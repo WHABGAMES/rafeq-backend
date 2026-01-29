@@ -8,7 +8,6 @@ import {
   IsString,
   IsOptional,
   IsBoolean,
-  IsEnum,
   IsNumber,
   IsArray,
   Min,
