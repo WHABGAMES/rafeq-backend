@@ -105,6 +105,17 @@ export class Conversation extends BaseEntity {
   customerExternalId: string;
 
   /**
+   * 👤 Customer ID - معرف العميل في النظام
+   */
+  @Column({
+    name: 'customer_id',
+    type: 'uuid',
+    nullable: true,
+  })
+  @Index('idx_conversation_customer_id')
+  customerId?: string;
+
+  /**
    * 👤 اسم العميل
    */
   @Column({
