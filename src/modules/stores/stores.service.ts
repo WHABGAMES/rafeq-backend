@@ -188,7 +188,7 @@ export class StoresService {
 
       return tokens.access_token;
 
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Failed to refresh token for store: ${store.id}`, error);
 
       store.status = StoreStatus.TOKEN_EXPIRED;
