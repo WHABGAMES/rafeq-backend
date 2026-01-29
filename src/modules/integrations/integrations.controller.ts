@@ -1,6 +1,33 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║              RAFIQ PLATFORM - Integrations Controller                          ║
+ * ║                                                                                ║
+ * ║  📌 تكاملات منصات التجارة الإلكترونية (سلة، زد، شوبيفاي، ووكومرس)              ║
+ * ║                                                                                ║
+ * ║  الـ Endpoints:                                                                ║
+ * ║  === General ===                                                              ║
+ * ║  GET    /integrations              → قائمة التكاملات النشطة                    ║
+ * ║  GET    /integrations/available    → التكاملات المتاحة                         ║
+ * ║  DELETE /integrations/:id          → فصل تكامل                                 ║
+ * ║                                                                                ║
+ * ║  === Salla ===                                                                ║
+ * ║  GET    /integrations/salla/connect    → بدء OAuth                            ║
+ * ║  GET    /integrations/salla/callback   → OAuth callback                       ║
+ * ║  GET    /integrations/salla/orders     → طلبات سلة                            ║
+ * ║  GET    /integrations/salla/products   → منتجات سلة                           ║
+ * ║  GET    /integrations/salla/customers  → عملاء سلة                            ║
+ * ║                                                                                ║
+ * ║  === Zid ===                                                                  ║
+ * ║  GET    /integrations/zid/connect      → بدء OAuth                            ║
+ * ║  GET    /integrations/zid/callback     → OAuth callback                       ║
+ * ║  GET    /integrations/zid/orders       → طلبات زد                             ║
+ * ║  GET    /integrations/zid/products     → منتجات زد                            ║
+ * ║                                                                                ║
+ * ║  === Shopify ===                                                              ║
+ * ║  POST   /integrations/shopify/connect  → ربط متجر شوبيفاي                     ║
+ * ║                                                                                ║
+ * ║  === WooCommerce ===                                                          ║
+ * ║  POST   /integrations/woocommerce/connect → ربط متجر ووكومرس                  ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -17,14 +44,16 @@ import {
   HttpStatus,
   UseGuards,
   Res,
+  Req,
 } from '@nestjs/common';
 import {
   ApiTags,
   ApiOperation,
+  
   ApiBearerAuth,
   ApiQuery,
 } from '@nestjs/swagger';
-import { Response } from 'express';
+import { Response, Request } from 'express';
 
 import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
 import { IntegrationsService } from './integrations.service';
@@ -184,10 +213,10 @@ export class IntegrationsController {
   ) {
     try {
       const result = await this.integrationsService.handleSallaCallback(code, state);
+      // Redirect to success page
       res.redirect(`/integrations/success?platform=salla&store=${result.storeName}`);
-    } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      res.redirect(`/integrations/error?platform=salla&error=${errorMessage}`);
+    } catch (error: any) {
+      res.redirect(`/integrations/error?platform=salla&error=${error.message}`);
     }
   }
 
@@ -273,9 +302,8 @@ export class IntegrationsController {
     try {
       const result = await this.integrationsService.handleZidCallback(code, state);
       res.redirect(`/integrations/success?platform=zid&store=${result.storeName}`);
-    } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      res.redirect(`/integrations/error?platform=zid&error=${errorMessage}`);
+    } catch (error: any) {
+      res.redirect(`/integrations/error?platform=zid&error=${error.message}`);
     }
   }
 
