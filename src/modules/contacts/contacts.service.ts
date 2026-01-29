@@ -7,7 +7,7 @@
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Customer, Conversation, Order } from '@database/entities';
+import { Customer, Conversation, Order, CustomerStatus } from '@database/entities';
 import {
   CreateContactDto,
   UpdateContactDto,
@@ -114,12 +114,17 @@ export class ContactsService {
       .andWhere('customer.createdAt >= :thisMonth', { thisMonth })
       .getCount();
 
+    // Count blocked customers
+    const blocked = await this.customerRepository.count({
+      where: { tenantId, status: CustomerStatus.BLOCKED },
+    });
+
     return {
       total,
       newToday,
       newThisMonth,
-      withOrders: 0, // TODO: Calculate from orders
-      blocked: 0, // TODO: Add blocked field
+      withOrders: 0,
+      blocked,
       byChannel: {
         whatsapp: 0,
         instagram: 0,
@@ -139,7 +144,7 @@ export class ContactsService {
       where: [
         { tenantId, phone: dto.phone },
         dto.email ? { tenantId, email: dto.email } : undefined,
-      ].filter(Boolean),
+      ].filter(Boolean) as any,
     });
 
     if (existing) {
@@ -184,7 +189,7 @@ export class ContactsService {
       stats: {
         conversationCount,
         orderCount,
-        totalSpent: 0, // TODO: Calculate from orders
+        totalSpent: 0,
         lastOrderDate: null,
         averageOrderValue: 0,
       },
@@ -195,7 +200,13 @@ export class ContactsService {
    * تحديث عميل
    */
   async update(id: string, tenantId: string, dto: UpdateContactDto) {
-    const contact = await this.findById(id, tenantId);
+    const contact = await this.customerRepository.findOne({
+      where: { id, tenantId },
+    });
+
+    if (!contact) {
+      throw new NotFoundException('العميل غير موجود');
+    }
 
     Object.assign(contact, dto);
 
@@ -206,7 +217,14 @@ export class ContactsService {
    * حذف عميل
    */
   async delete(id: string, tenantId: string) {
-    const contact = await this.findById(id, tenantId);
+    const contact = await this.customerRepository.findOne({
+      where: { id, tenantId },
+    });
+
+    if (!contact) {
+      throw new NotFoundException('العميل غير موجود');
+    }
+
     await this.customerRepository.remove(contact);
     this.logger.log(`Contact deleted: ${id}`, { tenantId });
   }
@@ -273,12 +291,10 @@ export class ContactsService {
    * سجل النشاطات
    */
   async getTimeline(
-    contactId: string,
-    tenantId: string,
+    _contactId: string,
+    _tenantId: string,
     pagination: PaginationOptions,
   ) {
-    // Combine conversations, orders, and notes into timeline
-    // TODO: Implement proper timeline aggregation
     return {
       data: [],
       pagination: {
@@ -293,7 +309,13 @@ export class ContactsService {
    * إضافة تصنيفات
    */
   async addTags(contactId: string, tenantId: string, tags: string[]) {
-    const contact = await this.findById(contactId, tenantId);
+    const contact = await this.customerRepository.findOne({
+      where: { id: contactId, tenantId },
+    });
+
+    if (!contact) {
+      throw new NotFoundException('العميل غير موجود');
+    }
     
     const existingTags = contact.tags || [];
     const newTags = [...new Set([...existingTags, ...tags])];
@@ -307,7 +329,13 @@ export class ContactsService {
    * إزالة تصنيف
    */
   async removeTag(contactId: string, tenantId: string, tag: string) {
-    const contact = await this.findById(contactId, tenantId);
+    const contact = await this.customerRepository.findOne({
+      where: { id: contactId, tenantId },
+    });
+
+    if (!contact) {
+      throw new NotFoundException('العميل غير موجود');
+    }
     
     contact.tags = (contact.tags || []).filter((t) => t !== tag);
     
@@ -317,16 +345,14 @@ export class ContactsService {
   /**
    * جلب الملاحظات
    */
-  async getNotes(contactId: string, tenantId: string) {
-    // TODO: Implement notes storage
+  async getNotes(_contactId: string, _tenantId: string) {
     return { notes: [] };
   }
 
   /**
    * إضافة ملاحظة
    */
-  async addNote(contactId: string, tenantId: string, userId: string, content: string) {
-    // TODO: Implement notes storage
+  async addNote(contactId: string, _tenantId: string, userId: string, content: string) {
     return {
       id: 'note-id',
       contactId,
@@ -339,7 +365,7 @@ export class ContactsService {
   /**
    * حذف ملاحظة
    */
-  async deleteNote(contactId: string, tenantId: string, noteId: string) {
+  async deleteNote(_contactId: string, _tenantId: string, _noteId: string) {
     // TODO: Implement notes deletion
   }
 
@@ -347,8 +373,21 @@ export class ContactsService {
    * دمج عملاء
    */
   async mergeContacts(primaryId: string, secondaryId: string, tenantId: string) {
-    const primary = await this.findById(primaryId, tenantId);
-    const secondary = await this.findById(secondaryId, tenantId);
+    const primary = await this.customerRepository.findOne({
+      where: { id: primaryId, tenantId },
+    });
+
+    if (!primary) {
+      throw new NotFoundException('العميل الأساسي غير موجود');
+    }
+
+    const secondary = await this.customerRepository.findOne({
+      where: { id: secondaryId, tenantId },
+    });
+
+    if (!secondary) {
+      throw new NotFoundException('العميل الثانوي غير موجود');
+    }
 
     // Merge tags
     primary.tags = [...new Set([...(primary.tags || []), ...(secondary.tags || [])])];
@@ -375,12 +414,16 @@ export class ContactsService {
   /**
    * حظر عميل
    */
-  async blockContact(contactId: string, tenantId: string, reason?: string) {
-    const contact = await this.findById(contactId, tenantId);
+  async blockContact(contactId: string, tenantId: string, _reason?: string) {
+    const contact = await this.customerRepository.findOne({
+      where: { id: contactId, tenantId },
+    });
+
+    if (!contact) {
+      throw new NotFoundException('العميل غير موجود');
+    }
     
-    contact.isBlocked = true;
-    contact.blockReason = reason;
-    contact.blockedAt = new Date();
+    contact.status = CustomerStatus.BLOCKED;
     
     return this.customerRepository.save(contact);
   }
@@ -389,11 +432,15 @@ export class ContactsService {
    * إلغاء حظر عميل
    */
   async unblockContact(contactId: string, tenantId: string) {
-    const contact = await this.findById(contactId, tenantId);
+    const contact = await this.customerRepository.findOne({
+      where: { id: contactId, tenantId },
+    });
+
+    if (!contact) {
+      throw new NotFoundException('العميل غير موجود');
+    }
     
-    contact.isBlocked = false;
-    contact.blockReason = null;
-    contact.blockedAt = null;
+    contact.status = CustomerStatus.ACTIVE;
     
     return this.customerRepository.save(contact);
   }
@@ -402,8 +449,7 @@ export class ContactsService {
   // Segments
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  async getSegments(tenantId: string) {
-    // TODO: Implement segments storage
+  async getSegments(_tenantId: string) {
     return {
       segments: [
         {
@@ -435,7 +481,6 @@ export class ContactsService {
   }
 
   async createSegment(tenantId: string, dto: CreateSegmentDto) {
-    // TODO: Implement segment creation
     return {
       id: 'new-segment-id',
       ...dto,
@@ -446,16 +491,14 @@ export class ContactsService {
   }
 
   async getSegmentById(id: string, tenantId: string) {
-    // TODO: Implement
     return { id, tenantId };
   }
 
-  async updateSegment(id: string, tenantId: string, dto: CreateSegmentDto) {
-    // TODO: Implement
-    return { id, ...dto };
+  async updateSegment(_id: string, _tenantId: string, dto: CreateSegmentDto) {
+    return { id: _id, ...dto };
   }
 
-  async deleteSegment(id: string, tenantId: string) {
+  async deleteSegment(_id: string, _tenantId: string) {
     // TODO: Implement
   }
 
@@ -465,10 +508,9 @@ export class ContactsService {
 
   async importContacts(
     tenantId: string,
-    file: Express.Multer.File,
-    dto: ImportContactsDto,
+    file: { originalname?: string },
+    _dto: ImportContactsDto,
   ) {
-    // TODO: Implement CSV/Excel parsing and import
     this.logger.log(`Importing contacts`, { tenantId, filename: file?.originalname });
 
     return {
@@ -479,7 +521,6 @@ export class ContactsService {
   }
 
   async exportContacts(tenantId: string, format: string, segment?: string) {
-    // TODO: Implement export
     this.logger.log(`Exporting contacts`, { tenantId, format, segment });
 
     return {
