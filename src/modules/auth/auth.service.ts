@@ -211,7 +211,7 @@ export class AuthService {
       });
 
       return tokens;
-    } catch (error) {
+    } catch (error: any) {
       // Rollback في حالة الخطأ
       await queryRunner.rollbackTransaction();
       throw error;
