@@ -265,9 +265,8 @@ export const buildTypeOrmConfig = (
      * Synchronize: تلقائي، قد يحذف بيانات، لا يمكن التراجع
      * Migrations: يدوي، آمن، يمكن التراجع، قابل للمراجعة
      */
-    synchronize: isDevelopment
-      ? configService.get<boolean>('database.synchronize', true)
-      : false, // أبداً في Production!
+    // ✅ يمكن تفعيله من Environment Variable: DATABASE_SYNCHRONIZE=true
+    synchronize: configService.get<boolean>('database.synchronize', false),
 
     // ═══════════════════════════════════════════════════════════════════════════
     // 📝 التسجيل (Logging)
