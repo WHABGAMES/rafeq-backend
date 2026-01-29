@@ -286,7 +286,7 @@ export class MessageService {
 
       return message;
 
-    } catch (error) {
+    } catch (error: any) {
       await queryRunner.rollbackTransaction();
       this.logger.error(`❌ Failed to save message: ${(error as Error).message}`);
       throw error;
