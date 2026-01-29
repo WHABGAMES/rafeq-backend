@@ -1147,7 +1147,7 @@ Important rules:
   /**
    * تحليلات البوت
    */
-  async getAnalytics(tenantId: string, period: string) {
+  async getAnalytics(_tenantId: string, period: string) {
     // TODO: Calculate actual analytics
     return {
       period,
