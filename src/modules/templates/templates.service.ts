@@ -6,7 +6,7 @@
 
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Like, In } from 'typeorm';
+import { Repository } from 'typeorm';
 import { MessageTemplate, TemplateStatus, TemplateChannel } from '@database/entities';
 import {
   CreateTemplateDto,
@@ -114,15 +114,14 @@ export class TemplatesService {
     const template = this.templateRepository.create({
       tenantId,
       name: dto.name,
-      displayName: dto.displayName || dto.name,
+      displayName: dto.name,
       description: dto.description,
-      category: dto.category,
-      channel: dto.channel,
-      language: dto.language,
-      type: dto.type,
+      category: dto.category as any,
+      channel: dto.channel as any,
+      language: (dto.language || 'ar') as any,
       body: dto.content,
       status: TemplateStatus.DRAFT,
-      usageCount: 0,
+      stats: { usageCount: 0 },
     });
 
     const saved = await this.templateRepository.save(template);
@@ -150,9 +149,13 @@ export class TemplatesService {
     }
     if (dto.name) {
       template.name = dto.name;
+      template.displayName = dto.name;
     }
     if (dto.description) {
       template.description = dto.description;
+    }
+    if (dto.category) {
+      template.category = dto.category as any;
     }
     
     return this.templateRepository.save(template);
@@ -164,7 +167,7 @@ export class TemplatesService {
   async delete(id: string, tenantId: string) {
     const template = await this.findById(id, tenantId);
     
-    await this.templateRepository.delete(id);
+    await this.templateRepository.delete(template.id);
 
     this.logger.log(`Template deleted: ${id}`, { tenantId });
   }
@@ -196,16 +199,19 @@ export class TemplatesService {
 
     const duplicate = this.templateRepository.create({
       tenantId: original.tenantId,
-      name: newName || `${original.name} (نسخة)`,
-      displayName: original.displayName,
+      name: newName || `${original.name}_copy`,
+      displayName: newName || `${original.displayName} (نسخة)`,
       description: original.description,
       category: original.category,
       channel: original.channel,
       language: original.language,
-      type: original.type,
       body: original.body,
+      header: original.header,
+      footer: original.footer,
+      buttons: original.buttons,
+      variables: original.variables,
       status: TemplateStatus.DRAFT,
-      usageCount: 0,
+      stats: { usageCount: 0 },
     });
 
     return this.templateRepository.save(duplicate);
@@ -332,7 +338,6 @@ export class TemplatesService {
 
       if (missing.length > 0) {
         this.logger.warn(`Template missing required variables: ${missing.join(', ')}`);
-        // Don't throw error, just warn
       }
     }
 
