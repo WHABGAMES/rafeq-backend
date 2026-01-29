@@ -11,14 +11,24 @@ import {
   Res,
   Logger,
   BadRequestException,
+  UseGuards,
+  Request,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { Response } from 'express';
 import { ConfigService } from '@nestjs/config';
 
 // Services
 import { SallaOAuthService } from './salla-oauth.service';
 import { StoresService } from './stores.service';
+
+// Auth
+import { JwtAuthGuard, Public } from '../auth/guards/jwt-auth.guard';
+import { User } from '@database/entities';
+
+interface RequestWithUser extends Request {
+  user: User;
+}
 
 @Controller('stores/salla')
 @ApiTags('Salla OAuth')
@@ -32,14 +42,17 @@ export class SallaOAuthController {
   ) {}
 
   @Get('connect')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('JWT-auth')
   @ApiOperation({
     summary: 'بدء ربط متجر سلة',
     description: 'يُحول المستخدم لصفحة تسجيل الدخول في سلة',
   })
   async connectStore(
+    @Request() req: RequestWithUser,
     @Res() res: Response,
   ): Promise<void> {
-    const tenantId = 'temp-tenant-id';
+    const tenantId = req.user.tenantId;
 
     try {
       const authUrl = this.sallaOAuthService.generateAuthorizationUrl(tenantId);
@@ -52,6 +65,7 @@ export class SallaOAuthController {
   }
 
   @Get('callback')
+  @Public() // Callback من سلة - لا يحتاج JWT
   @ApiOperation({
     summary: 'Callback من سلة',
     description: 'يستقبل authorization code من سلة ويكمل عملية الربط',
@@ -78,6 +92,7 @@ export class SallaOAuthController {
         return;
       }
 
+      // tenantId يأتي من الـ state parameter الذي تم إرساله عند بدء OAuth
       const { tokens, tenantId } = await this.sallaOAuthService.exchangeCodeForTokens(code, state);
       const merchantInfo = await this.sallaOAuthService.getMerchantInfo(tokens.access_token);
 
