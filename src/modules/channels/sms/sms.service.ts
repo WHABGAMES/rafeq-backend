@@ -272,8 +272,8 @@ export class SmsService {
 
   private async sendViaProvider(
     connection: SmsConnection,
-    phone: string,
-    message: string,
+    _phone: string,
+    _message: string,
     _senderId: string,
   ): Promise<{ messageId: string }> {
     // TODO: Implement actual sending for each provider
