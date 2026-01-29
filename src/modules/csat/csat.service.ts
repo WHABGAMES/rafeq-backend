@@ -7,7 +7,6 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { UpdateCsatSettingsDto, SubmitCsatDto } from './dto';
 
-// ✅ تم تصدير الـ interface
 export interface CsatSettings {
   enabled: boolean;
   type: 'csat' | 'nps' | 'ces' | 'thumbs';
@@ -34,18 +33,13 @@ export interface SurveyFilters {
 export class CsatService {
   private readonly logger = new Logger(CsatService.name);
   
-  // In-memory storage (replace with database)
   private settings: Map<string, CsatSettings> = new Map();
   private surveys: Map<string, any> = new Map();
 
-  /**
-   * الحصول على الإعدادات
-   */
   async getSettings(tenantId: string): Promise<CsatSettings> {
     const settings = this.settings.get(tenantId);
 
     if (!settings) {
-      // Return default settings
       return {
         enabled: true,
         type: 'csat',
@@ -61,9 +55,6 @@ export class CsatService {
     return settings;
   }
 
-  /**
-   * تحديث الإعدادات
-   */
   async updateSettings(tenantId: string, dto: UpdateCsatSettingsDto): Promise<CsatSettings> {
     const currentSettings = await this.getSettings(tenantId);
 
@@ -79,16 +70,12 @@ export class CsatService {
     return newSettings;
   }
 
-  /**
-   * الحصول على التقييمات
-   */
   async getSurveys(tenantId: string, filters: SurveyFilters) {
     const { page, limit } = filters;
 
     let surveys = Array.from(this.surveys.values())
       .filter((s) => s.tenantId === tenantId);
 
-    // Apply filters
     if (filters.type) {
       surveys = surveys.filter((s) => s.type === filters.type);
     }
@@ -101,7 +88,6 @@ export class CsatService {
       surveys = surveys.filter((s) => s.agentId === filters.agentId);
     }
 
-    // Sort by date
     surveys.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
     const total = surveys.length;
@@ -119,9 +105,6 @@ export class CsatService {
     };
   }
 
-  /**
-   * الحصول على تقييم بالـ ID
-   */
   async getSurveyById(id: string, tenantId: string) {
     const survey = this.surveys.get(id);
 
@@ -132,12 +115,7 @@ export class CsatService {
     return survey;
   }
 
-  /**
-   * إرسال تقييم
-   */
   async submitSurvey(token: string, dto: SubmitCsatDto) {
-    // Decode token to get survey context
-    // TODO: Implement proper token validation
     const context = this.decodeToken(token);
 
     const surveyId = `survey-${Date.now()}`;
@@ -168,9 +146,6 @@ export class CsatService {
     };
   }
 
-  /**
-   * تحليلات التقييم
-   */
   async getAnalytics(
     tenantId: string,
     params: { period: string; from?: string; to?: string },
@@ -181,12 +156,10 @@ export class CsatService {
     const totalSurveys = surveys.length;
     const ratings = surveys.map((s) => s.rating).filter((r) => r !== undefined);
 
-    // Calculate averages
     const avgCsat = ratings.length > 0
       ? ratings.reduce((a, b) => a + b, 0) / ratings.length
       : 0;
 
-    // Calculate distribution
     const distribution = [1, 2, 3, 4, 5].map((rating) => ({
       rating,
       count: ratings.filter((r) => r === rating).length,
@@ -195,8 +168,6 @@ export class CsatService {
         : 0,
     }));
 
-    // Calculate response rate
-    // TODO: Get actual conversation count
     const totalConversations = 100;
     const responseRate = totalConversations > 0
       ? (totalSurveys / totalConversations) * 100
@@ -215,9 +186,6 @@ export class CsatService {
     };
   }
 
-  /**
-   * تقييمات الوكلاء
-   */
   async getAgentRatings(
     tenantId: string,
     _params: { from?: string; to?: string },
@@ -225,7 +193,6 @@ export class CsatService {
     const surveys = Array.from(this.surveys.values())
       .filter((s) => s.tenantId === tenantId && s.agentId);
 
-    // Group by agent
     const agentMap = new Map<string, number[]>();
 
     for (const survey of surveys) {
@@ -243,7 +210,6 @@ export class CsatService {
       unsatisfiedCount: ratings.filter((r) => r <= 2).length,
     }));
 
-    // Sort by average rating
     agentRatings.sort((a, b) => b.averageRating - a.averageRating);
 
     return {
@@ -252,14 +218,10 @@ export class CsatService {
     };
   }
 
-  /**
-   * اتجاهات التقييم
-   */
   async getTrends(
     _tenantId: string,
     params: { period: string; groupBy: 'day' | 'week' | 'month' },
   ) {
-    // TODO: Implement actual trend calculation
     return {
       trends: [],
       period: params.period,
@@ -267,14 +229,10 @@ export class CsatService {
     };
   }
 
-  /**
-   * تصدير التقييمات
-   */
   async exportSurveys(
     _tenantId: string,
     _params: { format: string; from?: string; to?: string },
   ) {
-    // TODO: Implement export
     return {
       success: true,
       downloadUrl: '/api/v1/csat/export/download/file-id',
@@ -282,9 +240,6 @@ export class CsatService {
     };
   }
 
-  /**
-   * إنشاء رابط تقييم
-   */
   async createSurveyLink(
     tenantId: string,
     conversationId: string,
@@ -301,17 +256,11 @@ export class CsatService {
     return `https://app.rafiq.ai/csat/${token}`;
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // Private Methods
-  // ═══════════════════════════════════════════════════════════════════════════════
-
   private generateToken(data: any): string {
-    // TODO: Implement proper JWT token
     return Buffer.from(JSON.stringify(data)).toString('base64');
   }
 
   private decodeToken(token: string): any {
-    // TODO: Implement proper JWT verification
     try {
       return JSON.parse(Buffer.from(token, 'base64').toString());
     } catch {
