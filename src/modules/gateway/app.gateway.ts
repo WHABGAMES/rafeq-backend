@@ -433,7 +433,14 @@ export class AppGateway
     name?: string;
   } | null> {
     try {
-      return this.jwtService.verify(token);
+      const payload = this.jwtService.verify(token) as {
+        sub: string;
+        tenantId: string;
+        storeId?: string;
+        role: string;
+        name?: string;
+      };
+      return payload;
     } catch {
       return null;
     }
