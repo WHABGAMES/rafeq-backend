@@ -7,7 +7,6 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { CreateQuickReplyDto, UpdateQuickReplyDto } from './dto';
 
-// ✅ تم تصدير الـ interfaces
 export interface QuickReply {
   id: string;
   tenantId: string;
@@ -47,18 +46,13 @@ export interface Filters {
 export class QuickRepliesService {
   private readonly logger = new Logger(QuickRepliesService.name);
 
-  // In-memory storage (replace with database)
   private quickReplies: Map<string, QuickReply> = new Map();
   private categories: Map<string, Category> = new Map();
 
   constructor() {
-    // Add default quick replies
     this.initializeDefaults();
   }
 
-  /**
-   * Initialize default quick replies
-   */
   private initializeDefaults() {
     const defaultReplies = [
       {
@@ -77,58 +71,11 @@ export class QuickRepliesService {
         category: 'greetings',
         variables: ['customer_name'],
       },
-      {
-        id: 'qr-3',
-        shortcut: '/order',
-        title: 'حالة الطلب',
-        content: 'يمكنك تتبع طلبك من هنا:\n{{order_tracking_url}}\n\nإذا كان لديك أي استفسار، أنا هنا للمساعدة!',
-        category: 'orders',
-        variables: ['order_tracking_url'],
-      },
-      {
-        id: 'qr-4',
-        shortcut: '/return',
-        title: 'سياسة الاسترجاع',
-        content: 'سياسة الاسترجاع:\n- يمكنك استرجاع المنتج خلال 14 يوم من الاستلام\n- المنتج يجب أن يكون بحالته الأصلية\n- سيتم رد المبلغ خلال 5-7 أيام عمل\n\nهل تريد بدء طلب استرجاع؟',
-        category: 'policies',
-      },
-      {
-        id: 'qr-5',
-        shortcut: '/shipping',
-        title: 'معلومات الشحن',
-        content: 'معلومات الشحن:\n📦 الشحن داخل المدينة: 1-2 يوم عمل\n🚚 الشحن لباقي المناطق: 3-5 أيام عمل\n💰 الشحن مجاني للطلبات فوق 200 ريال',
-        category: 'shipping',
-      },
-      {
-        id: 'qr-6',
-        shortcut: '/payment',
-        title: 'طرق الدفع',
-        content: 'طرق الدفع المتاحة:\n💳 بطاقة ائتمان (فيزا، ماستركارد)\n🏦 تحويل بنكي\n💵 الدفع عند الاستلام\n📱 Apple Pay / مدى',
-        category: 'payment',
-      },
-      {
-        id: 'qr-7',
-        shortcut: '/wait',
-        title: 'انتظار',
-        content: 'لحظة من فضلك، أقوم بالتحقق من المعلومات... ⏳',
-        category: 'general',
-      },
-      {
-        id: 'qr-8',
-        shortcut: '/transfer',
-        title: 'تحويل',
-        content: 'سأقوم بتحويلك إلى أحد المختصين للمساعدة بشكل أفضل. لحظات من فضلك... 🔄',
-        category: 'general',
-      },
     ];
 
     const defaultCategories = [
       { id: 'cat-1', name: 'تحيات', icon: '👋' },
       { id: 'cat-2', name: 'الطلبات', icon: '📦' },
-      { id: 'cat-3', name: 'السياسات', icon: '📋' },
-      { id: 'cat-4', name: 'الشحن', icon: '🚚' },
-      { id: 'cat-5', name: 'الدفع', icon: '💳' },
-      { id: 'cat-6', name: 'عام', icon: '💬' },
     ];
 
     const tenantId = 'default';
@@ -154,9 +101,6 @@ export class QuickRepliesService {
     });
   }
 
-  /**
-   * جلب الفئات
-   */
   async getCategories(tenantId: string): Promise<{ categories: Category[] }> {
     const categories = Array.from(this.categories.values())
       .filter((c) => c.tenantId === tenantId || c.tenantId === 'default');
@@ -164,9 +108,6 @@ export class QuickRepliesService {
     return { categories };
   }
 
-  /**
-   * إنشاء فئة
-   */
   async createCategory(tenantId: string, data: { name: string; icon?: string }): Promise<Category> {
     const id = `cat-${Date.now()}`;
 
@@ -183,9 +124,6 @@ export class QuickRepliesService {
     return category;
   }
 
-  /**
-   * حذف فئة
-   */
   async deleteCategory(id: string, tenantId: string): Promise<void> {
     const category = this.categories.get(id);
 
@@ -196,9 +134,6 @@ export class QuickRepliesService {
     this.categories.delete(id);
   }
 
-  /**
-   * جلب جميع الردود
-   */
   async findAll(tenantId: string, filters: Filters): Promise<{
     data: QuickReply[];
     pagination: { page: number; limit: number; total: number; totalPages: number };
@@ -208,12 +143,10 @@ export class QuickRepliesService {
     let replies = Array.from(this.quickReplies.values())
       .filter((r) => r.tenantId === tenantId || r.isGlobal);
 
-    // Filter by category
     if (filters.category) {
       replies = replies.filter((r) => r.category === filters.category);
     }
 
-    // Search
     if (filters.search) {
       const searchLower = filters.search.toLowerCase();
       replies = replies.filter(
@@ -224,7 +157,6 @@ export class QuickRepliesService {
       );
     }
 
-    // Sort by usage count (most used first)
     replies.sort((a, b) => b.usageCount - a.usageCount);
 
     const total = replies.length;
@@ -242,9 +174,6 @@ export class QuickRepliesService {
     };
   }
 
-  /**
-   * بحث سريع
-   */
   async search(tenantId: string, query: string): Promise<{ results: QuickReply[] }> {
     const queryLower = query.toLowerCase();
 
@@ -261,13 +190,9 @@ export class QuickRepliesService {
     return { results: replies };
   }
 
-  /**
-   * إنشاء رد سريع
-   */
   async create(tenantId: string, userId: string, dto: CreateQuickReplyDto): Promise<QuickReply> {
     const id = `qr-${Date.now()}`;
 
-    // Extract variables from content
     const variableMatches = dto.content.match(/{{(\w+)}}/g);
     const variables = variableMatches
       ? variableMatches.map((v) => v.replace(/{{|}}/g, ''))
@@ -296,9 +221,6 @@ export class QuickRepliesService {
     return quickReply;
   }
 
-  /**
-   * جلب رد بالـ ID
-   */
   async findById(id: string, tenantId: string): Promise<QuickReply> {
     const reply = this.quickReplies.get(id);
 
@@ -309,9 +231,6 @@ export class QuickRepliesService {
     return reply;
   }
 
-  /**
-   * تحديث رد سريع
-   */
   async update(id: string, tenantId: string, dto: UpdateQuickReplyDto): Promise<QuickReply> {
     const reply = await this.findById(id, tenantId);
 
@@ -319,7 +238,6 @@ export class QuickRepliesService {
       throw new NotFoundException('لا يمكن تعديل الردود الافتراضية');
     }
 
-    // Extract variables if content changed
     if (dto.content) {
       const variableMatches = dto.content.match(/{{(\w+)}}/g);
       reply.variables = variableMatches
@@ -333,9 +251,6 @@ export class QuickRepliesService {
     return reply;
   }
 
-  /**
-   * حذف رد سريع
-   */
   async delete(id: string, tenantId: string): Promise<void> {
     const reply = await this.findById(id, tenantId);
 
@@ -348,9 +263,6 @@ export class QuickRepliesService {
     this.logger.log(`Quick reply deleted: ${id}`, { tenantId });
   }
 
-  /**
-   * تسجيل استخدام
-   */
   async recordUsage(id: string, tenantId: string, _userId: string): Promise<{ success: boolean; usageCount: number }> {
     const reply = await this.findById(id, tenantId);
 
@@ -360,9 +272,6 @@ export class QuickRepliesService {
     return { success: true, usageCount: reply.usageCount };
   }
 
-  /**
-   * الردود الأكثر استخداماً
-   */
   async getPopular(tenantId: string, limit: number): Promise<{ replies: QuickReply[] }> {
     const replies = Array.from(this.quickReplies.values())
       .filter((r) => r.tenantId === tenantId || r.isGlobal)
@@ -372,9 +281,6 @@ export class QuickRepliesService {
     return { replies };
   }
 
-  /**
-   * جلب رد بالاختصار
-   */
   async findByShortcut(tenantId: string, shortcut: string): Promise<QuickReply | null> {
     const reply = Array.from(this.quickReplies.values())
       .find(
