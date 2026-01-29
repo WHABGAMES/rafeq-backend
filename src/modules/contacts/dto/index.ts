@@ -57,6 +57,22 @@ export class CreateContactDto {
   @IsString()
   externalId?: string;
 
+  /**
+   * ✅ إضافة: مطلوب من contacts.service.ts:123
+   */
+  @ApiPropertyOptional({ description: 'معرف المتجر' })
+  @IsOptional()
+  @IsString()
+  storeId?: string;
+
+  /**
+   * ✅ إضافة: مطلوب من contacts.service.ts:124
+   */
+  @ApiPropertyOptional({ description: 'معرف العميل في سلة' })
+  @IsOptional()
+  @IsString()
+  sallaCustomerId?: string;
+
   @ApiPropertyOptional({ description: 'التصنيفات' })
   @IsOptional()
   @IsArray()
@@ -129,6 +145,16 @@ export class UpdateContactDto {
   @IsOptional()
   @IsString()
   lastName?: string;
+
+  @ApiPropertyOptional({ description: 'معرف المتجر' })
+  @IsOptional()
+  @IsString()
+  storeId?: string;
+
+  @ApiPropertyOptional({ description: 'معرف العميل في سلة' })
+  @IsOptional()
+  @IsString()
+  sallaCustomerId?: string;
 
   @ApiPropertyOptional({ description: 'التصنيفات' })
   @IsOptional()
@@ -274,9 +300,31 @@ export class SegmentCondition {
   @IsString()
   field: string;
 
-  @ApiProperty({ description: 'العملية', enum: ['equals', 'not_equals', 'contains', 'greater_than', 'less_than', 'in', 'not_in', 'exists', 'not_exists'] })
+  @ApiProperty({
+    description: 'العملية',
+    enum: [
+      'equals',
+      'not_equals',
+      'contains',
+      'greater_than',
+      'less_than',
+      'in',
+      'not_in',
+      'exists',
+      'not_exists',
+    ],
+  })
   @IsString()
-  operator: 'equals' | 'not_equals' | 'contains' | 'greater_than' | 'less_than' | 'in' | 'not_in' | 'exists' | 'not_exists';
+  operator:
+    | 'equals'
+    | 'not_equals'
+    | 'contains'
+    | 'greater_than'
+    | 'less_than'
+    | 'in'
+    | 'not_in'
+    | 'exists'
+    | 'not_exists';
 
   @ApiProperty({ description: 'القيمة' })
   value: string | number | boolean | string[];
