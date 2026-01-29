@@ -151,16 +151,24 @@ export class ContactsService {
       throw new BadRequestException('العميل موجود مسبقاً');
     }
 
+    // Extract address string and other fields separately
+    const { address: addressString, ...restDto } = dto;
+
     const contact = this.customerRepository.create({
-      ...dto,
+      ...restDto,
       tenantId,
-    });
+      // Convert string address to CustomerAddress if provided
+      address: addressString ? { street: addressString } : undefined,
+    } as any);
 
     const saved = await this.customerRepository.save(contact);
 
-    this.logger.log(`Contact created: ${saved.id}`, { tenantId, phone: dto.phone });
+    // Handle both single and array results from save()
+    const savedContact = Array.isArray(saved) ? saved[0] : saved;
 
-    return saved;
+    this.logger.log(`Contact created: ${savedContact.id}`, { tenantId, phone: dto.phone });
+
+    return savedContact;
   }
 
   /**
