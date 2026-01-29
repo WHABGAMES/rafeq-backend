@@ -7,7 +7,6 @@
 import {
   IsString,
   IsOptional,
-  IsEnum,
   IsArray,
   IsObject,
   IsBoolean,
