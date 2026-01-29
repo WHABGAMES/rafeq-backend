@@ -244,7 +244,7 @@ export class WhatsAppController {
       const channelId = 'CHANNEL_ID';
       await this.whatsAppService.processWebhook(payload, channelId);
 
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error('Error processing WhatsApp webhook', {
         error: error instanceof Error ? error.message : 'Unknown',
       });
@@ -274,7 +274,7 @@ export class WhatsAppController {
 
     try {
       await this.whatsAppService.processWebhook(payload, channelId);
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error('Error processing channel webhook', {
         channelId,
         error: error instanceof Error ? error.message : 'Unknown',
