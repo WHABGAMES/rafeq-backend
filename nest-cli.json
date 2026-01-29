@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json.schemastore.org/nest-cli",
+  
+  "collection": "@nestjs/schematics",
+  
+  "sourceRoot": "src",
+  
+  "compilerOptions": {
+    "deleteOutDir": true,
+    
+    "webpack": false,
+    
+    "tsConfigPath": "tsconfig.build.json",
+    
+    "assets": [
+      {
+        "include": "**/*.graphql",
+        "watchAssets": true
+      },
+      {
+        "include": "../templates/**/*",
+        "outDir": "dist/templates",
+        "watchAssets": true
+      }
+    ]
+  },
+
+  "generateOptions": {
+    "spec": true,
+    
+    "flat": false
+  }
+}

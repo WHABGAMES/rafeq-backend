@@ -1,0 +1,168 @@
+/**
+ * ╔═══════════════════════════════════════════════════════════════════════════════╗
+ * ║              RAFIQ PLATFORM - Telegram Controller                              ║
+ * ║                                                                                ║
+ * ║  📌 إدارة قناة Telegram Bot                                                    ║
+ * ║                                                                                ║
+ * ║  الـ Endpoints:                                                                ║
+ * ║  POST   /channels/telegram/connect      → ربط البوت                           ║
+ * ║  GET    /channels/telegram/status       → حالة الاتصال                        ║
+ * ║  POST   /channels/telegram/send         → إرسال رسالة                         ║
+ * ║  POST   /channels/telegram/webhook      → استقبال Webhook                     ║
+ * ║  DELETE /channels/telegram/disconnect   → فصل الاتصال                         ║
+ * ╚═══════════════════════════════════════════════════════════════════════════════╝
+ */
+
+import {
+  Controller,
+  Get,
+  Post,
+  Delete,
+  Body,
+  Param,
+  HttpCode,
+  HttpStatus,
+  UseGuards,
+} from '@nestjs/common';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+} from '@nestjs/swagger';
+
+import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
+import { TelegramService } from './telegram.service';
+
+@ApiTags('Channels - Telegram')
+@Controller({
+  path: 'channels/telegram',
+  version: '1',
+})
+export class TelegramController {
+  constructor(private readonly telegramService: TelegramService) {}
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // Connection
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Post('connect')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary: 'ربط Telegram Bot',
+    description: 'ربط بوت تيليجرام باستخدام Bot Token',
+  })
+  async connect(@Body() body: { botToken: string }) {
+    const tenantId = 'test-tenant-id';
+    return this.telegramService.connect(tenantId, body.botToken);
+  }
+
+  @Get('status')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary: 'حالة الاتصال',
+    description: 'التحقق من حالة بوت تيليجرام',
+  })
+  async getStatus() {
+    const tenantId = 'test-tenant-id';
+    return this.telegramService.getStatus(tenantId);
+  }
+
+  @Delete('disconnect')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('JWT-auth')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({
+    summary: 'فصل Telegram',
+    description: 'فصل الربط مع بوت تيليجرام',
+  })
+  async disconnect() {
+    const tenantId = 'test-tenant-id';
+    await this.telegramService.disconnect(tenantId);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // Messaging
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Post('send')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary: 'إرسال رسالة',
+    description: 'إرسال رسالة عبر Telegram',
+  })
+  async sendMessage(
+    @Body() body: {
+      chatId: string;
+      text: string;
+      parseMode?: 'HTML' | 'Markdown';
+      replyMarkup?: any;
+    },
+  ) {
+    const tenantId = 'test-tenant-id';
+    return this.telegramService.sendMessage(tenantId, body);
+  }
+
+  @Post('send-photo')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({ summary: 'إرسال صورة' })
+  async sendPhoto(
+    @Body() body: {
+      chatId: string;
+      photo: string;
+      caption?: string;
+    },
+  ) {
+    const tenantId = 'test-tenant-id';
+    return this.telegramService.sendPhoto(tenantId, body);
+  }
+
+  @Post('send-document')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({ summary: 'إرسال ملف' })
+  async sendDocument(
+    @Body() body: {
+      chatId: string;
+      document: string;
+      caption?: string;
+    },
+  ) {
+    const tenantId = 'test-tenant-id';
+    return this.telegramService.sendDocument(tenantId, body);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // Webhook
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Post('webhook/:token')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'استقبال Webhook',
+    description: 'استقبال التحديثات من Telegram',
+  })
+  async handleWebhook(
+    @Param('token') token: string,
+    @Body() update: any,
+  ) {
+    await this.telegramService.handleUpdate(token, update);
+    return 'OK';
+  }
+
+  @Post('set-webhook')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary: 'تعيين Webhook',
+    description: 'تعيين رابط Webhook للبوت',
+  })
+  async setWebhook(@Body() body: { url: string }) {
+    const tenantId = 'test-tenant-id';
+    return this.telegramService.setWebhook(tenantId, body.url);
+  }
+}

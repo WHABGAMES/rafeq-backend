@@ -1,0 +1,202 @@
+/**
+ * ╔═══════════════════════════════════════════════════════════════════════════════╗
+ * ║              RAFIQ PLATFORM - Campaigns Controller                             ║
+ * ║                                                                                ║
+ * ║  📌 نقاط الوصول لإدارة الحملات التسويقية                                        ║
+ * ║                                                                                ║
+ * ║  الـ Endpoints:                                                                ║
+ * ║  POST   /campaigns              → إنشاء حملة جديدة                             ║
+ * ║  GET    /campaigns              → قائمة الحملات                                ║
+ * ║  GET    /campaigns/:id          → تفاصيل حملة                                  ║
+ * ║  PATCH  /campaigns/:id          → تحديث حملة                                   ║
+ * ║  POST   /campaigns/:id/execute  → تنفيذ حملة فوراً                             ║
+ * ║  POST   /campaigns/:id/pause    → إيقاف حملة                                   ║
+ * ║  POST   /campaigns/:id/resume   → استئناف حملة                                 ║
+ * ║  POST   /campaigns/:id/cancel   → إلغاء حملة                                   ║
+ * ║  GET    /campaigns/:id/stats    → إحصائيات حملة                                ║
+ * ║  POST   /campaigns/preview      → معاينة عدد المستهدفين                         ║
+ * ╚═══════════════════════════════════════════════════════════════════════════════╝
+ */
+
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Param,
+  Query,
+  HttpCode,
+  HttpStatus,
+} from '@nestjs/common';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+  ApiQuery,
+} from '@nestjs/swagger';
+
+import {
+  CampaignsService,
+  CreateCampaignDto,
+} from './campaigns.service';
+import { CampaignType, CampaignStatus } from '@database/entities/campaign.entity';
+
+@ApiTags('Campaigns')
+@ApiBearerAuth('JWT-auth')
+@Controller({
+  path: 'campaigns',
+  version: '1',
+})
+export class CampaignsController {
+  constructor(private readonly campaignsService: CampaignsService) {}
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // POST /campaigns - إنشاء حملة جديدة
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Post()
+  @ApiOperation({
+    summary: 'إنشاء حملة جديدة',
+    description: 'إنشاء حملة تسويقية (مجدولة، مشروطة، أو متكررة)',
+  })
+  @ApiResponse({ status: 201, description: 'تم إنشاء الحملة' })
+  async create(@Body() dto: CreateCampaignDto) {
+    // مؤقتاً: tenant ID ثابت
+    const tenantId = 'test-tenant-id';
+    return this.campaignsService.create({ ...dto, tenantId });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // GET /campaigns - قائمة الحملات
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Get()
+  @ApiOperation({
+    summary: 'قائمة الحملات',
+    description: 'جلب جميع حملات المستأجر مع فلترة وتصفح',
+  })
+  @ApiQuery({ name: 'status', required: false, enum: CampaignStatus })
+  @ApiQuery({ name: 'type', required: false, enum: CampaignType })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  async findAll(
+    @Query('status') status?: CampaignStatus,
+    @Query('type') type?: CampaignType,
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
+  ) {
+    const tenantId = 'test-tenant-id';
+    return this.campaignsService.findAll(tenantId, {
+      status,
+      type,
+      page,
+      limit,
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // GET /campaigns/:id - تفاصيل حملة
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Get(':id')
+  @ApiOperation({
+    summary: 'تفاصيل حملة',
+    description: 'جلب تفاصيل حملة معينة',
+  })
+  async findOne(@Param('id') id: string) {
+    const tenantId = 'test-tenant-id';
+    return this.campaignsService.findById(id, tenantId);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // POST /campaigns/:id/execute - تنفيذ فوري
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Post(':id/execute')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'تنفيذ الحملة فوراً',
+    description: 'بدء إرسال رسائل الحملة فوراً (للحملات المجدولة)',
+  })
+  async execute(@Param('id') id: string) {
+    const tenantId = 'test-tenant-id';
+    await this.campaignsService.executeNow(id, tenantId);
+    return { message: 'تم بدء تنفيذ الحملة' };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // POST /campaigns/:id/pause - إيقاف مؤقت
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Post(':id/pause')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'إيقاف الحملة مؤقتاً',
+    description: 'إيقاف حملة نشطة مؤقتاً',
+  })
+  async pause(@Param('id') id: string) {
+    return this.campaignsService.pause(id);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // POST /campaigns/:id/resume - استئناف
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Post(':id/resume')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'استئناف الحملة',
+    description: 'استئناف حملة متوقفة مؤقتاً',
+  })
+  async resume(@Param('id') id: string) {
+    return this.campaignsService.resume(id);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // POST /campaigns/:id/cancel - إلغاء
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Post(':id/cancel')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'إلغاء الحملة',
+    description: 'إلغاء حملة نهائياً',
+  })
+  async cancel(@Param('id') id: string) {
+    return this.campaignsService.cancel(id);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // GET /campaigns/:id/stats - إحصائيات
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Get(':id/stats')
+  @ApiOperation({
+    summary: 'إحصائيات الحملة',
+    description: 'جلب إحصائيات الإرسال والتوصيل والقراءة',
+  })
+  async getStats(@Param('id') id: string) {
+    const tenantId = 'test-tenant-id';
+    return this.campaignsService.getStats(id, tenantId);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // POST /campaigns/preview - معاينة الاستهداف
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Post('preview')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'معاينة عدد المستهدفين',
+    description: 'معرفة عدد العملاء الذين سيستهدفهم segment معين',
+  })
+  async preview(@Body() body: { segment: Record<string, unknown> }) {
+    const tenantId = 'test-tenant-id';
+    const count = await this.campaignsService.previewSegment(
+      tenantId,
+      body.segment,
+    );
+    return { targetedCount: count };
+  }
+}

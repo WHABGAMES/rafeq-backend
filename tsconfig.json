@@ -1,0 +1,203 @@
+{
+  /*
+   * ═══════════════════════════════════════════════════════════════════════════
+   * ملف إعدادات TypeScript - tsconfig.json
+   * ═══════════════════════════════════════════════════════════════════════════
+   * 
+   * هذا الملف يتحكم في كيفية تحويل TypeScript إلى JavaScript
+   * 
+   * TypeScript = JavaScript + أنواع البيانات (Types)
+   * مثال: بدلاً من كتابة: function add(a, b) { return a + b }
+   *       نكتب: function add(a: number, b: number): number { return a + b }
+   * 
+   * الفائدة: اكتشاف الأخطاء قبل تشغيل الكود!
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+
+  "compilerOptions": {
+    /*
+     * ─────────────────────────────────────────────────────────────────────────
+     * إعدادات الإخراج (Output Settings)
+     * ─────────────────────────────────────────────────────────────────────────
+     */
+
+    // "module": نوع نظام الوحدات (Modules)
+    // commonjs = النظام المستخدم في Node.js (require/module.exports)
+    // هناك أنظمة أخرى مثل: ESM, AMD, UMD
+    "module": "commonjs",
+
+    // "target": إصدار JavaScript الناتج
+    // ES2022 = أحدث ميزات JavaScript المدعومة في Node.js 20+
+    // كلما كان أحدث، كلما كان الكود أنظف (أقل تحويلات)
+    "target": "ES2022",
+
+    // "outDir": مجلد الملفات المترجمة
+    // الكود الأصلي في src/ → الكود المترجم في dist/
+    "outDir": "./dist",
+
+    // "rootDir": المجلد الجذر للكود المصدري
+    "rootDir": "./src",
+
+    // "declaration": إنشاء ملفات .d.ts
+    // هذه الملفات تحتوي على تعريفات الأنواع فقط (بدون الكود الفعلي)
+    // مفيدة إذا أردت نشر المشروع كمكتبة
+    "declaration": true,
+
+    // "sourceMap": إنشاء ملفات .js.map
+    // تربط بين الكود المترجم والكود الأصلي
+    // مفيدة جداً للـ debugging - عندما يحدث خطأ، يظهر لك السطر في ملف .ts وليس .js
+    "sourceMap": true,
+
+    // "removeComments": حذف التعليقات من الكود المترجم
+    // true = حذفها (ملفات أصغر)
+    // false = الاحتفاظ بها
+    "removeComments": true,
+
+    // "incremental": الترجمة التزايدية
+    // يحفظ معلومات الترجمة السابقة لتسريع الترجمة التالية
+    // أول مرة: 10 ثوان، المرات التالية: 2 ثانية
+    "incremental": true,
+
+    /*
+     * ─────────────────────────────────────────────────────────────────────────
+     * الوضع الصارم (Strict Mode)
+     * ─────────────────────────────────────────────────────────────────────────
+     * هذه الإعدادات تجعل TypeScript أكثر صرامة في فحص الكود
+     * قد تبدو مزعجة في البداية، لكنها تمنع الكثير من الأخطاء!
+     */
+
+    // "strict": تفعيل جميع الفحوصات الصارمة دفعة واحدة
+    // يشمل: strictNullChecks, noImplicitAny, strictFunctionTypes, وغيرها
+    "strict": true,
+
+    // "noImplicitAny": منع الـ any الضمني
+    // خطأ: function greet(name) { } ← ما هو نوع name؟
+    // صحيح: function greet(name: string) { }
+    "noImplicitAny": true,
+
+    // "strictNullChecks": التحقق من null و undefined
+    // خطأ: const user = getUser(); console.log(user.name); ← ماذا لو كان user = null؟
+    // صحيح: if (user) { console.log(user.name); }
+    "strictNullChecks": true,
+
+    // "strictPropertyInitialization": التأكد من تهيئة الخصائص
+    // خطأ: class User { name: string; } ← name غير مُعرَّف!
+    // صحيح: class User { name: string = ''; }
+    // ملاحظة: نوقفها لأن NestJS يستخدم Dependency Injection
+    "strictPropertyInitialization": false,
+
+    // "noUnusedLocals": تحذير عند وجود متغيرات غير مستخدمة
+    "noUnusedLocals": true,
+
+    // "noUnusedParameters": تحذير عند وجود معاملات غير مستخدمة
+    "noUnusedParameters": true,
+
+    // "noImplicitReturns": التأكد من وجود return في كل المسارات
+    // خطأ: function getValue(x: number) { if (x > 0) return x; } ← ماذا لو x <= 0؟
+    "noImplicitReturns": true,
+
+    // "noFallthroughCasesInSwitch": منع الـ fallthrough في switch
+    // يتطلب break أو return في كل case
+    "noFallthroughCasesInSwitch": true,
+
+    /*
+     * ─────────────────────────────────────────────────────────────────────────
+     * إعدادات التوافق (Interop Settings)
+     * ─────────────────────────────────────────────────────────────────────────
+     */
+
+    // "esModuleInterop": تسهيل استيراد مكتبات CommonJS
+    // بدونها: import * as express from 'express';
+    // معها: import express from 'express'; ← أنظف!
+    "esModuleInterop": true,
+
+    // "allowSyntheticDefaultImports": السماح بـ default import
+    // حتى لو المكتبة لا تصدّر default export
+    "allowSyntheticDefaultImports": true,
+
+    // "forceConsistentCasingInFileNames": التأكد من تطابق حالة الأحرف
+    // Linux يفرق بين User.ts و user.ts، Windows لا يفرق
+    // هذا الإعداد يمنع مشاكل التوافق بين الأنظمة
+    "forceConsistentCasingInFileNames": true,
+
+    // "skipLibCheck": تخطي فحص ملفات .d.ts
+    // يسرّع الترجمة كثيراً (لا نحتاج فحص أنواع المكتبات)
+    "skipLibCheck": true,
+
+    /*
+     * ─────────────────────────────────────────────────────────────────────────
+     * إعدادات Decorators
+     * ─────────────────────────────────────────────────────────────────────────
+     * الـ Decorators هي ميزة تجريبية في JavaScript/TypeScript
+     * تستخدم بكثرة في NestJS
+     * 
+     * مثال: @Controller('users') ← هذا decorator يحول الكلاس إلى controller
+     */
+
+    // تفعيل دعم Decorators
+    "experimentalDecorators": true,
+
+    // تمكين إصدار metadata للـ decorators
+    // مطلوب لـ Dependency Injection في NestJS
+    "emitDecoratorMetadata": true,
+
+    /*
+     * ─────────────────────────────────────────────────────────────────────────
+     * اختصارات المسارات (Path Aliases)
+     * ─────────────────────────────────────────────────────────────────────────
+     * بدلاً من: import { User } from '../../../database/entities/user.entity';
+     * نكتب: import { User } from '@database/entities/user.entity';
+     * 
+     * أنظف وأسهل للقراءة!
+     */
+
+    "baseUrl": "./",
+    "paths": {
+      // @common/* → src/common/*
+      "@common/*": ["src/common/*"],
+      
+      // @config/* → src/config/*
+      "@config/*": ["src/config/*"],
+      
+      // @modules/* → src/modules/*
+      "@modules/*": ["src/modules/*"],
+      
+      // @database/* → src/database/*
+      "@database/*": ["src/database/*"],
+      
+      // @queue/* → src/queue/*
+      "@queue/*": ["src/queue/*"]
+    },
+
+    /*
+     * ─────────────────────────────────────────────────────────────────────────
+     * إعدادات إضافية
+     * ─────────────────────────────────────────────────────────────────────────
+     */
+
+    // "resolveJsonModule": السماح باستيراد ملفات JSON
+    // import config from './config.json';
+    "resolveJsonModule": true,
+
+    // "lib": المكتبات القياسية المتاحة
+    // ES2022 + DOM APIs (للأنواع فقط)
+    "lib": ["ES2022"]
+  },
+
+  /*
+   * ─────────────────────────────────────────────────────────────────────────
+   * include و exclude
+   * ─────────────────────────────────────────────────────────────────────────
+   */
+
+  // الملفات المراد ترجمتها
+  "include": ["src/**/*"],
+
+  // الملفات المستثناة من الترجمة
+  "exclude": [
+    "node_modules",     // مكتبات npm - لا نترجمها
+    "dist",             // الملفات المترجمة سابقاً
+    "test",             // ملفات الاختبار - لها إعدادات خاصة
+    "**/*.spec.ts"      // ملفات الـ unit tests
+  ]
+}
