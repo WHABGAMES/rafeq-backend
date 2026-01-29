@@ -1,6 +1,15 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║              RAFIQ PLATFORM - WebSocket Gateway                                ║
+ * ║                                                                                ║
+ * ║  📌 Gateway للإشعارات الفورية والمحادثات في الوقت الحقيقي                      ║
+ * ║                                                                                ║
+ * ║  الأحداث المدعومة:                                                             ║
+ * ║  • new_message - رسالة جديدة                                                   ║
+ * ║  • message_status - تحديث حالة الرسالة                                        ║
+ * ║  • conversation_updated - تحديث المحادثة                                      ║
+ * ║  • agent_typing - الموظف يكتب                                                 ║
+ * ║  • notification - إشعار عام                                                   ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -15,7 +24,7 @@ import {
   ConnectedSocket,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { Logger } from '@nestjs/common';
+import { Logger, UseGuards } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 
 /**
@@ -62,7 +71,7 @@ export enum SocketEvents {
  * بيانات المستخدم المتصل
  */
 interface ConnectedUser {
-  socketId: string;
+  odocketId: string;
   userId: string;
   tenantId: string;
   storeId?: string;
@@ -73,7 +82,7 @@ interface ConnectedUser {
 
 @WebSocketGateway({
   cors: {
-    origin: '*',
+    origin: '*', // سيتم تحديده من الـ env
     credentials: true,
   },
   namespace: '/ws',
@@ -87,8 +96,13 @@ export class AppGateway
 
   private readonly logger = new Logger(AppGateway.name);
   
+  // تتبع المستخدمين المتصلين
   private connectedUsers: Map<string, ConnectedUser> = new Map();
+  
+  // تتبع المستخدمين حسب الـ tenant
   private tenantUsers: Map<string, Set<string>> = new Map();
+  
+  // تتبع المستخدمين حسب المحادثة
   private conversationUsers: Map<string, Set<string>> = new Map();
 
   constructor(private readonly jwtService: JwtService) {}
@@ -96,7 +110,7 @@ export class AppGateway
   /**
    * بعد تهيئة الـ Gateway
    */
-  afterInit(_server: Server) {
+  afterInit(server: Server) {
     this.logger.log('🚀 WebSocket Gateway initialized');
   }
 
@@ -105,6 +119,7 @@ export class AppGateway
    */
   async handleConnection(client: Socket) {
     try {
+      // استخراج التوكن من الـ handshake
       const token = this.extractToken(client);
       
       if (!token) {
@@ -113,6 +128,7 @@ export class AppGateway
         return;
       }
 
+      // التحقق من التوكن
       const payload = await this.verifyToken(token);
       
       if (!payload) {
@@ -121,8 +137,9 @@ export class AppGateway
         return;
       }
 
+      // حفظ بيانات المستخدم
       const user: ConnectedUser = {
-        socketId: client.id,
+        odocketId: client.id,
         userId: payload.sub,
         tenantId: payload.tenantId,
         storeId: payload.storeId,
@@ -133,17 +150,21 @@ export class AppGateway
 
       this.connectedUsers.set(client.id, user);
 
+      // إضافة للـ tenant room
       client.join(`tenant:${user.tenantId}`);
       
+      // تتبع المستخدم في الـ tenant
       if (!this.tenantUsers.has(user.tenantId)) {
         this.tenantUsers.set(user.tenantId, new Set());
       }
       this.tenantUsers.get(user.tenantId)!.add(client.id);
 
+      // إضافة للـ store room إذا وجد
       if (user.storeId) {
         client.join(`store:${user.storeId}`);
       }
 
+      // إشعار الآخرين بالاتصال
       this.server.to(`tenant:${user.tenantId}`).emit(SocketEvents.AGENT_ONLINE, {
         userId: user.userId,
         name: user.name,
@@ -152,11 +173,11 @@ export class AppGateway
 
       this.logger.log(`✅ Client connected: ${client.id} (User: ${user.userId})`);
       
+      // إرسال قائمة المتصلين للمستخدم الجديد
       this.sendOnlineAgents(client, user.tenantId);
       
-    } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      this.logger.error(`❌ Connection error: ${errorMessage}`);
+    } catch (error: any) {
+      this.logger.error(`❌ Connection error: ${error.message}`);
       client.disconnect();
     }
   }
@@ -168,12 +189,15 @@ export class AppGateway
     const user = this.connectedUsers.get(client.id);
     
     if (user) {
+      // إزالة من الـ tenant tracking
       this.tenantUsers.get(user.tenantId)?.delete(client.id);
       
-      this.conversationUsers.forEach((users, _convId) => {
+      // إزالة من المحادثات
+      this.conversationUsers.forEach((users, convId) => {
         users.delete(client.id);
       });
 
+      // إشعار الآخرين
       this.server.to(`tenant:${user.tenantId}`).emit(SocketEvents.AGENT_OFFLINE, {
         userId: user.userId,
         name: user.name,
@@ -188,6 +212,9 @@ export class AppGateway
   // Message Events
   // ═══════════════════════════════════════════════════════════════════════════════
 
+  /**
+   * الانضمام لمحادثة
+   */
   @SubscribeMessage(SocketEvents.JOIN_CONVERSATION)
   handleJoinConversation(
     @ConnectedSocket() client: Socket,
@@ -199,6 +226,7 @@ export class AppGateway
     const room = `conversation:${data.conversationId}`;
     client.join(room);
 
+    // تتبع
     if (!this.conversationUsers.has(data.conversationId)) {
       this.conversationUsers.set(data.conversationId, new Set());
     }
@@ -207,6 +235,9 @@ export class AppGateway
     this.logger.debug(`User ${user.userId} joined conversation ${data.conversationId}`);
   }
 
+  /**
+   * مغادرة محادثة
+   */
   @SubscribeMessage(SocketEvents.LEAVE_CONVERSATION)
   handleLeaveConversation(
     @ConnectedSocket() client: Socket,
@@ -222,6 +253,9 @@ export class AppGateway
     this.logger.debug(`User ${user.userId} left conversation ${data.conversationId}`);
   }
 
+  /**
+   * إشعار الكتابة
+   */
   @SubscribeMessage(SocketEvents.AGENT_TYPING)
   handleAgentTyping(
     @ConnectedSocket() client: Socket,
@@ -230,6 +264,7 @@ export class AppGateway
     const user = this.connectedUsers.get(client.id);
     if (!user) return;
 
+    // إرسال للمحادثة
     this.server.to(`conversation:${data.conversationId}`).emit(SocketEvents.AGENT_TYPING, {
       conversationId: data.conversationId,
       userId: user.userId,
@@ -239,23 +274,31 @@ export class AppGateway
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // Public Methods
+  // Public Methods (للاستخدام من الـ Services)
   // ═══════════════════════════════════════════════════════════════════════════════
 
+  /**
+   * إرسال رسالة جديدة
+   */
   emitNewMessage(tenantId: string, conversationId: string, message: any) {
+    // إرسال للـ tenant
     this.server.to(`tenant:${tenantId}`).emit(SocketEvents.NEW_MESSAGE, {
       conversationId,
       message,
     });
 
+    // إرسال للمحادثة
     this.server.to(`conversation:${conversationId}`).emit(SocketEvents.NEW_MESSAGE, {
       conversationId,
       message,
     });
   }
 
+  /**
+   * تحديث حالة الرسالة
+   */
   emitMessageStatus(
-    _tenantId: string,
+    tenantId: string,
     conversationId: string,
     messageId: string,
     status: 'sent' | 'delivered' | 'read' | 'failed',
@@ -275,6 +318,9 @@ export class AppGateway
     });
   }
 
+  /**
+   * تحديث محادثة
+   */
   emitConversationUpdate(tenantId: string, conversationId: string, update: any) {
     this.server.to(`tenant:${tenantId}`).emit(SocketEvents.CONVERSATION_UPDATED, {
       conversationId,
@@ -282,12 +328,18 @@ export class AppGateway
     });
   }
 
+  /**
+   * محادثة جديدة
+   */
   emitNewConversation(tenantId: string, conversation: any) {
     this.server.to(`tenant:${tenantId}`).emit(SocketEvents.CONVERSATION_CREATED, {
       conversation,
     });
   }
 
+  /**
+   * تعيين محادثة
+   */
   emitConversationAssigned(tenantId: string, conversationId: string, assignedTo: any) {
     this.server.to(`tenant:${tenantId}`).emit(SocketEvents.CONVERSATION_ASSIGNED, {
       conversationId,
@@ -295,6 +347,9 @@ export class AppGateway
     });
   }
 
+  /**
+   * إغلاق محادثة
+   */
   emitConversationClosed(tenantId: string, conversationId: string, closedBy: any) {
     this.server.to(`tenant:${tenantId}`).emit(SocketEvents.CONVERSATION_CLOSED, {
       conversationId,
@@ -303,6 +358,9 @@ export class AppGateway
     });
   }
 
+  /**
+   * إشعار عام
+   */
   emitNotification(tenantId: string, notification: {
     type: 'info' | 'success' | 'warning' | 'error';
     title: string;
@@ -315,7 +373,11 @@ export class AppGateway
     });
   }
 
+  /**
+   * إشعار لمستخدم محدد
+   */
   emitToUser(userId: string, event: string, data: any) {
+    // البحث عن socket المستخدم
     for (const [socketId, user] of this.connectedUsers) {
       if (user.userId === userId) {
         this.server.to(socketId).emit(event, data);
@@ -327,7 +389,11 @@ export class AppGateway
   // Helper Methods
   // ═══════════════════════════════════════════════════════════════════════════════
 
+  /**
+   * استخراج التوكن
+   */
   private extractToken(client: Socket): string | null {
+    // من الـ auth header
     const authHeader = client.handshake.headers.authorization;
     if (authHeader) {
       const [type, token] = authHeader.split(' ');
@@ -336,11 +402,13 @@ export class AppGateway
       }
     }
 
+    // من الـ query
     const queryToken = client.handshake.query.token;
     if (queryToken && typeof queryToken === 'string') {
       return queryToken;
     }
 
+    // من الـ auth object
     const authToken = client.handshake.auth?.token;
     if (authToken) {
       return authToken;
@@ -349,14 +417,20 @@ export class AppGateway
     return null;
   }
 
+  /**
+   * التحقق من التوكن
+   */
   private async verifyToken(token: string): Promise<any> {
     try {
       return this.jwtService.verify(token);
-    } catch {
+    } catch (error: any) {
       return null;
     }
   }
 
+  /**
+   * إرسال قائمة المتصلين
+   */
   private sendOnlineAgents(client: Socket, tenantId: string) {
     const onlineAgents: any[] = [];
     
@@ -366,7 +440,7 @@ export class AppGateway
         const user = this.connectedUsers.get(socketId);
         if (user && user.role !== 'customer') {
           onlineAgents.push({
-            userId: user.userId,
+            oderId: user.userId,
             name: user.name,
             role: user.role,
             connectedAt: user.connectedAt,
@@ -378,6 +452,9 @@ export class AppGateway
     client.emit(SocketEvents.AGENTS_LIST, { agents: onlineAgents });
   }
 
+  /**
+   * الحصول على عدد المتصلين
+   */
   getConnectedCount(tenantId?: string): number {
     if (tenantId) {
       return this.tenantUsers.get(tenantId)?.size || 0;
@@ -385,6 +462,9 @@ export class AppGateway
     return this.connectedUsers.size;
   }
 
+  /**
+   * الحصول على قائمة المتصلين
+   */
   getConnectedUsers(tenantId: string): ConnectedUser[] {
     const users: ConnectedUser[] = [];
     const socketIds = this.tenantUsers.get(tenantId);
