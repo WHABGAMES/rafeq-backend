@@ -258,12 +258,19 @@ export interface OrderMetadata {
 @Index(['storeId', 'customerId'])
 @Index(['storeId', 'createdAt'])
 @Index(['storeId', 'paymentStatus'])
+@Index(['tenantId'])
 export class Order extends BaseEntity {
   /**
    * ═══════════════════════════════════════════════════════════════════════════════
    *                              🔑 IDENTIFIERS
    * ═══════════════════════════════════════════════════════════════════════════════
    */
+
+  /**
+   * 🏢 Tenant ID - معرف المستأجر
+   */
+  @Column({ name: 'tenant_id', type: 'uuid', nullable: true })
+  tenantId?: string;
 
   /**
    * 🏪 Store ID
