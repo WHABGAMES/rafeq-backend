@@ -7,7 +7,8 @@
 import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { CreateTagDto, UpdateTagDto } from './dto';
 
-interface Tag {
+// ✅ تم تصدير الـ interface
+export interface Tag {
   id: string;
   tenantId: string;
   name: string;
@@ -20,7 +21,7 @@ interface Tag {
   updatedAt: Date;
 }
 
-interface TagFilters {
+export interface TagFilters {
   type?: string;
   search?: string;
 }
@@ -69,7 +70,7 @@ export class TagsService {
   /**
    * جلب جميع التصنيفات
    */
-  async findAll(tenantId: string, filters: TagFilters) {
+  async findAll(tenantId: string, filters: TagFilters): Promise<{ tags: Tag[]; total: number }> {
     let tags = Array.from(this.tags.values())
       .filter((t) => t.tenantId === tenantId || t.tenantId === 'default');
 
@@ -97,7 +98,7 @@ export class TagsService {
   /**
    * إنشاء تصنيف
    */
-  async create(tenantId: string, dto: CreateTagDto) {
+  async create(tenantId: string, dto: CreateTagDto): Promise<Tag> {
     // Check for duplicate name
     const existing = Array.from(this.tags.values())
       .find(
@@ -135,14 +136,18 @@ export class TagsService {
   /**
    * إنشاء تصنيفات متعددة
    */
-  async createBulk(tenantId: string, dtos: CreateTagDto[]) {
-    const results = [];
+  async createBulk(tenantId: string, dtos: CreateTagDto[]): Promise<{
+    total: number;
+    created: number;
+    results: Array<{ success: boolean; tag?: Tag; name?: string; error?: string }>;
+  }> {
+    const results: Array<{ success: boolean; tag?: Tag; name?: string; error?: string }> = [];
 
     for (const dto of dtos) {
       try {
         const tag = await this.create(tenantId, dto);
         results.push({ success: true, tag });
-      } catch (error) {
+      } catch (error: any) {
         results.push({ success: false, name: dto.name, error: error.message });
       }
     }
@@ -157,7 +162,7 @@ export class TagsService {
   /**
    * جلب تصنيف بالـ ID
    */
-  async findById(id: string, tenantId: string) {
+  async findById(id: string, tenantId: string): Promise<Tag> {
     const tag = this.tags.get(id);
 
     if (!tag || (tag.tenantId !== tenantId && tag.tenantId !== 'default')) {
@@ -170,7 +175,7 @@ export class TagsService {
   /**
    * جلب تصنيف بالاسم
    */
-  async findByName(tenantId: string, name: string) {
+  async findByName(tenantId: string, name: string): Promise<Tag | undefined> {
     return Array.from(this.tags.values())
       .find(
         (t) =>
@@ -182,7 +187,7 @@ export class TagsService {
   /**
    * تحديث تصنيف
    */
-  async update(id: string, tenantId: string, dto: UpdateTagDto) {
+  async update(id: string, tenantId: string, dto: UpdateTagDto): Promise<Tag> {
     const tag = await this.findById(id, tenantId);
 
     if (tag.tenantId === 'default') {
@@ -206,7 +211,7 @@ export class TagsService {
   /**
    * حذف تصنيف
    */
-  async delete(id: string, tenantId: string) {
+  async delete(id: string, tenantId: string): Promise<void> {
     const tag = await this.findById(id, tenantId);
 
     if (tag.tenantId === 'default') {
@@ -221,14 +226,18 @@ export class TagsService {
   /**
    * حذف تصنيفات متعددة
    */
-  async deleteBulk(tenantId: string, ids: string[]) {
-    const results = [];
+  async deleteBulk(tenantId: string, ids: string[]): Promise<{
+    total: number;
+    deleted: number;
+    results: Array<{ id: string; success: boolean; error?: string }>;
+  }> {
+    const results: Array<{ id: string; success: boolean; error?: string }> = [];
 
     for (const id of ids) {
       try {
         await this.delete(id, tenantId);
         results.push({ id, success: true });
-      } catch (error) {
+      } catch (error: any) {
         results.push({ id, success: false, error: error.message });
       }
     }
@@ -243,7 +252,7 @@ export class TagsService {
   /**
    * دمج تصنيفات
    */
-  async mergeTags(targetId: string, sourceId: string, tenantId: string) {
+  async mergeTags(targetId: string, sourceId: string, tenantId: string): Promise<Tag> {
     const target = await this.findById(targetId, tenantId);
     const source = await this.findById(sourceId, tenantId);
 
@@ -269,7 +278,11 @@ export class TagsService {
   /**
    * إحصائيات الاستخدام
    */
-  async getStats(tenantId: string) {
+  async getStats(tenantId: string): Promise<{
+    summary: { totalTags: number; totalConversations: number; totalContacts: number };
+    topByConversations: Tag[];
+    topByContacts: Tag[];
+  }> {
     const tags = Array.from(this.tags.values())
       .filter((t) => t.tenantId === tenantId || t.tenantId === 'default');
 
@@ -300,7 +313,7 @@ export class TagsService {
   /**
    * تحديث عداد المحادثات
    */
-  async incrementConversationCount(tagId: string) {
+  async incrementConversationCount(tagId: string): Promise<void> {
     const tag = this.tags.get(tagId);
     if (tag) {
       tag.conversationCount += 1;
@@ -311,7 +324,7 @@ export class TagsService {
   /**
    * تحديث عداد العملاء
    */
-  async incrementContactCount(tagId: string) {
+  async incrementContactCount(tagId: string): Promise<void> {
     const tag = this.tags.get(tagId);
     if (tag) {
       tag.contactCount += 1;
