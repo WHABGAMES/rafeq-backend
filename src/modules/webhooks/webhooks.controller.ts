@@ -11,14 +11,26 @@ import {
   Param,
   Query,
   ParseUUIDPipe,
+  UseGuards,
+  Request,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiQuery } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiResponse, ApiQuery, ApiBearerAuth } from '@nestjs/swagger';
 
 // Services
 import { WebhooksService } from './webhooks.service';
 
+// Auth
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { User } from '@database/entities';
+
+interface RequestWithUser extends Request {
+  user: User;
+}
+
 @Controller('webhooks')
 @ApiTags('Webhooks Management')
+@UseGuards(JwtAuthGuard)
+@ApiBearerAuth('JWT-auth')
 export class WebhooksController {
   constructor(private readonly webhooksService: WebhooksService) {}
 
@@ -26,10 +38,10 @@ export class WebhooksController {
   @ApiOperation({ summary: 'إحصائيات الـ Webhooks' })
   @ApiQuery({ name: 'days', required: false, type: Number, description: 'عدد الأيام' })
   async getStatistics(
+    @Request() req: RequestWithUser,
     @Query('days') days?: number,
   ) {
-    const tenantId = 'temp-tenant-id';
-    return this.webhooksService.getStatistics(tenantId, days || 7);
+    return this.webhooksService.getStatistics(req.user.tenantId, days || 7);
   }
 
   @Get()
@@ -39,13 +51,13 @@ export class WebhooksController {
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'limit', required: false, type: Number })
   async listWebhooks(
+    @Request() req: RequestWithUser,
     @Query('status') status?: string,
     @Query('eventType') eventType?: string,
     @Query('page') page?: number,
     @Query('limit') limit?: number,
   ) {
-    const tenantId = 'temp-tenant-id';
-    return this.webhooksService.listWebhooks(tenantId, {
+    return this.webhooksService.listWebhooks(req.user.tenantId, {
       status,
       eventType,
       page: page || 1,
@@ -58,19 +70,19 @@ export class WebhooksController {
   @ApiResponse({ status: 200, description: 'تفاصيل الـ webhook' })
   @ApiResponse({ status: 404, description: 'غير موجود' })
   async getWebhook(
+    @Request() req: RequestWithUser,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    const tenantId = 'temp-tenant-id';
-    return this.webhooksService.getWebhookDetails(tenantId, id);
+    return this.webhooksService.getWebhookDetails(req.user.tenantId, id);
   }
 
   @Get(':id/logs')
   @ApiOperation({ summary: 'سجل معالجة الـ Webhook' })
   async getWebhookLogs(
+    @Request() req: RequestWithUser,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    const tenantId = 'temp-tenant-id';
-    return this.webhooksService.getWebhookLogs(tenantId, id);
+    return this.webhooksService.getWebhookLogs(req.user.tenantId, id);
   }
 
   @Post(':id/retry')
@@ -78,28 +90,28 @@ export class WebhooksController {
   @ApiResponse({ status: 200, description: 'تم إضافة للـ queue' })
   @ApiResponse({ status: 404, description: 'غير موجود' })
   async retryWebhook(
+    @Request() req: RequestWithUser,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    const tenantId = 'temp-tenant-id';
-    return this.webhooksService.retryWebhook(tenantId, id);
+    return this.webhooksService.retryWebhook(req.user.tenantId, id);
   }
 
   @Post(':id/cancel')
   @ApiOperation({ summary: 'إلغاء معالجة Webhook' })
   async cancelWebhook(
+    @Request() req: RequestWithUser,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    const tenantId = 'temp-tenant-id';
-    return this.webhooksService.cancelWebhook(tenantId, id);
+    return this.webhooksService.cancelWebhook(req.user.tenantId, id);
   }
 
   @Get('failed/list')
   @ApiOperation({ summary: 'قائمة الـ Webhooks الفاشلة' })
   @ApiQuery({ name: 'limit', required: false, type: Number })
   async getFailedWebhooks(
+    @Request() req: RequestWithUser,
     @Query('limit') limit?: number,
   ) {
-    const tenantId = 'temp-tenant-id';
-    return this.webhooksService.getFailedWebhooks(tenantId, limit || 50);
+    return this.webhooksService.getFailedWebhooks(req.user.tenantId, limit || 50);
   }
 }
