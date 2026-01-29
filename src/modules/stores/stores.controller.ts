@@ -14,8 +14,10 @@ import {
   ParseUUIDPipe,
   HttpCode,
   HttpStatus,
+  UseGuards,
+  Request,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
 
 // Services
 import { StoresService } from './stores.service';
@@ -23,8 +25,18 @@ import { StoresService } from './stores.service';
 // DTOs
 import { UpdateStoreSettingsDto } from './dto/update-store-settings.dto';
 
+// Auth
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { User } from '@database/entities';
+
+interface RequestWithUser extends Request {
+  user: User;
+}
+
 @Controller('stores')
 @ApiTags('Stores')
+@UseGuards(JwtAuthGuard)
+@ApiBearerAuth('JWT-auth')
 export class StoresController {
   constructor(private readonly storesService: StoresService) {}
 
@@ -37,16 +49,14 @@ export class StoresController {
     status: 200,
     description: 'قائمة المتاجر',
   })
-  async listStores() {
-    const tenantId = 'temp-tenant-id';
-    return this.storesService.findByTenant(tenantId);
+  async listStores(@Request() req: RequestWithUser) {
+    return this.storesService.findByTenant(req.user.tenantId);
   }
 
   @Get('statistics')
   @ApiOperation({ summary: 'إحصائيات المتاجر' })
-  async getStatistics() {
-    const tenantId = 'temp-tenant-id';
-    return this.storesService.getStatistics(tenantId);
+  async getStatistics(@Request() req: RequestWithUser) {
+    return this.storesService.getStatistics(req.user.tenantId);
   }
 
   @Get(':id')
@@ -54,21 +64,21 @@ export class StoresController {
   @ApiResponse({ status: 200, description: 'تفاصيل المتجر' })
   @ApiResponse({ status: 404, description: 'غير موجود' })
   async getStore(
+    @Request() req: RequestWithUser,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    const tenantId = 'temp-tenant-id';
-    return this.storesService.findById(tenantId, id);
+    return this.storesService.findById(req.user.tenantId, id);
   }
 
   @Put(':id/settings')
   @ApiOperation({ summary: 'تحديث إعدادات المتجر' })
   @ApiResponse({ status: 200, description: 'تم التحديث' })
   async updateSettings(
+    @Request() req: RequestWithUser,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateStoreSettingsDto,
   ) {
-    const tenantId = 'temp-tenant-id';
-    return this.storesService.updateSettings(tenantId, id, dto.settings);
+    return this.storesService.updateSettings(req.user.tenantId, id, dto.settings);
   }
 
   @Delete(':id')
@@ -76,9 +86,9 @@ export class StoresController {
   @ApiOperation({ summary: 'فصل المتجر' })
   @ApiResponse({ status: 204, description: 'تم الفصل' })
   async disconnectStore(
+    @Request() req: RequestWithUser,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    const tenantId = 'temp-tenant-id';
-    await this.storesService.disconnectStore(tenantId, id);
+    await this.storesService.disconnectStore(req.user.tenantId, id);
   }
 }
