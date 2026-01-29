@@ -7,13 +7,13 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   
-  // Port from environment
   const port = parseInt(process.env.PORT || '3000', 10);
   
-  // Enable CORS
+  // ✅ CORS - Allow ALL origins for now (fix later for production)
   app.enableCors({
-    origin: true,
+    origin: true,  // Allow all origins
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
     credentials: true,
   });
   
@@ -37,7 +37,7 @@ async function bootstrap() {
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('api/docs', app, document);
   
-  // CRITICAL: Listen on 0.0.0.0 for DigitalOcean
+  // Listen on 0.0.0.0
   await app.listen(port, '0.0.0.0');
   
   console.log('');
