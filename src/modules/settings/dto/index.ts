@@ -11,8 +11,6 @@ import {
   IsOptional,
   IsNumber,
   IsArray,
-  IsEnum,
-  IsEmail,
   Min,
   Max,
   ValidateNested,
@@ -313,9 +311,3 @@ export class UpdateTeamSettingsDto {
   @IsBoolean()
   allowAgentTakeOver?: boolean;
 }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Export All
-// ═══════════════════════════════════════════════════════════════════════════════
-
-export * from './index';
