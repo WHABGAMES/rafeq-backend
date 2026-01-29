@@ -1,16 +1,6 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║              RAFIQ PLATFORM - Tags Controller                                  ║
- * ║                                                                                ║
- * ║  📌 إدارة التصنيفات للمحادثات والعملاء                                          ║
- * ║                                                                                ║
- * ║  الـ Endpoints:                                                                ║
- * ║  GET    /tags              → قائمة التصنيفات                                   ║
- * ║  POST   /tags              → إنشاء تصنيف                                       ║
- * ║  GET    /tags/:id          → تفاصيل تصنيف                                      ║
- * ║  PUT    /tags/:id          → تحديث تصنيف                                       ║
- * ║  DELETE /tags/:id          → حذف تصنيف                                         ║
- * ║  GET    /tags/stats        → إحصائيات الاستخدام                                ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -31,7 +21,6 @@ import {
 import {
   ApiTags,
   ApiOperation,
-  ApiResponse,
   ApiBearerAuth,
   ApiQuery,
 } from '@nestjs/swagger';
