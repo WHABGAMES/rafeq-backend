@@ -8,7 +8,6 @@ import {
   IsString,
   IsOptional,
   IsEmail,
-  IsPhoneNumber,
   IsArray,
   IsObject,
   IsBoolean,
@@ -240,7 +239,7 @@ export class ImportContactsDto {
     name?: string;
     phone?: string;
     email?: string;
-    [key: string]: string;
+    [key: string]: string | undefined;
   };
 }
 
