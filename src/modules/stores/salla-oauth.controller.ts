@@ -45,7 +45,7 @@ export class SallaOAuthController {
       const authUrl = this.sallaOAuthService.generateAuthorizationUrl(tenantId);
       this.logger.log(`Redirecting tenant ${tenantId} to Salla OAuth`);
       res.redirect(authUrl);
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error('Failed to start OAuth flow', error);
       throw new BadRequestException('Failed to start connection process');
     }
@@ -98,7 +98,7 @@ export class SallaOAuthController {
 
       res.redirect(`${frontendUrl}/stores/connect/success?store_id=${store.id}`);
 
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error('OAuth callback error', {
         error: error instanceof Error ? error.message : 'Unknown',
         stack: error instanceof Error ? error.stack : undefined,
