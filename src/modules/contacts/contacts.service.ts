@@ -1,5 +1,7 @@
 /**
- * RAFIQ PLATFORM - Contacts Service (CRM)
+ * ╔═══════════════════════════════════════════════════════════════════════════════╗
+ * ║              RAFIQ PLATFORM - Contacts Service (CRM)                           ║
+ * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
@@ -32,6 +34,9 @@ export class ContactsService {
     private readonly orderRepository: Repository<Order>,
   ) {}
 
+  /**
+   * جلب جميع العملاء مع الفلترة
+   */
   async findAll(
     tenantId: string,
     filters: ContactFiltersDto,
@@ -42,77 +47,106 @@ export class ContactsService {
 
     const queryBuilder = this.customerRepository
       .createQueryBuilder('customer')
-      .where('customer.tenant_id = :tenantId', { tenantId });
+      .where('customer.tenantId = :tenantId', { tenantId });
 
+    // Search filter
     if (filters.search) {
       queryBuilder.andWhere(
-        '(customer.full_name ILIKE :search OR customer.phone ILIKE :search OR customer.email ILIKE :search)',
+        '(customer.name ILIKE :search OR customer.phone ILIKE :search OR customer.email ILIKE :search)',
         { search: `%${filters.search}%` },
       );
     }
 
+    // Tags filter
     if (filters.tags?.length) {
       queryBuilder.andWhere('customer.tags && :tags', { tags: filters.tags });
     }
 
+    // Channel filter
     if (filters.channel) {
       queryBuilder.andWhere('customer.channel = :channel', { channel: filters.channel });
     }
 
-    const sortColumn = `customer.${filters.sortBy || 'created_at'}`;
-    queryBuilder.orderBy(sortColumn, (filters.sortOrder?.toUpperCase() as 'ASC' | 'DESC') || 'DESC');
+    // Sorting
+    const sortColumn = `customer.${filters.sortBy || 'createdAt'}`;
+    queryBuilder.orderBy(sortColumn, filters.sortOrder?.toUpperCase() as 'ASC' | 'DESC' || 'DESC');
 
+    // Get total count
     const total = await queryBuilder.getCount();
-    const contacts = await queryBuilder.skip(skip).take(limit).getMany();
+
+    // Get paginated results
+    const contacts = await queryBuilder
+      .skip(skip)
+      .take(limit)
+      .getMany();
 
     return {
       data: contacts,
-      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
     };
   }
 
+  /**
+   * إحصائيات العملاء
+   */
   async getStats(tenantId: string) {
-    const total = await this.customerRepository
-      .createQueryBuilder('customer')
-      .where('customer.tenant_id = :tenantId', { tenantId })
-      .getCount();
-
+    const total = await this.customerRepository.count({ where: { tenantId } });
+    
+    // Get counts by different criteria
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-
+    
     const newToday = await this.customerRepository
       .createQueryBuilder('customer')
-      .where('customer.tenant_id = :tenantId', { tenantId })
-      .andWhere('customer.created_at >= :today', { today })
+      .where('customer.tenantId = :tenantId', { tenantId })
+      .andWhere('customer.createdAt >= :today', { today })
       .getCount();
 
     const thisMonth = new Date(today.getFullYear(), today.getMonth(), 1);
     const newThisMonth = await this.customerRepository
       .createQueryBuilder('customer')
-      .where('customer.tenant_id = :tenantId', { tenantId })
-      .andWhere('customer.created_at >= :thisMonth', { thisMonth })
+      .where('customer.tenantId = :tenantId', { tenantId })
+      .andWhere('customer.createdAt >= :thisMonth', { thisMonth })
       .getCount();
+
+    // Count blocked customers
+    const blocked = await this.customerRepository.count({
+      where: { tenantId, status: CustomerStatus.BLOCKED },
+    });
 
     return {
       total,
       newToday,
       newThisMonth,
       withOrders: 0,
-      blocked: 0,
-      byChannel: { whatsapp: 0, instagram: 0, telegram: 0, email: 0, sms: 0 },
+      blocked,
+      byChannel: {
+        whatsapp: 0,
+        instagram: 0,
+        telegram: 0,
+        email: 0,
+        sms: 0,
+      },
     };
   }
 
+  /**
+   * إنشاء عميل جديد
+   */
   async create(tenantId: string, dto: CreateContactDto) {
-    const queryBuilder = this.customerRepository
-      .createQueryBuilder('customer')
-      .where('customer.tenant_id = :tenantId', { tenantId })
-      .andWhere('(customer.phone = :phone OR customer.email = :email)', {
-        phone: dto.phone,
-        email: dto.email || '',
-      });
+    // Check for duplicate phone/email
+    const existing = await this.customerRepository.findOne({
+      where: [
+        { tenantId, phone: dto.phone },
+        dto.email ? { tenantId, email: dto.email } : undefined,
+      ].filter(Boolean) as any,
+    });
 
-    const existing = await queryBuilder.getOne();
     if (existing) {
       throw new BadRequestException('العميل موجود مسبقاً');
     }
@@ -120,208 +154,375 @@ export class ContactsService {
     const contact = this.customerRepository.create({
       ...dto,
       tenantId,
-      storeId: dto.storeId || 'default',
-      sallaCustomerId: dto.sallaCustomerId || `manual-${Date.now()}`,
-      status: CustomerStatus.ACTIVE,
-      isEmailVerified: false,
-      isPhoneVerified: false,
-      totalOrders: 0,
-      totalSpent: 0,
-      currency: 'SAR',
-      marketingConsent: false,
-      tags: [],
-      segments: [],
-      metadata: {},
-      isBlocked: false,
-    } as any);
+    });
 
     const saved = await this.customerRepository.save(contact);
+
     this.logger.log(`Contact created: ${saved.id}`, { tenantId, phone: dto.phone });
+
     return saved;
   }
 
-  async findById(id: string, tenantId: string): Promise<Customer> {
-    const contact = await this.customerRepository
-      .createQueryBuilder('customer')
-      .where('customer.id = :id', { id })
-      .andWhere('customer.tenant_id = :tenantId', { tenantId })
-      .getOne();
+  /**
+   * جلب عميل بالـ ID
+   */
+  async findById(id: string, tenantId: string) {
+    const contact = await this.customerRepository.findOne({
+      where: { id, tenantId },
+    });
 
     if (!contact) {
       throw new NotFoundException('العميل غير موجود');
     }
-    return contact;
-  }
 
-  async findByIdWithStats(id: string, tenantId: string) {
-    const contact = await this.findById(id, tenantId);
+    // Get additional stats
+    const conversationCount = await this.conversationRepository.count({
+      where: { customerId: id, tenantId },
+    });
 
-    const conversationCount = await this.conversationRepository
-      .createQueryBuilder('conv')
-      .where('conv.customer_id = :id', { id })
-      .andWhere('conv.tenant_id = :tenantId', { tenantId })
-      .getCount();
-
-    const orderCount = await this.orderRepository
-      .createQueryBuilder('order')
-      .where('order.customer_id = :id', { id })
-      .getCount();
+    const orderCount = await this.orderRepository.count({
+      where: { customerId: id, tenantId },
+    });
 
     return {
       ...contact,
-      stats: { conversationCount, orderCount, totalSpent: 0, lastOrderDate: null, averageOrderValue: 0 },
+      stats: {
+        conversationCount,
+        orderCount,
+        totalSpent: 0,
+        lastOrderDate: null,
+        averageOrderValue: 0,
+      },
     };
   }
 
+  /**
+   * تحديث عميل
+   */
   async update(id: string, tenantId: string, dto: UpdateContactDto) {
-    const contact = await this.findById(id, tenantId);
+    const contact = await this.customerRepository.findOne({
+      where: { id, tenantId },
+    });
+
+    if (!contact) {
+      throw new NotFoundException('العميل غير موجود');
+    }
+
     Object.assign(contact, dto);
+
     return this.customerRepository.save(contact);
   }
 
+  /**
+   * حذف عميل
+   */
   async delete(id: string, tenantId: string) {
-    const contact = await this.findById(id, tenantId);
+    const contact = await this.customerRepository.findOne({
+      where: { id, tenantId },
+    });
+
+    if (!contact) {
+      throw new NotFoundException('العميل غير موجود');
+    }
+
     await this.customerRepository.remove(contact);
     this.logger.log(`Contact deleted: ${id}`, { tenantId });
   }
 
-  async getConversations(contactId: string, tenantId: string, pagination: PaginationOptions) {
+  /**
+   * جلب محادثات العميل
+   */
+  async getConversations(
+    contactId: string,
+    tenantId: string,
+    pagination: PaginationOptions,
+  ) {
     const { page, limit } = pagination;
     const skip = (page - 1) * limit;
 
-    const [conversations, total] = await this.conversationRepository
-      .createQueryBuilder('conv')
-      .where('conv.customer_id = :contactId', { contactId })
-      .andWhere('conv.tenant_id = :tenantId', { tenantId })
-      .orderBy('conv.updated_at', 'DESC')
-      .skip(skip)
-      .take(limit)
-      .getManyAndCount();
+    const [conversations, total] = await this.conversationRepository.findAndCount({
+      where: { customerId: contactId, tenantId },
+      order: { updatedAt: 'DESC' },
+      skip,
+      take: limit,
+    });
 
     return {
       data: conversations,
-      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
     };
   }
 
-  async getOrders(contactId: string, tenantId: string, pagination: PaginationOptions) {
+  /**
+   * جلب طلبات العميل
+   */
+  async getOrders(
+    contactId: string,
+    tenantId: string,
+    pagination: PaginationOptions,
+  ) {
     const { page, limit } = pagination;
     const skip = (page - 1) * limit;
 
-    const [orders, total] = await this.orderRepository
-      .createQueryBuilder('order')
-      .where('order.customer_id = :contactId', { contactId })
-      .orderBy('order.created_at', 'DESC')
-      .skip(skip)
-      .take(limit)
-      .getManyAndCount();
+    const [orders, total] = await this.orderRepository.findAndCount({
+      where: { customerId: contactId, tenantId },
+      order: { createdAt: 'DESC' },
+      skip,
+      take: limit,
+    });
 
     return {
       data: orders,
-      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
     };
   }
 
-  async getTimeline(contactId: string, _tenantId: string, pagination: PaginationOptions) {
-    return { data: [], pagination: { ...pagination, total: 0, totalPages: 0 } };
+  /**
+   * سجل النشاطات
+   */
+  async getTimeline(
+    _contactId: string,
+    _tenantId: string,
+    pagination: PaginationOptions,
+  ) {
+    return {
+      data: [],
+      pagination: {
+        ...pagination,
+        total: 0,
+        totalPages: 0,
+      },
+    };
   }
 
+  /**
+   * إضافة تصنيفات
+   */
   async addTags(contactId: string, tenantId: string, tags: string[]) {
-    const contact = await this.findById(contactId, tenantId);
+    const contact = await this.customerRepository.findOne({
+      where: { id: contactId, tenantId },
+    });
+
+    if (!contact) {
+      throw new NotFoundException('العميل غير موجود');
+    }
+    
     const existingTags = contact.tags || [];
-    contact.tags = [...new Set([...existingTags, ...tags])];
+    const newTags = [...new Set([...existingTags, ...tags])];
+    
+    contact.tags = newTags;
+    
     return this.customerRepository.save(contact);
   }
 
+  /**
+   * إزالة تصنيف
+   */
   async removeTag(contactId: string, tenantId: string, tag: string) {
-    const contact = await this.findById(contactId, tenantId);
+    const contact = await this.customerRepository.findOne({
+      where: { id: contactId, tenantId },
+    });
+
+    if (!contact) {
+      throw new NotFoundException('العميل غير موجود');
+    }
+    
     contact.tags = (contact.tags || []).filter((t) => t !== tag);
+    
     await this.customerRepository.save(contact);
   }
 
+  /**
+   * جلب الملاحظات
+   */
   async getNotes(_contactId: string, _tenantId: string) {
     return { notes: [] };
   }
 
+  /**
+   * إضافة ملاحظة
+   */
   async addNote(contactId: string, _tenantId: string, userId: string, content: string) {
-    return { id: 'note-id', contactId, userId, content, createdAt: new Date() };
+    return {
+      id: 'note-id',
+      contactId,
+      userId,
+      content,
+      createdAt: new Date(),
+    };
   }
 
-  async deleteNote(_contactId: string, _tenantId: string, _noteId: string) {}
+  /**
+   * حذف ملاحظة
+   */
+  async deleteNote(_contactId: string, _tenantId: string, _noteId: string) {
+    // TODO: Implement notes deletion
+  }
 
+  /**
+   * دمج عملاء
+   */
   async mergeContacts(primaryId: string, secondaryId: string, tenantId: string) {
-    const primary = await this.findById(primaryId, tenantId);
-    const secondary = await this.findById(secondaryId, tenantId);
+    const primary = await this.customerRepository.findOne({
+      where: { id: primaryId, tenantId },
+    });
 
+    if (!primary) {
+      throw new NotFoundException('العميل الأساسي غير موجود');
+    }
+
+    const secondary = await this.customerRepository.findOne({
+      where: { id: secondaryId, tenantId },
+    });
+
+    if (!secondary) {
+      throw new NotFoundException('العميل الثانوي غير موجود');
+    }
+
+    // Merge tags
     primary.tags = [...new Set([...(primary.tags || []), ...(secondary.tags || [])])];
 
-    await this.conversationRepository
-      .createQueryBuilder()
-      .update()
-      .set({ customerId: primaryId })
-      .where('customer_id = :secondaryId', { secondaryId })
-      .andWhere('tenant_id = :tenantId', { tenantId })
-      .execute();
+    // Update conversations to point to primary
+    await this.conversationRepository.update(
+      { customerId: secondaryId, tenantId },
+      { customerId: primaryId },
+    );
 
-    await this.orderRepository
-      .createQueryBuilder()
-      .update()
-      .set({ customerId: primaryId })
-      .where('customer_id = :secondaryId', { secondaryId })
-      .execute();
+    // Update orders to point to primary
+    await this.orderRepository.update(
+      { customerId: secondaryId, tenantId },
+      { customerId: primaryId },
+    );
 
+    // Delete secondary contact
     await this.customerRepository.remove(secondary);
+
+    // Save primary with merged data
     return this.customerRepository.save(primary);
   }
 
-  async blockContact(contactId: string, tenantId: string, reason?: string) {
-    const contact = await this.findById(contactId, tenantId);
-    contact.isBlocked = true;
-    contact.blockReason = reason;
-    contact.blockedAt = new Date();
+  /**
+   * حظر عميل
+   */
+  async blockContact(contactId: string, tenantId: string, _reason?: string) {
+    const contact = await this.customerRepository.findOne({
+      where: { id: contactId, tenantId },
+    });
+
+    if (!contact) {
+      throw new NotFoundException('العميل غير موجود');
+    }
+    
+    contact.status = CustomerStatus.BLOCKED;
+    
     return this.customerRepository.save(contact);
   }
 
+  /**
+   * إلغاء حظر عميل
+   */
   async unblockContact(contactId: string, tenantId: string) {
-    const contact = await this.findById(contactId, tenantId);
-    contact.isBlocked = false;
-    contact.blockReason = undefined;
-    contact.blockedAt = undefined;
+    const contact = await this.customerRepository.findOne({
+      where: { id: contactId, tenantId },
+    });
+
+    if (!contact) {
+      throw new NotFoundException('العميل غير موجود');
+    }
+    
+    contact.status = CustomerStatus.ACTIVE;
+    
     return this.customerRepository.save(contact);
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // Segments
+  // ═══════════════════════════════════════════════════════════════════════════════
 
   async getSegments(_tenantId: string) {
     return {
       segments: [
-        { id: 'all-customers', name: 'جميع العملاء', count: 0, isSystem: true },
-        { id: 'new-customers', name: 'عملاء جدد (آخر 30 يوم)', count: 0, isSystem: true },
-        { id: 'vip-customers', name: 'عملاء VIP', count: 0, isSystem: true },
-        { id: 'inactive-customers', name: 'عملاء غير نشطين', count: 0, isSystem: true },
+        {
+          id: 'all-customers',
+          name: 'جميع العملاء',
+          count: 0,
+          isSystem: true,
+        },
+        {
+          id: 'new-customers',
+          name: 'عملاء جدد (آخر 30 يوم)',
+          count: 0,
+          isSystem: true,
+        },
+        {
+          id: 'vip-customers',
+          name: 'عملاء VIP',
+          count: 0,
+          isSystem: true,
+        },
+        {
+          id: 'inactive-customers',
+          name: 'عملاء غير نشطين',
+          count: 0,
+          isSystem: true,
+        },
       ],
     };
   }
 
   async createSegment(tenantId: string, dto: CreateSegmentDto) {
-    return { id: 'new-segment-id', ...dto, tenantId, count: 0, createdAt: new Date() };
+    return {
+      id: 'new-segment-id',
+      ...dto,
+      tenantId,
+      count: 0,
+      createdAt: new Date(),
+    };
   }
 
   async getSegmentById(id: string, tenantId: string) {
     return { id, tenantId };
   }
 
-  async updateSegment(id: string, _tenantId: string, dto: CreateSegmentDto) {
-    return { id, ...dto };
+  async updateSegment(_id: string, _tenantId: string, dto: CreateSegmentDto) {
+    return { id: _id, ...dto };
   }
 
-  async deleteSegment(_id: string, _tenantId: string) {}
+  async deleteSegment(_id: string, _tenantId: string) {
+    // TODO: Implement
+  }
 
-  async importContacts(tenantId: string, file: any, _dto: ImportContactsDto) {
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // Import/Export
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async importContacts(
+    tenantId: string,
+    file: { originalname?: string },
+    _dto: ImportContactsDto,
+  ) {
     this.logger.log(`Importing contacts`, { tenantId, filename: file?.originalname });
-    return { success: true, message: 'جاري استيراد العملاء', jobId: 'import-job-id' };
+
+    return {
+      success: true,
+      message: 'جاري استيراد العملاء',
+      jobId: 'import-job-id',
+    };
   }
 
   async exportContacts(tenantId: string, format: string, segment?: string) {
     this.logger.log(`Exporting contacts`, { tenantId, format, segment });
+
     return {
       success: true,
       downloadUrl: '/api/v1/contacts/export/download/file-id',
