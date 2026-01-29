@@ -182,7 +182,7 @@ export class SallaOAuthService {
         tenantId,
       };
 
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error('Failed to exchange code for tokens', {
         error: error instanceof Error ? error.message : 'Unknown',
       });
@@ -225,7 +225,7 @@ export class SallaOAuthService {
 
       return response.data;
 
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error('Failed to refresh access token', {
         error: error instanceof Error ? error.message : 'Unknown',
       });
@@ -252,7 +252,7 @@ export class SallaOAuthService {
 
       return response.data.data;
 
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error('Failed to get merchant info', {
         error: error instanceof Error ? error.message : 'Unknown',
       });
