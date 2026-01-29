@@ -1,7 +1,5 @@
 /**
- * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║              RAFIQ PLATFORM - Telegram Service                                 ║
- * ╚═══════════════════════════════════════════════════════════════════════════════╝
+ * RAFIQ PLATFORM - Telegram Service
  */
 
 import { Injectable, Logger, BadRequestException, NotFoundException } from '@nestjs/common';
@@ -17,199 +15,108 @@ interface TelegramConnection {
   createdAt: Date;
 }
 
+interface TelegramApiResponse<T = any> {
+  ok: boolean;
+  result?: T;
+  description?: string;
+  error_code?: number;
+}
+
+interface TelegramUser {
+  id: number;
+  is_bot: boolean;
+  first_name: string;
+  last_name?: string;
+  username?: string;
+  language_code?: string;
+}
+
 @Injectable()
 export class TelegramService {
   private readonly logger = new Logger(TelegramService.name);
   private connections: Map<string, TelegramConnection> = new Map();
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   constructor(private readonly configService: ConfigService) {}
 
-  /**
-   * ربط بوت تيليجرام
-   */
   async connect(tenantId: string, botToken: string) {
-    // Validate bot token by calling getMe
     const botInfo = await this.getMe(botToken);
-
-    if (!botInfo.ok) {
+    if (!botInfo.ok || !botInfo.result) {
       throw new BadRequestException('Bot Token غير صالح');
     }
 
     const connection: TelegramConnection = {
       tenantId,
       botToken,
-      botUsername: botInfo.result.username,
+      botUsername: botInfo.result.username || '',
       botId: botInfo.result.id,
       status: 'active',
       createdAt: new Date(),
     };
 
     this.connections.set(tenantId, connection);
-
     this.logger.log(`Telegram bot connected: @${botInfo.result.username}`, { tenantId });
 
     return {
       success: true,
       message: 'تم ربط البوت بنجاح',
-      bot: {
-        username: botInfo.result.username,
-        firstName: botInfo.result.first_name,
-      },
+      bot: { username: botInfo.result.username, firstName: botInfo.result.first_name },
     };
   }
 
-  /**
-   * حالة الاتصال
-   */
   async getStatus(tenantId: string) {
     const connection = this.connections.get(tenantId);
-
     if (!connection) {
-      return {
-        connected: false,
-        message: 'لم يتم ربط بوت تيليجرام',
-      };
+      return { connected: false, message: 'لم يتم ربط بوت تيليجرام' };
     }
-
     return {
       connected: true,
-      bot: {
-        username: connection.botUsername,
-        id: connection.botId,
-      },
+      botUsername: connection.botUsername,
       webhookUrl: connection.webhookUrl,
       status: connection.status,
-      connectedAt: connection.createdAt,
     };
   }
 
-  /**
-   * فصل الاتصال
-   */
   async disconnect(tenantId: string) {
     const connection = this.connections.get(tenantId);
-
-    if (!connection) {
-      throw new NotFoundException('لم يتم العثور على اتصال');
-    }
-
-    // Delete webhook
-    await this.deleteWebhook(connection.botToken);
-
+    if (!connection) throw new NotFoundException('البوت غير مربوط');
     this.connections.delete(tenantId);
-
-    this.logger.log(`Telegram bot disconnected`, { tenantId });
+    this.logger.log('Telegram bot disconnected', { tenantId });
   }
 
-  /**
-   * إرسال رسالة نصية
-   */
-  async sendMessage(
-    tenantId: string,
-    params: {
-      chatId: string;
-      text: string;
-      parseMode?: 'HTML' | 'Markdown';
-      replyMarkup?: any;
-    },
-  ) {
+  async sendMessage(tenantId: string, chatId: string | number, text: string) {
     const connection = this.getConnection(tenantId);
-
-    const body: any = {
-      chat_id: params.chatId,
-      text: params.text,
-    };
-
-    if (params.parseMode) {
-      body.parse_mode = params.parseMode;
-    }
-
-    if (params.replyMarkup) {
-      body.reply_markup = JSON.stringify(params.replyMarkup);
-    }
-
-    return this.callApi(connection.botToken, 'sendMessage', body);
+    return this.callApi(connection.botToken, 'sendMessage', { chat_id: chatId, text, parse_mode: 'HTML' });
   }
 
-  /**
-   * إرسال صورة
-   */
-  async sendPhoto(
-    tenantId: string,
-    params: {
-      chatId: string;
-      photo: string;
-      caption?: string;
-    },
-  ) {
+  async sendPhoto(tenantId: string, chatId: string | number, photo: string, caption?: string) {
     const connection = this.getConnection(tenantId);
-
-    const body: any = {
-      chat_id: params.chatId,
-      photo: params.photo,
-    };
-
-    if (params.caption) {
-      body.caption = params.caption;
-    }
-
-    return this.callApi(connection.botToken, 'sendPhoto', body);
+    return this.callApi(connection.botToken, 'sendPhoto', { chat_id: chatId, photo, caption });
   }
 
-  /**
-   * إرسال ملف
-   */
-  async sendDocument(
-    tenantId: string,
-    params: {
-      chatId: string;
-      document: string;
-      caption?: string;
-    },
-  ) {
+  async sendDocument(tenantId: string, chatId: string | number, document: string, caption?: string) {
     const connection = this.getConnection(tenantId);
-
-    const body: any = {
-      chat_id: params.chatId,
-      document: params.document,
-    };
-
-    if (params.caption) {
-      body.caption = params.caption;
-    }
-
-    return this.callApi(connection.botToken, 'sendDocument', body);
+    return this.callApi(connection.botToken, 'sendDocument', { chat_id: chatId, document, caption });
   }
 
-  /**
-   * تعيين Webhook
-   */
   async setWebhook(tenantId: string, url: string) {
     const connection = this.getConnection(tenantId);
-
     const result = await this.callApi(connection.botToken, 'setWebhook', {
       url: `${url}/${connection.botToken}`,
       allowed_updates: ['message', 'callback_query'],
-    });
+    }) as TelegramApiResponse;
 
     if (result.ok) {
       connection.webhookUrl = url;
       this.connections.set(tenantId, connection);
     }
-
     return result;
   }
 
-  /**
-   * معالجة التحديثات
-   */
   async handleUpdate(token: string, update: any) {
-    // Find tenant by token
-    const connection = Array.from(this.connections.values())
-      .find((c) => c.botToken === token);
-
+    const connection = Array.from(this.connections.values()).find((c) => c.botToken === token);
     if (!connection) {
-      this.logger.warn('Update received for unknown bot', { token: token.substring(0, 10) + '...' });
+      this.logger.warn('Update received for unknown bot');
       return;
     }
 
@@ -219,67 +126,42 @@ export class TelegramService {
       type: update.message ? 'message' : update.callback_query ? 'callback' : 'unknown',
     });
 
-    // Process update
-    if (update.message) {
-      await this.processMessage(connection.tenantId, update.message);
-    } else if (update.callback_query) {
-      await this.processCallbackQuery(connection.tenantId, update.callback_query);
-    }
+    if (update.message) await this.processMessage(connection.tenantId, update.message);
+    else if (update.callback_query) await this.processCallbackQuery(connection.tenantId, update.callback_query);
   }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // Private Methods
-  // ═══════════════════════════════════════════════════════════════════════════════
 
   private getConnection(tenantId: string): TelegramConnection {
     const connection = this.connections.get(tenantId);
-
-    if (!connection) {
-      throw new NotFoundException('لم يتم ربط بوت تيليجرام');
-    }
-
+    if (!connection) throw new NotFoundException('البوت غير مربوط');
     return connection;
   }
 
-  private async getMe(botToken: string) {
-    return this.callApi(botToken, 'getMe', {});
+  private async getMe(botToken: string): Promise<TelegramApiResponse<TelegramUser>> {
+    return this.callApi(botToken, 'getMe', {}) as Promise<TelegramApiResponse<TelegramUser>>;
   }
 
-  private async deleteWebhook(botToken: string) {
-    return this.callApi(botToken, 'deleteWebhook', {});
-  }
-
-  private async callApi(botToken: string, method: string, body: any) {
+  private async callApi(botToken: string, method: string, body: any): Promise<unknown> {
     const url = `https://api.telegram.org/bot${botToken}/${method}`;
-
     try {
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
-
       return response.json();
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(`Telegram API error: ${method}`, error);
       throw error;
     }
   }
 
-  private async processMessage(tenantId: string, message: any) {
-    // TODO: Create conversation and forward to inbox
-    this.logger.log('Processing Telegram message', {
-      tenantId,
-      chatId: message.chat.id,
-      from: message.from?.username,
-    });
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  private async processMessage(_tenantId: string, message: any) {
+    this.logger.log('Processing Telegram message', { chatId: message.chat.id, from: message.from?.username });
   }
 
-  private async processCallbackQuery(tenantId: string, query: any) {
-    // TODO: Handle callback queries (button clicks)
-    this.logger.log('Processing Telegram callback', {
-      tenantId,
-      data: query.data,
-    });
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  private async processCallbackQuery(_tenantId: string, query: any) {
+    this.logger.log('Processing Telegram callback', { data: query.data });
   }
 }
