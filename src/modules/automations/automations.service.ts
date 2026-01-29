@@ -277,12 +277,12 @@ export class AutomationsService {
    */
   async executeAutomation(
     automationId: string,
-    tenantId: string,
+    _tenantId: string,
     context: Record<string, unknown>,
   ) {
-    const automation = await this.findById(automationId, tenantId);
+    const automation = this.automations.get(automationId);
 
-    if (automation.status !== 'active') {
+    if (!automation || automation.status !== 'active') {
       this.logger.warn(`Automation ${automationId} is not active`);
       return;
     }
@@ -296,7 +296,7 @@ export class AutomationsService {
 
     // Execute actions
     for (const action of automation.actions || []) {
-      await this.executeAction(action, context, tenantId);
+      await this.executeAction(action, context);
     }
 
     return { success: true, automationId };
@@ -308,7 +308,6 @@ export class AutomationsService {
   private async executeAction(
     action: any,
     context: Record<string, unknown>,
-    tenantId: string,
   ) {
     this.logger.log(`Executing action: ${action.type}`, { action, context });
 
