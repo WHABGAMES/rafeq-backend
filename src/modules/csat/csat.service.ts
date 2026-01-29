@@ -7,7 +7,8 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { UpdateCsatSettingsDto, SubmitCsatDto } from './dto';
 
-interface CsatSettings {
+// ✅ تم تصدير الـ interface
+export interface CsatSettings {
   enabled: boolean;
   type: 'csat' | 'nps' | 'ces' | 'thumbs';
   question: string;
@@ -19,7 +20,7 @@ interface CsatSettings {
   channels: string[];
 }
 
-interface SurveyFilters {
+export interface SurveyFilters {
   type?: string;
   rating?: number;
   agentId?: string;
@@ -63,10 +64,10 @@ export class CsatService {
   /**
    * تحديث الإعدادات
    */
-  async updateSettings(tenantId: string, dto: UpdateCsatSettingsDto) {
+  async updateSettings(tenantId: string, dto: UpdateCsatSettingsDto): Promise<CsatSettings> {
     const currentSettings = await this.getSettings(tenantId);
 
-    const newSettings = {
+    const newSettings: CsatSettings = {
       ...currentSettings,
       ...dto,
     };
@@ -219,7 +220,7 @@ export class CsatService {
    */
   async getAgentRatings(
     tenantId: string,
-    params: { from?: string; to?: string },
+    _params: { from?: string; to?: string },
   ) {
     const surveys = Array.from(this.surveys.values())
       .filter((s) => s.tenantId === tenantId && s.agentId);
@@ -255,7 +256,7 @@ export class CsatService {
    * اتجاهات التقييم
    */
   async getTrends(
-    tenantId: string,
+    _tenantId: string,
     params: { period: string; groupBy: 'day' | 'week' | 'month' },
   ) {
     // TODO: Implement actual trend calculation
@@ -270,8 +271,8 @@ export class CsatService {
    * تصدير التقييمات
    */
   async exportSurveys(
-    tenantId: string,
-    params: { format: string; from?: string; to?: string },
+    _tenantId: string,
+    _params: { format: string; from?: string; to?: string },
   ) {
     // TODO: Implement export
     return {
