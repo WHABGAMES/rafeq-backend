@@ -24,7 +24,7 @@ import {
   ConnectedSocket,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { Logger, UseGuards } from '@nestjs/common';
+import { Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 
 /**
@@ -34,32 +34,32 @@ export enum SocketEvents {
   // Connection
   CONNECTION = 'connection',
   DISCONNECT = 'disconnect',
-  
+
   // Messages
   NEW_MESSAGE = 'new_message',
   MESSAGE_SENT = 'message_sent',
   MESSAGE_DELIVERED = 'message_delivered',
   MESSAGE_READ = 'message_read',
   MESSAGE_FAILED = 'message_failed',
-  
+
   // Conversations
   CONVERSATION_CREATED = 'conversation_created',
   CONVERSATION_UPDATED = 'conversation_updated',
   CONVERSATION_ASSIGNED = 'conversation_assigned',
   CONVERSATION_CLOSED = 'conversation_closed',
-  
+
   // Typing
   AGENT_TYPING = 'agent_typing',
   CUSTOMER_TYPING = 'customer_typing',
-  
+
   // Notifications
   NOTIFICATION = 'notification',
-  
+
   // Presence
   AGENT_ONLINE = 'agent_online',
   AGENT_OFFLINE = 'agent_offline',
   AGENTS_LIST = 'agents_list',
-  
+
   // Rooms
   JOIN_ROOM = 'join_room',
   LEAVE_ROOM = 'leave_room',
@@ -71,7 +71,7 @@ export enum SocketEvents {
  * بيانات المستخدم المتصل
  */
 interface ConnectedUser {
-  odocketId: string;
+  socketId: string;
   userId: string;
   tenantId: string;
   storeId?: string;
@@ -82,7 +82,7 @@ interface ConnectedUser {
 
 @WebSocketGateway({
   cors: {
-    origin: '*', // سيتم تحديده من الـ env
+    origin: '*',
     credentials: true,
   },
   namespace: '/ws',
@@ -95,13 +95,13 @@ export class AppGateway
   server: Server;
 
   private readonly logger = new Logger(AppGateway.name);
-  
+
   // تتبع المستخدمين المتصلين
   private connectedUsers: Map<string, ConnectedUser> = new Map();
-  
+
   // تتبع المستخدمين حسب الـ tenant
   private tenantUsers: Map<string, Set<string>> = new Map();
-  
+
   // تتبع المستخدمين حسب المحادثة
   private conversationUsers: Map<string, Set<string>> = new Map();
 
@@ -109,8 +109,9 @@ export class AppGateway
 
   /**
    * بعد تهيئة الـ Gateway
+   * ✅ إصلاح: إزالة server parameter غير المستخدم
    */
-  afterInit(server: Server) {
+  afterInit(_server: Server) {
     this.logger.log('🚀 WebSocket Gateway initialized');
   }
 
@@ -121,7 +122,7 @@ export class AppGateway
     try {
       // استخراج التوكن من الـ handshake
       const token = this.extractToken(client);
-      
+
       if (!token) {
         this.logger.warn(`❌ Connection rejected - No token: ${client.id}`);
         client.disconnect();
@@ -130,7 +131,7 @@ export class AppGateway
 
       // التحقق من التوكن
       const payload = await this.verifyToken(token);
-      
+
       if (!payload) {
         this.logger.warn(`❌ Connection rejected - Invalid token: ${client.id}`);
         client.disconnect();
@@ -139,7 +140,7 @@ export class AppGateway
 
       // حفظ بيانات المستخدم
       const user: ConnectedUser = {
-        odocketId: client.id,
+        socketId: client.id,
         userId: payload.sub,
         tenantId: payload.tenantId,
         storeId: payload.storeId,
@@ -152,7 +153,7 @@ export class AppGateway
 
       // إضافة للـ tenant room
       client.join(`tenant:${user.tenantId}`);
-      
+
       // تتبع المستخدم في الـ tenant
       if (!this.tenantUsers.has(user.tenantId)) {
         this.tenantUsers.set(user.tenantId, new Set());
@@ -172,12 +173,12 @@ export class AppGateway
       });
 
       this.logger.log(`✅ Client connected: ${client.id} (User: ${user.userId})`);
-      
+
       // إرسال قائمة المتصلين للمستخدم الجديد
       this.sendOnlineAgents(client, user.tenantId);
-      
-    } catch (error: any) {
-      this.logger.error(`❌ Connection error: ${error.message}`);
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(`❌ Connection error: ${errorMessage}`);
       client.disconnect();
     }
   }
@@ -187,13 +188,13 @@ export class AppGateway
    */
   handleDisconnect(client: Socket) {
     const user = this.connectedUsers.get(client.id);
-    
+
     if (user) {
       // إزالة من الـ tenant tracking
       this.tenantUsers.get(user.tenantId)?.delete(client.id);
-      
-      // إزالة من المحادثات
-      this.conversationUsers.forEach((users, convId) => {
+
+      // ✅ إصلاح: إزالة _convId غير المستخدم
+      this.conversationUsers.forEach((users) => {
         users.delete(client.id);
       });
 
@@ -280,7 +281,7 @@ export class AppGateway
   /**
    * إرسال رسالة جديدة
    */
-  emitNewMessage(tenantId: string, conversationId: string, message: any) {
+  emitNewMessage(tenantId: string, conversationId: string, message: unknown) {
     // إرسال للـ tenant
     this.server.to(`tenant:${tenantId}`).emit(SocketEvents.NEW_MESSAGE, {
       conversationId,
@@ -296,9 +297,10 @@ export class AppGateway
 
   /**
    * تحديث حالة الرسالة
+   * ✅ إصلاح: إزالة _tenantId غير المستخدم
    */
   emitMessageStatus(
-    tenantId: string,
+    _tenantId: string,
     conversationId: string,
     messageId: string,
     status: 'sent' | 'delivered' | 'read' | 'failed',
@@ -321,17 +323,17 @@ export class AppGateway
   /**
    * تحديث محادثة
    */
-  emitConversationUpdate(tenantId: string, conversationId: string, update: any) {
+  emitConversationUpdate(tenantId: string, conversationId: string, update: unknown) {
     this.server.to(`tenant:${tenantId}`).emit(SocketEvents.CONVERSATION_UPDATED, {
       conversationId,
-      ...update,
+      ...((update as Record<string, unknown>) || {}),
     });
   }
 
   /**
    * محادثة جديدة
    */
-  emitNewConversation(tenantId: string, conversation: any) {
+  emitNewConversation(tenantId: string, conversation: unknown) {
     this.server.to(`tenant:${tenantId}`).emit(SocketEvents.CONVERSATION_CREATED, {
       conversation,
     });
@@ -340,7 +342,7 @@ export class AppGateway
   /**
    * تعيين محادثة
    */
-  emitConversationAssigned(tenantId: string, conversationId: string, assignedTo: any) {
+  emitConversationAssigned(tenantId: string, conversationId: string, assignedTo: unknown) {
     this.server.to(`tenant:${tenantId}`).emit(SocketEvents.CONVERSATION_ASSIGNED, {
       conversationId,
       assignedTo,
@@ -350,7 +352,7 @@ export class AppGateway
   /**
    * إغلاق محادثة
    */
-  emitConversationClosed(tenantId: string, conversationId: string, closedBy: any) {
+  emitConversationClosed(tenantId: string, conversationId: string, closedBy: unknown) {
     this.server.to(`tenant:${tenantId}`).emit(SocketEvents.CONVERSATION_CLOSED, {
       conversationId,
       closedBy,
@@ -361,12 +363,15 @@ export class AppGateway
   /**
    * إشعار عام
    */
-  emitNotification(tenantId: string, notification: {
-    type: 'info' | 'success' | 'warning' | 'error';
-    title: string;
-    message: string;
-    data?: any;
-  }) {
+  emitNotification(
+    tenantId: string,
+    notification: {
+      type: 'info' | 'success' | 'warning' | 'error';
+      title: string;
+      message: string;
+      data?: unknown;
+    },
+  ) {
     this.server.to(`tenant:${tenantId}`).emit(SocketEvents.NOTIFICATION, {
       ...notification,
       timestamp: new Date().toISOString(),
@@ -376,7 +381,7 @@ export class AppGateway
   /**
    * إشعار لمستخدم محدد
    */
-  emitToUser(userId: string, event: string, data: any) {
+  emitToUser(userId: string, event: string, data: unknown) {
     // البحث عن socket المستخدم
     for (const [socketId, user] of this.connectedUsers) {
       if (user.userId === userId) {
@@ -420,10 +425,16 @@ export class AppGateway
   /**
    * التحقق من التوكن
    */
-  private async verifyToken(token: string): Promise<any> {
+  private async verifyToken(token: string): Promise<{
+    sub: string;
+    tenantId: string;
+    storeId?: string;
+    role: string;
+    name?: string;
+  } | null> {
     try {
       return this.jwtService.verify(token);
-    } catch (error: any) {
+    } catch {
       return null;
     }
   }
@@ -432,15 +443,20 @@ export class AppGateway
    * إرسال قائمة المتصلين
    */
   private sendOnlineAgents(client: Socket, tenantId: string) {
-    const onlineAgents: any[] = [];
-    
+    const onlineAgents: Array<{
+      userId: string;
+      name: string;
+      role: string;
+      connectedAt: Date;
+    }> = [];
+
     const tenantSocketIds = this.tenantUsers.get(tenantId);
     if (tenantSocketIds) {
-      tenantSocketIds.forEach(socketId => {
+      tenantSocketIds.forEach((socketId) => {
         const user = this.connectedUsers.get(socketId);
         if (user && user.role !== 'customer') {
           onlineAgents.push({
-            oderId: user.userId,
+            userId: user.userId,
             name: user.name,
             role: user.role,
             connectedAt: user.connectedAt,
@@ -468,9 +484,9 @@ export class AppGateway
   getConnectedUsers(tenantId: string): ConnectedUser[] {
     const users: ConnectedUser[] = [];
     const socketIds = this.tenantUsers.get(tenantId);
-    
+
     if (socketIds) {
-      socketIds.forEach(socketId => {
+      socketIds.forEach((socketId) => {
         const user = this.connectedUsers.get(socketId);
         if (user) {
           users.push(user);
