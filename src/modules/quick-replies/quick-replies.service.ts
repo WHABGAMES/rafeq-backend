@@ -7,7 +7,8 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { CreateQuickReplyDto, UpdateQuickReplyDto } from './dto';
 
-interface QuickReply {
+// ✅ تم تصدير الـ interfaces
+export interface QuickReply {
   id: string;
   tenantId: string;
   shortcut: string;
@@ -27,7 +28,7 @@ interface QuickReply {
   updatedAt: Date;
 }
 
-interface Category {
+export interface Category {
   id: string;
   tenantId: string;
   name: string;
@@ -35,7 +36,7 @@ interface Category {
   count: number;
 }
 
-interface Filters {
+export interface Filters {
   category?: string;
   search?: string;
   page: number;
@@ -156,7 +157,7 @@ export class QuickRepliesService {
   /**
    * جلب الفئات
    */
-  async getCategories(tenantId: string) {
+  async getCategories(tenantId: string): Promise<{ categories: Category[] }> {
     const categories = Array.from(this.categories.values())
       .filter((c) => c.tenantId === tenantId || c.tenantId === 'default');
 
@@ -166,7 +167,7 @@ export class QuickRepliesService {
   /**
    * إنشاء فئة
    */
-  async createCategory(tenantId: string, data: { name: string; icon?: string }) {
+  async createCategory(tenantId: string, data: { name: string; icon?: string }): Promise<Category> {
     const id = `cat-${Date.now()}`;
 
     const category: Category = {
@@ -185,7 +186,7 @@ export class QuickRepliesService {
   /**
    * حذف فئة
    */
-  async deleteCategory(id: string, tenantId: string) {
+  async deleteCategory(id: string, tenantId: string): Promise<void> {
     const category = this.categories.get(id);
 
     if (!category || category.tenantId !== tenantId) {
@@ -198,7 +199,10 @@ export class QuickRepliesService {
   /**
    * جلب جميع الردود
    */
-  async findAll(tenantId: string, filters: Filters) {
+  async findAll(tenantId: string, filters: Filters): Promise<{
+    data: QuickReply[];
+    pagination: { page: number; limit: number; total: number; totalPages: number };
+  }> {
     const { page, limit } = filters;
 
     let replies = Array.from(this.quickReplies.values())
@@ -241,7 +245,7 @@ export class QuickRepliesService {
   /**
    * بحث سريع
    */
-  async search(tenantId: string, query: string) {
+  async search(tenantId: string, query: string): Promise<{ results: QuickReply[] }> {
     const queryLower = query.toLowerCase();
 
     const replies = Array.from(this.quickReplies.values())
@@ -260,7 +264,7 @@ export class QuickRepliesService {
   /**
    * إنشاء رد سريع
    */
-  async create(tenantId: string, userId: string, dto: CreateQuickReplyDto) {
+  async create(tenantId: string, userId: string, dto: CreateQuickReplyDto): Promise<QuickReply> {
     const id = `qr-${Date.now()}`;
 
     // Extract variables from content
@@ -295,7 +299,7 @@ export class QuickRepliesService {
   /**
    * جلب رد بالـ ID
    */
-  async findById(id: string, tenantId: string) {
+  async findById(id: string, tenantId: string): Promise<QuickReply> {
     const reply = this.quickReplies.get(id);
 
     if (!reply || (reply.tenantId !== tenantId && !reply.isGlobal)) {
@@ -308,7 +312,7 @@ export class QuickRepliesService {
   /**
    * تحديث رد سريع
    */
-  async update(id: string, tenantId: string, dto: UpdateQuickReplyDto) {
+  async update(id: string, tenantId: string, dto: UpdateQuickReplyDto): Promise<QuickReply> {
     const reply = await this.findById(id, tenantId);
 
     if (reply.isGlobal) {
@@ -332,7 +336,7 @@ export class QuickRepliesService {
   /**
    * حذف رد سريع
    */
-  async delete(id: string, tenantId: string) {
+  async delete(id: string, tenantId: string): Promise<void> {
     const reply = await this.findById(id, tenantId);
 
     if (reply.isGlobal) {
@@ -347,7 +351,7 @@ export class QuickRepliesService {
   /**
    * تسجيل استخدام
    */
-  async recordUsage(id: string, tenantId: string, userId: string) {
+  async recordUsage(id: string, tenantId: string, _userId: string): Promise<{ success: boolean; usageCount: number }> {
     const reply = await this.findById(id, tenantId);
 
     reply.usageCount += 1;
@@ -359,7 +363,7 @@ export class QuickRepliesService {
   /**
    * الردود الأكثر استخداماً
    */
-  async getPopular(tenantId: string, limit: number) {
+  async getPopular(tenantId: string, limit: number): Promise<{ replies: QuickReply[] }> {
     const replies = Array.from(this.quickReplies.values())
       .filter((r) => r.tenantId === tenantId || r.isGlobal)
       .sort((a, b) => b.usageCount - a.usageCount)
@@ -371,7 +375,7 @@ export class QuickRepliesService {
   /**
    * جلب رد بالاختصار
    */
-  async findByShortcut(tenantId: string, shortcut: string) {
+  async findByShortcut(tenantId: string, shortcut: string): Promise<QuickReply | null> {
     const reply = Array.from(this.quickReplies.values())
       .find(
         (r) =>
