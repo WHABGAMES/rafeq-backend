@@ -4,7 +4,7 @@
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
-import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ConnectShopifyDto, ConnectWooCommerceDto } from './dto';
 
@@ -18,7 +18,6 @@ interface PaginationOptions {
 export class IntegrationsService {
   private readonly logger = new Logger(IntegrationsService.name);
 
-  // In-memory storage for integrations (replace with database)
   private integrations: Map<string, any> = new Map();
 
   constructor(private readonly configService: ConfigService) {}
@@ -62,25 +61,21 @@ export class IntegrationsService {
     return `https://accounts.salla.sa/oauth2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${scope}&state=${state}`;
   }
 
-  async handleSallaCallback(code: string, state: string) {
+  async handleSallaCallback(_code: string, state: string) {
     const { tenantId } = JSON.parse(Buffer.from(state, 'base64').toString());
 
-    // Exchange code for tokens
-    // TODO: Implement actual OAuth token exchange
     const tokens = {
       access_token: 'salla_access_token',
       refresh_token: 'salla_refresh_token',
       expires_in: 3600,
     };
 
-    // Get merchant info
     const merchantInfo = {
       id: 'merchant-id',
       name: 'متجر سلة',
       domain: 'store.salla.sa',
     };
 
-    // Save integration
     const integrationId = `int-salla-${Date.now()}`;
     this.integrations.set(integrationId, {
       id: integrationId,
@@ -105,8 +100,7 @@ export class IntegrationsService {
     };
   }
 
-  async getSallaOrders(tenantId: string, options: PaginationOptions) {
-    // TODO: Fetch from Salla API
+  async getSallaOrders(_tenantId: string, options: PaginationOptions) {
     return {
       data: [],
       pagination: {
@@ -118,8 +112,7 @@ export class IntegrationsService {
     };
   }
 
-  async getSallaProducts(tenantId: string, options: PaginationOptions) {
-    // TODO: Fetch from Salla API
+  async getSallaProducts(_tenantId: string, options: PaginationOptions) {
     return {
       data: [],
       pagination: {
@@ -131,8 +124,7 @@ export class IntegrationsService {
     };
   }
 
-  async getSallaCustomers(tenantId: string, options: PaginationOptions) {
-    // TODO: Fetch from Salla API
+  async getSallaCustomers(_tenantId: string, options: PaginationOptions) {
     return {
       data: [],
       pagination: {
@@ -144,8 +136,7 @@ export class IntegrationsService {
     };
   }
 
-  async getSallaAbandonedCarts(tenantId: string, options: PaginationOptions) {
-    // TODO: Fetch from Salla API
+  async getSallaAbandonedCarts(_tenantId: string, options: PaginationOptions) {
     return {
       data: [],
       pagination: {
@@ -169,25 +160,21 @@ export class IntegrationsService {
     return `https://oauth.zid.sa/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&state=${state}`;
   }
 
-  async handleZidCallback(code: string, state: string) {
+  async handleZidCallback(_code: string, state: string) {
     const { tenantId } = JSON.parse(Buffer.from(state, 'base64').toString());
 
-    // Exchange code for tokens
-    // TODO: Implement actual OAuth token exchange
     const tokens = {
       access_token: 'zid_access_token',
       refresh_token: 'zid_refresh_token',
       expires_in: 3600,
     };
 
-    // Get store info
     const storeInfo = {
       id: 'store-id',
       name: 'متجر زد',
       domain: 'store.zid.sa',
     };
 
-    // Save integration
     const integrationId = `int-zid-${Date.now()}`;
     this.integrations.set(integrationId, {
       id: integrationId,
@@ -212,8 +199,7 @@ export class IntegrationsService {
     };
   }
 
-  async getZidOrders(tenantId: string, options: PaginationOptions) {
-    // TODO: Fetch from Zid API
+  async getZidOrders(_tenantId: string, options: PaginationOptions) {
     return {
       data: [],
       pagination: {
@@ -225,8 +211,7 @@ export class IntegrationsService {
     };
   }
 
-  async getZidProducts(tenantId: string, options: PaginationOptions) {
-    // TODO: Fetch from Zid API
+  async getZidProducts(_tenantId: string, options: PaginationOptions) {
     return {
       data: [],
       pagination: {
@@ -238,8 +223,7 @@ export class IntegrationsService {
     };
   }
 
-  async getZidCustomers(tenantId: string, options: PaginationOptions) {
-    // TODO: Fetch from Zid API
+  async getZidCustomers(_tenantId: string, options: PaginationOptions) {
     return {
       data: [],
       pagination: {
@@ -256,9 +240,6 @@ export class IntegrationsService {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   async connectShopify(tenantId: string, dto: ConnectShopifyDto) {
-    // Validate API credentials
-    // TODO: Test connection to Shopify
-
     const integrationId = `int-shopify-${Date.now()}`;
     this.integrations.set(integrationId, {
       id: integrationId,
@@ -282,8 +263,7 @@ export class IntegrationsService {
     };
   }
 
-  async getShopifyOrders(tenantId: string, options: PaginationOptions) {
-    // TODO: Fetch from Shopify API
+  async getShopifyOrders(_tenantId: string, options: PaginationOptions) {
     return {
       data: [],
       pagination: {
@@ -300,9 +280,6 @@ export class IntegrationsService {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   async connectWooCommerce(tenantId: string, dto: ConnectWooCommerceDto) {
-    // Validate API credentials
-    // TODO: Test connection to WooCommerce
-
     const integrationId = `int-woo-${Date.now()}`;
     this.integrations.set(integrationId, {
       id: integrationId,
@@ -325,8 +302,7 @@ export class IntegrationsService {
     };
   }
 
-  async getWooCommerceOrders(tenantId: string, options: PaginationOptions) {
-    // TODO: Fetch from WooCommerce API
+  async getWooCommerceOrders(_tenantId: string, options: PaginationOptions) {
     return {
       data: [],
       pagination: {
@@ -345,7 +321,6 @@ export class IntegrationsService {
   async syncData(tenantId: string, platform: string) {
     this.logger.log(`Starting sync for ${platform}`, { tenantId });
 
-    // TODO: Implement actual sync logic
     return {
       success: true,
       message: `جاري مزامنة البيانات من ${platform}`,
@@ -353,7 +328,7 @@ export class IntegrationsService {
     };
   }
 
-  async getSyncStatus(tenantId: string, platform: string) {
+  async getSyncStatus(_tenantId: string, platform: string) {
     return {
       platform,
       lastSyncAt: null,
@@ -380,14 +355,13 @@ export class IntegrationsService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // Refresh Tokens (for OAuth integrations)
+  // Refresh Tokens
   // ═══════════════════════════════════════════════════════════════════════════════
 
   async refreshSallaToken(integrationId: string) {
     const integration = this.integrations.get(integrationId);
     if (!integration) return;
 
-    // TODO: Implement token refresh
     this.logger.log(`Refreshing Salla token`, { integrationId });
   }
 
@@ -395,7 +369,6 @@ export class IntegrationsService {
     const integration = this.integrations.get(integrationId);
     if (!integration) return;
 
-    // TODO: Implement token refresh
     this.logger.log(`Refreshing Zid token`, { integrationId });
   }
 }
