@@ -58,7 +58,7 @@ export class InstagramService {
   /**
    * معالجة OAuth Callback
    */
-  async handleCallback(code: string, state: string): Promise<{ username: string }> {
+  async handleCallback(_code: string, state: string): Promise<{ username: string }> {
     const { tenantId } = JSON.parse(Buffer.from(state, 'base64').toString());
 
     // Exchange code for token (simplified)
