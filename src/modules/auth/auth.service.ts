@@ -158,6 +158,7 @@ export class AuthService {
       const tenant = queryRunner.manager.create(Tenant, {
         name: dto.storeName,
         slug: slug,
+        email: dto.email.toLowerCase(),  // ✅ إضافة البريد للـ Tenant
         status: TenantStatus.TRIAL,
         subscriptionPlan: SubscriptionPlan.FREE,
         trialEndsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000), // 14 يوم
