@@ -1,169 +1,292 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║              RAFIQ PLATFORM - Quick Replies Controller                         ║
+ * ║              RAFIQ PLATFORM - Tags Service                                     ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
-import {
-  Controller,
-  Get,
-  Post,
-  Put,
-  Delete,
-  Body,
-  Param,
-  Query,
-  ParseUUIDPipe,
-  HttpCode,
-  HttpStatus,
-  UseGuards,
-} from '@nestjs/common';
-import {
-  ApiTags,
-  ApiOperation,
-  ApiBearerAuth,
-  ApiQuery,
-} from '@nestjs/swagger';
+import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
+import { CreateTagDto, UpdateTagDto } from './dto';
 
-import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
-import { QuickRepliesService } from './quick-replies.service';
-import { CreateQuickReplyDto, UpdateQuickReplyDto } from './dto';
+// ✅ تم تصدير الـ interface
+export interface Tag {
+  id: string;
+  tenantId: string;
+  name: string;
+  color: string;
+  description?: string;
+  type: 'conversation' | 'contact' | 'both';
+  conversationCount: number;
+  contactCount: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
 
-@ApiTags('Quick Replies - الردود السريعة')
-@ApiBearerAuth('JWT-auth')
-@UseGuards(JwtAuthGuard)
-@Controller({
-  path: 'quick-replies',
-  version: '1',
-})
-export class QuickRepliesController {
-  constructor(private readonly quickRepliesService: QuickRepliesService) {}
+export interface TagFilters {
+  type?: string;
+  search?: string;
+}
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // Categories
-  // ═══════════════════════════════════════════════════════════════════════════════
+@Injectable()
+export class TagsService {
+  private readonly logger = new Logger(TagsService.name);
 
-  @Get('categories')
-  @ApiOperation({
-    summary: 'فئات الردود',
-    description: 'جلب جميع فئات الردود السريعة',
-  })
-  async getCategories() {
-    const tenantId = 'test-tenant-id';
-    return this.quickRepliesService.getCategories(tenantId);
+  // In-memory storage (replace with database)
+  private tags: Map<string, Tag> = new Map();
+
+  /**
+   * جلب جميع التصنيفات
+   */
+  async findAll(tenantId: string, filters: TagFilters) {
+    let tags = Array.from(this.tags.values())
+      .filter((t) => t.tenantId === tenantId);
+
+    if (filters.type && filters.type !== 'all') {
+      tags = tags.filter((t) => t.type === filters.type || t.type === 'both');
+    }
+
+    if (filters.search) {
+      const search = filters.search.toLowerCase();
+      tags = tags.filter((t) =>
+        t.name.toLowerCase().includes(search) ||
+        t.description?.toLowerCase().includes(search)
+      );
+    }
+
+    return {
+      data: tags,
+      total: tags.length,
+    };
   }
 
-  @Post('categories')
-  @ApiOperation({
-    summary: 'إنشاء فئة',
-    description: 'إنشاء فئة جديدة للردود السريعة',
-  })
-  async createCategory(@Body() body: { name: string; icon?: string }) {
-    const tenantId = 'test-tenant-id';
-    return this.quickRepliesService.createCategory(tenantId, body);
+  /**
+   * إنشاء تصنيف
+   */
+  async create(tenantId: string, dto: CreateTagDto) {
+    // Check for duplicate name
+    const existing = Array.from(this.tags.values())
+      .find((t) => t.tenantId === tenantId && t.name === dto.name);
+
+    if (existing) {
+      throw new BadRequestException('يوجد تصنيف بنفس الاسم');
+    }
+
+    const id = `tag-${Date.now()}`;
+
+    const tag: Tag = {
+      id,
+      tenantId,
+      name: dto.name,
+      color: dto.color || '#6366f1',
+      description: dto.description,
+      type: dto.type || 'both',
+      conversationCount: 0,
+      contactCount: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    this.tags.set(id, tag);
+
+    this.logger.log(`Tag created: ${id}`, { tenantId, name: dto.name });
+
+    return tag;
   }
 
-  @Delete('categories/:id')
-  @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({ summary: 'حذف فئة' })
-  async deleteCategory(@Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = 'test-tenant-id';
-    await this.quickRepliesService.deleteCategory(id, tenantId);
+  /**
+   * جلب تصنيف بالـ ID
+   */
+  async findById(id: string, tenantId: string) {
+    const tag = this.tags.get(id);
+
+    if (!tag || tag.tenantId !== tenantId) {
+      throw new NotFoundException('التصنيف غير موجود');
+    }
+
+    return tag;
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // Quick Replies CRUD
-  // ═══════════════════════════════════════════════════════════════════════════════
+  /**
+   * تحديث تصنيف
+   */
+  async update(id: string, tenantId: string, dto: UpdateTagDto) {
+    const tag = await this.findById(id, tenantId);
 
-  @Get()
-  @ApiOperation({
-    summary: 'قائمة الردود السريعة',
-    description: 'جلب جميع الردود السريعة مع الفلترة',
-  })
-  @ApiQuery({ name: 'category', required: false })
-  @ApiQuery({ name: 'search', required: false })
-  @ApiQuery({ name: 'page', required: false })
-  @ApiQuery({ name: 'limit', required: false })
-  async findAll(
-    @Query('category') category?: string,
-    @Query('search') search?: string,
-    @Query('page') page = 1,
-    @Query('limit') limit = 50,
-  ) {
-    const tenantId = 'test-tenant-id';
-    return this.quickRepliesService.findAll(tenantId, { category, search, page, limit });
+    // Check for duplicate name if changing
+    if (dto.name && dto.name !== tag.name) {
+      const existing = Array.from(this.tags.values())
+        .find((t) => t.tenantId === tenantId && t.name === dto.name && t.id !== id);
+
+      if (existing) {
+        throw new BadRequestException('يوجد تصنيف بنفس الاسم');
+      }
+    }
+
+    Object.assign(tag, dto, { updatedAt: new Date() });
+    this.tags.set(id, tag);
+
+    return tag;
   }
 
-  @Get('search')
-  @ApiOperation({
-    summary: 'بحث في الردود',
-    description: 'بحث سريع في الردود باستخدام الاختصار أو المحتوى',
-  })
-  @ApiQuery({ name: 'q', required: true, description: 'كلمة البحث أو الاختصار' })
-  async search(@Query('q') query: string) {
-    const tenantId = 'test-tenant-id';
-    return this.quickRepliesService.search(tenantId, query);
+  /**
+   * حذف تصنيف
+   */
+  async delete(id: string, tenantId: string) {
+    await this.findById(id, tenantId);
+    this.tags.delete(id);
+    this.logger.log(`Tag deleted: ${id}`, { tenantId });
   }
 
-  @Post()
-  @ApiOperation({
-    summary: 'إنشاء رد سريع',
-    description: 'إنشاء رد سريع جديد',
-  })
-  async create(@Body() dto: CreateQuickReplyDto) {
-    const tenantId = 'test-tenant-id';
-    const userId = 'test-user-id';
-    return this.quickRepliesService.create(tenantId, userId, dto);
+  /**
+   * إحصائيات الاستخدام
+   */
+  async getStats(tenantId: string) {
+    const tags = Array.from(this.tags.values())
+      .filter((t) => t.tenantId === tenantId);
+
+    return {
+      totalTags: tags.length,
+      byType: {
+        conversation: tags.filter((t) => t.type === 'conversation').length,
+        contact: tags.filter((t) => t.type === 'contact').length,
+        both: tags.filter((t) => t.type === 'both').length,
+      },
+      mostUsed: tags
+        .sort((a, b) => (b.conversationCount + b.contactCount) - (a.conversationCount + a.contactCount))
+        .slice(0, 10),
+    };
   }
 
-  @Get(':id')
-  @ApiOperation({ summary: 'تفاصيل رد سريع' })
-  async findOne(@Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = 'test-tenant-id';
-    return this.quickRepliesService.findById(id, tenantId);
+  /**
+   * إنشاء تصنيفات متعددة
+   */
+  async createBulk(tenantId: string, dtos: CreateTagDto[]) {
+    const results = [];
+
+    for (const dto of dtos) {
+      try {
+        const tag = await this.create(tenantId, dto);
+        results.push({ success: true, tag });
+      } catch (error) {
+        results.push({ success: false, name: dto.name, error: (error as Error).message });
+      }
+    }
+
+    return {
+      total: dtos.length,
+      success: results.filter((r) => r.success).length,
+      failed: results.filter((r) => !r.success).length,
+      results,
+    };
   }
 
-  @Put(':id')
-  @ApiOperation({ summary: 'تحديث رد سريع' })
-  async update(
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body() dto: UpdateQuickReplyDto,
-  ) {
-    const tenantId = 'test-tenant-id';
-    return this.quickRepliesService.update(id, tenantId, dto);
+  /**
+   * حذف تصنيفات متعددة
+   */
+  async deleteBulk(tenantId: string, ids: string[]) {
+    const results = [];
+
+    for (const id of ids) {
+      try {
+        await this.delete(id, tenantId);
+        results.push({ id, success: true });
+      } catch (error) {
+        results.push({ id, success: false, error: (error as Error).message });
+      }
+    }
+
+    return {
+      total: ids.length,
+      success: results.filter((r) => r.success).length,
+      failed: results.filter((r) => !r.success).length,
+      results,
+    };
   }
 
-  @Delete(':id')
-  @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({ summary: 'حذف رد سريع' })
-  async remove(@Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = 'test-tenant-id';
-    await this.quickRepliesService.delete(id, tenantId);
+  /**
+   * دمج تصنيفين
+   */
+  async mergeTags(targetId: string, sourceId: string, tenantId: string) {
+    const targetTag = await this.findById(targetId, tenantId);
+    const sourceTag = await this.findById(sourceId, tenantId);
+
+    // Transfer counts
+    targetTag.conversationCount += sourceTag.conversationCount;
+    targetTag.contactCount += sourceTag.contactCount;
+    targetTag.updatedAt = new Date();
+
+    this.tags.set(targetId, targetTag);
+
+    // Delete source tag
+    this.tags.delete(sourceId);
+
+    this.logger.log(`Tags merged: ${sourceId} → ${targetId}`, { tenantId });
+
+    return {
+      success: true,
+      message: `تم دمج "${sourceTag.name}" في "${targetTag.name}"`,
+      tag: targetTag,
+    };
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // Usage & Stats
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  @Post(':id/use')
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({
-    summary: 'تسجيل استخدام',
-    description: 'تسجيل استخدام رد سريع (لتحسين الترتيب)',
-  })
-  async recordUsage(@Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = 'test-tenant-id';
-    const userId = 'test-user-id';
-    return this.quickRepliesService.recordUsage(id, tenantId, userId);
+  /**
+   * إضافة تصنيف لمحادثة (زيادة العداد)
+   */
+  async incrementConversationCount(tagId: string, tenantId: string) {
+    const tag = await this.findById(tagId, tenantId);
+    tag.conversationCount += 1;
+    tag.updatedAt = new Date();
+    this.tags.set(tagId, tag);
   }
 
-  @Get('stats/popular')
-  @ApiOperation({
-    summary: 'الردود الأكثر استخداماً',
-    description: 'قائمة الردود السريعة الأكثر استخداماً',
-  })
-  async getPopular(@Query('limit') limit = 10) {
-    const tenantId = 'test-tenant-id';
-    return this.quickRepliesService.getPopular(tenantId, limit);
+  /**
+   * إزالة تصنيف من محادثة (تقليل العداد)
+   */
+  async decrementConversationCount(tagId: string, tenantId: string) {
+    const tag = await this.findById(tagId, tenantId);
+    if (tag.conversationCount > 0) {
+      tag.conversationCount -= 1;
+      tag.updatedAt = new Date();
+      this.tags.set(tagId, tag);
+    }
+  }
+
+  /**
+   * إضافة تصنيف لجهة اتصال (زيادة العداد)
+   */
+  async incrementContactCount(tagId: string, tenantId: string) {
+    const tag = await this.findById(tagId, tenantId);
+    tag.contactCount += 1;
+    tag.updatedAt = new Date();
+    this.tags.set(tagId, tag);
+  }
+
+  /**
+   * إزالة تصنيف من جهة اتصال (تقليل العداد)
+   */
+  async decrementContactCount(tagId: string, tenantId: string) {
+    const tag = await this.findById(tagId, tenantId);
+    if (tag.contactCount > 0) {
+      tag.contactCount -= 1;
+      tag.updatedAt = new Date();
+      this.tags.set(tagId, tag);
+    }
+  }
+
+  /**
+   * البحث عن تصنيفات بالأسماء
+   */
+  async findByNames(tenantId: string, names: string[]): Promise<Tag[]> {
+    return Array.from(this.tags.values())
+      .filter((t) => t.tenantId === tenantId && names.includes(t.name));
+  }
+
+  /**
+   * الحصول على التصنيفات الأكثر استخداماً
+   */
+  async getPopularTags(tenantId: string, limit = 10): Promise<Tag[]> {
+    return Array.from(this.tags.values())
+      .filter((t) => t.tenantId === tenantId)
+      .sort((a, b) => (b.conversationCount + b.contactCount) - (a.conversationCount + a.contactCount))
+      .slice(0, limit);
   }
 }
