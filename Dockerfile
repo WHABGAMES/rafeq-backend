@@ -1,4 +1,4 @@
-# Rafiq Platform - Simple Dockerfile
+# Rafiq Platform - Production Dockerfile
 FROM node:20-alpine
 
 # Install build tools
@@ -19,7 +19,7 @@ COPY . .
 # Build the application
 RUN npm run build
 
-# Remove devDependencies after build
+# Remove devDependencies after build (but keep module-alias!)
 RUN npm prune --production
 
 # Set environment
@@ -29,9 +29,9 @@ ENV PORT=3000
 # Expose port
 EXPOSE 3000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD node -e "require('http').get('http://localhost:3000/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1))"
+# Health check - use /api/health since we have global prefix
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD node -e "require('http').get('http://localhost:3000/api/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1))"
 
-# Start the application
-CMD ["node", "dist/main.js"]
+# Start with module-alias for path resolution
+CMD ["node", "-r", "module-alias/register", "dist/main.js"]
