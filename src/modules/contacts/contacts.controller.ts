@@ -186,7 +186,7 @@ export class ContactsController {
   @ApiConsumes('multipart/form-data')
   @UseInterceptors(FileInterceptor('file'))
   async importContacts(
-    @UploadedFile() file: Express.Multer.File,
+    @UploadedFile() file: any,
     @Body() dto: ImportContactsDto,
   ) {
     const tenantId = 'test-tenant-id';
