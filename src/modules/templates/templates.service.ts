@@ -7,7 +7,7 @@
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Like, In } from 'typeorm';
-import { MessageTemplate } from '@database/entities';
+import { MessageTemplate, TemplateStatus, TemplateChannel } from '@database/entities';
 import {
   CreateTemplateDto,
   UpdateTemplateDto,
@@ -63,7 +63,7 @@ export class TemplatesService {
 
     if (filters.search) {
       queryBuilder.andWhere(
-        '(template.name ILIKE :search OR template.content ILIKE :search)',
+        '(template.name ILIKE :search OR template.body ILIKE :search)',
         { search: `%${filters.search}%` },
       );
     }
@@ -101,13 +101,7 @@ export class TemplatesService {
       throw new NotFoundException('القالب غير موجود');
     }
 
-    // Get usage stats
-    const stats = await this.getStats(id, tenantId);
-
-    return {
-      ...template,
-      stats,
-    };
+    return template;
   }
 
   /**
@@ -118,9 +112,16 @@ export class TemplatesService {
     this.validateTemplateContent(dto);
 
     const template = this.templateRepository.create({
-      ...dto,
       tenantId,
-      status: 'draft',
+      name: dto.name,
+      displayName: dto.displayName || dto.name,
+      description: dto.description,
+      category: dto.category,
+      channel: dto.channel,
+      language: dto.language,
+      type: dto.type,
+      body: dto.content,
+      status: TemplateStatus.DRAFT,
       usageCount: 0,
     });
 
@@ -138,13 +139,21 @@ export class TemplatesService {
     const template = await this.findById(id, tenantId);
 
     // If template is approved by WhatsApp, some fields cannot be changed
-    if (template.status === 'approved' && dto.content) {
+    if (template.status === TemplateStatus.APPROVED && dto.content) {
       throw new BadRequestException(
         'لا يمكن تعديل محتوى قالب معتمد من WhatsApp. قم بإنشاء قالب جديد.',
       );
     }
 
-    Object.assign(template, dto);
+    if (dto.content) {
+      template.body = dto.content;
+    }
+    if (dto.name) {
+      template.name = dto.name;
+    }
+    if (dto.description) {
+      template.description = dto.description;
+    }
     
     return this.templateRepository.save(template);
   }
@@ -155,7 +164,7 @@ export class TemplatesService {
   async delete(id: string, tenantId: string) {
     const template = await this.findById(id, tenantId);
     
-    await this.templateRepository.remove(template);
+    await this.templateRepository.delete(id);
 
     this.logger.log(`Template deleted: ${id}`, { tenantId });
   }
@@ -166,14 +175,16 @@ export class TemplatesService {
   async toggle(id: string, tenantId: string) {
     const template = await this.findById(id, tenantId);
 
-    template.status = template.status === 'active' ? 'disabled' : 'active';
+    template.status = template.status === TemplateStatus.ACTIVE 
+      ? TemplateStatus.DISABLED 
+      : TemplateStatus.ACTIVE;
 
     const saved = await this.templateRepository.save(template);
 
     return {
       id: saved.id,
       status: saved.status,
-      message: saved.status === 'active' ? 'تم تفعيل القالب' : 'تم تعطيل القالب',
+      message: saved.status === TemplateStatus.ACTIVE ? 'تم تفعيل القالب' : 'تم تعطيل القالب',
     };
   }
 
@@ -184,14 +195,17 @@ export class TemplatesService {
     const original = await this.findById(id, tenantId);
 
     const duplicate = this.templateRepository.create({
-      ...original,
-      id: undefined,
+      tenantId: original.tenantId,
       name: newName || `${original.name} (نسخة)`,
-      status: 'draft',
+      displayName: original.displayName,
+      description: original.description,
+      category: original.category,
+      channel: original.channel,
+      language: original.language,
+      type: original.type,
+      body: original.body,
+      status: TemplateStatus.DRAFT,
       usageCount: 0,
-      whatsappTemplateId: undefined,
-      createdAt: undefined,
-      updatedAt: undefined,
     });
 
     return this.templateRepository.save(duplicate);
@@ -208,11 +222,11 @@ export class TemplatesService {
   ) {
     const template = await this.findById(id, tenantId);
 
-    // Replace variables in content
-    let content = template.content;
+    // Replace variables in body
+    let body = template.body || '';
     if (variables) {
       Object.entries(variables).forEach(([key, value]) => {
-        content = content.replace(new RegExp(`{{${key}}}`, 'g'), value);
+        body = body.replace(new RegExp(`{{${key}}}`, 'g'), value);
       });
     }
 
@@ -222,7 +236,7 @@ export class TemplatesService {
     return {
       success: true,
       message: 'تم إرسال رسالة الاختبار',
-      preview: content,
+      preview: body,
     };
   }
 
@@ -247,18 +261,18 @@ export class TemplatesService {
     const templates = await this.templateRepository.find({
       where: {
         tenantId,
-        channel: 'whatsapp',
+        channel: TemplateChannel.WHATSAPP,
       },
-      select: ['id', 'name', 'status', 'whatsappTemplateId', 'updatedAt'],
+      select: ['id', 'name', 'status', 'updatedAt'],
     });
 
     return {
       templates,
       summary: {
         total: templates.length,
-        approved: templates.filter((t) => t.status === 'approved').length,
-        pending: templates.filter((t) => t.status === 'pending').length,
-        rejected: templates.filter((t) => t.status === 'rejected').length,
+        approved: templates.filter((t) => t.status === TemplateStatus.APPROVED).length,
+        pending: templates.filter((t) => t.status === TemplateStatus.PENDING_APPROVAL).length,
+        rejected: templates.filter((t) => t.status === TemplateStatus.REJECTED).length,
       },
     };
   }
@@ -282,7 +296,7 @@ export class TemplatesService {
   /**
    * إحصائيات القالب
    */
-  async getStats(id: string, tenantId: string) {
+  async getStats(_id: string, _tenantId: string) {
     // TODO: Get actual stats from messages/campaigns tables
     return {
       usageCount: 0,
@@ -310,8 +324,8 @@ export class TemplatesService {
     };
 
     const category = dto.category;
-    if (requiredVariables[category]) {
-      const content = dto.content;
+    if (category && requiredVariables[category]) {
+      const content = dto.content || '';
       const missing = requiredVariables[category].filter(
         (v) => !content.includes(`{{${v}}}`),
       );
@@ -323,7 +337,7 @@ export class TemplatesService {
     }
 
     // Validate content length for WhatsApp
-    if (dto.channel === 'whatsapp' && dto.content.length > 1024) {
+    if (dto.channel === 'whatsapp' && dto.content && dto.content.length > 1024) {
       throw new BadRequestException('محتوى القالب يتجاوز الحد المسموح (1024 حرف)');
     }
   }
