@@ -29,10 +29,15 @@ import {
   ApiQuery,
 } from '@nestjs/swagger';
 
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+
 import { AnalyticsService, DateRange } from './analytics.service';
 
 @ApiTags('Analytics')
 @ApiBearerAuth('JWT-auth')
+@ApiBearerAuth()
+@UseGuards(JwtAuthGuard)
 @Controller({
   path: 'analytics',
   version: '1',
@@ -49,8 +54,8 @@ export class AnalyticsController {
     summary: 'نظرة عامة',
     description: 'إحصائيات سريعة: المحادثات، الرسائل، العملاء، وقت الرد',
   })
-  async getOverview() {
-    const tenantId = 'test-tenant-id';
+  async getOverview(@CurrentUser() user: any) {
+    const tenantId = user.tenantId;
     return this.analyticsService.getOverview(tenantId);
   }
 
@@ -66,10 +71,11 @@ export class AnalyticsController {
   @ApiQuery({ name: 'startDate', required: false })
   @ApiQuery({ name: 'endDate', required: false })
   async getConversationStats(
+    @CurrentUser() user: any,
     @Query('startDate') startDate?: string,
     @Query('endDate') endDate?: string,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     const range = this.getDateRange(startDate, endDate);
     return this.analyticsService.getConversationStats(tenantId, range);
   }
@@ -86,10 +92,11 @@ export class AnalyticsController {
   @ApiQuery({ name: 'startDate', required: false })
   @ApiQuery({ name: 'endDate', required: false })
   async getTeamPerformance(
+    @CurrentUser() user: any,
     @Query('startDate') startDate?: string,
     @Query('endDate') endDate?: string,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     const range = this.getDateRange(startDate, endDate);
     return this.analyticsService.getTeamPerformance(tenantId, range);
   }
@@ -106,10 +113,11 @@ export class AnalyticsController {
   @ApiQuery({ name: 'startDate', required: false })
   @ApiQuery({ name: 'endDate', required: false })
   async getCampaignStats(
+    @CurrentUser() user: any,
     @Query('startDate') startDate?: string,
     @Query('endDate') endDate?: string,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     const range = this.getDateRange(startDate, endDate);
     return this.analyticsService.getCampaignStats(tenantId, range);
   }
@@ -125,10 +133,11 @@ export class AnalyticsController {
   })
   @ApiQuery({ name: 'days', required: false, type: Number })
   async getTrends(
+    @CurrentUser() user: any,
     @Param('metric') metric: 'conversations' | 'messages' | 'customers',
     @Query('days') days = 30,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.analyticsService.getTrends(tenantId, metric, days);
   }
 
@@ -150,13 +159,14 @@ export class AnalyticsController {
   @ApiQuery({ name: 'startDate', required: false })
   @ApiQuery({ name: 'endDate', required: false })
   async exportReport(
+    @CurrentUser() user: any,
     @Query('type') type: string,
     @Query('format') format: 'csv' | 'json' = 'json',
     @Query('startDate') startDate?: string,
     @Query('endDate') endDate?: string,
     @Res() res?: Response,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     const range = this.getDateRange(startDate, endDate);
 
     const result = await this.analyticsService.exportReport(
