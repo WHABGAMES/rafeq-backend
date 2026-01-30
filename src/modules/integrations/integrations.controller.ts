@@ -27,6 +27,7 @@ import {
 import { Response } from 'express';
 
 import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { IntegrationsService } from './integrations.service';
 import {
   ConnectShopifyDto,
@@ -137,8 +138,8 @@ export class IntegrationsController {
     summary: 'التكاملات النشطة',
     description: 'قائمة التكاملات المربوطة مع حسابك',
   })
-  async getActiveIntegrations() {
-    const tenantId = 'test-tenant-id';
+  async getActiveIntegrations(@CurrentUser() user: any) {
+    const tenantId = user.tenantId;
     return this.integrationsService.getActiveIntegrations(tenantId);
   }
 
@@ -150,8 +151,9 @@ export class IntegrationsController {
     summary: 'فصل تكامل',
     description: 'فصل الربط مع منصة',
   })
-  async disconnectIntegration(@Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = 'test-tenant-id';
+  async disconnectIntegration(@CurrentUser() user: any,
+    @Param('id', ParseUUIDPipe) id: string) {
+    const tenantId = user.tenantId;
     await this.integrationsService.disconnect(id, tenantId);
   }
 
@@ -167,7 +169,7 @@ export class IntegrationsController {
     description: 'بدء عملية OAuth للربط مع سلة',
   })
   async connectSalla(@Res() res: Response) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     const authUrl = await this.integrationsService.getSallaAuthUrl(tenantId);
     res.redirect(authUrl);
   }
@@ -178,6 +180,7 @@ export class IntegrationsController {
     description: 'معالجة رد سلة بعد الموافقة',
   })
   async sallaCallback(
+    @CurrentUser() user: any,
     @Query('code') code: string,
     @Query('state') state: string,
     @Res() res: Response,
@@ -199,11 +202,12 @@ export class IntegrationsController {
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
   async getSallaOrders(
+    @CurrentUser() user: any,
     @Query('status') status?: string,
     @Query('page') page = 1,
     @Query('limit') limit = 20,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.integrationsService.getSallaOrders(tenantId, { status, page, limit });
   }
 
@@ -212,10 +216,11 @@ export class IntegrationsController {
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'منتجات سلة' })
   async getSallaProducts(
+    @CurrentUser() user: any,
     @Query('page') page = 1,
     @Query('limit') limit = 20,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.integrationsService.getSallaProducts(tenantId, { page, limit });
   }
 
@@ -224,10 +229,11 @@ export class IntegrationsController {
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'عملاء سلة' })
   async getSallaCustomers(
+    @CurrentUser() user: any,
     @Query('page') page = 1,
     @Query('limit') limit = 20,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.integrationsService.getSallaCustomers(tenantId, { page, limit });
   }
 
@@ -236,10 +242,11 @@ export class IntegrationsController {
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'السلات المتروكة في سلة' })
   async getSallaAbandonedCarts(
+    @CurrentUser() user: any,
     @Query('page') page = 1,
     @Query('limit') limit = 20,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.integrationsService.getSallaAbandonedCarts(tenantId, { page, limit });
   }
 
@@ -255,7 +262,7 @@ export class IntegrationsController {
     description: 'بدء عملية OAuth للربط مع زد',
   })
   async connectZid(@Res() res: Response) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     const authUrl = await this.integrationsService.getZidAuthUrl(tenantId);
     res.redirect(authUrl);
   }
@@ -266,6 +273,7 @@ export class IntegrationsController {
     description: 'معالجة رد زد بعد الموافقة',
   })
   async zidCallback(
+    @CurrentUser() user: any,
     @Query('code') code: string,
     @Query('state') state: string,
     @Res() res: Response,
@@ -284,11 +292,12 @@ export class IntegrationsController {
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'طلبات زد' })
   async getZidOrders(
+    @CurrentUser() user: any,
     @Query('status') status?: string,
     @Query('page') page = 1,
     @Query('limit') limit = 20,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.integrationsService.getZidOrders(tenantId, { status, page, limit });
   }
 
@@ -297,10 +306,11 @@ export class IntegrationsController {
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'منتجات زد' })
   async getZidProducts(
+    @CurrentUser() user: any,
     @Query('page') page = 1,
     @Query('limit') limit = 20,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.integrationsService.getZidProducts(tenantId, { page, limit });
   }
 
@@ -309,10 +319,11 @@ export class IntegrationsController {
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'عملاء زد' })
   async getZidCustomers(
+    @CurrentUser() user: any,
     @Query('page') page = 1,
     @Query('limit') limit = 20,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.integrationsService.getZidCustomers(tenantId, { page, limit });
   }
 
@@ -327,8 +338,9 @@ export class IntegrationsController {
     summary: 'ربط شوبيفاي',
     description: 'ربط متجر شوبيفاي باستخدام API Key',
   })
-  async connectShopify(@Body() dto: ConnectShopifyDto) {
-    const tenantId = 'test-tenant-id';
+  async connectShopify(@CurrentUser() user: any,
+    @Body() dto: ConnectShopifyDto) {
+    const tenantId = user.tenantId;
     return this.integrationsService.connectShopify(tenantId, dto);
   }
 
@@ -337,10 +349,11 @@ export class IntegrationsController {
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'طلبات شوبيفاي' })
   async getShopifyOrders(
+    @CurrentUser() user: any,
     @Query('page') page = 1,
     @Query('limit') limit = 20,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.integrationsService.getShopifyOrders(tenantId, { page, limit });
   }
 
@@ -355,8 +368,9 @@ export class IntegrationsController {
     summary: 'ربط ووكومرس',
     description: 'ربط متجر ووكومرس باستخدام API Keys',
   })
-  async connectWooCommerce(@Body() dto: ConnectWooCommerceDto) {
-    const tenantId = 'test-tenant-id';
+  async connectWooCommerce(@CurrentUser() user: any,
+    @Body() dto: ConnectWooCommerceDto) {
+    const tenantId = user.tenantId;
     return this.integrationsService.connectWooCommerce(tenantId, dto);
   }
 
@@ -365,10 +379,11 @@ export class IntegrationsController {
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'طلبات ووكومرس' })
   async getWooCommerceOrders(
+    @CurrentUser() user: any,
     @Query('page') page = 1,
     @Query('limit') limit = 20,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.integrationsService.getWooCommerceOrders(tenantId, { page, limit });
   }
 
@@ -384,8 +399,9 @@ export class IntegrationsController {
     summary: 'مزامنة البيانات',
     description: 'مزامنة الطلبات والعملاء من المنصة',
   })
-  async syncData(@Param('platform') platform: string) {
-    const tenantId = 'test-tenant-id';
+  async syncData(@CurrentUser() user: any,
+    @Param('platform') platform: string) {
+    const tenantId = user.tenantId;
     return this.integrationsService.syncData(tenantId, platform);
   }
 
@@ -393,8 +409,9 @@ export class IntegrationsController {
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'حالة المزامنة' })
-  async getSyncStatus(@Param('platform') platform: string) {
-    const tenantId = 'test-tenant-id';
+  async getSyncStatus(@CurrentUser() user: any,
+    @Param('platform') platform: string) {
+    const tenantId = user.tenantId;
     return this.integrationsService.getSyncStatus(tenantId, platform);
   }
 }
