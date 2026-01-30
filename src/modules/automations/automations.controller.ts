@@ -49,6 +49,7 @@ import {
 } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AutomationsService } from './automations.service';
 import {
   CreateAutomationDto,
@@ -459,12 +460,13 @@ export class AutomationsController {
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
   async findAll(
+    @CurrentUser() user: any,
     @Query('status') status?: string,
     @Query('trigger') trigger?: string,
     @Query('page') page = 1,
     @Query('limit') limit = 20,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.automationsService.findAll(tenantId, { status, trigger }, { page, limit });
   }
 
@@ -473,65 +475,73 @@ export class AutomationsController {
     summary: 'إنشاء أتمتة',
     description: 'إنشاء أتمتة جديدة',
   })
-  async create(@Body() dto: CreateAutomationDto) {
-    const tenantId = 'test-tenant-id';
+  async create(@CurrentUser() user: any,
+    @Body() dto: CreateAutomationDto) {
+    const tenantId = user.tenantId;
     return this.automationsService.create(tenantId, dto);
   }
 
   @Get(':id')
   @ApiOperation({ summary: 'تفاصيل أتمتة' })
-  async findOne(@Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = 'test-tenant-id';
+  async findOne(@CurrentUser() user: any,
+    @Param('id', ParseUUIDPipe) id: string) {
+    const tenantId = user.tenantId;
     return this.automationsService.findById(id, tenantId);
   }
 
   @Put(':id')
   @ApiOperation({ summary: 'تحديث أتمتة' })
   async update(
+    @CurrentUser() user: any,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateAutomationDto,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.automationsService.update(id, tenantId, dto);
   }
 
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'حذف أتمتة' })
-  async remove(@Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = 'test-tenant-id';
+  async remove(@CurrentUser() user: any,
+    @Param('id', ParseUUIDPipe) id: string) {
+    const tenantId = user.tenantId;
     await this.automationsService.delete(id, tenantId);
   }
 
   @Post(':id/activate')
   @ApiOperation({ summary: 'تفعيل أتمتة' })
-  async activate(@Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = 'test-tenant-id';
+  async activate(@CurrentUser() user: any,
+    @Param('id', ParseUUIDPipe) id: string) {
+    const tenantId = user.tenantId;
     return this.automationsService.activate(id, tenantId);
   }
 
   @Post(':id/deactivate')
   @ApiOperation({ summary: 'تعطيل أتمتة' })
-  async deactivate(@Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = 'test-tenant-id';
+  async deactivate(@CurrentUser() user: any,
+    @Param('id', ParseUUIDPipe) id: string) {
+    const tenantId = user.tenantId;
     return this.automationsService.deactivate(id, tenantId);
   }
 
   @Get(':id/logs')
   @ApiOperation({ summary: 'سجلات الأتمتة' })
   async getLogs(
+    @CurrentUser() user: any,
     @Param('id', ParseUUIDPipe) id: string,
     @Query('page') page = 1,
     @Query('limit') limit = 50,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.automationsService.getLogs(id, tenantId, { page, limit });
   }
 
   @Get(':id/stats')
   @ApiOperation({ summary: 'إحصائيات الأتمتة' })
-  async getStats(@Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = 'test-tenant-id';
+  async getStats(@CurrentUser() user: any,
+    @Param('id', ParseUUIDPipe) id: string) {
+    const tenantId = user.tenantId;
     return this.automationsService.getStats(id, tenantId);
   }
 
@@ -545,42 +555,47 @@ export class AutomationsController {
     description: 'الـ Workflows هي سلاسل أتمتة متقدمة بخطوات متعددة',
   })
   async getWorkflows(
+    @CurrentUser() user: any,
     @Query('page') page = 1,
     @Query('limit') limit = 20,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.automationsService.getWorkflows(tenantId, { page, limit });
   }
 
   @Post('workflows')
   @ApiOperation({ summary: 'إنشاء Workflow' })
-  async createWorkflow(@Body() dto: CreateWorkflowDto) {
-    const tenantId = 'test-tenant-id';
+  async createWorkflow(@CurrentUser() user: any,
+    @Body() dto: CreateWorkflowDto) {
+    const tenantId = user.tenantId;
     return this.automationsService.createWorkflow(tenantId, dto);
   }
 
   @Get('workflows/:id')
   @ApiOperation({ summary: 'تفاصيل Workflow' })
-  async getWorkflow(@Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = 'test-tenant-id';
+  async getWorkflow(@CurrentUser() user: any,
+    @Param('id', ParseUUIDPipe) id: string) {
+    const tenantId = user.tenantId;
     return this.automationsService.getWorkflowById(id, tenantId);
   }
 
   @Put('workflows/:id')
   @ApiOperation({ summary: 'تحديث Workflow' })
   async updateWorkflow(
+    @CurrentUser() user: any,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateWorkflowDto,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.automationsService.updateWorkflow(id, tenantId, dto);
   }
 
   @Delete('workflows/:id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'حذف Workflow' })
-  async deleteWorkflow(@Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = 'test-tenant-id';
+  async deleteWorkflow(@CurrentUser() user: any,
+    @Param('id', ParseUUIDPipe) id: string) {
+    const tenantId = user.tenantId;
     await this.automationsService.deleteWorkflow(id, tenantId);
   }
 }
