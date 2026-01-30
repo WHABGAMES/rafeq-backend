@@ -14,12 +14,17 @@ import {
   Query,
   HttpCode,
   HttpStatus,
+  UseGuards,
 } from '@nestjs/common';
 import {
   ApiTags,
+  ApiBearerAuth,
   ApiOperation,
   ApiQuery,
 } from '@nestjs/swagger';
+
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
 import {
   InboxService,
@@ -29,6 +34,8 @@ import {
 } from './inbox.service';
 
 @ApiTags('Inbox')
+@ApiBearerAuth()
+@UseGuards(JwtAuthGuard)
 @Controller({
   path: 'inbox',
   version: '1',
@@ -50,6 +57,7 @@ export class InboxController {
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'limit', required: false, type: Number })
   async getConversations(
+    @CurrentUser() user: any,
     @Query('status') status?: ConversationStatus,
     @Query('channel') channel?: string,
     @Query('assignedTo') assignedTo?: string,
@@ -59,7 +67,7 @@ export class InboxController {
     @Query('page') page = 1,
     @Query('limit') limit = 20,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     
     const filters: InboxFilters = {
       status,
@@ -81,9 +89,9 @@ export class InboxController {
     summary: 'إحصائيات الـ Inbox',
     description: 'إجماليات المحادثات وأوقات الرد',
   })
-  async getStats() {
-    const tenantId = 'test-tenant-id';
-    const userId = 'test-user-id';
+  async getStats(@CurrentUser() user: any) {
+    const tenantId = user.tenantId;
+    const userId = user.id;
     return this.inboxService.getStats(tenantId, userId);
   }
 
@@ -92,8 +100,9 @@ export class InboxController {
     summary: 'تفاصيل محادثة',
     description: 'جلب محادثة مع الرسائل',
   })
-  async getConversation(@Param('id') id: string) {
-    const tenantId = 'test-tenant-id';
+  async getConversation(@CurrentUser() user: any,
+    @Param('id') id: string) {
+    const tenantId = user.tenantId;
     return this.inboxService.getConversation(id, tenantId);
   }
 
@@ -103,10 +112,11 @@ export class InboxController {
     summary: 'تعيين المحادثة لموظف',
   })
   async assign(
+    @CurrentUser() user: any,
     @Param('id') id: string,
     @Body() body: { agentId: string },
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.inboxService.assignToAgent(id, body.agentId, tenantId);
   }
 
@@ -115,8 +125,9 @@ export class InboxController {
   @ApiOperation({
     summary: 'إلغاء تعيين المحادثة',
   })
-  async unassign(@Param('id') id: string) {
-    const tenantId = 'test-tenant-id';
+  async unassign(@CurrentUser() user: any,
+    @Param('id') id: string) {
+    const tenantId = user.tenantId;
     return this.inboxService.unassign(id, tenantId);
   }
 
@@ -125,10 +136,11 @@ export class InboxController {
     summary: 'تغيير حالة المحادثة',
   })
   async updateStatus(
+    @CurrentUser() user: any,
     @Param('id') id: string,
     @Body() body: { status: ConversationStatus },
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.inboxService.updateStatus(id, body.status, tenantId);
   }
 
@@ -137,10 +149,11 @@ export class InboxController {
     summary: 'تغيير أولوية المحادثة',
   })
   async updatePriority(
+    @CurrentUser() user: any,
     @Param('id') id: string,
     @Body() body: { priority: ConversationPriority },
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.inboxService.updatePriority(id, body.priority, tenantId);
   }
 
@@ -150,10 +163,11 @@ export class InboxController {
     summary: 'إضافة tags للمحادثة',
   })
   async addTags(
+    @CurrentUser() user: any,
     @Param('id') id: string,
     @Body() body: { tags: string[] },
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.inboxService.addTags(id, body.tags, tenantId);
   }
 
@@ -162,8 +176,9 @@ export class InboxController {
   @ApiOperation({
     summary: 'وضع علامة مقروء',
   })
-  async markAsRead(@Param('id') id: string) {
-    const tenantId = 'test-tenant-id';
+  async markAsRead(@CurrentUser() user: any,
+    @Param('id') id: string) {
+    const tenantId = user.tenantId;
     await this.inboxService.markAsRead(id, tenantId);
   }
 
@@ -173,11 +188,12 @@ export class InboxController {
     summary: 'إضافة ملاحظة داخلية',
   })
   async addNote(
+    @CurrentUser() user: any,
     @Param('id') id: string,
     @Body() body: { note: string },
   ) {
-    const tenantId = 'test-tenant-id';
-    const userId = 'test-user-id';
+    const tenantId = user.tenantId;
+    const userId = user.id;
     return this.inboxService.addNote(id, body.note, userId, tenantId);
   }
 }
