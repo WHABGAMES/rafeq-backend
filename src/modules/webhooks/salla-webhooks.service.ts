@@ -204,13 +204,6 @@ export class SallaWebhooksService {
 
   /**
    * ✅ استخراج merchantId بشكل آمن من TypeScript
-   * 
-   * سلة قد ترسل الـ merchantId بطرق مختلفة:
-   * - payload.merchant (number)
-   * - payload.merchant.id
-   * - payload.data.merchant
-   * - payload.data.merchant.id
-   * - payload.data.store.merchant
    */
   private extractMerchantId(payload: SallaWebhookJobDto): number | null {
     try {
@@ -267,9 +260,39 @@ export class SallaWebhooksService {
       }
 
       return null;
-
     } catch (error) {
       this.logger.warn('Error extracting merchantId', {
+        error: error instanceof Error ? error.message : 'Unknown',
+      });
+      return null;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🏪 Store Lookup
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * ✅ البحث عن المتجر باستخدام merchantId
+   */
+  private async findStoreByMerchantId(merchantId: number): Promise<{
+    tenantId: string;
+    storeId: string;
+  } | null> {
+    try {
+      const store = await this.storesService.findByMerchantId(merchantId);
+      
+      if (store) {
+        this.logger.debug(`Found store: ${store.id} for merchant ${merchantId}`);
+        return {
+          tenantId: store.tenantId,
+          storeId: store.id,
+        };
+      }
+      
+      return null;
+    } catch (error) {
+      this.logger.error(`Error looking up store for merchant ${merchantId}`, {
         error: error instanceof Error ? error.message : 'Unknown',
       });
       return null;
@@ -280,58 +303,20 @@ export class SallaWebhooksService {
   // 🔐 Signature Verification
   // ═══════════════════════════════════════════════════════════════════════════════
 
+  /**
+   * تقييم حالة التوقيع
+   */
   private evaluateSignatureStatus(signature: string | undefined): boolean {
     if (!signature) {
-      this.logger.debug('Webhook received without signature');
       return false;
     }
+    // التحقق الفعلي يتم في Controller
+    // هنا نتحقق فقط من وجود التوقيع
     return true;
   }
 
-  async getStoreSecret(merchantId: number): Promise<string | undefined> {
-    try {
-      const store = await this.storesService.findByMerchantId(merchantId);
-      if (!store) return undefined;
-      
-      // webhookSecret مخفي بـ select: false، نحتاج query خاص
-      // TODO: إضافة method في StoresService للحصول على secret
-      return undefined;
-    } catch (error) {
-      this.logger.error(`Error getting store secret for merchant ${merchantId}`);
-      return undefined;
-    }
-  }
-
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 🏪 Store Lookup
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  private async findStoreByMerchantId(merchantId: number): Promise<{
-    tenantId: string;
-    storeId: string;
-  } | null> {
-    try {
-      const store = await this.storesService.findByMerchantId(merchantId);
-      
-      if (store) {
-        return {
-          tenantId: store.tenantId,
-          storeId: store.id,
-        };
-      }
-      
-      return null;
-      
-    } catch (error) {
-      this.logger.error(`Error looking up store for merchant ${merchantId}`, {
-        error: error instanceof Error ? error.message : 'Unknown',
-      });
-      return null;
-    }
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 📊 Status & Metrics
+  // 🔄 Duplicate Check
   // ═══════════════════════════════════════════════════════════════════════════════
 
   async checkDuplicate(idempotencyKey: string): Promise<boolean> {
@@ -339,8 +324,28 @@ export class SallaWebhooksService {
       where: { idempotencyKey },
       select: ['id'],
     });
+
     return !!existing;
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔑 Store Secret
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async getStoreSecret(merchantId: number): Promise<string | undefined> {
+    const store = await this.storesService.findByMerchantId(merchantId);
+    
+    if (store) {
+      // TODO: إرجاع webhookSecret من الـ store إذا كان موجوداً
+      // return store.webhookSecret;
+    }
+    
+    return undefined;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 📊 Metrics
+  // ═══════════════════════════════════════════════════════════════════════════════
 
   getMetrics(): WebhookMetrics {
     return { ...this.metrics };
