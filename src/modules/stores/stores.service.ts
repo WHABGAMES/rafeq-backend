@@ -1,6 +1,8 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Stores Service                             ║
+ * ║                                                                                ║
+ * ║  خدمة إدارة المتاجر (سلة + زد)                                                  ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -19,6 +21,7 @@ import { Store, StoreStatus, StorePlatform } from './entities/store.entity';
 
 // Services
 import { SallaOAuthService, SallaMerchantInfo } from './salla-oauth.service';
+import { ZidOAuthService, ZidStoreInfo } from './zid-oauth.service';
 
 interface ConnectSallaStoreData {
   tokens: {
@@ -27,6 +30,15 @@ interface ConnectSallaStoreData {
     expiresAt: Date;
   };
   merchantInfo: SallaMerchantInfo;
+}
+
+interface ConnectZidStoreData {
+  tokens: {
+    accessToken: string;
+    refreshToken: string;
+    expiresAt: Date;
+  };
+  storeInfo: ZidStoreInfo;
 }
 
 @Injectable()
@@ -38,8 +50,13 @@ export class StoresService {
     private readonly storeRepository: Repository<Store>,
 
     private readonly sallaOAuthService: SallaOAuthService,
+    private readonly zidOAuthService: ZidOAuthService,
     private readonly eventEmitter: EventEmitter2,
   ) {}
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🛒 Salla Store Connection
+  // ═══════════════════════════════════════════════════════════════════════════════
 
   async connectSallaStore(
     tenantId: string,
@@ -53,7 +70,7 @@ export class StoresService {
 
     if (existingStore) {
       if (existingStore.tenantId === tenantId) {
-        return this.updateStoreConnection(existingStore, tokens, merchantInfo);
+        return this.updateSallaStoreConnection(existingStore, tokens, merchantInfo);
       }
       throw new ConflictException('This store is already connected to another account');
     }
@@ -97,7 +114,7 @@ export class StoresService {
       merchantId: merchantInfo.id,
     });
 
-    this.logger.log(`Store connected: ${savedStore.name}`, {
+    this.logger.log(`Salla store connected: ${savedStore.name}`, {
       storeId: savedStore.id,
       tenantId,
       merchantId: merchantInfo.id,
@@ -106,7 +123,7 @@ export class StoresService {
     return savedStore;
   }
 
-  private async updateStoreConnection(
+  private async updateSallaStoreConnection(
     store: Store,
     tokens: ConnectSallaStoreData['tokens'],
     merchantInfo: SallaMerchantInfo,
@@ -127,6 +144,103 @@ export class StoresService {
 
     return this.storeRepository.save(store);
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🏪 Zid Store Connection
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async connectZidStore(
+    tenantId: string,
+    data: ConnectZidStoreData,
+  ): Promise<Store> {
+    const { tokens, storeInfo } = data;
+
+    // Check if store already connected
+    const existingStore = await this.storeRepository.findOne({
+      where: { zidStoreId: storeInfo.id },
+    });
+
+    if (existingStore) {
+      if (existingStore.tenantId === tenantId) {
+        return this.updateZidStoreConnection(existingStore, tokens, storeInfo);
+      }
+      throw new ConflictException('هذا المتجر مربوط بحساب آخر');
+    }
+
+    const store = this.storeRepository.create({
+      tenantId,
+      name: storeInfo.name,
+      platform: StorePlatform.ZID,
+      status: StoreStatus.ACTIVE,
+      zidStoreId: storeInfo.id,
+      zidStoreUuid: storeInfo.uuid,
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      tokenExpiresAt: tokens.expiresAt,
+      zidStoreName: storeInfo.name,
+      zidEmail: storeInfo.email,
+      zidMobile: storeInfo.mobile,
+      zidDomain: storeInfo.url,
+      zidLogo: storeInfo.logo,
+      zidCurrency: storeInfo.currency,
+      zidLanguage: storeInfo.language,
+      settings: {
+        autoReply: true,
+        welcomeMessageEnabled: true,
+        orderNotificationsEnabled: true,
+      },
+      subscribedEvents: [
+        'order.created',
+        'customer.created',
+        'order.status.updated',
+      ],
+      lastSyncedAt: new Date(),
+    });
+
+    const savedStore = await this.storeRepository.save(store);
+
+    this.eventEmitter.emit('store.connected', {
+      storeId: savedStore.id,
+      tenantId,
+      platform: StorePlatform.ZID,
+      zidStoreId: storeInfo.id,
+    });
+
+    this.logger.log(`Zid store connected: ${savedStore.name}`, {
+      storeId: savedStore.id,
+      tenantId,
+      zidStoreId: storeInfo.id,
+    });
+
+    return savedStore;
+  }
+
+  private async updateZidStoreConnection(
+    store: Store,
+    tokens: ConnectZidStoreData['tokens'],
+    storeInfo: ZidStoreInfo,
+  ): Promise<Store> {
+    store.accessToken = tokens.accessToken;
+    store.refreshToken = tokens.refreshToken;
+    store.tokenExpiresAt = tokens.expiresAt;
+    store.status = StoreStatus.ACTIVE;
+    store.lastSyncedAt = new Date();
+    store.consecutiveErrors = 0;
+    store.lastError = undefined;
+    store.zidStoreName = storeInfo.name;
+    store.zidEmail = storeInfo.email;
+    store.zidMobile = storeInfo.mobile;
+    store.zidDomain = storeInfo.url;
+    store.zidLogo = storeInfo.logo;
+    store.zidCurrency = storeInfo.currency;
+    store.zidLanguage = storeInfo.language;
+
+    return this.storeRepository.save(store);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 📊 Common Operations
+  // ═══════════════════════════════════════════════════════════════════════════════
 
   async findByTenant(tenantId: string): Promise<Store[]> {
     return this.storeRepository.find({
@@ -153,6 +267,12 @@ export class StoresService {
     });
   }
 
+  async findByZidStoreId(zidStoreId: string): Promise<Store | null> {
+    return this.storeRepository.findOne({
+      where: { zidStoreId },
+    });
+  }
+
   async updateSettings(
     tenantId: string,
     storeId: string,
@@ -173,14 +293,23 @@ export class StoresService {
       return store.accessToken;
     }
 
-    this.logger.log(`Refreshing token for store: ${store.id}`);
+    this.logger.log(`Refreshing token for store: ${store.id} (${store.platform})`);
 
     try {
-      const tokens = await this.sallaOAuthService.refreshAccessToken(store.refreshToken!);
+      let tokens;
+
+      if (store.platform === StorePlatform.SALLA) {
+        tokens = await this.sallaOAuthService.refreshAccessToken(store.refreshToken!);
+        store.tokenExpiresAt = this.sallaOAuthService.calculateTokenExpiry(tokens.expires_in);
+      } else if (store.platform === StorePlatform.ZID) {
+        tokens = await this.zidOAuthService.refreshAccessToken(store.refreshToken!);
+        store.tokenExpiresAt = this.zidOAuthService.calculateTokenExpiry(tokens.expires_in);
+      } else {
+        throw new Error(`Unsupported platform: ${store.platform}`);
+      }
 
       store.accessToken = tokens.access_token;
       store.refreshToken = tokens.refresh_token;
-      store.tokenExpiresAt = this.sallaOAuthService.calculateTokenExpiry(tokens.expires_in);
       store.lastTokenRefreshAt = new Date();
       store.consecutiveErrors = 0;
 
@@ -217,6 +346,7 @@ export class StoresService {
       tenantId,
       platform: store.platform,
       merchantId: store.sallaMerchantId,
+      zidStoreId: store.zidStoreId,
     });
 
     this.logger.log(`Store disconnected: ${store.id}`);
