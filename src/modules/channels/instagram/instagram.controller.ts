@@ -46,7 +46,10 @@ export class InstagramController {
     summary: 'ربط Instagram',
     description: 'بدء عملية OAuth للربط مع Instagram',
   })
-  async connect(@Res() res: Response) {
+  async connect(
+    @CurrentUser() user: any,
+    @Res() res: Response,
+  ) {
     const tenantId = user.tenantId;
     const authUrl = await this.instagramService.getAuthUrl(tenantId);
     res.redirect(authUrl);
@@ -58,7 +61,7 @@ export class InstagramController {
     description: 'معالجة رد Instagram بعد الموافقة',
   })
   async callback(
-    @CurrentUser() user: any,
+    @CurrentUser() _user: any,
     @Query('code') code: string,
     @Query('state') state: string,
     @Res() res: Response,
@@ -152,7 +155,7 @@ export class InstagramController {
     summary: 'استقبال Webhook',
     description: 'استقبال الرسائل والأحداث من Instagram',
   })
-  async handleWebhook(@CurrentUser() user: any,
+  async handleWebhook(@CurrentUser() _user: any,
     @Body() body: unknown) {
     await this.instagramService.handleWebhook(body);
     return 'OK';
