@@ -145,7 +145,7 @@ export class CampaignsController {
     summary: 'إيقاف الحملة مؤقتاً',
     description: 'إيقاف حملة نشطة مؤقتاً',
   })
-  async pause(@CurrentUser() user: any,
+  async pause(@CurrentUser() _user: any,
     @Param('id') id: string) {
     return this.campaignsService.pause(id);
   }
@@ -160,7 +160,7 @@ export class CampaignsController {
     summary: 'استئناف الحملة',
     description: 'استئناف حملة متوقفة مؤقتاً',
   })
-  async resume(@CurrentUser() user: any,
+  async resume(@CurrentUser() _user: any,
     @Param('id') id: string) {
     return this.campaignsService.resume(id);
   }
@@ -175,7 +175,7 @@ export class CampaignsController {
     summary: 'إلغاء الحملة',
     description: 'إلغاء حملة نهائياً',
   })
-  async cancel(@CurrentUser() user: any,
+  async cancel(@CurrentUser() _user: any,
     @Param('id') id: string) {
     return this.campaignsService.cancel(id);
   }
