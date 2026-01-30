@@ -34,6 +34,7 @@ import {
 } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
+import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { EmailService } from './email.service';
 
 @ApiTags('Channels - Email')
@@ -112,6 +113,7 @@ export class EmailController {
     description: 'ربط خدمة البريد الإلكتروني',
   })
   async connect(
+    @CurrentUser() user: any,
     @Body() body: {
       provider: string;
       // SMTP
@@ -128,7 +130,7 @@ export class EmailController {
       fromName: string;
     },
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.emailService.connect(tenantId, body);
   }
 
@@ -140,8 +142,9 @@ export class EmailController {
     summary: 'اختبار الإعدادات',
     description: 'إرسال بريد اختباري للتحقق من الإعدادات',
   })
-  async testConnection(@Body() body: { email: string }) {
-    const tenantId = 'test-tenant-id';
+  async testConnection(@CurrentUser() user: any,
+    @Body() body: { email: string }) {
+    const tenantId = user.tenantId;
     return this.emailService.testConnection(tenantId, body.email);
   }
 
@@ -152,8 +155,8 @@ export class EmailController {
     summary: 'حالة الاتصال',
     description: 'التحقق من حالة اتصال البريد',
   })
-  async getStatus() {
-    const tenantId = 'test-tenant-id';
+  async getStatus(@CurrentUser() user: any) {
+    const tenantId = user.tenantId;
     return this.emailService.getStatus(tenantId);
   }
 
@@ -165,8 +168,8 @@ export class EmailController {
     summary: 'فصل البريد',
     description: 'فصل الربط مع خدمة البريد',
   })
-  async disconnect() {
-    const tenantId = 'test-tenant-id';
+  async disconnect(@CurrentUser() user: any) {
+    const tenantId = user.tenantId;
     await this.emailService.disconnect(tenantId);
   }
 
@@ -182,6 +185,7 @@ export class EmailController {
     description: 'إرسال بريد إلكتروني',
   })
   async sendEmail(
+    @CurrentUser() user: any,
     @Body() body: {
       to: string | string[];
       subject: string;
@@ -199,7 +203,7 @@ export class EmailController {
       replyTo?: string;
     },
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.emailService.send(tenantId, body);
   }
 
@@ -211,6 +215,7 @@ export class EmailController {
     description: 'إرسال بريد لعدة مستلمين',
   })
   async sendBulk(
+    @CurrentUser() user: any,
     @Body() body: {
       recipients: Array<{
         email: string;
@@ -223,7 +228,7 @@ export class EmailController {
       templateId?: string;
     },
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.emailService.sendBulk(tenantId, body);
   }
 
@@ -238,8 +243,8 @@ export class EmailController {
     summary: 'قوالب البريد',
     description: 'قوالب البريد الجاهزة',
   })
-  async getTemplates() {
-    const tenantId = 'test-tenant-id';
+  async getTemplates(@CurrentUser() user: any) {
+    const tenantId = user.tenantId;
     return this.emailService.getTemplates(tenantId);
   }
 
@@ -255,12 +260,13 @@ export class EmailController {
     description: 'تقارير البريد المرسل',
   })
   async getReports(
+    @CurrentUser() user: any,
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('page') page = 1,
     @Query('limit') limit = 50,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.emailService.getReports(tenantId, { from, to, page, limit });
   }
 }
