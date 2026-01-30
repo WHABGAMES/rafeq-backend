@@ -39,6 +39,7 @@ import {
 } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AIService } from './ai.service';
 
 /**
@@ -116,8 +117,8 @@ export class AiController {
     summary: 'جلب إعدادات البوت',
     description: 'جلب جميع إعدادات الذكاء الاصطناعي للمتجر',
   })
-  async getSettings() {
-    const tenantId = 'test-tenant-id';
+  async getSettings(@CurrentUser() user: any) {
+    const tenantId = user.tenantId;
     return this.aiService.getSettings(tenantId);
   }
 
@@ -127,8 +128,9 @@ export class AiController {
     summary: 'تحديث إعدادات البوت',
     description: 'تحديث إعدادات الذكاء الاصطناعي',
   })
-  async updateSettings(@Body() dto: UpdateAISettingsDto) {
-    const tenantId = 'test-tenant-id';
+  async updateSettings(@CurrentUser() user: any,
+    @Body() dto: UpdateAISettingsDto) {
+    const tenantId = user.tenantId;
     return this.aiService.updateSettings(tenantId, dto);
   }
 
@@ -145,10 +147,11 @@ export class AiController {
   @ApiQuery({ name: 'category', required: false })
   @ApiQuery({ name: 'search', required: false })
   async getKnowledge(
+    @CurrentUser() user: any,
     @Query('category') category?: string,
     @Query('search') search?: string,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.aiService.getKnowledge(tenantId, { category, search });
   }
 
@@ -158,8 +161,9 @@ export class AiController {
     summary: 'إضافة معرفة',
     description: 'إضافة معلومات جديدة لقاعدة معرفة البوت',
   })
-  async addKnowledge(@Body() dto: AddKnowledgeDto) {
-    const tenantId = 'test-tenant-id';
+  async addKnowledge(@CurrentUser() user: any,
+    @Body() dto: AddKnowledgeDto) {
+    const tenantId = user.tenantId;
     return this.aiService.addKnowledge(tenantId, dto);
   }
 
@@ -170,8 +174,9 @@ export class AiController {
     summary: 'حذف معرفة',
     description: 'حذف معلومة من قاعدة المعرفة',
   })
-  async deleteKnowledge(@Param('id') id: string) {
-    const tenantId = 'test-tenant-id';
+  async deleteKnowledge(@CurrentUser() user: any,
+    @Param('id') id: string) {
+    const tenantId = user.tenantId;
     return this.aiService.deleteKnowledge(tenantId, id);
   }
 
@@ -185,8 +190,9 @@ export class AiController {
     summary: 'تدريب البوت',
     description: 'تدريب البوت على أسئلة وأجوبة جديدة',
   })
-  async trainBot(@Body() dto: TrainBotDto) {
-    const tenantId = 'test-tenant-id';
+  async trainBot(@CurrentUser() user: any,
+    @Body() dto: TrainBotDto) {
+    const tenantId = user.tenantId;
     return this.aiService.trainBot(tenantId, dto);
   }
 
@@ -196,8 +202,8 @@ export class AiController {
     summary: 'حالة التدريب',
     description: 'جلب حالة عملية تدريب البوت',
   })
-  async getTrainingStatus() {
-    const tenantId = 'test-tenant-id';
+  async getTrainingStatus(@CurrentUser() user: any) {
+    const tenantId = user.tenantId;
     return this.aiService.getTrainingStatus(tenantId);
   }
 
@@ -212,8 +218,9 @@ export class AiController {
     description: 'تحليلات أداء البوت',
   })
   @ApiQuery({ name: 'period', required: false, enum: ['day', 'week', 'month'] })
-  async getAnalytics(@Query('period') period = 'week') {
-    const tenantId = 'test-tenant-id';
+  async getAnalytics(@CurrentUser() user: any,
+    @Query('period') period = 'week') {
+    const tenantId = user.tenantId;
     return this.aiService.getAnalytics(tenantId, period);
   }
 
@@ -228,8 +235,9 @@ export class AiController {
     description: 'يحلل الرسالة ويولّد رداً مناسباً باستخدام الـ AI',
   })
   @ApiResponse({ status: 200, description: 'الرد المولّد' })
-  async respond(@Body() dto: RespondDto) {
-    const tenantId = 'test-tenant-id';
+  async respond(@CurrentUser() user: any,
+    @Body() dto: RespondDto) {
+    const tenantId = user.tenantId;
     
     const response = await this.aiService.generateResponse({
       tenantId,
@@ -251,7 +259,8 @@ export class AiController {
     summary: 'تحليل رسالة',
     description: 'تحليل النية (intent) والمشاعر (sentiment) للرسالة',
   })
-  async analyze(@Body() dto: AnalyzeDto) {
+  async analyze(@CurrentUser() user: any,
+    @Body() dto: AnalyzeDto) {
     const analysis = await this.aiService.analyzeMessage(dto.message, dto.language);
     return analysis;
   }
@@ -265,8 +274,8 @@ export class AiController {
     summary: 'إحصائيات الـ AI',
     description: 'عدد الردود، نسبة النجاح، التحويلات للموظفين',
   })
-  async getStats() {
-    const tenantId = 'test-tenant-id';
+  async getStats(@CurrentUser() user: any) {
+    const tenantId = user.tenantId;
     return this.aiService.getStats(tenantId);
   }
 
@@ -280,7 +289,8 @@ export class AiController {
     summary: 'اختبار رد الـ AI',
     description: 'اختبار كيف سيرد الـ AI على رسالة معينة (بدون حفظ)',
   })
-  async testResponse(@Body() dto: TestResponseDto) {
+  async testResponse(@CurrentUser() user: any,
+    @Body() dto: TestResponseDto) {
     const response = await this.aiService.testResponse(
       dto.message,
       dto.storeContext,
