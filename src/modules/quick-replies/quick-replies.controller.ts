@@ -38,6 +38,7 @@ import {
 } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { QuickRepliesService } from './quick-replies.service';
 import { CreateQuickReplyDto, UpdateQuickReplyDto } from './dto';
 
@@ -60,8 +61,8 @@ export class QuickRepliesController {
     summary: 'فئات الردود',
     description: 'جلب جميع فئات الردود السريعة',
   })
-  async getCategories() {
-    const tenantId = 'test-tenant-id';
+  async getCategories(@CurrentUser() user: any) {
+    const tenantId = user.tenantId;
     return this.quickRepliesService.getCategories(tenantId);
   }
 
@@ -70,16 +71,18 @@ export class QuickRepliesController {
     summary: 'إنشاء فئة',
     description: 'إنشاء فئة جديدة للردود السريعة',
   })
-  async createCategory(@Body() body: { name: string; icon?: string }) {
-    const tenantId = 'test-tenant-id';
+  async createCategory(@CurrentUser() user: any,
+    @Body() body: { name: string; icon?: string }) {
+    const tenantId = user.tenantId;
     return this.quickRepliesService.createCategory(tenantId, body);
   }
 
   @Delete('categories/:id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'حذف فئة' })
-  async deleteCategory(@Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = 'test-tenant-id';
+  async deleteCategory(@CurrentUser() user: any,
+    @Param('id', ParseUUIDPipe) id: string) {
+    const tenantId = user.tenantId;
     await this.quickRepliesService.deleteCategory(id, tenantId);
   }
 
@@ -97,12 +100,13 @@ export class QuickRepliesController {
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
   async findAll(
+    @CurrentUser() user: any,
     @Query('category') category?: string,
     @Query('search') search?: string,
     @Query('page') page = 1,
     @Query('limit') limit = 50,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.quickRepliesService.findAll(tenantId, { category, search, page, limit });
   }
 
@@ -112,8 +116,9 @@ export class QuickRepliesController {
     description: 'بحث سريع في الردود باستخدام الاختصار أو المحتوى',
   })
   @ApiQuery({ name: 'q', required: true, description: 'كلمة البحث أو الاختصار' })
-  async search(@Query('q') query: string) {
-    const tenantId = 'test-tenant-id';
+  async search(@CurrentUser() user: any,
+    @Query('q') query: string) {
+    const tenantId = user.tenantId;
     return this.quickRepliesService.search(tenantId, query);
   }
 
@@ -122,34 +127,38 @@ export class QuickRepliesController {
     summary: 'إنشاء رد سريع',
     description: 'إنشاء رد سريع جديد',
   })
-  async create(@Body() dto: CreateQuickReplyDto) {
-    const tenantId = 'test-tenant-id';
-    const userId = 'test-user-id';
+  async create(@CurrentUser() user: any,
+    @Body() dto: CreateQuickReplyDto) {
+    const tenantId = user.tenantId;
+    const userId = user.id;
     return this.quickRepliesService.create(tenantId, userId, dto);
   }
 
   @Get(':id')
   @ApiOperation({ summary: 'تفاصيل رد سريع' })
-  async findOne(@Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = 'test-tenant-id';
+  async findOne(@CurrentUser() user: any,
+    @Param('id', ParseUUIDPipe) id: string) {
+    const tenantId = user.tenantId;
     return this.quickRepliesService.findById(id, tenantId);
   }
 
   @Put(':id')
   @ApiOperation({ summary: 'تحديث رد سريع' })
   async update(
+    @CurrentUser() user: any,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateQuickReplyDto,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.quickRepliesService.update(id, tenantId, dto);
   }
 
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'حذف رد سريع' })
-  async remove(@Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = 'test-tenant-id';
+  async remove(@CurrentUser() user: any,
+    @Param('id', ParseUUIDPipe) id: string) {
+    const tenantId = user.tenantId;
     await this.quickRepliesService.delete(id, tenantId);
   }
 
@@ -163,9 +172,10 @@ export class QuickRepliesController {
     summary: 'تسجيل استخدام',
     description: 'تسجيل استخدام رد سريع (لتحسين الترتيب)',
   })
-  async recordUsage(@Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = 'test-tenant-id';
-    const userId = 'test-user-id';
+  async recordUsage(@CurrentUser() user: any,
+    @Param('id', ParseUUIDPipe) id: string) {
+    const tenantId = user.tenantId;
+    const userId = user.id;
     return this.quickRepliesService.recordUsage(id, tenantId, userId);
   }
 
@@ -174,8 +184,9 @@ export class QuickRepliesController {
     summary: 'الردود الأكثر استخداماً',
     description: 'قائمة الردود السريعة الأكثر استخداماً',
   })
-  async getPopular(@Query('limit') limit = 10) {
-    const tenantId = 'test-tenant-id';
+  async getPopular(@CurrentUser() user: any,
+    @Query('limit') limit = 10) {
+    const tenantId = user.tenantId;
     return this.quickRepliesService.getPopular(tenantId, limit);
   }
 }
