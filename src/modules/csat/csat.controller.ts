@@ -197,7 +197,7 @@ export class CsatController {
     description: 'إرسال تقييم من العميل (بدون تسجيل دخول)',
   })
   async submitSurvey(
-    @CurrentUser() user: any,
+    @CurrentUser() _user: any,
     @Param('token') token: string,
     @Body() dto: SubmitCsatDto,
   ) {
