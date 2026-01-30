@@ -259,7 +259,7 @@ export class AiController {
     summary: 'تحليل رسالة',
     description: 'تحليل النية (intent) والمشاعر (sentiment) للرسالة',
   })
-  async analyze(@CurrentUser() user: any,
+  async analyze(@CurrentUser() _user: any,
     @Body() dto: AnalyzeDto) {
     const analysis = await this.aiService.analyzeMessage(dto.message, dto.language);
     return analysis;
@@ -289,7 +289,7 @@ export class AiController {
     summary: 'اختبار رد الـ AI',
     description: 'اختبار كيف سيرد الـ AI على رسالة معينة (بدون حفظ)',
   })
-  async testResponse(@CurrentUser() user: any,
+  async testResponse(@CurrentUser() _user: any,
     @Body() dto: TestResponseDto) {
     const response = await this.aiService.testResponse(
       dto.message,
