@@ -2,21 +2,14 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Webhook Event Entity                       ║
  * ║                                                                                ║
- * ║  📌 هذا الـ Entity يمثل أحداث الـ Webhooks المستلمة                            ║
+ * ║  جدول لحفظ جميع الـ Webhook Events الواردة                                      ║
  * ║                                                                                ║
- * ║  🎯 الغرض الأساسي: Idempotency (عدم التكرار)                                  ║
- * ║  ═══════════════════════════════════════════════                               ║
+ * ║  ⚠️ مهم: هذا الملف يجب أن يطابق:                                              ║
+ * ║     /src/modules/webhooks/entities/webhook-event.entity.ts                    ║
  * ║                                                                                ║
- * ║  المشكلة:                                                                      ║
- * ║  - منصة سلة قد ترسل نفس الـ webhook أكثر من مرة                               ║
- * ║  - إذا فشل التوصيل، سلة تعيد المحاولة                                         ║
- * ║  - بدون Idempotency، قد نرسل للعميل نفس الرسالة مرتين!                        ║
- * ║                                                                                ║
- * ║  الحل:                                                                         ║
- * ║  - نخزن كل webhook نستلمه                                                      ║
- * ║  - قبل المعالجة، نتحقق هل سبق معالجته                                          ║
- * ║  - إذا نعم → نتجاهله (نرد 200 OK فقط)                                          ║
- * ║  - إذا لا → نعالجه ونخزنه                                                      ║
+ * ║  📌 ملاحظة: لا نستخدم event_id كعمود مطلوب لأن:                               ║
+ * ║     - بعض الـ webhooks (مثل test webhooks) لا ترسل event_id                   ║
+ * ║     - نستخدم idempotency_key بدلاً منه للتحقق من التكرار                       ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -28,171 +21,185 @@ import {
   JoinColumn,
 } from 'typeorm';
 import { BaseEntity } from './base.entity';
+import { Tenant } from './tenant.entity';
 import { Store } from './store.entity';
 
 /**
- * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║                         🏷️ TYPES & ENUMS                                       ║
- * ╚═══════════════════════════════════════════════════════════════════════════════╝
- */
-
-/**
- * 📌 WebhookSource - مصدر الـ Webhook
+ * مصدر الـ Webhook
  */
 export enum WebhookSource {
-  /** من منصة سلة */
   SALLA = 'salla',
-  /** من WhatsApp */
   WHATSAPP = 'whatsapp',
-  /** من Instagram */
   INSTAGRAM = 'instagram',
-  /** من Discord */
   DISCORD = 'discord',
-  /** من Stripe */
   STRIPE = 'stripe',
-  /** من Moyasar */
   MOYASAR = 'moyasar',
+  CUSTOM = 'custom',
 }
 
 /**
- * 📌 WebhookStatus - حالة معالجة الـ Webhook
+ * حالة معالجة الـ Webhook
  */
 export enum WebhookStatus {
-  /** مستلم - لم يُعالج بعد */
-  RECEIVED = 'received',
+  /** استُقبل وينتظر المعالجة */
+  PENDING = 'pending',
   /** قيد المعالجة */
   PROCESSING = 'processing',
   /** تمت المعالجة بنجاح */
   PROCESSED = 'processed',
   /** فشلت المعالجة */
   FAILED = 'failed',
-  /** تم تخطيه (مكرر أو غير مطلوب) */
+  /** تم تخطيه (مكرر أو غير مهم) */
   SKIPPED = 'skipped',
-  /** تم تأجيله (سيُعالج لاحقاً) */
-  DEFERRED = 'deferred',
+  /** في انتظار إعادة المحاولة */
+  RETRY_PENDING = 'retry_pending',
 }
 
 /**
- * 📌 ProcessingResult - نتيجة المعالجة
+ * أنواع أحداث سلة الرئيسية
  */
-export interface ProcessingResult {
-  /** هل نجحت المعالجة */
-  success: boolean;
-  /** الإجراءات التي تمت */
-  actions?: string[];
-  /** رسائل أُرسلت */
-  messagesSent?: number;
-  /** الأخطاء (إن وجدت) */
-  errors?: string[];
-  /** وقت المعالجة بالمللي ثانية */
-  processingTimeMs?: number;
+export enum SallaEventType {
+  // Order Events
+  ORDER_CREATED = 'order.created',
+  ORDER_UPDATED = 'order.updated',
+  ORDER_STATUS_UPDATED = 'order.status.updated',
+  ORDER_PAYMENT_UPDATED = 'order.payment.updated',
+  ORDER_CANCELLED = 'order.cancelled',
+  ORDER_REFUNDED = 'order.refunded',
+  ORDER_SHIPPED = 'order.shipped',
+  ORDER_DELIVERED = 'order.delivered',
+
+  // Customer Events
+  CUSTOMER_CREATED = 'customer.created',
+  CUSTOMER_UPDATED = 'customer.updated',
+  CUSTOMER_LOGIN = 'customer.login',
+  CUSTOMER_OTP_REQUEST = 'customer.otp.request',
+
+  // Product Events
+  PRODUCT_CREATED = 'product.created',
+  PRODUCT_UPDATED = 'product.updated',
+  PRODUCT_DELETED = 'product.deleted',
+  PRODUCT_AVAILABLE = 'product.available',
+  PRODUCT_QUANTITY_LOW = 'product.quantity.low',
+
+  // Cart Events
+  ABANDONED_CART = 'abandoned.cart',
+  CART_UPDATED = 'cart.updated',
+
+  // Shipment Events
+  SHIPMENT_CREATED = 'shipment.created',
+  SHIPMENT_CREATING = 'shipment.creating',
+  SHIPMENT_CANCELLED = 'shipment.cancelled',
+  SHIPMENT_RETURN_CREATING = 'shipment.return.creating',
+  SHIPMENT_RETURN_CREATED = 'shipment.return.created',
+  SHIPMENT_RETURN_CANCELLED = 'shipment.return.cancelled',
+
+  // Tracking Events
+  TRACKING_REFRESHED = 'tracking.refreshed',
+
+  // Review Events
+  REVIEW_ADDED = 'review.added',
+
+  // Coupon Events
+  COUPON_APPLIED = 'coupon.applied',
+
+  // Store Events
+  STORE_BRANCH_SETDEFAULT = 'store.branch.setDefault',
+  STOREBRANCH_CREATED = 'storebranch.created',
+  STOREBRANCH_UPDATED = 'storebranch.updated',
+  STOREBRANCH_DELETED = 'storebranch.deleted',
+  STOREBRANCH_ACTIVATED = 'storebranch.activated',
+
+  // App Events
+  APP_INSTALLED = 'app.installed',
+  APP_UNINSTALLED = 'app.uninstalled',
+  APP_TOKEN_CREATED = 'app.token.created',
+  APP_STORE_AUTHORIZE = 'app.store.authorize',
+
+  // Invoice Events
+  INVOICE_CREATED = 'invoice.created',
+
+  // Specialoffer Events
+  SPECIALOFFER_CREATED = 'specialoffer.created',
+  SPECIALOFFER_UPDATED = 'specialoffer.updated',
 }
 
-/**
- * 📌 WebhookMetadata - بيانات إضافية
- */
-export interface WebhookMetadata {
-  /** رقم المحاولة */
-  attemptNumber?: number;
-  /** IP المرسل */
-  sourceIp?: string;
-  /** Headers مهمة */
-  headers?: Record<string, string>;
-  /** توقيع الـ Webhook */
-  signature?: string;
-  /** هل تم التحقق من التوقيع */
-  signatureVerified?: boolean;
-  /** ملاحظات */
-  notes?: string;
-}
-
-/**
- * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║                         🗃️ WEBHOOK EVENT ENTITY                                ║
- * ╚═══════════════════════════════════════════════════════════════════════════════╝
- * 
- * 📊 الجدول: webhook_events
- * 
- * 🔑 الفهارس:
- * - event_id (UNIQUE) → للتحقق من التكرار
- * - store_id + event_type → للبحث حسب المتجر والنوع
- * - status → للبحث عن الفاشلة لإعادة المحاولة
- * - created_at → للتنظيف الدوري
- */
 @Entity('webhook_events')
-@Index(['eventId'], { unique: true })
-@Index(['storeId', 'eventType'])
-@Index(['source', 'eventType'])
-@Index(['status'])
-@Index(['createdAt'])
+@Index(['tenantId', 'status', 'createdAt'])
+@Index(['source', 'eventType', 'createdAt'])
+@Index(['idempotencyKey'], { unique: true, where: '"idempotency_key" IS NOT NULL' })
+@Index(['externalId', 'source'])
 export class WebhookEvent extends BaseEntity {
   /**
-   * ═══════════════════════════════════════════════════════════════════════════════
-   *                              🔑 IDENTIFIERS
-   * ═══════════════════════════════════════════════════════════════════════════════
-   */
-
-  /**
-   * 🔑 Event ID - المعرف الفريد للحدث
-   * 
-   * هذا هو المفتاح الأساسي للـ Idempotency
-   * يأتي من المصدر (سلة، واتساب، إلخ)
-   * 
-   * أمثلة:
-   * - سلة: "evt_123456789"
-   * - واتساب: "wamid.HBg..."
-   * 
-   * إذا لم يوفر المصدر ID، ننشئ hash من الـ payload
+   * الـ Tenant (المتجر) المالك للحدث
+   * nullable: true - لأن بعض الـ webhooks تصل قبل ربط المتجر
    */
   @Column({
-    name: 'event_id',
-    type: 'varchar',
-    length: 255,
-    comment: 'المعرف الفريد للحدث من المصدر',
+    name: 'tenant_id',
+    type: 'uuid',
+    nullable: true,
+    comment: 'معرّف الـ Tenant',
   })
-  eventId: string;
+  @Index()
+  tenantId?: string;
+
+  @ManyToOne(() => Tenant, { onDelete: 'CASCADE', nullable: true })
+  @JoinColumn({ name: 'tenant_id' })
+  tenant?: Tenant;
 
   /**
-   * 🏪 Store ID - معرف المتجر
-   * 
-   * قد يكون null لـ webhooks عامة (مثل Stripe)
+   * المتجر المرتبط (إذا كان الـ webhook من سلة)
    */
   @Column({
     name: 'store_id',
     type: 'uuid',
     nullable: true,
-    comment: 'معرف المتجر المرتبط',
+    comment: 'معرّف المتجر في سلة',
   })
   storeId?: string;
 
-  /**
-   * ═══════════════════════════════════════════════════════════════════════════════
-   *                              📊 EVENT INFO
-   * ═══════════════════════════════════════════════════════════════════════════════
-   */
+  @ManyToOne(() => Store, { onDelete: 'CASCADE', nullable: true })
+  @JoinColumn({ name: 'store_id' })
+  store?: Store;
 
   /**
-   * 🌐 Source - مصدر الـ Webhook
+   * Idempotency Key - مفتاح فريد لمنع معالجة نفس الحدث مرتين
+   * هذا هو البديل عن event_id - نولّده داخلياً
    */
   @Column({
-    type: 'enum',
-    enum: WebhookSource,
-    comment: 'مصدر الـ Webhook',
+    name: 'idempotency_key',
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+    comment: 'مفتاح فريد لمنع التكرار',
   })
-  source: WebhookSource;
+  idempotencyKey?: string;
 
   /**
-   * 📌 Event Type - نوع الحدث
-   * 
-   * أمثلة من سلة:
-   * - "order.created"
-   * - "order.updated"
-   * - "customer.created"
-   * - "product.updated"
-   * 
-   * أمثلة من واتساب:
-   * - "message"
-   * - "status"
+   * External ID - معرّف الحدث من المصدر الخارجي (اختياري)
+   */
+  @Column({
+    name: 'external_id',
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+    comment: 'معرّف الحدث من المصدر',
+  })
+  externalId?: string;
+
+  /**
+   * Source - مصدر الـ webhook
+   * نستخدم varchar بدلاً من enum للمرونة
+   */
+  @Column({
+    type: 'varchar',
+    length: 50,
+    comment: 'مصدر الـ Webhook',
+  })
+  source: string;
+
+  /**
+   * Event Type - نوع الحدث
    */
   @Column({
     name: 'event_type',
@@ -200,41 +207,74 @@ export class WebhookEvent extends BaseEntity {
     length: 100,
     comment: 'نوع الحدث',
   })
+  @Index()
   eventType: string;
 
   /**
-   * 📦 Payload - البيانات الكاملة
-   * 
-   * نخزن الـ payload كاملاً لـ:
-   * - إمكانية إعادة المعالجة
-   * - التصحيح والتتبع
-   * - الامتثال (Compliance)
+   * Payload - البيانات الكاملة للـ webhook
    */
   @Column({
     type: 'jsonb',
-    comment: 'البيانات الكاملة للحدث',
+    comment: 'بيانات الـ Webhook كاملة',
   })
-  payload: Record<string, any>;
+  payload: Record<string, unknown>;
 
   /**
-   * ═══════════════════════════════════════════════════════════════════════════════
-   *                              🚦 PROCESSING
-   * ═══════════════════════════════════════════════════════════════════════════════
-   */
-
-  /**
-   * 🚦 Status - حالة المعالجة
+   * Headers - الـ HTTP headers الواردة
    */
   @Column({
-    type: 'enum',
-    enum: WebhookStatus,
-    default: WebhookStatus.RECEIVED,
-    comment: 'حالة المعالجة',
+    type: 'jsonb',
+    nullable: true,
+    comment: 'HTTP Headers',
   })
-  status: WebhookStatus;
+  headers?: Record<string, string>;
 
   /**
-   * 📊 Processing Result - نتيجة المعالجة
+   * Status - حالة معالجة الـ webhook
+   * نستخدم varchar بدلاً من enum للمرونة
+   */
+  @Column({
+    type: 'varchar',
+    length: 50,
+    default: 'pending',
+    comment: 'حالة المعالجة',
+  })
+  status: string;
+
+  /**
+   * Attempts - عدد محاولات المعالجة
+   */
+  @Column({
+    type: 'integer',
+    default: 0,
+    comment: 'عدد محاولات المعالجة',
+  })
+  attempts: number;
+
+  /**
+   * Processed At - تاريخ اكتمال المعالجة
+   */
+  @Column({
+    name: 'processed_at',
+    type: 'timestamptz',
+    nullable: true,
+    comment: 'تاريخ المعالجة',
+  })
+  processedAt?: Date;
+
+  /**
+   * Error Message - رسالة الخطأ إذا فشلت المعالجة
+   */
+  @Column({
+    name: 'error_message',
+    type: 'text',
+    nullable: true,
+    comment: 'رسالة الخطأ',
+  })
+  errorMessage?: string;
+
+  /**
+   * Processing Result - نتيجة المعالجة
    */
   @Column({
     name: 'processing_result',
@@ -242,174 +282,74 @@ export class WebhookEvent extends BaseEntity {
     nullable: true,
     comment: 'نتيجة المعالجة',
   })
-  processingResult?: ProcessingResult;
+  processingResult?: Record<string, unknown>;
 
   /**
-   * ❌ Error Message - رسالة الخطأ
-   * 
-   * في حالة فشل المعالجة
+   * IP Address - عنوان IP المُرسل
    */
   @Column({
-    name: 'error_message',
-    type: 'text',
+    name: 'ip_address',
+    type: 'varchar',
+    length: 45,
     nullable: true,
-    comment: 'رسالة الخطأ إن وجدت',
+    comment: 'عنوان IP',
   })
-  errorMessage?: string;
+  ipAddress?: string;
 
   /**
-   * 🔄 Retry Count - عدد محاولات إعادة المعالجة
+   * Signature - التوقيع المُستخدم للتحقق
    */
   @Column({
-    name: 'retry_count',
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+    comment: 'توقيع التحقق',
+  })
+  signature?: string;
+
+  /**
+   * Signature Verified - هل تم التحقق من التوقيع
+   */
+  @Column({
+    name: 'signature_verified',
+    type: 'boolean',
+    default: false,
+    comment: 'هل تم التحقق من التوقيع',
+  })
+  signatureVerified: boolean;
+
+  /**
+   * Processing Duration (ms)
+   */
+  @Column({
+    name: 'processing_duration_ms',
     type: 'integer',
-    default: 0,
-    comment: 'عدد محاولات إعادة المعالجة',
-  })
-  retryCount: number;
-
-  /**
-   * ⏰ Next Retry At - موعد المحاولة القادمة
-   */
-  @Column({
-    name: 'next_retry_at',
-    type: 'timestamptz',
     nullable: true,
-    comment: 'موعد المحاولة القادمة',
+    comment: 'مدة المعالجة بالـ ms',
   })
-  nextRetryAt?: Date;
+  processingDurationMs?: number;
 
   /**
-   * ═══════════════════════════════════════════════════════════════════════════════
-   *                              📅 TIMESTAMPS
-   * ═══════════════════════════════════════════════════════════════════════════════
-   */
-
-  /**
-   * 📅 Received At - وقت الاستلام
-   * 
-   * الوقت الذي وصلنا فيه الـ Webhook
+   * Related Entity ID - معرّف الكيان المرتبط
    */
   @Column({
-    name: 'received_at',
-    type: 'timestamptz',
-    default: () => 'CURRENT_TIMESTAMP',
-    comment: 'وقت استلام الـ Webhook',
-  })
-  receivedAt: Date;
-
-  /**
-   * 📅 Processed At - وقت المعالجة
-   */
-  @Column({
-    name: 'processed_at',
-    type: 'timestamptz',
+    name: 'related_entity_id',
+    type: 'varchar',
+    length: 255,
     nullable: true,
-    comment: 'وقت اكتمال المعالجة',
+    comment: 'معرّف الكيان المرتبط',
   })
-  processedAt?: Date;
+  relatedEntityId?: string;
 
   /**
-   * 📅 Event Timestamp - وقت الحدث الأصلي
-   * 
-   * الوقت الذي حدث فيه الحدث في المصدر
-   * (قد يختلف عن وقت الاستلام)
+   * Related Entity Type - نوع الكيان المرتبط
    */
   @Column({
-    name: 'event_timestamp',
-    type: 'timestamptz',
+    name: 'related_entity_type',
+    type: 'varchar',
+    length: 50,
     nullable: true,
-    comment: 'وقت الحدث في المصدر',
+    comment: 'نوع الكيان المرتبط',
   })
-  eventTimestamp?: Date;
-
-  /**
-   * ═══════════════════════════════════════════════════════════════════════════════
-   *                              📝 METADATA
-   * ═══════════════════════════════════════════════════════════════════════════════
-   */
-
-  /**
-   * 📝 Metadata - بيانات إضافية
-   */
-  @Column({
-    type: 'jsonb',
-    nullable: true,
-    default: {},
-    comment: 'بيانات إضافية',
-  })
-  metadata: WebhookMetadata;
-
-  /**
-   * ═══════════════════════════════════════════════════════════════════════════════
-   *                              🔗 RELATIONS
-   * ═══════════════════════════════════════════════════════════════════════════════
-   */
-
-  @ManyToOne(() => Store, { onDelete: 'CASCADE', nullable: true })
-  @JoinColumn({ name: 'store_id' })
-  store?: Store;
+  relatedEntityType?: string;
 }
-
-/**
- * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║                         📚 IDEMPOTENCY EXPLAINED                               ║
- * ╠═══════════════════════════════════════════════════════════════════════════════╣
- * ║                                                                                ║
- * ║  🔄 ما هو الـ Idempotency؟                                                    ║
- * ║  ══════════════════════════                                                    ║
- * ║                                                                                ║
- * ║  Idempotency = العملية التي تُنفّذ مرة واحدة فقط                              ║
- * ║  حتى لو طُلبت عدة مرات                                                        ║
- * ║                                                                                ║
- * ║  مثال بسيط:                                                                    ║
- * ║  - العميل طلب منتج                                                            ║
- * ║  - سلة أرسلت webhook "order.created"                                          ║
- * ║  - نحن أرسلنا رسالة "شكراً على طلبك!"                                        ║
- * ║  - الشبكة تقطعت قبل أن نرد 200 OK                                            ║
- * ║  - سلة أعادت إرسال نفس الـ webhook                                            ║
- * ║                                                                                ║
- * ║  بدون Idempotency:                                                            ║
- * ║  ❌ نرسل نفس الرسالة مرتين! (سيء جداً)                                       ║
- * ║                                                                                ║
- * ║  مع Idempotency:                                                              ║
- * ║  ✅ نتحقق أن الحدث سبق معالجته → نتجاهله                                     ║
- * ║                                                                                ║
- * ║  ═══════════════════════════════════════════════════════════════════════════  ║
- * ║                                                                                ║
- * ║  📊 خوارزمية المعالجة:                                                        ║
- * ║  ═════════════════════                                                         ║
- * ║                                                                                ║
- * ║  1. استلام الـ Webhook                                                        ║
- * ║     ↓                                                                          ║
- * ║  2. استخراج الـ event_id                                                      ║
- * ║     ↓                                                                          ║
- * ║  3. البحث في webhook_events:                                                  ║
- * ║     │                                                                          ║
- * ║     ├─ موجود؟ → إرجاع 200 OK (تجاهل)                                         ║
- * ║     │                                                                          ║
- * ║     └─ غير موجود؟ → متابعة...                                                 ║
- * ║        ↓                                                                       ║
- * ║  4. إنشاء سجل جديد (status = RECEIVED)                                       ║
- * ║     ↓                                                                          ║
- * ║  5. معالجة الـ Webhook                                                        ║
- * ║     ↓                                                                          ║
- * ║  6. تحديث السجل (status = PROCESSED/FAILED)                                  ║
- * ║     ↓                                                                          ║
- * ║  7. إرجاع 200 OK                                                              ║
- * ║                                                                                ║
- * ║  ═══════════════════════════════════════════════════════════════════════════  ║
- * ║                                                                                ║
- * ║  🧹 التنظيف الدوري:                                                           ║
- * ║  ═════════════════                                                             ║
- * ║                                                                                ║
- * ║  - نحذف الأحداث القديمة (أكثر من 30 يوم)                                      ║
- * ║  - نحتفظ بالفاشلة للمراجعة                                                    ║
- * ║  - نعيد محاولة الفاشلة (حد أقصى 3 مرات)                                       ║
- * ║                                                                                ║
- * ║  Cron Job مقترح:                                                               ║
- * ║  - كل ساعة: إعادة محاولة الفاشلة                                              ║
- * ║  - كل يوم: حذف الأحداث أقدم من 30 يوم                                        ║
- * ║                                                                                ║
- * ╚═══════════════════════════════════════════════════════════════════════════════╝
- */
