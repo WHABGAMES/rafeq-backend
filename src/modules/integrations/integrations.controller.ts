@@ -168,7 +168,10 @@ export class IntegrationsController {
     summary: 'ربط سلة',
     description: 'بدء عملية OAuth للربط مع سلة',
   })
-  async connectSalla(@Res() res: Response) {
+  async connectSalla(
+    @CurrentUser() user: any,
+    @Res() res: Response,
+  ) {
     const tenantId = user.tenantId;
     const authUrl = await this.integrationsService.getSallaAuthUrl(tenantId);
     res.redirect(authUrl);
@@ -180,7 +183,7 @@ export class IntegrationsController {
     description: 'معالجة رد سلة بعد الموافقة',
   })
   async sallaCallback(
-    @CurrentUser() user: any,
+    @CurrentUser() _user: any,
     @Query('code') code: string,
     @Query('state') state: string,
     @Res() res: Response,
@@ -261,7 +264,10 @@ export class IntegrationsController {
     summary: 'ربط زد',
     description: 'بدء عملية OAuth للربط مع زد',
   })
-  async connectZid(@Res() res: Response) {
+  async connectZid(
+    @CurrentUser() user: any,
+    @Res() res: Response,
+  ) {
     const tenantId = user.tenantId;
     const authUrl = await this.integrationsService.getZidAuthUrl(tenantId);
     res.redirect(authUrl);
@@ -273,7 +279,7 @@ export class IntegrationsController {
     description: 'معالجة رد زد بعد الموافقة',
   })
   async zidCallback(
-    @CurrentUser() user: any,
+    @CurrentUser() _user: any,
     @Query('code') code: string,
     @Query('state') state: string,
     @Res() res: Response,
