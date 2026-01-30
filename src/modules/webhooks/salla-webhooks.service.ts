@@ -64,6 +64,7 @@ export class SallaWebhooksService {
 
       const savedEvent = await this.webhookEventRepository.save(webhookEvent);
 
+      // إنشاء log فقط إذا كان هناك tenantId
       await this.createLog(savedEvent.id, savedEvent.tenantId, {
         action: WebhookLogAction.RECEIVED,
         newStatus: WebhookStatus.PENDING,
@@ -180,9 +181,13 @@ export class SallaWebhooksService {
     return event?.attempts || 1;
   }
 
+  /**
+   * إنشاء سجل log للـ webhook
+   * يتخطى الإنشاء إذا لم يكن هناك tenantId
+   */
   async createLog(
     webhookEventId: string,
-    tenantId: string | undefined,
+    tenantId: string | undefined | null,
     data: {
       action: WebhookLogAction;
       previousStatus?: WebhookStatus;
@@ -194,10 +199,16 @@ export class SallaWebhooksService {
       attemptNumber?: number;
       triggeredBy?: string;
     },
-  ): Promise<WebhookLog> {
+  ): Promise<WebhookLog | null> {
+    // تخطي إنشاء log إذا لم يكن هناك tenantId
+    if (!tenantId) {
+      this.logger.warn('Skipping webhook log: tenantId is missing');
+      return null;
+    }
+
     const log = this.webhookLogRepository.create({
       webhookEventId,
-      tenantId: tenantId || 'unknown',
+      tenantId,
       ...data,
     });
 
@@ -320,7 +331,7 @@ export class SallaWebhooksService {
 
     await this.createLog(event.id, event.tenantId, {
       action: WebhookLogAction.MANUALLY_RETRIED,
-      previousStatus: event.status,
+      previousStatus: event.status as WebhookStatus,
       newStatus: WebhookStatus.RETRY_PENDING,
       message: 'Manual retry requested',
     });
