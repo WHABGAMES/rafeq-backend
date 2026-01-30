@@ -9,12 +9,28 @@ async function bootstrap() {
   
   const port = parseInt(process.env.PORT || '3000', 10);
   
-  // ✅ CORS - Allow ALL origins for now (fix later for production)
+  // ✅ Trust proxy for DigitalOcean App Platform (required for CORS to work properly)
+  const expressApp = app.getHttpAdapter().getInstance();
+  expressApp.set('trust proxy', 1);
+  
+  // ✅ CORS - Allow ALL origins with ALL methods and headers
   app.enableCors({
     origin: true,  // Allow all origins
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: [
+      'Content-Type', 
+      'Authorization', 
+      'Accept', 
+      'Origin', 
+      'X-Requested-With',
+      'Access-Control-Allow-Origin',
+      'Access-Control-Allow-Headers',
+      'Access-Control-Allow-Methods',
+    ],
+    exposedHeaders: ['Authorization'],
     credentials: true,
+    preflightContinue: false,
+    optionsSuccessStatus: 204,
   });
   
   // Global API prefix
