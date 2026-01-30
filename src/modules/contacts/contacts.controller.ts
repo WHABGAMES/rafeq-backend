@@ -47,6 +47,7 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 
 import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ContactsService } from './contacts.service';
 import {
   CreateContactDto,
@@ -86,6 +87,7 @@ export class ContactsController {
   @ApiQuery({ name: 'limit', required: false, type: Number })
   @ApiResponse({ status: 200, description: 'قائمة العملاء' })
   async findAll(
+    @CurrentUser() user: any,
     @Query('search') search?: string,
     @Query('segment') segment?: string,
     @Query('tags') tags?: string,
@@ -96,7 +98,7 @@ export class ContactsController {
     @Query('page') page = 1,
     @Query('limit') limit = 20,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
 
     const filters: ContactFiltersDto = {
       search,
@@ -120,8 +122,8 @@ export class ContactsController {
     summary: 'إحصائيات العملاء',
     description: 'إحصائيات شاملة عن العملاء',
   })
-  async getStats() {
-    const tenantId = 'test-tenant-id';
+  async getStats(@CurrentUser() user: any) {
+    const tenantId = user.tenantId;
     return this.contactsService.getStats(tenantId);
   }
 
@@ -134,8 +136,8 @@ export class ContactsController {
     summary: 'شرائح العملاء',
     description: 'جلب جميع شرائح العملاء',
   })
-  async getSegments() {
-    const tenantId = 'test-tenant-id';
+  async getSegments(@CurrentUser() user: any) {
+    const tenantId = user.tenantId;
     return this.contactsService.getSegments(tenantId);
   }
 
@@ -144,33 +146,37 @@ export class ContactsController {
     summary: 'إنشاء شريحة',
     description: 'إنشاء شريحة عملاء جديدة بشروط محددة',
   })
-  async createSegment(@Body() dto: CreateSegmentDto) {
-    const tenantId = 'test-tenant-id';
+  async createSegment(@CurrentUser() user: any,
+    @Body() dto: CreateSegmentDto) {
+    const tenantId = user.tenantId;
     return this.contactsService.createSegment(tenantId, dto);
   }
 
   @Get('segments/:id')
   @ApiOperation({ summary: 'تفاصيل شريحة' })
-  async getSegment(@Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = 'test-tenant-id';
+  async getSegment(@CurrentUser() user: any,
+    @Param('id', ParseUUIDPipe) id: string) {
+    const tenantId = user.tenantId;
     return this.contactsService.getSegmentById(id, tenantId);
   }
 
   @Put('segments/:id')
   @ApiOperation({ summary: 'تحديث شريحة' })
   async updateSegment(
+    @CurrentUser() user: any,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: CreateSegmentDto,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.contactsService.updateSegment(id, tenantId, dto);
   }
 
   @Delete('segments/:id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'حذف شريحة' })
-  async deleteSegment(@Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = 'test-tenant-id';
+  async deleteSegment(@CurrentUser() user: any,
+    @Param('id', ParseUUIDPipe) id: string) {
+    const tenantId = user.tenantId;
     await this.contactsService.deleteSegment(id, tenantId);
   }
 
@@ -189,7 +195,7 @@ export class ContactsController {
     @UploadedFile() file: any,
     @Body() dto: ImportContactsDto,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.contactsService.importContacts(tenantId, file, dto);
   }
 
@@ -201,10 +207,11 @@ export class ContactsController {
   @ApiQuery({ name: 'format', required: false, enum: ['csv', 'xlsx'] })
   @ApiQuery({ name: 'segment', required: false })
   async exportContacts(
+    @CurrentUser() user: any,
     @Query('format') format = 'csv',
     @Query('segment') segment?: string,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.contactsService.exportContacts(tenantId, format, segment);
   }
 
@@ -218,8 +225,9 @@ export class ContactsController {
     description: 'إنشاء عميل جديد في النظام',
   })
   @ApiResponse({ status: 201, description: 'تم إنشاء العميل' })
-  async create(@Body() dto: CreateContactDto) {
-    const tenantId = 'test-tenant-id';
+  async create(@CurrentUser() user: any,
+    @Body() dto: CreateContactDto) {
+    const tenantId = user.tenantId;
     return this.contactsService.create(tenantId, dto);
   }
 
@@ -232,8 +240,9 @@ export class ContactsController {
     summary: 'تفاصيل عميل',
     description: 'جلب تفاصيل عميل معين مع سجل النشاطات',
   })
-  async findOne(@Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = 'test-tenant-id';
+  async findOne(@CurrentUser() user: any,
+    @Param('id', ParseUUIDPipe) id: string) {
+    const tenantId = user.tenantId;
     return this.contactsService.findById(id, tenantId);
   }
 
@@ -247,10 +256,11 @@ export class ContactsController {
     description: 'تحديث بيانات عميل معين',
   })
   async update(
+    @CurrentUser() user: any,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateContactDto,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.contactsService.update(id, tenantId, dto);
   }
 
@@ -264,8 +274,9 @@ export class ContactsController {
     summary: 'حذف عميل',
     description: 'حذف عميل من النظام',
   })
-  async remove(@Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = 'test-tenant-id';
+  async remove(@CurrentUser() user: any,
+    @Param('id', ParseUUIDPipe) id: string) {
+    const tenantId = user.tenantId;
     await this.contactsService.delete(id, tenantId);
   }
 
@@ -281,11 +292,12 @@ export class ContactsController {
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
   async getConversations(
+    @CurrentUser() user: any,
     @Param('id', ParseUUIDPipe) id: string,
     @Query('page') page = 1,
     @Query('limit') limit = 20,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.contactsService.getConversations(id, tenantId, { page, limit });
   }
 
@@ -301,11 +313,12 @@ export class ContactsController {
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
   async getOrders(
+    @CurrentUser() user: any,
     @Param('id', ParseUUIDPipe) id: string,
     @Query('page') page = 1,
     @Query('limit') limit = 20,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.contactsService.getOrders(id, tenantId, { page, limit });
   }
 
@@ -319,11 +332,12 @@ export class ContactsController {
     description: 'جميع نشاطات العميل (رسائل، طلبات، ملاحظات)',
   })
   async getTimeline(
+    @CurrentUser() user: any,
     @Param('id', ParseUUIDPipe) id: string,
     @Query('page') page = 1,
     @Query('limit') limit = 50,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.contactsService.getTimeline(id, tenantId, { page, limit });
   }
 
@@ -337,10 +351,11 @@ export class ContactsController {
     description: 'إضافة تصنيفات للعميل',
   })
   async addTags(
+    @CurrentUser() user: any,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() body: { tags: string[] },
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.contactsService.addTags(id, tenantId, body.tags);
   }
 
@@ -351,10 +366,11 @@ export class ContactsController {
     description: 'إزالة تصنيف من العميل',
   })
   async removeTag(
+    @CurrentUser() user: any,
     @Param('id', ParseUUIDPipe) id: string,
     @Param('tag') tag: string,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     await this.contactsService.removeTag(id, tenantId, tag);
   }
 
@@ -364,19 +380,21 @@ export class ContactsController {
 
   @Get(':id/notes')
   @ApiOperation({ summary: 'ملاحظات العميل' })
-  async getNotes(@Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = 'test-tenant-id';
+  async getNotes(@CurrentUser() user: any,
+    @Param('id', ParseUUIDPipe) id: string) {
+    const tenantId = user.tenantId;
     return this.contactsService.getNotes(id, tenantId);
   }
 
   @Post(':id/notes')
   @ApiOperation({ summary: 'إضافة ملاحظة' })
   async addNote(
+    @CurrentUser() user: any,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() body: { content: string },
   ) {
-    const tenantId = 'test-tenant-id';
-    const userId = 'test-user-id';
+    const tenantId = user.tenantId;
+    const userId = user.id;
     return this.contactsService.addNote(id, tenantId, userId, body.content);
   }
 
@@ -384,10 +402,11 @@ export class ContactsController {
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'حذف ملاحظة' })
   async deleteNote(
+    @CurrentUser() user: any,
     @Param('id', ParseUUIDPipe) id: string,
     @Param('noteId', ParseUUIDPipe) noteId: string,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     await this.contactsService.deleteNote(id, tenantId, noteId);
   }
 
@@ -401,10 +420,11 @@ export class ContactsController {
     description: 'دمج عميلين في سجل واحد',
   })
   async mergeContacts(
+    @CurrentUser() user: any,
     @Param('id', ParseUUIDPipe) primaryId: string,
     @Body() body: { secondaryId: string },
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.contactsService.mergeContacts(primaryId, body.secondaryId, tenantId);
   }
 
@@ -415,17 +435,19 @@ export class ContactsController {
   @Post(':id/block')
   @ApiOperation({ summary: 'حظر عميل' })
   async blockContact(
+    @CurrentUser() user: any,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() body: { reason?: string },
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.contactsService.blockContact(id, tenantId, body.reason);
   }
 
   @Post(':id/unblock')
   @ApiOperation({ summary: 'إلغاء حظر عميل' })
-  async unblockContact(@Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = 'test-tenant-id';
+  async unblockContact(@CurrentUser() user: any,
+    @Param('id', ParseUUIDPipe) id: string) {
+    const tenantId = user.tenantId;
     return this.contactsService.unblockContact(id, tenantId);
   }
 }
