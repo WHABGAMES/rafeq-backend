@@ -37,6 +37,7 @@ import {
 } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { TagsService } from './tags.service';
 import { CreateTagDto, UpdateTagDto } from './dto';
 
@@ -62,10 +63,11 @@ export class TagsController {
   @ApiQuery({ name: 'type', required: false, enum: ['conversation', 'contact', 'all'] })
   @ApiQuery({ name: 'search', required: false })
   async findAll(
+    @CurrentUser() user: any,
     @Query('type') type?: string,
     @Query('search') search?: string,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.tagsService.findAll(tenantId, { type, search });
   }
 
@@ -74,8 +76,9 @@ export class TagsController {
     summary: 'إنشاء تصنيف',
     description: 'إنشاء تصنيف جديد',
   })
-  async create(@Body() dto: CreateTagDto) {
-    const tenantId = 'test-tenant-id';
+  async create(@CurrentUser() user: any,
+    @Body() dto: CreateTagDto) {
+    const tenantId = user.tenantId;
     return this.tagsService.create(tenantId, dto);
   }
 
@@ -84,33 +87,36 @@ export class TagsController {
     summary: 'إحصائيات الاستخدام',
     description: 'عدد المحادثات والعملاء لكل تصنيف',
   })
-  async getStats() {
-    const tenantId = 'test-tenant-id';
+  async getStats(@CurrentUser() user: any) {
+    const tenantId = user.tenantId;
     return this.tagsService.getStats(tenantId);
   }
 
   @Get(':id')
   @ApiOperation({ summary: 'تفاصيل تصنيف' })
-  async findOne(@Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = 'test-tenant-id';
+  async findOne(@CurrentUser() user: any,
+    @Param('id', ParseUUIDPipe) id: string) {
+    const tenantId = user.tenantId;
     return this.tagsService.findById(id, tenantId);
   }
 
   @Put(':id')
   @ApiOperation({ summary: 'تحديث تصنيف' })
   async update(
+    @CurrentUser() user: any,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateTagDto,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.tagsService.update(id, tenantId, dto);
   }
 
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'حذف تصنيف' })
-  async remove(@Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = 'test-tenant-id';
+  async remove(@CurrentUser() user: any,
+    @Param('id', ParseUUIDPipe) id: string) {
+    const tenantId = user.tenantId;
     await this.tagsService.delete(id, tenantId);
   }
 
@@ -123,8 +129,9 @@ export class TagsController {
     summary: 'إنشاء تصنيفات متعددة',
     description: 'إنشاء عدة تصنيفات دفعة واحدة',
   })
-  async createBulk(@Body() body: { tags: CreateTagDto[] }) {
-    const tenantId = 'test-tenant-id';
+  async createBulk(@CurrentUser() user: any,
+    @Body() body: { tags: CreateTagDto[] }) {
+    const tenantId = user.tenantId;
     return this.tagsService.createBulk(tenantId, body.tags);
   }
 
@@ -134,8 +141,9 @@ export class TagsController {
     summary: 'حذف تصنيفات متعددة',
     description: 'حذف عدة تصنيفات دفعة واحدة',
   })
-  async deleteBulk(@Body() body: { ids: string[] }) {
-    const tenantId = 'test-tenant-id';
+  async deleteBulk(@CurrentUser() user: any,
+    @Body() body: { ids: string[] }) {
+    const tenantId = user.tenantId;
     return this.tagsService.deleteBulk(tenantId, body.ids);
   }
 
@@ -149,10 +157,11 @@ export class TagsController {
     description: 'دمج تصنيفين في واحد',
   })
   async mergeTags(
+    @CurrentUser() user: any,
     @Param('id', ParseUUIDPipe) targetId: string,
     @Body() body: { sourceId: string },
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.tagsService.mergeTags(targetId, body.sourceId, tenantId);
   }
 }
