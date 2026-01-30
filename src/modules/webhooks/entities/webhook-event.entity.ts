@@ -163,18 +163,20 @@ export class WebhookEvent extends BaseEntity {
 
   /**
    * الـ Tenant (المتجر) المالك للحدث
+   * nullable: true - لأن بعض الـ webhooks تصل قبل ربط المتجر
    */
   @Column({
     name: 'tenant_id',
     type: 'uuid',
+    nullable: true,
     comment: 'معرّف الـ Tenant',
   })
   @Index()
-  tenantId: string;
+  tenantId?: string;
 
-  @ManyToOne(() => Tenant, { onDelete: 'CASCADE' })
+  @ManyToOne(() => Tenant, { onDelete: 'CASCADE', nullable: true })
   @JoinColumn({ name: 'tenant_id' })
-  tenant: Tenant;
+  tenant?: Tenant;
 
   /**
    * المتجر المرتبط (إذا كان الـ webhook من سلة)
