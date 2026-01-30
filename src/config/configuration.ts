@@ -3,10 +3,6 @@
  * ║                    RAFIQ PLATFORM - Configuration                              ║
  * ║                                                                                ║
  * ║  📌 هذا الملف يجمع كل Environment Variables في مكان واحد                        ║
- * ║                                                                                ║
- * ║  الاستخدام في الكود:                                                           ║
- * ║    constructor(private config: ConfigService) {}                              ║
- * ║    const port = this.config.get<number>('app.port');                          ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -17,11 +13,10 @@ export default () => ({
   app: {
     env: process.env.NODE_ENV || 'development',
     port: parseInt(process.env.PORT || '3000', 10),
-    apiBaseUrl: process.env.API_BASE_URL || 'http://localhost:3000',
-    frontendUrl: process.env.FRONTEND_URL || 'http://localhost:4200',
+    apiBaseUrl: process.env.API_BASE_URL || 'https://api.rafeq.ai',
+    frontendUrl: process.env.FRONTEND_URL || 'https://rafeq.ai',
     secret: process.env.APP_SECRET || 'default-secret-change-me',
     
-    // Helper flags
     isDevelopment: process.env.NODE_ENV === 'development',
     isProduction: process.env.NODE_ENV === 'production',
     isStaging: process.env.NODE_ENV === 'staging',
@@ -67,8 +62,21 @@ export default () => ({
     clientId: process.env.SALLA_CLIENT_ID || '',
     clientSecret: process.env.SALLA_CLIENT_SECRET || '',
     webhookSecret: process.env.SALLA_WEBHOOK_SECRET || '',
-    oauthCallbackUrl: process.env.SALLA_OAUTH_CALLBACK_URL || '',
+    oauthCallbackUrl: process.env.SALLA_OAUTH_CALLBACK_URL || 'https://api.rafeq.ai/api/stores/salla/callback',
+    redirectUri: process.env.SALLA_OAUTH_CALLBACK_URL || 'https://api.rafeq.ai/api/stores/salla/callback',
     apiUrl: process.env.SALLA_API_URL || 'https://api.salla.dev/admin/v2',
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🏪 ZID
+  // ═══════════════════════════════════════════════════════════════════════════════
+  zid: {
+    clientId: process.env.ZID_CLIENT_ID || '',
+    clientSecret: process.env.ZID_CLIENT_SECRET || '',
+    webhookSecret: process.env.ZID_WEBHOOK_SECRET || '',
+    oauthCallbackUrl: process.env.ZID_OAUTH_CALLBACK_URL || 'https://api.rafeq.ai/api/stores/zid/callback',
+    redirectUri: process.env.ZID_OAUTH_CALLBACK_URL || 'https://api.rafeq.ai/api/stores/zid/callback',
+    apiUrl: process.env.ZID_API_URL || 'https://api.zid.sa/v1',
   },
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -127,7 +135,7 @@ export default () => ({
     user: process.env.SMTP_USER || '',
     password: process.env.SMTP_PASSWORD || '',
     fromName: process.env.SMTP_FROM_NAME || 'Rafiq Platform',
-    fromEmail: process.env.SMTP_FROM_EMAIL || 'noreply@rafiq.com',
+    fromEmail: process.env.SMTP_FROM_EMAIL || 'noreply@rafeq.ai',
   },
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -142,7 +150,7 @@ export default () => ({
   // 🔒 SECURITY
   // ═══════════════════════════════════════════════════════════════════════════════
   security: {
-    corsOrigins: (process.env.CORS_ORIGINS || 'http://localhost:4200')
+    corsOrigins: (process.env.CORS_ORIGINS || 'https://rafeq.ai,https://www.rafeq.ai')
       .split(',')
       .map((origin) => origin.trim()),
     rateLimitTtl: parseInt(process.env.RATE_LIMIT_TTL || '60', 10),
