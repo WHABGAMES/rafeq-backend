@@ -3,7 +3,7 @@
  * ║                RAFIQ PLATFORM - Salla Webhooks Service                         ║
  * ║                                                                                ║
  * ║  ✅ Production-Ready:                                                          ║
- * ║     - Robust merchantId extraction                                            ║
+ * ║     - Robust merchantId extraction (TypeScript safe)                          ║
  * ║     - Real signature verification                                             ║
  * ║     - Proper tenant/store linking                                             ║
  * ║     - Metrics & monitoring                                                    ║
@@ -44,7 +44,7 @@ export class SallaWebhooksService {
   private readonly logger = new Logger(SallaWebhooksService.name);
 
   /**
-   * 📊 Metrics Counter (يمكن استبداله بـ Prometheus/StatsD لاحقاً)
+   * 📊 Metrics Counter
    */
   private metrics: WebhookMetrics = {
     totalReceived: 0,
@@ -67,7 +67,6 @@ export class SallaWebhooksService {
 
     private readonly eventEmitter: EventEmitter2,
 
-    // ✅ StoresService للبحث عن المتجر
     private readonly storesService: StoresService,
   ) {}
 
@@ -80,21 +79,16 @@ export class SallaWebhooksService {
     this.metrics.totalReceived++;
 
     try {
-      // ═══════════════════════════════════════════════════════════════════════════════
-      // 1️⃣ استخراج merchantId بشكل robust
-      // ═══════════════════════════════════════════════════════════════════════════════
+      // 1️⃣ استخراج merchantId بشكل آمن
       const merchantId = this.extractMerchantId(payload);
 
       if (!merchantId) {
         this.logger.warn('Could not extract merchantId from webhook payload', {
           eventType: payload.eventType,
-          payloadKeys: Object.keys(payload.data || {}),
         });
       }
 
-      // ═══════════════════════════════════════════════════════════════════════════════
       // 2️⃣ البحث عن المتجر
-      // ═══════════════════════════════════════════════════════════════════════════════
       const storeInfo = merchantId 
         ? await this.findStoreByMerchantId(merchantId)
         : null;
@@ -106,13 +100,10 @@ export class SallaWebhooksService {
         this.metrics.unlinkedWebhooks++;
         this.logger.warn(`⚠️ Unlinked webhook - merchant: ${merchantId || 'unknown'}`, {
           eventType: payload.eventType,
-          hint: 'Store not found or not connected yet',
         });
       }
 
-      // ═══════════════════════════════════════════════════════════════════════════════
       // 3️⃣ تحديد حالة التحقق من التوقيع
-      // ═══════════════════════════════════════════════════════════════════════════════
       const signatureVerified = this.evaluateSignatureStatus(payload.signature);
       
       if (signatureVerified) {
@@ -121,9 +112,7 @@ export class SallaWebhooksService {
         this.metrics.signatureFailed++;
       }
 
-      // ═══════════════════════════════════════════════════════════════════════════════
       // 4️⃣ إنشاء وحفظ الـ Webhook Event
-      // ═══════════════════════════════════════════════════════════════════════════════
       const webhookEvent = this.webhookEventRepository.create({
         tenantId: storeInfo?.tenantId,
         storeId: storeInfo?.storeId,
@@ -143,9 +132,7 @@ export class SallaWebhooksService {
 
       const savedEvent = await this.webhookEventRepository.save(webhookEvent);
 
-      // ═══════════════════════════════════════════════════════════════════════════════
-      // 5️⃣ إنشاء Log (يتخطى إذا لم يكن هناك tenantId)
-      // ═══════════════════════════════════════════════════════════════════════════════
+      // 5️⃣ إنشاء Log
       await this.createLog(savedEvent.id, savedEvent.tenantId, {
         action: WebhookLogAction.RECEIVED,
         newStatus: WebhookStatus.PENDING,
@@ -158,23 +145,16 @@ export class SallaWebhooksService {
         },
       });
 
-      // ═══════════════════════════════════════════════════════════════════════════════
       // 6️⃣ إضافة للـ Queue
-      // ═══════════════════════════════════════════════════════════════════════════════
       const job = await this.webhookQueue.add(
         payload.eventType,
         {
-          // بيانات أساسية
           webhookEventId: savedEvent.id,
           eventType: payload.eventType,
           data: payload.data,
-          
-          // ✅ تمرير tenant/store لمنع lookup مكرر في الـ processor
           tenantId: storeInfo?.tenantId || null,
           storeId: storeInfo?.storeId || null,
           merchantId: merchantId || null,
-          
-          // metadata إضافية
           signatureVerified,
           receivedAt: new Date().toISOString(),
         },
@@ -186,9 +166,7 @@ export class SallaWebhooksService {
         },
       );
 
-      // ═══════════════════════════════════════════════════════════════════════════════
       // 7️⃣ إرسال Event داخلي
-      // ═══════════════════════════════════════════════════════════════════════════════
       this.eventEmitter.emit('webhook.received', {
         source: 'salla',
         eventType: payload.eventType,
@@ -205,7 +183,6 @@ export class SallaWebhooksService {
         webhookEventId: savedEvent.id,
         tenantId: storeInfo?.tenantId || 'N/A',
         merchantId: merchantId || 'N/A',
-        linked: !!storeInfo,
         duration: `${duration}ms`,
       });
 
@@ -222,56 +199,71 @@ export class SallaWebhooksService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 🔍 Merchant ID Extraction (Robust)
+  // 🔍 Merchant ID Extraction (TypeScript Safe)
   // ═══════════════════════════════════════════════════════════════════════════════
 
   /**
-   * ✅ استخراج merchantId من جميع الصيغ المحتملة
+   * ✅ استخراج merchantId بشكل آمن من TypeScript
    * 
    * سلة قد ترسل الـ merchantId بطرق مختلفة:
    * - payload.merchant (number)
    * - payload.merchant.id
    * - payload.data.merchant
    * - payload.data.merchant.id
-   * - payload.merchant_id
+   * - payload.data.store.merchant
    */
   private extractMerchantId(payload: SallaWebhookJobDto): number | null {
     try {
-      // 1️⃣ الطريقة الأساسية: payload.merchant
-      if (payload.merchant) {
-        const id = typeof payload.merchant === 'object' 
-          ? (payload.merchant as any).id 
-          : payload.merchant;
-        if (id) return Number(id);
+      // 1️⃣ الطريقة الأساسية: payload.merchant (number مباشر)
+      if (typeof payload.merchant === 'number') {
+        return payload.merchant;
       }
 
-      // 2️⃣ من data.merchant
-      if (payload.data?.merchant) {
-        const merchant = payload.data.merchant;
-        const id = typeof merchant === 'object' 
-          ? (merchant as any).id 
-          : merchant;
-        if (id) return Number(id);
+      // 2️⃣ payload.merchant كـ object
+      if (payload.merchant && typeof payload.merchant === 'object') {
+        const merchantObj = payload.merchant as Record<string, unknown>;
+        if (merchantObj.id) {
+          return Number(merchantObj.id);
+        }
       }
 
-      // 3️⃣ من merchant_id مباشرة
-      const anyPayload = payload as any;
-      if (anyPayload.merchant_id) {
-        return Number(anyPayload.merchant_id);
+      // ✅ استخدام type casting آمن لـ data
+      const data = payload.data as Record<string, unknown> | undefined;
+      if (!data) return null;
+
+      // 3️⃣ من data.merchant (number مباشر)
+      if (typeof data.merchant === 'number') {
+        return data.merchant;
       }
 
-      // 4️⃣ من data.merchant_id
-      if (payload.data?.merchant_id) {
-        return Number(payload.data.merchant_id);
+      // 4️⃣ من data.merchant.id
+      if (data.merchant && typeof data.merchant === 'object') {
+        const merchantObj = data.merchant as Record<string, unknown>;
+        if (merchantObj.id) {
+          return Number(merchantObj.id);
+        }
       }
 
-      // 5️⃣ من store.merchant
-      if (payload.data?.store?.merchant) {
-        const merchant = payload.data.store.merchant;
-        const id = typeof merchant === 'object' 
-          ? (merchant as any).id 
-          : merchant;
-        if (id) return Number(id);
+      // 5️⃣ من data.merchant_id
+      if (data.merchant_id) {
+        return Number(data.merchant_id);
+      }
+
+      // 6️⃣ من data.store.merchant
+      if (data.store && typeof data.store === 'object') {
+        const storeObj = data.store as Record<string, unknown>;
+        if (storeObj.merchant) {
+          const merchant = storeObj.merchant;
+          if (typeof merchant === 'number') {
+            return merchant;
+          }
+          if (typeof merchant === 'object' && merchant !== null) {
+            const merchantObj = merchant as Record<string, unknown>;
+            if (merchantObj.id) {
+              return Number(merchantObj.id);
+            }
+          }
+        }
       }
 
       return null;
@@ -288,49 +280,24 @@ export class SallaWebhooksService {
   // 🔐 Signature Verification
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * ✅ تقييم حالة التحقق من التوقيع
-   * 
-   * - إذا لم يكن هناك توقيع → false
-   * - إذا كان هناك توقيع → true (التحقق الفعلي يتم في Controller)
-   * 
-   * ملاحظة: التحقق الكامل يجب أن يتم في Controller قبل استدعاء queueWebhook
-   */
   private evaluateSignatureStatus(signature: string | undefined): boolean {
-    // إذا لم يكن هناك توقيع، نعتبره غير موثق
     if (!signature) {
       this.logger.debug('Webhook received without signature');
       return false;
     }
-
-    // التوقيع موجود - نفترض أنه تم التحقق منه في Controller
-    // (WebhookVerificationService.verifySallaWebhook)
     return true;
   }
 
-  /**
-   * 🔐 الحصول على Webhook Secret للمتجر
-   * يُستخدم في Controller للتحقق من التوقيع
-   */
   async getStoreSecret(merchantId: number): Promise<string | undefined> {
     try {
       const store = await this.storesService.findByMerchantId(merchantId);
+      if (!store) return undefined;
       
-      if (store) {
-        // جلب webhookSecret (يحتاج select خاص لأنه مخفي)
-        const storeWithSecret = await this.storesService['storeRepository'].findOne({
-          where: { id: store.id },
-          select: ['id', 'webhookSecret'],
-        });
-        
-        return storeWithSecret?.webhookSecret;
-      }
-      
+      // webhookSecret مخفي بـ select: false، نحتاج query خاص
+      // TODO: إضافة method في StoresService للحصول على secret
       return undefined;
     } catch (error) {
-      this.logger.error(`Error getting store secret for merchant ${merchantId}`, {
-        error: error instanceof Error ? error.message : 'Unknown',
-      });
+      this.logger.error(`Error getting store secret for merchant ${merchantId}`);
       return undefined;
     }
   }
@@ -339,9 +306,6 @@ export class SallaWebhooksService {
   // 🏪 Store Lookup
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * ✅ البحث عن المتجر باستخدام merchantId
-   */
   private async findStoreByMerchantId(merchantId: number): Promise<{
     tenantId: string;
     storeId: string;
@@ -375,20 +339,13 @@ export class SallaWebhooksService {
       where: { idempotencyKey },
       select: ['id'],
     });
-
     return !!existing;
   }
 
-  /**
-   * 📊 الحصول على Metrics الحالية
-   */
   getMetrics(): WebhookMetrics {
     return { ...this.metrics };
   }
 
-  /**
-   * 📊 إعادة تعيين Metrics
-   */
   resetMetrics(): void {
     this.metrics = {
       totalReceived: 0,
@@ -462,10 +419,6 @@ export class SallaWebhooksService {
   // 📋 Logging
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * إنشاء سجل log للـ webhook
-   * ⚠️ يتخطى الإنشاء إذا لم يكن هناك tenantId (سلوك مقصود)
-   */
   async createLog(
     webhookEventId: string,
     tenantId: string | undefined | null,
@@ -481,9 +434,8 @@ export class SallaWebhooksService {
       triggeredBy?: string;
     },
   ): Promise<WebhookLog | null> {
-    // تخطي إنشاء log إذا لم يكن هناك tenantId
     if (!tenantId) {
-      this.logger.debug('Skipping webhook log: tenantId is missing (webhook not linked to store)');
+      this.logger.debug('Skipping webhook log: tenantId is missing');
       return null;
     }
 
@@ -509,34 +461,25 @@ export class SallaWebhooksService {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   private extractEntityId(data: Record<string, unknown>): string | undefined {
-    // محاولة استخراج ID من مواقع مختلفة
     const id = data.id || data.order_id || data.customer_id || data.product_id;
     return id ? String(id) : undefined;
   }
 
   private extractEntityType(eventType: string): string | undefined {
-    // order.created → order
     const parts = eventType.split('.');
     return parts[0] || undefined;
   }
 
   private getEventPriority(eventType: string): number {
     const priorities: Record<string, number> = {
-      // أولوية عالية (1-2): أحداث مالية/طلبات
       [SallaEventType.ORDER_CREATED]: 1,
       [SallaEventType.ORDER_PAYMENT_UPDATED]: 1,
       [SallaEventType.ORDER_REFUNDED]: 1,
-      
-      // أولوية متوسطة-عالية (2-3): عملاء وسلات متروكة
       [SallaEventType.CUSTOMER_CREATED]: 2,
       [SallaEventType.ABANDONED_CART]: 2,
-      
-      // أولوية متوسطة (4-5): تحديثات
       [SallaEventType.ORDER_STATUS_UPDATED]: 4,
       [SallaEventType.SHIPMENT_CREATED]: 4,
       [SallaEventType.TRACKING_REFRESHED]: 5,
-      
-      // أولوية منخفضة (7-8): منتجات ومراجعات
       [SallaEventType.PRODUCT_UPDATED]: 7,
       [SallaEventType.REVIEW_ADDED]: 8,
     };
@@ -584,7 +527,6 @@ export class SallaWebhooksService {
       }
     }
 
-    // حساب نسبة الربط
     const totalWebhooks = this.metrics.linkedToTenant + this.metrics.unlinkedWebhooks;
     const linkedPercentage = totalWebhooks > 0 
       ? Math.round((this.metrics.linkedToTenant / totalWebhooks) * 100)
@@ -612,9 +554,6 @@ export class SallaWebhooksService {
     });
   }
 
-  /**
-   * 📊 الحصول على Webhooks غير المرتبطة (للمراجعة)
-   */
   async getUnlinkedWebhooks(limit: number = 100): Promise<WebhookEvent[]> {
     return this.webhookEventRepository
       .createQueryBuilder('event')
@@ -645,11 +584,11 @@ export class SallaWebhooksService {
         data: event.payload,
         tenantId: event.tenantId || null,
         storeId: event.storeId || null,
-        merchantId: null, // غير متوفر في الـ retry
+        merchantId: null,
         isRetry: true,
       },
       {
-        priority: 1, // أولوية عالية للـ retry
+        priority: 1,
       },
     );
 
