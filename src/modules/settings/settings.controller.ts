@@ -32,6 +32,7 @@ import {
 } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { SettingsService } from './settings.service';
 
 @ApiTags('Settings - الإعدادات')
@@ -53,8 +54,8 @@ export class SettingsController {
     summary: 'الإعدادات العامة',
     description: 'جلب الإعدادات العامة للحساب',
   })
-  async getGeneralSettings() {
-    const tenantId = 'test-tenant-id';
+  async getGeneralSettings(@CurrentUser() user: any) {
+    const tenantId = user.tenantId;
     return this.settingsService.getGeneralSettings(tenantId);
   }
 
@@ -64,6 +65,7 @@ export class SettingsController {
     description: 'تحديث الإعدادات العامة للحساب',
   })
   async updateGeneralSettings(
+    @CurrentUser() user: any,
     @Body() body: {
       storeName?: string;
       storeUrl?: string;
@@ -73,7 +75,7 @@ export class SettingsController {
       logo?: string;
     },
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.settingsService.updateGeneralSettings(tenantId, body);
   }
 
@@ -86,8 +88,8 @@ export class SettingsController {
     summary: 'إعدادات الإشعارات',
     description: 'جلب إعدادات الإشعارات',
   })
-  async getNotificationSettings() {
-    const tenantId = 'test-tenant-id';
+  async getNotificationSettings(@CurrentUser() user: any) {
+    const tenantId = user.tenantId;
     return this.settingsService.getNotificationSettings(tenantId);
   }
 
@@ -97,6 +99,7 @@ export class SettingsController {
     description: 'تحديث إعدادات الإشعارات',
   })
   async updateNotificationSettings(
+    @CurrentUser() user: any,
     @Body() body: {
       email?: {
         newConversation?: boolean;
@@ -115,7 +118,7 @@ export class SettingsController {
       };
     },
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.settingsService.updateNotificationSettings(tenantId, body);
   }
 
@@ -128,8 +131,8 @@ export class SettingsController {
     summary: 'ساعات العمل',
     description: 'جلب ساعات العمل',
   })
-  async getWorkingHours() {
-    const tenantId = 'test-tenant-id';
+  async getWorkingHours(@CurrentUser() user: any) {
+    const tenantId = user.tenantId;
     return this.settingsService.getWorkingHours(tenantId);
   }
 
@@ -139,6 +142,7 @@ export class SettingsController {
     description: 'تحديث ساعات العمل',
   })
   async updateWorkingHours(
+    @CurrentUser() user: any,
     @Body() body: {
       enabled?: boolean;
       timezone?: string;
@@ -154,7 +158,7 @@ export class SettingsController {
       }>;
     },
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.settingsService.updateWorkingHours(tenantId, body);
   }
 
@@ -167,8 +171,8 @@ export class SettingsController {
     summary: 'الردود التلقائية',
     description: 'جلب إعدادات الردود التلقائية',
   })
-  async getAutoReplies() {
-    const tenantId = 'test-tenant-id';
+  async getAutoReplies(@CurrentUser() user: any) {
+    const tenantId = user.tenantId;
     return this.settingsService.getAutoReplies(tenantId);
   }
 
@@ -178,6 +182,7 @@ export class SettingsController {
     description: 'تحديث الردود التلقائية',
   })
   async updateAutoReplies(
+    @CurrentUser() user: any,
     @Body() body: {
       welcomeMessage?: {
         enabled: boolean;
@@ -198,7 +203,7 @@ export class SettingsController {
       };
     },
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.settingsService.updateAutoReplies(tenantId, body);
   }
 
@@ -211,8 +216,8 @@ export class SettingsController {
     summary: 'إعدادات الفريق',
     description: 'جلب إعدادات الفريق وتوزيع المحادثات',
   })
-  async getTeamSettings() {
-    const tenantId = 'test-tenant-id';
+  async getTeamSettings(@CurrentUser() user: any) {
+    const tenantId = user.tenantId;
     return this.settingsService.getTeamSettings(tenantId);
   }
 
@@ -222,6 +227,7 @@ export class SettingsController {
     description: 'تحديث إعدادات الفريق وتوزيع المحادثات',
   })
   async updateTeamSettings(
+    @CurrentUser() user: any,
     @Body() body: {
       autoAssignment?: {
         enabled: boolean;
@@ -232,7 +238,7 @@ export class SettingsController {
       allowAgentTakeOver?: boolean;
     },
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.settingsService.updateTeamSettings(tenantId, body);
   }
 
@@ -245,8 +251,8 @@ export class SettingsController {
     summary: 'جميع الإعدادات',
     description: 'جلب جميع إعدادات الحساب',
   })
-  async getAllSettings() {
-    const tenantId = 'test-tenant-id';
+  async getAllSettings(@CurrentUser() user: any) {
+    const tenantId = user.tenantId;
     return this.settingsService.getAllSettings(tenantId);
   }
 }
