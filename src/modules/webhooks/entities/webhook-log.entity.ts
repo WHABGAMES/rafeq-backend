@@ -47,39 +47,40 @@ export class WebhookLog extends BaseEntity {
   @Column({
     name: 'tenant_id',
     type: 'uuid',
+    nullable: true,
     comment: 'معرّف الـ Tenant',
   })
   @Index()
-  tenantId: string;
+  tenantId?: string;
 
-  @ManyToOne(() => Tenant, { onDelete: 'CASCADE' })
+  @ManyToOne(() => Tenant, { onDelete: 'CASCADE', nullable: true })
   @JoinColumn({ name: 'tenant_id' })
-  tenant: Tenant;
+  tenant?: Tenant;
 
   @Column({
-    type: 'enum',
-    enum: WebhookLogAction,
+    type: 'varchar',
+    length: 50,
     comment: 'نوع العملية',
   })
-  action: WebhookLogAction;
+  action: string;
 
   @Column({
     name: 'previous_status',
-    type: 'enum',
-    enum: WebhookStatus,
+    type: 'varchar',
+    length: 50,
     nullable: true,
     comment: 'الحالة السابقة',
   })
-  previousStatus?: WebhookStatus;
+  previousStatus?: string;
 
   @Column({
     name: 'new_status',
-    type: 'enum',
-    enum: WebhookStatus,
+    type: 'varchar',
+    length: 50,
     nullable: true,
     comment: 'الحالة الجديدة',
   })
-  newStatus?: WebhookStatus;
+  newStatus?: string;
 
   @Column({
     type: 'text',
