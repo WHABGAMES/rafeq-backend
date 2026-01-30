@@ -1,6 +1,8 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Store Entity                               ║
+ * ║                                                                                ║
+ * ║  كيان المتجر - يدعم سلة وزد                                                     ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -33,6 +35,7 @@ export enum StorePlatform {
 @Entity('stores')
 @Index(['tenantId', 'platform'])
 @Index(['sallaMerchantId'], { unique: true, where: '"salla_merchant_id" IS NOT NULL' })
+@Index(['zidStoreId'], { unique: true, where: '"zid_store_id" IS NOT NULL' })
 @Index(['status'])
 export class Store extends BaseEntity {
   @Column({
@@ -77,19 +80,15 @@ export class Store extends BaseEntity {
   })
   status: StoreStatus;
 
-  @Column({
-    name: 'salla_merchant_id',
-    type: 'bigint',
-    nullable: true,
-    comment: 'معرّف المتجر في سلة',
-  })
-  sallaMerchantId?: number;
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔐 Tokens (مشتركة)
+  // ═══════════════════════════════════════════════════════════════════════════════
 
   @Column({
     name: 'access_token',
     type: 'text',
     nullable: true,
-    comment: 'Access Token (مشفر)',
+    comment: 'Access Token',
   })
   @Exclude()
   accessToken?: string;
@@ -98,7 +97,7 @@ export class Store extends BaseEntity {
     name: 'refresh_token',
     type: 'text',
     nullable: true,
-    comment: 'Refresh Token (مشفر)',
+    comment: 'Refresh Token',
   })
   @Exclude()
   refreshToken?: string;
@@ -120,6 +119,18 @@ export class Store extends BaseEntity {
   })
   @Exclude()
   webhookSecret?: string;
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🛒 Salla-specific fields
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Column({
+    name: 'salla_merchant_id',
+    type: 'bigint',
+    nullable: true,
+    comment: 'معرّف المتجر في سلة',
+  })
+  sallaMerchantId?: number;
 
   @Column({
     name: 'salla_store_name',
@@ -167,15 +178,6 @@ export class Store extends BaseEntity {
   sallaAvatar?: string;
 
   @Column({
-    name: 'currency',
-    type: 'varchar',
-    length: 3,
-    default: 'SAR',
-    comment: 'عملة المتجر',
-  })
-  currency: string;
-
-  @Column({
     name: 'salla_plan',
     type: 'varchar',
     length: 50,
@@ -183,6 +185,104 @@ export class Store extends BaseEntity {
     comment: 'خطة الاشتراك في سلة',
   })
   sallaPlan?: string;
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🏪 Zid-specific fields
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Column({
+    name: 'zid_store_id',
+    type: 'varchar',
+    length: 100,
+    nullable: true,
+    comment: 'معرّف المتجر في زد',
+  })
+  zidStoreId?: string;
+
+  @Column({
+    name: 'zid_store_uuid',
+    type: 'varchar',
+    length: 100,
+    nullable: true,
+    comment: 'UUID المتجر في زد',
+  })
+  zidStoreUuid?: string;
+
+  @Column({
+    name: 'zid_store_name',
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+    comment: 'اسم المتجر في زد',
+  })
+  zidStoreName?: string;
+
+  @Column({
+    name: 'zid_email',
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+    comment: 'البريد في زد',
+  })
+  zidEmail?: string;
+
+  @Column({
+    name: 'zid_mobile',
+    type: 'varchar',
+    length: 20,
+    nullable: true,
+    comment: 'رقم الهاتف في زد',
+  })
+  zidMobile?: string;
+
+  @Column({
+    name: 'zid_domain',
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+    comment: 'رابط المتجر في زد',
+  })
+  zidDomain?: string;
+
+  @Column({
+    name: 'zid_logo',
+    type: 'varchar',
+    length: 500,
+    nullable: true,
+    comment: 'شعار المتجر من زد',
+  })
+  zidLogo?: string;
+
+  @Column({
+    name: 'zid_currency',
+    type: 'varchar',
+    length: 10,
+    nullable: true,
+    comment: 'عملة المتجر في زد',
+  })
+  zidCurrency?: string;
+
+  @Column({
+    name: 'zid_language',
+    type: 'varchar',
+    length: 10,
+    nullable: true,
+    comment: 'لغة المتجر في زد',
+  })
+  zidLanguage?: string;
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 📊 Common fields
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Column({
+    name: 'currency',
+    type: 'varchar',
+    length: 3,
+    default: 'SAR',
+    comment: 'عملة المتجر',
+  })
+  currency: string;
 
   @Column({
     type: 'jsonb',
@@ -239,6 +339,10 @@ export class Store extends BaseEntity {
   })
   consecutiveErrors: number;
 
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🛠️ Computed properties
+  // ═══════════════════════════════════════════════════════════════════════════════
+
   get isActive(): boolean {
     return this.status === StoreStatus.ACTIVE;
   }
@@ -252,5 +356,23 @@ export class Store extends BaseEntity {
     if (!this.tokenExpiresAt) return true;
     const tenMinutesFromNow = new Date(Date.now() + 10 * 60 * 1000);
     return this.tokenExpiresAt < tenMinutesFromNow;
+  }
+
+  get platformStoreId(): string | number | undefined {
+    if (this.platform === StorePlatform.SALLA) return this.sallaMerchantId;
+    if (this.platform === StorePlatform.ZID) return this.zidStoreId;
+    return undefined;
+  }
+
+  get platformStoreName(): string | undefined {
+    if (this.platform === StorePlatform.SALLA) return this.sallaStoreName;
+    if (this.platform === StorePlatform.ZID) return this.zidStoreName;
+    return this.name;
+  }
+
+  get platformLogo(): string | undefined {
+    if (this.platform === StorePlatform.SALLA) return this.sallaAvatar;
+    if (this.platform === StorePlatform.ZID) return this.zidLogo;
+    return undefined;
   }
 }
