@@ -34,6 +34,7 @@ import {
 } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
+import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { SmsService } from './sms.service';
 
 @ApiTags('Channels - SMS')
@@ -114,6 +115,7 @@ export class SmsController {
     description: 'ربط حساب مزود SMS',
   })
   async connect(
+    @CurrentUser() user: any,
     @Body() body: {
       provider: string;
       apiKey: string;
@@ -121,7 +123,7 @@ export class SmsController {
       senderId: string;
     },
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.smsService.connect(tenantId, body);
   }
 
@@ -132,8 +134,8 @@ export class SmsController {
     summary: 'حالة الاتصال',
     description: 'التحقق من حالة اتصال SMS',
   })
-  async getStatus() {
-    const tenantId = 'test-tenant-id';
+  async getStatus(@CurrentUser() user: any) {
+    const tenantId = user.tenantId;
     return this.smsService.getStatus(tenantId);
   }
 
@@ -144,8 +146,8 @@ export class SmsController {
     summary: 'الرصيد',
     description: 'الرصيد المتبقي من رسائل SMS',
   })
-  async getBalance() {
-    const tenantId = 'test-tenant-id';
+  async getBalance(@CurrentUser() user: any) {
+    const tenantId = user.tenantId;
     return this.smsService.getBalance(tenantId);
   }
 
@@ -157,8 +159,8 @@ export class SmsController {
     summary: 'فصل SMS',
     description: 'فصل الربط مع مزود SMS',
   })
-  async disconnect() {
-    const tenantId = 'test-tenant-id';
+  async disconnect(@CurrentUser() user: any) {
+    const tenantId = user.tenantId;
     await this.smsService.disconnect(tenantId);
   }
 
@@ -174,13 +176,14 @@ export class SmsController {
     description: 'إرسال رسالة SMS',
   })
   async sendMessage(
+    @CurrentUser() user: any,
     @Body() body: {
       to: string;
       message: string;
       senderId?: string;
     },
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.smsService.send(tenantId, body);
   }
 
@@ -192,13 +195,14 @@ export class SmsController {
     description: 'إرسال رسائل SMS لعدة أرقام',
   })
   async sendBulk(
+    @CurrentUser() user: any,
     @Body() body: {
       recipients: string[];
       message: string;
       senderId?: string;
     },
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.smsService.sendBulk(tenantId, body);
   }
 
@@ -210,13 +214,14 @@ export class SmsController {
     description: 'إرسال رمز تحقق',
   })
   async sendOtp(
+    @CurrentUser() user: any,
     @Body() body: {
       to: string;
       code?: string;
       template?: string;
     },
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.smsService.sendOtp(tenantId, body);
   }
 
@@ -232,12 +237,13 @@ export class SmsController {
     description: 'تقارير الرسائل المرسلة',
   })
   async getReports(
+    @CurrentUser() user: any,
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('page') page = 1,
     @Query('limit') limit = 50,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.smsService.getReports(tenantId, { from, to, page, limit });
   }
 }
