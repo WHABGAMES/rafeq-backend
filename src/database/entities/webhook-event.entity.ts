@@ -196,7 +196,7 @@ export class WebhookEvent extends BaseEntity {
     length: 50,
     comment: 'مصدر الـ Webhook',
   })
-  source: string;
+  source?: string;
 
   /**
    * Event Type - نوع الحدث
