@@ -192,6 +192,7 @@ export class ContactsController {
   @ApiConsumes('multipart/form-data')
   @UseInterceptors(FileInterceptor('file'))
   async importContacts(
+    @CurrentUser() user: any,
     @UploadedFile() file: any,
     @Body() dto: ImportContactsDto,
   ) {
