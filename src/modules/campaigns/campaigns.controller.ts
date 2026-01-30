@@ -27,6 +27,7 @@ import {
   Query,
   HttpCode,
   HttpStatus,
+  UseGuards,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -36,6 +37,9 @@ import {
   ApiQuery,
 } from '@nestjs/swagger';
 
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+
 import {
   CampaignsService,
   CreateCampaignDto,
@@ -44,6 +48,8 @@ import { CampaignType, CampaignStatus } from '@database/entities/campaign.entity
 
 @ApiTags('Campaigns')
 @ApiBearerAuth('JWT-auth')
+@ApiBearerAuth()
+@UseGuards(JwtAuthGuard)
 @Controller({
   path: 'campaigns',
   version: '1',
@@ -61,9 +67,10 @@ export class CampaignsController {
     description: 'إنشاء حملة تسويقية (مجدولة، مشروطة، أو متكررة)',
   })
   @ApiResponse({ status: 201, description: 'تم إنشاء الحملة' })
-  async create(@Body() dto: CreateCampaignDto) {
+  async create(@CurrentUser() user: any,
+    @Body() dto: CreateCampaignDto) {
     // مؤقتاً: tenant ID ثابت
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.campaignsService.create({ ...dto, tenantId });
   }
 
@@ -81,12 +88,13 @@ export class CampaignsController {
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'limit', required: false, type: Number })
   async findAll(
+    @CurrentUser() user: any,
     @Query('status') status?: CampaignStatus,
     @Query('type') type?: CampaignType,
     @Query('page') page?: number,
     @Query('limit') limit?: number,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.campaignsService.findAll(tenantId, {
       status,
       type,
@@ -104,8 +112,9 @@ export class CampaignsController {
     summary: 'تفاصيل حملة',
     description: 'جلب تفاصيل حملة معينة',
   })
-  async findOne(@Param('id') id: string) {
-    const tenantId = 'test-tenant-id';
+  async findOne(@CurrentUser() user: any,
+    @Param('id') id: string) {
+    const tenantId = user.tenantId;
     return this.campaignsService.findById(id, tenantId);
   }
 
@@ -119,8 +128,9 @@ export class CampaignsController {
     summary: 'تنفيذ الحملة فوراً',
     description: 'بدء إرسال رسائل الحملة فوراً (للحملات المجدولة)',
   })
-  async execute(@Param('id') id: string) {
-    const tenantId = 'test-tenant-id';
+  async execute(@CurrentUser() user: any,
+    @Param('id') id: string) {
+    const tenantId = user.tenantId;
     await this.campaignsService.executeNow(id, tenantId);
     return { message: 'تم بدء تنفيذ الحملة' };
   }
@@ -135,7 +145,8 @@ export class CampaignsController {
     summary: 'إيقاف الحملة مؤقتاً',
     description: 'إيقاف حملة نشطة مؤقتاً',
   })
-  async pause(@Param('id') id: string) {
+  async pause(@CurrentUser() user: any,
+    @Param('id') id: string) {
     return this.campaignsService.pause(id);
   }
 
@@ -149,7 +160,8 @@ export class CampaignsController {
     summary: 'استئناف الحملة',
     description: 'استئناف حملة متوقفة مؤقتاً',
   })
-  async resume(@Param('id') id: string) {
+  async resume(@CurrentUser() user: any,
+    @Param('id') id: string) {
     return this.campaignsService.resume(id);
   }
 
@@ -163,7 +175,8 @@ export class CampaignsController {
     summary: 'إلغاء الحملة',
     description: 'إلغاء حملة نهائياً',
   })
-  async cancel(@Param('id') id: string) {
+  async cancel(@CurrentUser() user: any,
+    @Param('id') id: string) {
     return this.campaignsService.cancel(id);
   }
 
@@ -176,8 +189,9 @@ export class CampaignsController {
     summary: 'إحصائيات الحملة',
     description: 'جلب إحصائيات الإرسال والتوصيل والقراءة',
   })
-  async getStats(@Param('id') id: string) {
-    const tenantId = 'test-tenant-id';
+  async getStats(@CurrentUser() user: any,
+    @Param('id') id: string) {
+    const tenantId = user.tenantId;
     return this.campaignsService.getStats(id, tenantId);
   }
 
@@ -191,8 +205,9 @@ export class CampaignsController {
     summary: 'معاينة عدد المستهدفين',
     description: 'معرفة عدد العملاء الذين سيستهدفهم segment معين',
   })
-  async preview(@Body() body: { segment: Record<string, unknown> }) {
-    const tenantId = 'test-tenant-id';
+  async preview(@CurrentUser() user: any,
+    @Body() body: { segment: Record<string, unknown> }) {
+    const tenantId = user.tenantId;
     const count = await this.campaignsService.previewSegment(
       tenantId,
       body.segment,
