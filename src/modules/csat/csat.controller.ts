@@ -37,6 +37,7 @@ import {
 } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { CsatService } from './csat.service';
 import { UpdateCsatSettingsDto, SubmitCsatDto } from './dto';
 
@@ -59,8 +60,8 @@ export class CsatController {
     summary: 'إعدادات التقييم',
     description: 'جلب إعدادات نظام تقييم رضا العملاء',
   })
-  async getSettings() {
-    const tenantId = 'test-tenant-id';
+  async getSettings(@CurrentUser() user: any) {
+    const tenantId = user.tenantId;
     return this.csatService.getSettings(tenantId);
   }
 
@@ -71,8 +72,9 @@ export class CsatController {
     summary: 'تحديث الإعدادات',
     description: 'تحديث إعدادات نظام التقييم',
   })
-  async updateSettings(@Body() dto: UpdateCsatSettingsDto) {
-    const tenantId = 'test-tenant-id';
+  async updateSettings(@CurrentUser() user: any,
+    @Body() dto: UpdateCsatSettingsDto) {
+    const tenantId = user.tenantId;
     return this.csatService.updateSettings(tenantId, dto);
   }
 
@@ -150,6 +152,7 @@ export class CsatController {
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
   async getSurveys(
+    @CurrentUser() user: any,
     @Query('type') type?: string,
     @Query('rating') rating?: number,
     @Query('agentId') agentId?: string,
@@ -158,7 +161,7 @@ export class CsatController {
     @Query('page') page = 1,
     @Query('limit') limit = 20,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.csatService.getSurveys(tenantId, {
       type,
       rating,
@@ -177,8 +180,9 @@ export class CsatController {
     summary: 'تفاصيل تقييم',
     description: 'جلب تفاصيل تقييم معين',
   })
-  async getSurvey(@Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = 'test-tenant-id';
+  async getSurvey(@CurrentUser() user: any,
+    @Param('id', ParseUUIDPipe) id: string) {
+    const tenantId = user.tenantId;
     return this.csatService.getSurveyById(id, tenantId);
   }
 
@@ -193,6 +197,7 @@ export class CsatController {
     description: 'إرسال تقييم من العميل (بدون تسجيل دخول)',
   })
   async submitSurvey(
+    @CurrentUser() user: any,
     @Param('token') token: string,
     @Body() dto: SubmitCsatDto,
   ) {
@@ -214,11 +219,12 @@ export class CsatController {
   @ApiQuery({ name: 'from', required: false })
   @ApiQuery({ name: 'to', required: false })
   async getAnalytics(
+    @CurrentUser() user: any,
     @Query('period') period = 'month',
     @Query('from') from?: string,
     @Query('to') to?: string,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.csatService.getAnalytics(tenantId, { period, from, to });
   }
 
@@ -230,10 +236,11 @@ export class CsatController {
     description: 'تقييمات كل وكيل من فريق الدعم',
   })
   async getAgentRatings(
+    @CurrentUser() user: any,
     @Query('from') from?: string,
     @Query('to') to?: string,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.csatService.getAgentRatings(tenantId, { from, to });
   }
 
@@ -245,10 +252,11 @@ export class CsatController {
     description: 'تطور التقييمات عبر الزمن',
   })
   async getTrends(
+    @CurrentUser() user: any,
     @Query('period') period = 'month',
     @Query('groupBy') groupBy: 'day' | 'week' | 'month' = 'day',
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.csatService.getTrends(tenantId, { period, groupBy });
   }
 
@@ -267,11 +275,12 @@ export class CsatController {
   @ApiQuery({ name: 'from', required: false })
   @ApiQuery({ name: 'to', required: false })
   async exportSurveys(
+    @CurrentUser() user: any,
     @Query('format') format = 'csv',
     @Query('from') from?: string,
     @Query('to') to?: string,
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.csatService.exportSurveys(tenantId, { format, from, to });
   }
 }
