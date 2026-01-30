@@ -152,7 +152,7 @@ export class TelegramController {
     description: 'استقبال التحديثات من Telegram',
   })
   async handleWebhook(
-    @CurrentUser() user: any,
+    @CurrentUser() _user: any,
     @Param('token') token: string,
     @Body() update: any,
   ) {
