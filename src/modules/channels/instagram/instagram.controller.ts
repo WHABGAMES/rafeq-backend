@@ -24,6 +24,7 @@ import {
 import { Response } from 'express';
 
 import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
+import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { InstagramService } from './instagram.service';
 
 @ApiTags('Channels - Instagram')
@@ -46,7 +47,7 @@ export class InstagramController {
     description: 'بدء عملية OAuth للربط مع Instagram',
   })
   async connect(@Res() res: Response) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     const authUrl = await this.instagramService.getAuthUrl(tenantId);
     res.redirect(authUrl);
   }
@@ -57,6 +58,7 @@ export class InstagramController {
     description: 'معالجة رد Instagram بعد الموافقة',
   })
   async callback(
+    @CurrentUser() user: any,
     @Query('code') code: string,
     @Query('state') state: string,
     @Res() res: Response,
@@ -81,8 +83,8 @@ export class InstagramController {
     summary: 'حالة الاتصال',
     description: 'التحقق من حالة اتصال Instagram',
   })
-  async getStatus() {
-    const tenantId = 'test-tenant-id';
+  async getStatus(@CurrentUser() user: any) {
+    const tenantId = user.tenantId;
     return this.instagramService.getConnectionStatus(tenantId);
   }
 
@@ -94,8 +96,8 @@ export class InstagramController {
     summary: 'فصل Instagram',
     description: 'فصل الربط مع Instagram',
   })
-  async disconnect() {
-    const tenantId = 'test-tenant-id';
+  async disconnect(@CurrentUser() user: any) {
+    const tenantId = user.tenantId;
     await this.instagramService.disconnect(tenantId);
   }
 
@@ -111,13 +113,14 @@ export class InstagramController {
     description: 'إرسال رسالة عبر Instagram DM',
   })
   async sendMessage(
+    @CurrentUser() user: any,
     @Body() body: {
       recipientId: string;
       message: string;
       mediaUrl?: string;
     },
   ) {
-    const tenantId = 'test-tenant-id';
+    const tenantId = user.tenantId;
     return this.instagramService.sendDirectMessage(
       tenantId,
       body.recipientId,
@@ -149,7 +152,8 @@ export class InstagramController {
     summary: 'استقبال Webhook',
     description: 'استقبال الرسائل والأحداث من Instagram',
   })
-  async handleWebhook(@Body() body: unknown) {
+  async handleWebhook(@CurrentUser() user: any,
+    @Body() body: unknown) {
     await this.instagramService.handleWebhook(body);
     return 'OK';
   }
