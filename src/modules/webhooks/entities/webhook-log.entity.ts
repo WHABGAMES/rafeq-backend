@@ -12,7 +12,7 @@ import {
   JoinColumn,
 } from 'typeorm';
 import { BaseEntity } from '../../../database/entities/base.entity';
-import { WebhookEvent, WebhookStatus } from './webhook-event.entity';
+import { WebhookEvent } from './webhook-event.entity';
 import { Tenant } from '../../../database/entities/tenant.entity';
 
 export enum WebhookLogAction {
