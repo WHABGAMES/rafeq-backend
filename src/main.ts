@@ -2,7 +2,7 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Main Entry Point                           ║
  * ║                                                                                ║
- * ║  ✅ CORS Fixed                                                                 ║
+ * ║  ✅ CORS Fixed (including cache-control)                                       ║
  * ║  ✅ Detailed error logging                                                     ║
  * ║  ✅ Environment validation                                                     ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
@@ -72,7 +72,7 @@ async function bootstrap() {
     logger.log('✅ Proxy trust enabled');
     
     // ═══════════════════════════════════════════════════════════════════════════
-    // CORS Configuration - Allow ALL origins
+    // CORS Configuration - Allow ALL origins (✅ FIXED: Added Cache-Control)
     // ═══════════════════════════════════════════════════════════════════════════
     app.enableCors({
       origin: true, // Accept ALL origins
@@ -85,6 +85,10 @@ async function bootstrap() {
         'X-Requested-With',
         'Access-Control-Allow-Origin',
         'Access-Control-Allow-Headers',
+        'Cache-Control',        // ✅ Added - was causing CORS error
+        'Pragma',               // ✅ Added
+        'If-Modified-Since',    // ✅ Added
+        'X-CSRF-Token',         // ✅ Added for CSRF
       ],
       exposedHeaders: ['Content-Length', 'Content-Type'],
       credentials: true,
@@ -92,7 +96,7 @@ async function bootstrap() {
       optionsSuccessStatus: 204,
       maxAge: 86400,
     });
-    logger.log('✅ CORS enabled for ALL origins');
+    logger.log('✅ CORS enabled for ALL origins (with Cache-Control)');
 
     // ═══════════════════════════════════════════════════════════════════════════
     // Global Prefix & Validation
