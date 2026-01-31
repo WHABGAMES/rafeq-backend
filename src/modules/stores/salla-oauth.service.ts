@@ -14,10 +14,10 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { firstValueFrom } from 'rxjs';
 
-import { Store } from './entities/store.entity';
+import { Store, StoreStatus, StorePlatform } from './entities/store.entity';
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ✅ Exported Types - تُستخدم في ملفات أخرى
+// ✅ Exported Types
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export interface SallaTokenResponse {
@@ -27,13 +27,18 @@ export interface SallaTokenResponse {
   token_type: string;
 }
 
+/**
+ * ✅ معلومات التاجر من سلة API
+ */
 export interface SallaMerchantInfo {
   id: number;
   name: string;
+  username?: string;
   email: string;
   mobile: string;
   domain: string;
   plan: string;
+  avatar?: string;
 }
 
 export interface OAuthResult {
@@ -44,7 +49,6 @@ export interface OAuthResult {
 
 /**
  * ✅ بيانات app.store.authorize من webhook سلة
- * تُستخدم في salla-webhooks.controller.ts
  */
 export interface SallaAppAuthorizeData {
   access_token: string;
@@ -79,9 +83,6 @@ export class SallaOAuthService {
   // 🔗 OAuth URL Generation
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * ✅ توليد رابط OAuth لسلة
-   */
   generateAuthorizationUrl(tenantId: string, customState?: string): string {
     const stateData = {
       tenantId,
@@ -106,9 +107,6 @@ export class SallaOAuthService {
     return url;
   }
 
-  /**
-   * ✅ استخراج tenantId من state
-   */
   extractTenantIdFromState(state: string): string | null {
     try {
       const decoded = Buffer.from(state, 'base64url').toString('utf-8');
@@ -124,9 +122,6 @@ export class SallaOAuthService {
   // 🔄 Token Exchange
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * ✅ استبدال الـ code بـ tokens
-   */
   async exchangeCodeForTokens(code: string, state: string): Promise<OAuthResult> {
     this.logger.log('Exchanging code for tokens');
 
@@ -197,7 +192,7 @@ export class SallaOAuthService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 🏪 Store Management
+  // 🏪 Store Management - متوافق مع Store Entity الحقيقي
   // ═══════════════════════════════════════════════════════════════════════════════
 
   private async createOrUpdateStore(
@@ -205,33 +200,51 @@ export class SallaOAuthService {
     tokens: SallaTokenResponse,
     merchantInfo: SallaMerchantInfo,
   ): Promise<Store> {
+    // ✅ استخدام sallaMerchantId بدلاً من merchantId
     let store = await this.storeRepository.findOne({
-      where: { merchantId: merchantInfo.id },
+      where: { sallaMerchantId: merchantInfo.id },
     });
 
     if (store) {
+      // تحديث المتجر الموجود
       store.tenantId = tenantId;
       store.accessToken = tokens.access_token;
       store.refreshToken = tokens.refresh_token;
       store.tokenExpiresAt = this.calculateTokenExpiry(tokens.expires_in);
       store.lastTokenRefreshAt = new Date();
-      store.isActive = true;
+      store.status = StoreStatus.ACTIVE;
+      store.consecutiveErrors = 0;
+      store.lastError = undefined;
+      
+      // تحديث معلومات سلة
+      store.sallaStoreName = merchantInfo.name;
+      store.sallaEmail = merchantInfo.email;
+      store.sallaMobile = merchantInfo.mobile;
+      store.sallaDomain = merchantInfo.domain;
+      store.sallaAvatar = merchantInfo.avatar;
+      store.sallaPlan = merchantInfo.plan;
       
       this.logger.log(`Updated existing store: ${store.id}`);
     } else {
+      // إنشاء متجر جديد
       store = this.storeRepository.create({
         tenantId,
-        merchantId: merchantInfo.id,
-        name: merchantInfo.name || `متجر سلة`,
-        domain: merchantInfo.domain,
-        email: merchantInfo.email,
-        phone: merchantInfo.mobile,
-        plan: merchantInfo.plan,
+        name: merchantInfo.name || merchantInfo.username || `متجر سلة`,
+        platform: StorePlatform.SALLA,
+        status: StoreStatus.ACTIVE,
+        sallaMerchantId: merchantInfo.id,
         accessToken: tokens.access_token,
         refreshToken: tokens.refresh_token,
         tokenExpiresAt: this.calculateTokenExpiry(tokens.expires_in),
-        isActive: true,
-        connectedAt: new Date(),
+        sallaStoreName: merchantInfo.name,
+        sallaEmail: merchantInfo.email,
+        sallaMobile: merchantInfo.mobile,
+        sallaDomain: merchantInfo.domain,
+        sallaAvatar: merchantInfo.avatar,
+        sallaPlan: merchantInfo.plan,
+        lastSyncedAt: new Date(),
+        settings: {},
+        subscribedEvents: [],
       });
       
       this.logger.log(`Created new store for merchant ${merchantInfo.id}`);
@@ -283,14 +296,17 @@ export class SallaOAuthService {
 
   async findByMerchantId(merchantId: number): Promise<Store | null> {
     return this.storeRepository.findOne({
-      where: { merchantId },
+      where: { sallaMerchantId: merchantId },
     });
   }
 
   async getUnlinkedStores(): Promise<Store[]> {
-    return this.storeRepository.find({
-      where: { tenantId: undefined as any },
-    });
+    // المتاجر بدون tenantId
+    return this.storeRepository
+      .createQueryBuilder('store')
+      .where('store.tenant_id IS NULL')
+      .andWhere('store.platform = :platform', { platform: StorePlatform.SALLA })
+      .getMany();
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -299,11 +315,6 @@ export class SallaOAuthService {
 
   /**
    * ✅ معالجة app.store.authorize من webhook سلة
-   * يُستدعى من salla-webhooks.controller.ts
-   * 
-   * @param merchantId معرّف التاجر
-   * @param data بيانات التفويض (SallaAppAuthorizeData)
-   * @param createdAt وقت الـ webhook
    */
   async handleAppStoreAuthorize(
     merchantId: number,
@@ -315,36 +326,49 @@ export class SallaOAuthService {
     const merchantInfo = await this.fetchMerchantInfo(data.access_token);
 
     let store = await this.storeRepository.findOne({
-      where: { merchantId },
+      where: { sallaMerchantId: merchantId },
     });
 
     const expiresIn = data.expires || 3600;
 
     if (store) {
+      // تحديث المتجر الموجود
       store.accessToken = data.access_token;
       store.refreshToken = data.refresh_token;
       store.tokenExpiresAt = this.calculateTokenExpiry(expiresIn);
       store.lastTokenRefreshAt = new Date();
-      store.isActive = true;
-      store.name = merchantInfo.name || store.name;
-      store.domain = merchantInfo.domain || store.domain;
-      store.email = merchantInfo.email || store.email;
-      store.phone = merchantInfo.mobile || store.phone;
+      store.status = StoreStatus.ACTIVE;
+      store.consecutiveErrors = 0;
+      store.lastError = undefined;
+      
+      // تحديث معلومات سلة
+      store.sallaStoreName = merchantInfo.name || store.sallaStoreName;
+      store.sallaEmail = merchantInfo.email || store.sallaEmail;
+      store.sallaMobile = merchantInfo.mobile || store.sallaMobile;
+      store.sallaDomain = merchantInfo.domain || store.sallaDomain;
+      store.sallaAvatar = merchantInfo.avatar || store.sallaAvatar;
+      store.sallaPlan = merchantInfo.plan || store.sallaPlan;
       
       this.logger.log(`Updated store for merchant ${merchantId}`);
     } else {
+      // إنشاء متجر جديد - في Easy Mode لا يوجد tenantId بعد
       store = this.storeRepository.create({
-        merchantId,
-        name: merchantInfo.name || `متجر سلة`,
-        domain: merchantInfo.domain,
-        email: merchantInfo.email,
-        phone: merchantInfo.mobile,
-        plan: merchantInfo.plan,
+        name: merchantInfo.name || merchantInfo.username || `متجر سلة`,
+        platform: StorePlatform.SALLA,
+        status: StoreStatus.ACTIVE,
+        sallaMerchantId: merchantId,
         accessToken: data.access_token,
         refreshToken: data.refresh_token,
         tokenExpiresAt: this.calculateTokenExpiry(expiresIn),
-        isActive: true,
-        connectedAt: new Date(),
+        sallaStoreName: merchantInfo.name,
+        sallaEmail: merchantInfo.email,
+        sallaMobile: merchantInfo.mobile,
+        sallaDomain: merchantInfo.domain,
+        sallaAvatar: merchantInfo.avatar,
+        sallaPlan: merchantInfo.plan,
+        lastSyncedAt: new Date(),
+        settings: {},
+        subscribedEvents: [],
       });
       
       this.logger.log(`Created new store for merchant ${merchantId} (Easy Mode)`);
@@ -360,17 +384,17 @@ export class SallaOAuthService {
     this.logger.log(`App uninstalled for merchant ${merchantId}`);
 
     const store = await this.storeRepository.findOne({
-      where: { merchantId },
+      where: { sallaMerchantId: merchantId },
     });
 
     if (store) {
-      store.isActive = false;
-      store.disconnectedAt = new Date();
-      store.accessToken = undefined as any;
-      store.refreshToken = undefined as any;
+      store.status = StoreStatus.UNINSTALLED;
+      store.accessToken = undefined;
+      store.refreshToken = undefined;
+      store.tokenExpiresAt = undefined;
       
       await this.storeRepository.save(store);
-      this.logger.log(`Deactivated store for merchant ${merchantId}`);
+      this.logger.log(`Store uninstalled for merchant ${merchantId}`);
     }
   }
 
