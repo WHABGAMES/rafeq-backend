@@ -10,6 +10,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { HttpModule } from '@nestjs/axios';
 import { ConfigModule } from '@nestjs/config';
+import { TenantsModule } from '../tenants/tenants.module';
 
 // Controllers
 import { StoresController } from './stores.controller';
@@ -30,6 +31,7 @@ import { Store } from './entities/store.entity';
   imports: [
     TypeOrmModule.forFeature([Store]),
     ConfigModule,
+    TenantsModule,
     
     HttpModule.register({
       timeout: 30000,
