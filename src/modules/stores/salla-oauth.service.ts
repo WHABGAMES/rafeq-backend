@@ -17,7 +17,7 @@ import { firstValueFrom } from 'rxjs';
 import { Store } from './entities/store.entity';
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Types
+// ✅ Exported Types - تُستخدم في ملفات أخرى
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export interface SallaTokenResponse {
@@ -40,6 +40,17 @@ export interface OAuthResult {
   tokens: SallaTokenResponse;
   tenantId: string;
   merchantId: number;
+}
+
+/**
+ * ✅ بيانات app.store.authorize من webhook سلة
+ * تُستخدم في salla-webhooks.controller.ts
+ */
+export interface SallaAppAuthorizeData {
+  access_token: string;
+  refresh_token: string;
+  expires: number;
+  scope: string;
 }
 
 @Injectable()
@@ -70,12 +81,8 @@ export class SallaOAuthService {
 
   /**
    * ✅ توليد رابط OAuth لسلة
-   * @param tenantId معرّف المستأجر (مطلوب)
-   * @param customState state إضافي من المستخدم (اختياري)
-   * @returns رابط OAuth الكامل
    */
   generateAuthorizationUrl(tenantId: string, customState?: string): string {
-    // تشفير tenantId مع customState في الـ state parameter
     const stateData = {
       tenantId,
       custom: customState || '',
@@ -118,15 +125,11 @@ export class SallaOAuthService {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   /**
-   * ✅ استبدال الـ code بـ tokens وإنشاء/تحديث المتجر
-   * @param code الـ authorization code من سلة
-   * @param state الـ state الذي يحتوي tenantId
-   * @returns نتيجة OAuth مع tokens و tenantId
+   * ✅ استبدال الـ code بـ tokens
    */
   async exchangeCodeForTokens(code: string, state: string): Promise<OAuthResult> {
     this.logger.log('Exchanging code for tokens');
 
-    // استخراج tenantId من state
     const tenantId = this.extractTenantIdFromState(state);
     
     if (!tenantId) {
@@ -134,7 +137,6 @@ export class SallaOAuthService {
     }
 
     try {
-      // طلب الـ tokens من سلة
       const response = await firstValueFrom(
         this.httpService.post<SallaTokenResponse>(
           this.sallaTokenUrl,
@@ -154,11 +156,8 @@ export class SallaOAuthService {
       );
 
       const tokens = response.data;
-      
-      // جلب معلومات التاجر
       const merchantInfo = await this.fetchMerchantInfo(tokens.access_token);
       
-      // إنشاء أو تحديث المتجر
       await this.createOrUpdateStore(tenantId, tokens, merchantInfo);
 
       this.logger.log(`OAuth completed for tenant ${tenantId}, merchant ${merchantInfo.id}`);
@@ -180,9 +179,6 @@ export class SallaOAuthService {
   // 📊 Merchant Info
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * ✅ جلب معلومات التاجر من سلة
-   */
   async fetchMerchantInfo(accessToken: string): Promise<SallaMerchantInfo> {
     try {
       const response = await firstValueFrom(
@@ -204,21 +200,16 @@ export class SallaOAuthService {
   // 🏪 Store Management
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * ✅ إنشاء أو تحديث المتجر
-   */
   private async createOrUpdateStore(
     tenantId: string,
     tokens: SallaTokenResponse,
     merchantInfo: SallaMerchantInfo,
   ): Promise<Store> {
-    // البحث عن متجر موجود
     let store = await this.storeRepository.findOne({
       where: { merchantId: merchantInfo.id },
     });
 
     if (store) {
-      // تحديث المتجر الموجود
       store.tenantId = tenantId;
       store.accessToken = tokens.access_token;
       store.refreshToken = tokens.refresh_token;
@@ -228,7 +219,6 @@ export class SallaOAuthService {
       
       this.logger.log(`Updated existing store: ${store.id}`);
     } else {
-      // إنشاء متجر جديد
       store = this.storeRepository.create({
         tenantId,
         merchantId: merchantInfo.id,
@@ -250,9 +240,6 @@ export class SallaOAuthService {
     return this.storeRepository.save(store);
   }
 
-  /**
-   * ✅ حساب وقت انتهاء التوكن
-   */
   calculateTokenExpiry(expiresIn: number): Date {
     return new Date(Date.now() + expiresIn * 1000);
   }
@@ -261,9 +248,6 @@ export class SallaOAuthService {
   // 🔄 Token Refresh
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * ✅ تجديد الـ access token
-   */
   async refreshAccessToken(refreshToken: string): Promise<SallaTokenResponse> {
     this.logger.log('Refreshing access token');
 
@@ -297,18 +281,12 @@ export class SallaOAuthService {
   // 🔍 Store Lookup
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * ✅ البحث عن متجر بـ merchantId
-   */
   async findByMerchantId(merchantId: number): Promise<Store | null> {
     return this.storeRepository.findOne({
       where: { merchantId },
     });
   }
 
-  /**
-   * ✅ الحصول على المتاجر غير المرتبطة
-   */
   async getUnlinkedStores(): Promise<Store[]> {
     return this.storeRepository.find({
       where: { tenantId: undefined as any },
@@ -316,39 +294,44 @@ export class SallaOAuthService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 🔌 Easy Mode (App Store)
+  // 🔌 Easy Mode - Webhook Handlers
   // ═══════════════════════════════════════════════════════════════════════════════
 
   /**
-   * ✅ معالجة تفويض App Store (Easy Mode)
+   * ✅ معالجة app.store.authorize من webhook سلة
+   * يُستدعى من salla-webhooks.controller.ts
+   * 
+   * @param merchantId معرّف التاجر
+   * @param data بيانات التفويض (SallaAppAuthorizeData)
+   * @param createdAt وقت الـ webhook
    */
   async handleAppStoreAuthorize(
-    accessToken: string,
-    refreshToken: string,
-    expiresIn: number,
     merchantId: number,
+    data: SallaAppAuthorizeData,
+    createdAt: string,
   ): Promise<Store> {
-    this.logger.log(`App Store authorize for merchant ${merchantId}`);
+    this.logger.log(`App Store authorize for merchant ${merchantId}`, { createdAt });
 
-    const merchantInfo = await this.fetchMerchantInfo(accessToken);
+    const merchantInfo = await this.fetchMerchantInfo(data.access_token);
 
-    const tokens: SallaTokenResponse = {
-      access_token: accessToken,
-      refresh_token: refreshToken,
-      expires_in: expiresIn,
-      token_type: 'Bearer',
-    };
-
-    // في Easy Mode، لا يوجد tenantId بعد - سيتم ربطه لاحقاً
     let store = await this.storeRepository.findOne({
       where: { merchantId },
     });
 
+    const expiresIn = data.expires || 3600;
+
     if (store) {
-      store.accessToken = accessToken;
-      store.refreshToken = refreshToken;
+      store.accessToken = data.access_token;
+      store.refreshToken = data.refresh_token;
       store.tokenExpiresAt = this.calculateTokenExpiry(expiresIn);
+      store.lastTokenRefreshAt = new Date();
       store.isActive = true;
+      store.name = merchantInfo.name || store.name;
+      store.domain = merchantInfo.domain || store.domain;
+      store.email = merchantInfo.email || store.email;
+      store.phone = merchantInfo.mobile || store.phone;
+      
+      this.logger.log(`Updated store for merchant ${merchantId}`);
     } else {
       store = this.storeRepository.create({
         merchantId,
@@ -357,19 +340,21 @@ export class SallaOAuthService {
         email: merchantInfo.email,
         phone: merchantInfo.mobile,
         plan: merchantInfo.plan,
-        accessToken,
-        refreshToken,
+        accessToken: data.access_token,
+        refreshToken: data.refresh_token,
         tokenExpiresAt: this.calculateTokenExpiry(expiresIn),
         isActive: true,
         connectedAt: new Date(),
       });
+      
+      this.logger.log(`Created new store for merchant ${merchantId} (Easy Mode)`);
     }
 
     return this.storeRepository.save(store);
   }
 
   /**
-   * ✅ معالجة إلغاء تثبيت التطبيق
+   * ✅ معالجة app.uninstalled
    */
   async handleAppUninstalled(merchantId: number): Promise<void> {
     this.logger.log(`App uninstalled for merchant ${merchantId}`);
@@ -385,6 +370,7 @@ export class SallaOAuthService {
       store.refreshToken = undefined as any;
       
       await this.storeRepository.save(store);
+      this.logger.log(`Deactivated store for merchant ${merchantId}`);
     }
   }
 
