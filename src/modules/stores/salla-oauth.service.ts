@@ -2,7 +2,7 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Salla OAuth Service                        ║
  * ║                                                                                ║
- * ║  ✅ يدعم النمط السهل (Easy Mode) عبر app.store.authorize webhook              ║
+ * ║  ✅ يدعم النمط السهل (Easy Mode)                                               ║
  * ║  ✅ يدعم OAuth Redirect Flow                                                   ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
@@ -23,6 +23,7 @@ import { Store, StoreStatus, StorePlatform } from './entities/store.entity';
 export interface SallaMerchantInfo {
   id: number;
   name: string;
+  username?: string;
   email?: string;
   mobile?: string;
   domain?: string;
@@ -82,8 +83,8 @@ export class SallaOAuthService {
     return `https://accounts.salla.sa/oauth2/auth?${params.toString()}`;
   }
 
-  async exchangeCodeForTokens(code: string, tenantId: string): Promise<Store> {
-    this.logger.log(`Exchanging code for tokens, tenantId: ${tenantId}`);
+  async exchangeCodeForTokens(code: string): Promise<SallaTokenResponse> {
+    this.logger.log('Exchanging code for tokens');
 
     try {
       const response = await firstValueFrom(
@@ -99,43 +100,10 @@ export class SallaOAuthService {
         ),
       );
 
-      const tokens = response.data;
-      const merchantInfo = await this.fetchMerchantInfo(tokens.access_token);
-
-      let store = await this.storeRepository.findOne({
-        where: { sallaMerchantId: merchantInfo.id },
-      });
-
-      if (store) {
-        store.accessToken = tokens.access_token;
-        store.refreshToken = tokens.refresh_token;
-        store.tokenExpiresAt = new Date(Date.now() + tokens.expires_in * 1000);
-        store.status = StoreStatus.ACTIVE;
-        store.tenantId = tenantId;
-        store.lastTokenRefreshAt = new Date();
-      } else {
-        store = this.storeRepository.create({
-          tenantId,
-          platform: StorePlatform.SALLA,
-          name: merchantInfo.name || `متجر سلة ${merchantInfo.id}`,
-          status: StoreStatus.ACTIVE,
-          accessToken: tokens.access_token,
-          refreshToken: tokens.refresh_token,
-          tokenExpiresAt: new Date(Date.now() + tokens.expires_in * 1000),
-          sallaMerchantId: merchantInfo.id,
-          sallaStoreName: merchantInfo.name,
-          sallaEmail: merchantInfo.email,
-          sallaMobile: merchantInfo.mobile,
-          sallaDomain: merchantInfo.domain,
-          sallaAvatar: merchantInfo.avatar,
-          sallaPlan: merchantInfo.plan,
-        });
-      }
-
-      return this.storeRepository.save(store);
+      return response.data;
     } catch (error: any) {
       this.logger.error('Failed to exchange code for tokens', error.message);
-      throw new BadRequestException('Failed to connect to Salla');
+      throw new BadRequestException('Failed to exchange code');
     }
   }
 
@@ -162,7 +130,7 @@ export class SallaOAuthService {
         
         store.accessToken = data.access_token;
         store.refreshToken = data.refresh_token;
-        store.tokenExpiresAt = new Date(Date.now() + data.expires_in * 1000);
+        store.tokenExpiresAt = this.calculateTokenExpiry(data.expires_in);
         store.status = StoreStatus.ACTIVE;
         store.sallaStoreName = merchantInfo.name;
         store.sallaEmail = merchantInfo.email;
@@ -174,15 +142,15 @@ export class SallaOAuthService {
         store.lastError = undefined;
         store.consecutiveErrors = 0;
       } else {
-        this.logger.log(`Creating new store for merchant ${merchantId} (Easy Mode)`);
+        this.logger.log(`Creating new store for merchant ${merchantId}`);
         
         store = this.storeRepository.create({
           platform: StorePlatform.SALLA,
-          name: merchantInfo.name || `متجر سلة ${merchantId}`,
+          name: merchantInfo.name || merchantInfo.username || `متجر سلة ${merchantId}`,
           status: StoreStatus.ACTIVE,
           accessToken: data.access_token,
           refreshToken: data.refresh_token,
-          tokenExpiresAt: new Date(Date.now() + data.expires_in * 1000),
+          tokenExpiresAt: this.calculateTokenExpiry(data.expires_in),
           sallaMerchantId: merchantId,
           sallaStoreName: merchantInfo.name,
           sallaEmail: merchantInfo.email,
@@ -198,10 +166,10 @@ export class SallaOAuthService {
       }
 
       const saved = await this.storeRepository.save(store);
-      this.logger.log(`✅ Store saved: ${saved.id}, merchant: ${merchantId}`);
+      this.logger.log(`✅ Store saved: ${saved.id}`);
       return saved;
     } catch (error: any) {
-      this.logger.error(`Failed to handle app.store.authorize for merchant ${merchantId}`, error.message);
+      this.logger.error(`Failed for merchant ${merchantId}`, error.message);
       throw error;
     }
   }
@@ -218,7 +186,6 @@ export class SallaOAuthService {
       store.accessToken = undefined;
       store.refreshToken = undefined;
       await this.storeRepository.save(store);
-      this.logger.log(`Store ${store.id} marked as uninstalled`);
     }
   }
 
@@ -236,7 +203,7 @@ export class SallaOAuthService {
     }
 
     if (store.tenantId) {
-      throw new BadRequestException('Store is already linked');
+      throw new BadRequestException('Store already linked');
     }
 
     store.tenantId = tenantId;
@@ -255,11 +222,7 @@ export class SallaOAuthService {
   // 🔄 Token Refresh
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  async refreshAccessToken(store: Store): Promise<Store> {
-    if (!store.refreshToken) {
-      throw new BadRequestException('No refresh token available');
-    }
-
+  async refreshAccessToken(refreshToken: string): Promise<SallaTokenResponse> {
     try {
       const response = await firstValueFrom(
         this.httpService.post<SallaTokenResponse>(
@@ -268,32 +231,23 @@ export class SallaOAuthService {
             grant_type: 'refresh_token',
             client_id: this.clientId,
             client_secret: this.clientSecret,
-            refresh_token: store.refreshToken,
+            refresh_token: refreshToken,
           },
         ),
       );
 
-      const tokens = response.data;
-
-      store.accessToken = tokens.access_token;
-      store.refreshToken = tokens.refresh_token;
-      store.tokenExpiresAt = new Date(Date.now() + tokens.expires_in * 1000);
-      store.lastTokenRefreshAt = new Date();
-      store.status = StoreStatus.ACTIVE;
-      store.consecutiveErrors = 0;
-
-      return this.storeRepository.save(store);
+      return response.data;
     } catch (error: any) {
-      this.logger.error(`Failed to refresh token for store ${store.id}`, error.message);
-      
-      store.status = StoreStatus.TOKEN_EXPIRED;
-      store.lastError = error.message;
-      store.lastErrorAt = new Date();
-      store.consecutiveErrors += 1;
-      
-      await this.storeRepository.save(store);
-      throw error;
+      this.logger.error('Failed to refresh token', error.message);
+      throw new BadRequestException('Failed to refresh token');
     }
+  }
+
+  /**
+   * حساب تاريخ انتهاء الـ Token
+   */
+  calculateTokenExpiry(expiresIn: number): Date {
+    return new Date(Date.now() + expiresIn * 1000);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -312,6 +266,7 @@ export class SallaOAuthService {
       return {
         id: data.id,
         name: data.name,
+        username: data.username,
         email: data.email,
         mobile: data.mobile,
         domain: data.domain,
