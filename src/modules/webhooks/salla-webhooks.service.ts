@@ -2,8 +2,7 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                RAFIQ PLATFORM - Salla Webhooks Service                         ║
  * ║                                                                                ║
- * ║  ✅ Production-ready: ربط merchantId → Store → tenantId                       ║
- * ║  ✅ يدعم tenantId nullable للنمط السهل                                        ║
+ * ║  ✅ يدعم tenantId nullable                                                     ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -47,13 +46,10 @@ export class SallaWebhooksService {
     const startTime = Date.now();
 
     try {
-      // ✅ البحث عن المتجر باستخدام merchantId
       const storeInfo = await this.findStoreByMerchantId(payload.merchant);
 
       if (!storeInfo) {
-        this.logger.warn(`No store found for merchant ${payload.merchant} - webhook will be saved without tenantId`);
-      } else {
-        this.logger.debug(`Found store for merchant ${payload.merchant}: tenantId=${storeInfo.tenantId || 'N/A'}`);
+        this.logger.warn(`No store found for merchant ${payload.merchant}`);
       }
 
       const webhookEvent = this.webhookEventRepository.create({
@@ -75,7 +71,7 @@ export class SallaWebhooksService {
 
       const savedEvent = await this.webhookEventRepository.save(webhookEvent);
 
-      // إنشاء log (سيتم تخطيه إذا لم يكن هناك tenantId)
+      // Log only if tenantId exists
       if (savedEvent.tenantId) {
         await this.createLog(savedEvent.id, savedEvent.tenantId, {
           action: WebhookLogAction.RECEIVED,
@@ -113,8 +109,6 @@ export class SallaWebhooksService {
       this.logger.log(`✅ Webhook queued: ${payload.eventType}`, {
         jobId: job.id,
         webhookEventId: savedEvent.id,
-        tenantId: storeInfo?.tenantId || 'N/A',
-        duration: `${Date.now() - startTime}ms`,
       });
 
       return job.id as string;
@@ -122,7 +116,6 @@ export class SallaWebhooksService {
     } catch (error) {
       this.logger.error(`❌ Failed to queue webhook: ${payload.eventType}`, {
         error: error instanceof Error ? error.message : 'Unknown',
-        merchant: payload.merchant,
       });
       throw error;
     }
@@ -196,9 +189,12 @@ export class SallaWebhooksService {
     return event?.attempts || 1;
   }
 
+  /**
+   * إنشاء Log - يقبل tenantId nullable
+   */
   async createLog(
     webhookEventId: string,
-    tenantId: string,
+    tenantId: string | undefined | null,
     data: {
       action: WebhookLogAction;
       previousStatus?: WebhookStatus;
@@ -210,7 +206,13 @@ export class SallaWebhooksService {
       attemptNumber?: number;
       triggeredBy?: string;
     },
-  ): Promise<WebhookLog> {
+  ): Promise<WebhookLog | null> {
+    // Skip if no tenantId
+    if (!tenantId) {
+      this.logger.debug('Skipping log: no tenantId');
+      return null;
+    }
+
     const log = this.webhookLogRepository.create({
       webhookEventId,
       tenantId,
@@ -220,34 +222,23 @@ export class SallaWebhooksService {
     return this.webhookLogRepository.save(log);
   }
 
-  /**
-   * ✅ البحث عن المتجر - يُرجع tenantId و storeId
-   * tenantId قد يكون undefined في النمط السهل
-   */
   private async findStoreByMerchantId(merchantId: number): Promise<{
     tenantId?: string;
     storeId: string;
   } | null> {
-    this.logger.debug(`Looking up store for merchant ${merchantId}`);
-    
     try {
       const store = await this.storesService.findByMerchantId(merchantId);
       
       if (store) {
-        this.logger.debug(`Found store: ${store.id} for merchant ${merchantId}`);
         return {
           tenantId: store.tenantId || undefined,
           storeId: store.id,
         };
       }
       
-      this.logger.debug(`No store found for merchant ${merchantId}`);
       return null;
-      
     } catch (error) {
-      this.logger.error(`Error looking up store for merchant ${merchantId}`, {
-        error: error instanceof Error ? error.message : 'Unknown',
-      });
+      this.logger.error(`Error looking up store for merchant ${merchantId}`);
       return null;
     }
   }
@@ -291,11 +282,7 @@ export class SallaWebhooksService {
       .createQueryBuilder('event')
       .where('event.tenantId = :tenantId', { tenantId })
       .andWhere('event.createdAt >= :startDate', { startDate })
-      .select([
-        'event.status',
-        'event.eventType',
-        'event.processingDurationMs',
-      ])
+      .select(['event.status', 'event.eventType', 'event.processingDurationMs'])
       .getMany();
 
     const byStatus: Record<string, number> = {};
@@ -325,10 +312,7 @@ export class SallaWebhooksService {
 
   async getFailedWebhooks(tenantId: string, limit: number = 50): Promise<WebhookEvent[]> {
     return this.webhookEventRepository.find({
-      where: {
-        tenantId,
-        status: WebhookStatus.FAILED,
-      },
+      where: { tenantId, status: WebhookStatus.FAILED },
       order: { createdAt: 'DESC' },
       take: limit,
     });
@@ -353,9 +337,7 @@ export class SallaWebhooksService {
         storeId: event.storeId,
         isRetry: true,
       },
-      {
-        priority: 1,
-      },
+      { priority: 1 },
     );
 
     if (event.tenantId) {
