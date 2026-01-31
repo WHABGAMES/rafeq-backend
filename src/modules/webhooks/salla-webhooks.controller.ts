@@ -2,9 +2,8 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                RAFIQ PLATFORM - Salla Webhooks Controller                      ║
  * ║                                                                                ║
- * ║  ✅ يستقبل جميع webhooks من سلة                                               ║
- * ║  ✅ يدعم app.store.authorize (النمط السهل)                                    ║
- * ║  ✅ يدعم جميع أحداث المتجر (orders, customers, etc)                          ║
+ * ║  ✅ يستقبل webhooks من سلة                                                     ║
+ * ║  ✅ يدعم app.store.authorize للنمط السهل                                       ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -16,317 +15,204 @@ import {
   HttpCode,
   HttpStatus,
   Logger,
-  BadRequestException,
+  RawBodyRequest,
+  Req,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { ApiTags, ApiOperation, ApiHeader } from '@nestjs/swagger';
+import { Request } from 'express';
 import * as crypto from 'crypto';
+import { ConfigService } from '@nestjs/config';
 
-// Services
 import { SallaWebhooksService } from './salla-webhooks.service';
 import { SallaOAuthService, SallaAppAuthorizeData } from '../stores/salla-oauth.service';
+import { SallaWebhookDto, SallaWebhookJobDto } from './dto/salla-webhook.dto';
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// Interfaces
-// ═══════════════════════════════════════════════════════════════════════════════
-
-interface SallaWebhookPayload {
-  event: string;
-  merchant: number;
-  created_at: string;
-  data: Record<string, any>;
-}
-
-interface WebhookHeaders {
-  'x-salla-signature'?: string;
-  'x-salla-timestamp'?: string;
-  'content-type'?: string;
-}
-
+@ApiTags('Webhooks - Salla')
 @Controller('webhooks/salla')
 export class SallaWebhooksController {
   private readonly logger = new Logger(SallaWebhooksController.name);
+  private readonly webhookSecret: string;
 
   constructor(
     private readonly webhooksService: SallaWebhooksService,
     private readonly sallaOAuthService: SallaOAuthService,
     private readonly configService: ConfigService,
-  ) {}
+  ) {
+    this.webhookSecret = this.configService.get<string>('SALLA_WEBHOOK_SECRET', '');
+  }
 
   /**
-   * ✅ POST /api/webhooks/salla
-   * نقطة استقبال جميع webhooks من سلة
+   * 🔔 استقبال Webhooks من سلة
    */
   @Post()
   @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Receive Salla webhooks' })
+  @ApiHeader({ name: 'x-salla-signature', description: 'HMAC signature' })
   async handleWebhook(
-    @Body() payload: SallaWebhookPayload,
-    @Headers() headers: WebhookHeaders,
-  ): Promise<{ success: boolean; message: string }> {
+    @Req() req: RawBodyRequest<Request>,
+    @Body() payload: SallaWebhookDto,
+    @Headers('x-salla-signature') signature?: string,
+    @Headers('x-salla-delivery') deliveryId?: string,
+  ): Promise<{ success: boolean; message: string; jobId?: string }> {
     const startTime = Date.now();
-    const { event, merchant } = payload;
-
-    this.logger.log(`📨 Received Salla webhook: ${event}`, {
-      merchant,
-      hasSignature: !!headers['x-salla-signature'],
+    
+    this.logger.log(`📥 Webhook received: ${payload.event}`, {
+      merchant: payload.merchant,
+      deliveryId,
     });
 
-    try {
-      // 1. التحقق من التوقيع (اختياري في التطوير)
-      const signatureValid = this.verifySignature(payload, headers);
-      
-      if (!signatureValid) {
-        this.logger.warn(`⚠️ Invalid Salla webhook signature for ${event}`);
-        // نستمر حتى لو التوقيع خاطئ (للتطوير)
-        // في الإنتاج: throw new BadRequestException('Invalid signature');
-      }
-
-      // 2. معالجة الحدث حسب نوعه
-      let result: { success: boolean; message: string };
-
-      if (this.isAppEvent(event)) {
-        // ✅ أحداث التطبيق (النمط السهل)
-        result = await this.handleAppEvent(payload);
-      } else {
-        // ✅ أحداث المتجر (orders, customers, etc)
-        result = await this.handleStoreEvent(payload, headers, signatureValid);
-      }
-
-      this.logger.log(`✅ Webhook processed: ${event}`, {
-        duration: `${Date.now() - startTime}ms`,
-        result: result.message,
-      });
-
-      return result;
-
-    } catch (error) {
-      this.logger.error(`❌ Webhook processing failed: ${event}`, {
-        error: error instanceof Error ? error.message : 'Unknown',
-        merchant,
-      });
-
-      // نرجع 200 حتى لا تعيد سلة إرسال الـ webhook
-      return {
-        success: false,
-        message: error instanceof Error ? error.message : 'Processing failed',
-      };
+    // التحقق من التوقيع
+    const signatureValid = this.verifySignature(req.rawBody, signature);
+    
+    if (!signatureValid) {
+      this.logger.warn(`⚠️ Invalid signature for webhook ${payload.event}`);
+      // نستمر بالمعالجة حتى لو كان التوقيع غير صحيح (للتطوير)
     }
-  }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // ✅ معالجة أحداث التطبيق (النمط السهل)
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  private async handleAppEvent(
-    payload: SallaWebhookPayload,
-  ): Promise<{ success: boolean; message: string }> {
-    const { event, merchant, data, created_at } = payload;
-
-    this.logger.log(`📱 Processing app event: ${event}`, { merchant });
-
-    switch (event) {
-      // ✅ أهم حدث - ربط المتجر
-      case 'app.store.authorize': {
-        const authorizeData = data as SallaAppAuthorizeData;
-        
-        const store = await this.sallaOAuthService.handleAppStoreAuthorize(
-          merchant,
-          authorizeData,
-          created_at,
-        );
-
-        return {
-          success: true,
-          message: `Store ${store.id} authorized successfully`,
-        };
-      }
-
-      // ✅ تثبيت التطبيق
-      case 'app.installed': {
-        this.logger.log(`📦 App installed for merchant ${merchant}`, {
-          appName: data.app_name,
-          storeType: data.store_type,
-        });
-        
-        return {
-          success: true,
-          message: `App installed for merchant ${merchant}`,
-        };
-      }
-
-      // ✅ إلغاء تثبيت التطبيق
-      case 'app.uninstalled': {
-        await this.sallaOAuthService.handleAppUninstalled(merchant);
-        
-        return {
-          success: true,
-          message: `App uninstalled for merchant ${merchant}`,
-        };
-      }
-
-      // ✅ أحداث الاشتراك
-      case 'app.subscription.started':
-      case 'app.subscription.renewed':
-      case 'app.subscription.canceled':
-      case 'app.subscription.expired':
-      case 'app.trial.started':
-      case 'app.trial.expired':
-      case 'app.trial.canceled': {
-        this.logger.log(`💳 Subscription event: ${event}`, {
-          merchant,
-          planName: data.plan_name,
-        });
-        
-        // TODO: معالجة الاشتراكات
-        return {
-          success: true,
-          message: `Subscription event ${event} received`,
-        };
-      }
-
-      // ✅ تقييم التطبيق
-      case 'app.feedback.created': {
-        this.logger.log(`⭐ App feedback received`, {
-          merchant,
-          rating: data.rating,
-        });
-        
-        return {
-          success: true,
-          message: `Feedback received with rating ${data.rating}`,
-        };
-      }
-
-      // ✅ تحديث إعدادات التطبيق
-      case 'app.settings.updated': {
-        this.logger.log(`⚙️ App settings updated`, {
-          merchant,
-          settings: data.settings,
-        });
-        
-        return {
-          success: true,
-          message: 'Settings updated',
-        };
-      }
-
-      default:
-        this.logger.warn(`Unknown app event: ${event}`);
-        return {
-          success: true,
-          message: `Unknown app event: ${event}`,
-        };
+    // معالجة خاصة لـ app.store.authorize (النمط السهل)
+    if (payload.event === 'app.store.authorize') {
+      return this.handleAppStoreAuthorize(payload);
     }
-  }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // ✅ معالجة أحداث المتجر (orders, customers, etc)
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  private async handleStoreEvent(
-    payload: SallaWebhookPayload,
-    headers: WebhookHeaders,
-    signatureValid: boolean,
-  ): Promise<{ success: boolean; message: string }> {
-    const { event, merchant, data, created_at } = payload;
+    // معالجة خاصة لـ app.uninstalled
+    if (payload.event === 'app.uninstalled') {
+      return this.handleAppUninstalled(payload);
+    }
 
     // التحقق من التكرار
     const idempotencyKey = this.generateIdempotencyKey(payload);
     const isDuplicate = await this.webhooksService.checkDuplicate(idempotencyKey);
-
+    
     if (isDuplicate) {
-      this.logger.warn(`Duplicate webhook detected: ${event}`, { idempotencyKey });
-      return { success: true, message: 'Duplicate webhook ignored' };
+      this.logger.log(`⏭️ Duplicate webhook skipped: ${payload.event}`);
+      return { success: true, message: 'Duplicate webhook - already processed' };
     }
 
-    // إضافة للـ queue للمعالجة
-    const jobId = await this.webhooksService.queueWebhook({
-      eventType: event,
-      merchant,
-      data,
-      deliveryId: headers['x-salla-timestamp'] || Date.now().toString(),
+    // إضافة للـ Queue
+    const jobData: SallaWebhookJobDto = {
+      eventType: payload.event,
+      merchant: payload.merchant,
+      data: payload.data,
+      createdAt: payload.created_at,
+      deliveryId: deliveryId || `delivery_${Date.now()}`,
       idempotencyKey,
-      signature: headers['x-salla-signature'],
-      headers: headers as Record<string, string>,
-      ipAddress: '0.0.0.0', // Will be set by middleware
+      signature,
+      headers: this.extractHeaders(req),
+      ipAddress: this.getClientIp(req),
+    };
+
+    const jobId = await this.webhooksService.queueWebhook(jobData);
+
+    this.logger.log(`✅ Webhook queued: ${payload.event}`, {
+      jobId,
+      duration: `${Date.now() - startTime}ms`,
     });
 
-    return {
-      success: true,
-      message: `Webhook queued with job ID: ${jobId}`,
-    };
+    return { success: true, message: 'Webhook received', jobId };
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🛠️ Helper Methods
-  // ═══════════════════════════════════════════════════════════════════════════════
+  /**
+   * ⚡ معالجة app.store.authorize (النمط السهل)
+   */
+  private async handleAppStoreAuthorize(
+    payload: SallaWebhookDto,
+  ): Promise<{ success: boolean; message: string }> {
+    this.logger.log(`⚡ Processing app.store.authorize for merchant ${payload.merchant}`);
+
+    try {
+      const data = payload.data as unknown as SallaAppAuthorizeData;
+
+      await this.sallaOAuthService.handleAppStoreAuthorize(
+        payload.merchant,
+        data,
+        payload.created_at,
+      );
+
+      this.logger.log(`✅ app.store.authorize processed for merchant ${payload.merchant}`);
+      
+      return { success: true, message: 'Store authorized successfully' };
+    } catch (error: any) {
+      this.logger.error(`❌ Failed to process app.store.authorize`, error.message);
+      return { success: false, message: error.message };
+    }
+  }
 
   /**
-   * التحقق من توقيع Webhook
+   * 🗑️ معالجة app.uninstalled
    */
-  private verifySignature(
-    payload: SallaWebhookPayload,
-    headers: WebhookHeaders,
-  ): boolean {
-    const signature = headers['x-salla-signature'];
-    
-    if (!signature) {
-      this.logger.warn('No signature provided');
-      return false;
-    }
+  private async handleAppUninstalled(
+    payload: SallaWebhookDto,
+  ): Promise<{ success: boolean; message: string }> {
+    this.logger.log(`🗑️ Processing app.uninstalled for merchant ${payload.merchant}`);
 
-    const secret = this.configService.get<string>('SALLA_WEBHOOK_SECRET');
-    
-    if (!secret) {
-      this.logger.warn('SALLA_WEBHOOK_SECRET not configured');
+    try {
+      await this.sallaOAuthService.handleAppUninstalled(payload.merchant);
+      
+      this.logger.log(`✅ app.uninstalled processed for merchant ${payload.merchant}`);
+      
+      return { success: true, message: 'App uninstalled processed' };
+    } catch (error: any) {
+      this.logger.error(`❌ Failed to process app.uninstalled`, error.message);
+      return { success: false, message: error.message };
+    }
+  }
+
+  /**
+   * 🔐 التحقق من التوقيع
+   */
+  private verifySignature(rawBody: Buffer | undefined, signature: string | undefined): boolean {
+    if (!this.webhookSecret || !signature || !rawBody) {
       return false;
     }
 
     try {
-      const payloadString = JSON.stringify(payload);
-      const computedSignature = crypto
-        .createHmac('sha256', secret)
-        .update(payloadString)
+      const expectedSignature = crypto
+        .createHmac('sha256', this.webhookSecret)
+        .update(rawBody)
         .digest('hex');
 
-      const isValid = crypto.timingSafeEqual(
+      return crypto.timingSafeEqual(
         Buffer.from(signature),
-        Buffer.from(computedSignature),
+        Buffer.from(expectedSignature),
       );
-
-      if (!isValid) {
-        this.logger.warn('Signature mismatch', {
-          received: signature.substring(0, 20) + '...',
-          computed: computedSignature.substring(0, 20) + '...',
-        });
-      }
-
-      return isValid;
-
-    } catch (error) {
-      this.logger.error('Signature verification error', {
-        error: error instanceof Error ? error.message : 'Unknown',
-      });
+    } catch {
       return false;
     }
   }
 
   /**
-   * التحقق مما إذا كان الحدث من نوع App Event
+   * 🔑 توليد مفتاح التكرار
    */
-  private isAppEvent(event: string): boolean {
-    return event.startsWith('app.');
+  private generateIdempotencyKey(payload: SallaWebhookDto): string {
+    const data = `${payload.event}_${payload.merchant}_${payload.created_at}_${JSON.stringify(payload.data).slice(0, 100)}`;
+    return crypto.createHash('sha256').update(data).digest('hex');
   }
 
   /**
-   * توليد مفتاح فريد للتحقق من التكرار
+   * 📋 استخراج الـ Headers
    */
-  private generateIdempotencyKey(payload: SallaWebhookPayload): string {
-    const { event, merchant, created_at, data } = payload;
-    const dataId = data.id || data.order_id || data.customer_id || '';
+  private extractHeaders(req: Request): Record<string, string> {
+    const headers: Record<string, string> = {};
+    const allowedHeaders = ['x-salla-signature', 'x-salla-delivery', 'content-type', 'user-agent'];
     
-    return crypto
-      .createHash('sha256')
-      .update(`${event}:${merchant}:${created_at}:${dataId}`)
-      .digest('hex');
+    for (const key of allowedHeaders) {
+      const value = req.headers[key];
+      if (typeof value === 'string') {
+        headers[key] = value;
+      }
+    }
+    
+    return headers;
+  }
+
+  /**
+   * 🌐 الحصول على IP العميل
+   */
+  private getClientIp(req: Request): string {
+    const forwarded = req.headers['x-forwarded-for'];
+    if (typeof forwarded === 'string') {
+      return forwarded.split(',')[0].trim();
+    }
+    return req.ip || '0.0.0.0';
   }
 }
