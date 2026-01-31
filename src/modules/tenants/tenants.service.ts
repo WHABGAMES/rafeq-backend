@@ -62,6 +62,53 @@ export class TenantsService {
     });
   }
 
+  /**
+   * ✅ إنشاء Tenant تلقائيًا عند تثبيت تطبيق سلة (Easy Mode)
+   * - يضمن uniqueness للـ email والـ slug
+   * - يعيد tenant موجود إذا كان البريد موجود
+   */
+  async createTenantFromSalla(input: {
+    merchantId: number;
+    name?: string;
+    email?: string;
+    phone?: string;
+    logo?: string;
+    website?: string;
+  }): Promise<Tenant> {
+    const email = (input.email || `merchant-${input.merchantId}@salla.local`).toLowerCase();
+
+    // إذا موجود بنفس البريد نرجعه (تجنب تكرار unique constraint)
+    const existingByEmail = await this.findByEmail(email);
+    if (existingByEmail) return existingByEmail;
+
+    // slug آمن ومميز
+    const baseSlug = `salla-${input.merchantId}`;
+    let slug = baseSlug;
+    let i = 1;
+
+    // في حال تضارب slug (نادر) نضيف suffix
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const found = await this.tenantRepository.findOne({ where: { slug } });
+      if (!found) break;
+      i += 1;
+      slug = `${baseSlug}-${i}`;
+    }
+
+    const tenant = this.tenantRepository.create({
+      name: input.name?.trim() || `Salla Merchant ${input.merchantId}`,
+      email,
+      slug,
+      phone: input.phone,
+      logo: input.logo,
+      website: input.website,
+      status: TenantStatus.ACTIVE,
+      subscriptionPlan: SubscriptionPlan.FREE,
+    });
+
+    return this.tenantRepository.save(tenant);
+  }
+
   async update(id: string, dto: UpdateTenantDto): Promise<Tenant> {
     const tenant = await this.findById(id);
     Object.assign(tenant, dto);
