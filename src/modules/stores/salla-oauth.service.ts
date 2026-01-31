@@ -334,6 +334,18 @@ export class SallaOAuthService {
     const expiresIn = data.expires || 3600;
 
     if (store) {
+      // ✅ إذا المتجر موجود لكن غير مربوط بـ tenant (tenant_id NULL) أنشئ tenant وربطه (Production)
+      if (!store.tenantId) {
+        const tenant = await this.tenantsService.createTenantFromSalla({
+          merchantId,
+          storeName: merchantInfo.name || merchantInfo.username || `متجر سلة`,
+          email: merchantInfo.email,
+          phone: merchantInfo.mobile,
+          logo: merchantInfo.avatar,
+          website: merchantInfo.domain,
+        });
+        store.tenantId = tenant.id;
+      }
       // تحديث المتجر الموجود
       store.accessToken = data.access_token;
       store.refreshToken = data.refresh_token;
@@ -353,8 +365,18 @@ export class SallaOAuthService {
       
       this.logger.log(`Updated store for merchant ${merchantId}`);
     } else {
-      // إنشاء متجر جديد - في Easy Mode لا يوجد tenantId بعد
+      // ✅ إنشاء Tenant تلقائي (Production) ثم إنشاء المتجر مرتبط بالـ tenantId
+      const tenant = await this.tenantsService.createTenantFromSalla({
+        merchantId,
+        storeName: merchantInfo.name || merchantInfo.username || `متجر سلة`,
+        email: merchantInfo.email,
+        phone: merchantInfo.mobile,
+        logo: merchantInfo.avatar,
+        website: merchantInfo.domain,
+      });
+
       store = this.storeRepository.create({
+        tenantId: tenant.id,
         name: merchantInfo.name || merchantInfo.username || `متجر سلة`,
         platform: StorePlatform.SALLA,
         status: StoreStatus.ACTIVE,
@@ -372,8 +394,8 @@ export class SallaOAuthService {
         settings: {},
         subscribedEvents: [],
       });
-      
-      this.logger.log(`Created new store for merchant ${merchantId} (Easy Mode)`);
+
+      this.logger.log(`Created new store for merchant ${merchantId} (Easy Mode + Auto Tenant)`);
     }
 
     return this.storeRepository.save(store);
