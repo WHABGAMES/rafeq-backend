@@ -17,22 +17,27 @@ import {
   Res,
   UseGuards,
   Logger,
-  HttpStatus,
 } from '@nestjs/common';
 import { Response, Request } from 'express';
 import { ConfigService } from '@nestjs/config';
 
-// ✅ Guards
+// Guards
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
 // Services
 import { SallaOAuthService } from './salla-oauth.service';
 
-// DTOs
-import { SallaConnectDto } from './dto/salla-connect.dto';
-import { SallaCallbackDto } from './dto/salla-callback.dto';
+// ✅ DTOs inline - لا حاجة لملفات خارجية
+interface SallaConnectDto {
+  state?: string;
+}
 
-// ✅ لا يوجد UnauthorizedException - لأننا نستخدم JwtAuthGuard
+interface SallaCallbackQuery {
+  code?: string;
+  state?: string;
+  error?: string;
+  error_description?: string;
+}
 
 @Controller('stores/salla')
 export class SallaOAuthController {
@@ -47,11 +52,6 @@ export class SallaOAuthController {
    * ═══════════════════════════════════════════════════════════════════════════════
    * ✅ POST /stores/salla/connect
    * ═══════════════════════════════════════════════════════════════════════════════
-   * 
-   * - محمي بـ JwtAuthGuard (يتطلب تسجيل دخول)
-   * - يستقبل state من الـ Frontend للحماية من CSRF
-   * - يرجع { redirectUrl } فقط
-   * - لا يرجع store_id أو أي بيانات حساسة
    */
   @Post('connect')
   @UseGuards(JwtAuthGuard)
@@ -73,7 +73,6 @@ export class SallaOAuthController {
       dto.state,
     );
 
-    // ✅ يرجع { redirectUrl } فقط
     return { redirectUrl };
   }
 
@@ -81,16 +80,10 @@ export class SallaOAuthController {
    * ═══════════════════════════════════════════════════════════════════════════════
    * ✅ GET /stores/salla/callback
    * ═══════════════════════════════════════════════════════════════════════════════
-   * 
-   * - ❌ بدون Guard - لأن سلة ترسل الـ callback
-   * - يعالج الـ OAuth callback من سلة
-   * - يستبدل الـ code بـ tokens
-   * - يحفظ المتجر في قاعدة البيانات
-   * - يعيد توجيه المستخدم للـ Frontend مع status فقط
    */
   @Get('callback')
   async callback(
-    @Query() query: SallaCallbackDto,
+    @Query() query: SallaCallbackQuery,
     @Res() res: Response,
   ): Promise<void> {
     const frontendUrl = this.configService.get<string>('FRONTEND_URL', 'https://rafeq.ai');
@@ -126,11 +119,10 @@ export class SallaOAuthController {
       );
 
       this.logger.log(`OAuth completed successfully`, {
-        storeId: result.store.id,
-        merchantId: result.store.merchantId,
+        tenantId: result.tenantId,
       });
 
-      // ✅ توجيه مع status فقط - لا store_id
+      // ✅ توجيه مع status فقط
       return res.redirect(
         `${frontendUrl}${redirectPath}?status=success&state=${query.state || ''}`,
       );
@@ -145,26 +137,5 @@ export class SallaOAuthController {
         `${frontendUrl}${redirectPath}?status=error&reason=connection_failed`,
       );
     }
-  }
-
-  /**
-   * ═══════════════════════════════════════════════════════════════════════════════
-   * GET /stores/salla/status
-   * ═══════════════════════════════════════════════════════════════════════════════
-   * 
-   * - محمي بـ JwtAuthGuard
-   * - يرجع حالة الربط للـ tenant
-   */
-  @Get('status')
-  @UseGuards(JwtAuthGuard)
-  async getStatus(@Req() req: Request): Promise<{
-    connected: boolean;
-    storeCount: number;
-  }> {
-    const user = req.user as { tenantId: string };
-    
-    const status = await this.sallaOAuthService.getConnectionStatus(user.tenantId);
-    
-    return status;
   }
 }
