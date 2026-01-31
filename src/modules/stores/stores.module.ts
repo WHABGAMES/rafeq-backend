@@ -53,10 +53,15 @@ import { Store } from './entities/store.entity';
     ZidOAuthService,
   ],
 
+  // ✅ تصدير جميع الـ Services المطلوبة من modules أخرى
   exports: [
     StoresService,
+    // Salla
     SallaApiService,
+    SallaOAuthService,  // ✅ مطلوب في WebhooksModule
+    // Zid
     ZidApiService,
+    ZidOAuthService,    // ✅ للاكتمال
   ],
 })
 export class StoresModule {}
