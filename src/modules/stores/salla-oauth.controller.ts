@@ -1,192 +1,170 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║                RAFIQ PLATFORM - Salla OAuth Controller                         ║
+ * ║                RAFIQ - Salla OAuth Controller                                  ║
  * ║                                                                                ║
- * ║  ✅ Updated: Secure redirects with status param (no store_id exposure)         ║
+ * ║  ✅ POST /connect - مع JwtAuthGuard - يرجع { redirectUrl }                    ║
+ * ║  ✅ GET /callback - بدون Guard - يعالج الـ OAuth callback                     ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
 import {
   Controller,
-  Get,
   Post,
+  Get,
   Query,
   Body,
+  Req,
   Res,
-  Logger,
-  BadRequestException,
   UseGuards,
-  Request,
+  Logger,
+  HttpStatus,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
-import { Response } from 'express';
+import { Response, Request } from 'express';
 import { ConfigService } from '@nestjs/config';
+
+// ✅ Guards
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
 // Services
 import { SallaOAuthService } from './salla-oauth.service';
-import { StoresService } from './stores.service';
 
-// Auth
-import { JwtAuthGuard, Public } from '../auth/guards/jwt-auth.guard';
-import { User } from '@database/entities';
+// DTOs
+import { SallaConnectDto } from './dto/salla-connect.dto';
+import { SallaCallbackDto } from './dto/salla-callback.dto';
 
-interface RequestWithUser extends Request {
-  user: User;
-}
+// ✅ لا يوجد UnauthorizedException - لأننا نستخدم JwtAuthGuard
 
 @Controller('stores/salla')
-@ApiTags('Salla OAuth')
 export class SallaOAuthController {
   private readonly logger = new Logger(SallaOAuthController.name);
 
   constructor(
     private readonly sallaOAuthService: SallaOAuthService,
-    private readonly storesService: StoresService,
     private readonly configService: ConfigService,
   ) {}
 
   /**
+   * ═══════════════════════════════════════════════════════════════════════════════
    * ✅ POST /stores/salla/connect
-   * بدء عملية OAuth - يستقبل CSRF state من Frontend
+   * ═══════════════════════════════════════════════════════════════════════════════
+   * 
+   * - محمي بـ JwtAuthGuard (يتطلب تسجيل دخول)
+   * - يستقبل state من الـ Frontend للحماية من CSRF
+   * - يرجع { redirectUrl } فقط
+   * - لا يرجع store_id أو أي بيانات حساسة
    */
   @Post('connect')
   @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth('JWT-auth')
-  @ApiOperation({
-    summary: 'بدء ربط متجر سلة',
-    description: 'يُرجع رابط OAuth للتحويل',
-  })
-  async connectStore(
-    @Request() req: RequestWithUser,
-    @Body() body: { state?: string },
+  async connect(
+    @Body() dto: SallaConnectDto,
+    @Req() req: Request,
   ): Promise<{ redirectUrl: string }> {
-    const tenantId = req.user.tenantId;
-    const csrfState = body.state;
+    const user = req.user as { id: string; tenantId: string };
 
-    try {
-      // ✅ Generate auth URL with tenant + CSRF state
-      const authUrl = this.sallaOAuthService.generateAuthorizationUrl(tenantId, csrfState);
-      
-      this.logger.log(`Generated OAuth URL for tenant ${tenantId}`);
-      
-      return { redirectUrl: authUrl };
-    } catch (error: any) {
-      this.logger.error('Failed to start OAuth flow', error);
-      throw new BadRequestException('Failed to start connection process');
-    }
+    this.logger.log(`OAuth connect initiated`, {
+      userId: user.id,
+      tenantId: user.tenantId,
+      hasState: !!dto.state,
+    });
+
+    // توليد رابط التفويض
+    const redirectUrl = this.sallaOAuthService.generateAuthorizationUrl(
+      user.tenantId,
+      dto.state,
+    );
+
+    // ✅ يرجع { redirectUrl } فقط
+    return { redirectUrl };
   }
 
   /**
-   * ✅ GET /stores/salla/connect (Legacy support)
-   * للتوافق مع الطريقة القديمة
-   */
-  @Get('connect')
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth('JWT-auth')
-  @ApiOperation({
-    summary: 'بدء ربط متجر سلة (Legacy)',
-    description: 'يُحول المستخدم لصفحة تسجيل الدخول في سلة',
-  })
-  async connectStoreLegacy(
-    @Request() req: RequestWithUser,
-    @Res() res: Response,
-  ): Promise<void> {
-    const tenantId = req.user.tenantId;
-
-    try {
-      const authUrl = this.sallaOAuthService.generateAuthorizationUrl(tenantId);
-      this.logger.log(`Redirecting tenant ${tenantId} to Salla OAuth`);
-      res.redirect(authUrl);
-    } catch (error: any) {
-      this.logger.error('Failed to start OAuth flow', error);
-      throw new BadRequestException('Failed to start connection process');
-    }
-  }
-
-  /**
+   * ═══════════════════════════════════════════════════════════════════════════════
    * ✅ GET /stores/salla/callback
-   * Callback من سلة - يعالج النتيجة ويحوّل للـ Frontend
+   * ═══════════════════════════════════════════════════════════════════════════════
+   * 
+   * - ❌ بدون Guard - لأن سلة ترسل الـ callback
+   * - يعالج الـ OAuth callback من سلة
+   * - يستبدل الـ code بـ tokens
+   * - يحفظ المتجر في قاعدة البيانات
+   * - يعيد توجيه المستخدم للـ Frontend مع status فقط
    */
   @Get('callback')
-  @Public()
-  @ApiOperation({
-    summary: 'Callback من سلة',
-    description: 'يستقبل authorization code من سلة ويكمل عملية الربط',
-  })
-  async handleCallback(
-    @Query('code') code: string,
-    @Query('state') state: string,
-    @Query('error') error: string,
-    @Query('error_description') errorDescription: string,
+  async callback(
+    @Query() query: SallaCallbackDto,
     @Res() res: Response,
   ): Promise<void> {
-    // ✅ Frontend URL for redirects
-    const frontendUrl = this.configService.get<string>('app.frontendUrl') || 'https://rafeq.ai';
-    const connectPage = `${frontendUrl}/connect-store.html`;
+    const frontendUrl = this.configService.get<string>('FRONTEND_URL', 'https://rafeq.ai');
+    const redirectPath = '/dashboard/stores';
 
     try {
-      // ═══════════════════════════════════════════════════════════════════════════
-      // Handle OAuth Error from Salla
-      // ═══════════════════════════════════════════════════════════════════════════
-      if (error) {
-        this.logger.warn('OAuth error from Salla', { error, errorDescription });
-        
-        // ✅ Secure redirect: status + reason (no sensitive data)
-        const reason = error === 'access_denied' ? 'access_denied' : 'connection_failed';
-        res.redirect(`${connectPage}?status=error&reason=${reason}&state=${state || ''}`);
-        return;
-      }
-
-      // ═══════════════════════════════════════════════════════════════════════════
-      // Validate Required Params
-      // ═══════════════════════════════════════════════════════════════════════════
-      if (!code || !state) {
-        this.logger.warn('Missing code or state in callback');
-        res.redirect(`${connectPage}?status=error&reason=invalid_state`);
-        return;
-      }
-
-      // ═══════════════════════════════════════════════════════════════════════════
-      // Exchange Code for Tokens
-      // ═══════════════════════════════════════════════════════════════════════════
-      const { tokens, tenantId, csrfState } = await this.sallaOAuthService.exchangeCodeForTokens(code, state);
-      
-      // ═══════════════════════════════════════════════════════════════════════════
-      // Get Merchant Info
-      // ═══════════════════════════════════════════════════════════════════════════
-      const merchantInfo = await this.sallaOAuthService.getMerchantInfo(tokens.access_token);
-
-      // ═══════════════════════════════════════════════════════════════════════════
-      // Create/Update Store
-      // ═══════════════════════════════════════════════════════════════════════════
-      const store = await this.storesService.connectSallaStore(tenantId, {
-        tokens: {
-          accessToken: tokens.access_token,
-          refreshToken: tokens.refresh_token,
-          expiresAt: this.sallaOAuthService.calculateTokenExpiry(tokens.expires_in),
-        },
-        merchantInfo,
+      this.logger.log(`OAuth callback received`, {
+        hasCode: !!query.code,
+        hasState: !!query.state,
+        hasError: !!query.error,
       });
 
-      this.logger.log(`✅ Successfully connected Salla store: ${merchantInfo.name}`, {
-        tenantId,
-        storeId: store.id,
-        merchantId: merchantInfo.id,
+      // التحقق من الأخطاء من سلة
+      if (query.error) {
+        this.logger.warn(`OAuth error from Salla: ${query.error}`);
+        return res.redirect(
+          `${frontendUrl}${redirectPath}?status=error&reason=${query.error}`,
+        );
+      }
+
+      // التحقق من وجود code
+      if (!query.code) {
+        this.logger.warn('OAuth callback missing code');
+        return res.redirect(
+          `${frontendUrl}${redirectPath}?status=error&reason=missing_code`,
+        );
+      }
+
+      // استبدال الـ code بـ tokens وحفظ المتجر
+      const result = await this.sallaOAuthService.exchangeCodeForTokens(
+        query.code,
+        query.state,
+      );
+
+      this.logger.log(`OAuth completed successfully`, {
+        storeId: result.store.id,
+        merchantId: result.store.merchantId,
       });
 
-      // ═══════════════════════════════════════════════════════════════════════════
-      // ✅ Secure Redirect: Only status + CSRF state (NO store_id)
-      // ═══════════════════════════════════════════════════════════════════════════
-      res.redirect(`${connectPage}?status=success&state=${csrfState || ''}`);
+      // ✅ توجيه مع status فقط - لا store_id
+      return res.redirect(
+        `${frontendUrl}${redirectPath}?status=success&state=${query.state || ''}`,
+      );
 
-    } catch (error: any) {
-      this.logger.error('OAuth callback error', {
+    } catch (error) {
+      this.logger.error(`OAuth callback error`, {
         error: error instanceof Error ? error.message : 'Unknown',
         stack: error instanceof Error ? error.stack : undefined,
       });
 
-      // ✅ Secure error redirect
-      res.redirect(`${connectPage}?status=error&reason=connection_failed&state=${state || ''}`);
+      return res.redirect(
+        `${frontendUrl}${redirectPath}?status=error&reason=connection_failed`,
+      );
     }
+  }
+
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════════
+   * GET /stores/salla/status
+   * ═══════════════════════════════════════════════════════════════════════════════
+   * 
+   * - محمي بـ JwtAuthGuard
+   * - يرجع حالة الربط للـ tenant
+   */
+  @Get('status')
+  @UseGuards(JwtAuthGuard)
+  async getStatus(@Req() req: Request): Promise<{
+    connected: boolean;
+    storeCount: number;
+  }> {
+    const user = req.user as { tenantId: string };
+    
+    const status = await this.sallaOAuthService.getConnectionStatus(user.tenantId);
+    
+    return status;
   }
 }
