@@ -2,7 +2,7 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Channel Entity                             ║
  * ║                                                                                ║
- * ║  قنوات التواصل: واتساب رسمي، واتساب QR، انستقرام، ديسكورد                      ║
+ * ║  ✅ يدعم WhatsApp Official + WhatsApp QR + Instagram + Discord                 ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -19,9 +19,12 @@ import { Store } from '../../stores/entities/store.entity';
 
 export enum ChannelType {
   WHATSAPP_OFFICIAL = 'whatsapp_official',
-  WHATSAPP_UNOFFICIAL = 'whatsapp_unofficial',
+  WHATSAPP_QR = 'whatsapp_qr',
   INSTAGRAM = 'instagram',
   DISCORD = 'discord',
+  TELEGRAM = 'telegram',
+  SMS = 'sms',
+  EMAIL = 'email',
 }
 
 export enum ChannelStatus {
@@ -29,7 +32,7 @@ export enum ChannelStatus {
   CONNECTED = 'connected',
   DISCONNECTED = 'disconnected',
   ERROR = 'error',
-  BANNED = 'banned',
+  EXPIRED = 'expired',
 }
 
 @Entity('channels')
@@ -46,14 +49,7 @@ export class Channel extends BaseEntity {
 
   @ManyToOne(() => Store, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'store_id' })
-  store: Store;
-
-  @Column({
-    type: 'enum',
-    enum: ChannelType,
-    comment: 'نوع القناة',
-  })
-  type: ChannelType;
+  store?: Store;
 
   @Column({
     type: 'varchar',
@@ -64,22 +60,29 @@ export class Channel extends BaseEntity {
 
   @Column({
     type: 'enum',
+    enum: ChannelType,
+    comment: 'نوع القناة',
+  })
+  type: ChannelType;
+
+  @Column({
+    type: 'enum',
     enum: ChannelStatus,
     default: ChannelStatus.PENDING,
-    comment: 'حالة القناة',
+    comment: 'حالة الاتصال',
   })
   status: ChannelStatus;
 
   @Column({
     name: 'is_official',
     type: 'boolean',
-    default: true,
-    comment: 'هل القناة رسمية؟',
+    default: false,
+    comment: 'هل هي قناة رسمية (API)',
   })
   isOfficial: boolean;
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 💬 WhatsApp Official (Meta Business API)
+  // 💬 WhatsApp Official Fields
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Column({
@@ -87,6 +90,7 @@ export class Channel extends BaseEntity {
     type: 'varchar',
     length: 100,
     nullable: true,
+    comment: 'Phone Number ID من Meta',
   })
   whatsappPhoneNumberId?: string;
 
@@ -95,6 +99,7 @@ export class Channel extends BaseEntity {
     type: 'varchar',
     length: 100,
     nullable: true,
+    comment: 'Business Account ID من Meta',
   })
   whatsappBusinessAccountId?: string;
 
@@ -102,6 +107,7 @@ export class Channel extends BaseEntity {
     name: 'whatsapp_access_token',
     type: 'text',
     nullable: true,
+    comment: 'Access Token للـ WhatsApp API',
   })
   @Exclude()
   whatsappAccessToken?: string;
@@ -111,7 +117,7 @@ export class Channel extends BaseEntity {
     type: 'varchar',
     length: 20,
     nullable: true,
-    comment: 'رقم الهاتف المعروض',
+    comment: 'رقم الهاتف',
   })
   whatsappPhoneNumber?: string;
 
@@ -120,11 +126,12 @@ export class Channel extends BaseEntity {
     type: 'varchar',
     length: 255,
     nullable: true,
+    comment: 'الاسم المعروض',
   })
   whatsappDisplayName?: string;
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 📱 WhatsApp Unofficial (Baileys/QR)
+  // 📱 WhatsApp QR (Baileys) Fields
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Column({
@@ -132,7 +139,6 @@ export class Channel extends BaseEntity {
     type: 'varchar',
     length: 100,
     nullable: true,
-    unique: true,
     comment: 'معرّف جلسة Baileys',
   })
   sessionId?: string;
@@ -141,28 +147,13 @@ export class Channel extends BaseEntity {
     name: 'session_data',
     type: 'text',
     nullable: true,
-    comment: 'بيانات الجلسة المشفرة',
+    comment: 'بيانات الجلسة (مشفرة)',
   })
   @Exclude()
   sessionData?: string;
 
-  @Column({
-    name: 'qr_code',
-    type: 'text',
-    nullable: true,
-    comment: 'QR Code الحالي',
-  })
-  qrCode?: string;
-
-  @Column({
-    name: 'qr_expires_at',
-    type: 'timestamptz',
-    nullable: true,
-  })
-  qrExpiresAt?: Date;
-
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 📸 Instagram
+  // 📸 Instagram Fields
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Column({
@@ -170,6 +161,7 @@ export class Channel extends BaseEntity {
     type: 'varchar',
     length: 100,
     nullable: true,
+    comment: 'Instagram User ID',
   })
   instagramUserId?: string;
 
@@ -178,6 +170,7 @@ export class Channel extends BaseEntity {
     type: 'varchar',
     length: 100,
     nullable: true,
+    comment: 'Instagram Username',
   })
   instagramUsername?: string;
 
@@ -185,6 +178,7 @@ export class Channel extends BaseEntity {
     name: 'instagram_access_token',
     type: 'text',
     nullable: true,
+    comment: 'Instagram Access Token',
   })
   @Exclude()
   instagramAccessToken?: string;
@@ -199,13 +193,14 @@ export class Channel extends BaseEntity {
   instagramPageId?: string;
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 🎮 Discord
+  // 🎮 Discord Fields
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Column({
     name: 'discord_bot_token',
     type: 'text',
     nullable: true,
+    comment: 'Discord Bot Token',
   })
   @Exclude()
   discordBotToken?: string;
@@ -215,6 +210,7 @@ export class Channel extends BaseEntity {
     type: 'varchar',
     length: 100,
     nullable: true,
+    comment: 'Discord Guild/Server ID',
   })
   discordGuildId?: string;
 
@@ -223,6 +219,7 @@ export class Channel extends BaseEntity {
     type: 'varchar',
     length: 100,
     nullable: true,
+    comment: 'Discord Bot ID',
   })
   discordBotId?: string;
 
@@ -231,75 +228,12 @@ export class Channel extends BaseEntity {
     type: 'varchar',
     length: 100,
     nullable: true,
+    comment: 'Discord Bot Username',
   })
   discordBotUsername?: string;
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 📊 Statistics
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  @Column({
-    name: 'messages_sent',
-    type: 'integer',
-    default: 0,
-  })
-  messagesSent: number;
-
-  @Column({
-    name: 'messages_received',
-    type: 'integer',
-    default: 0,
-  })
-  messagesReceived: number;
-
-  @Column({
-    name: 'last_activity_at',
-    type: 'timestamptz',
-    nullable: true,
-  })
-  lastActivityAt?: Date;
-
-  @Column({
-    name: 'connected_at',
-    type: 'timestamptz',
-    nullable: true,
-  })
-  connectedAt?: Date;
-
-  @Column({
-    name: 'disconnected_at',
-    type: 'timestamptz',
-    nullable: true,
-  })
-  disconnectedAt?: Date;
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🛠️ Error tracking
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  @Column({
-    name: 'last_error',
-    type: 'text',
-    nullable: true,
-  })
-  lastError?: string;
-
-  @Column({
-    name: 'last_error_at',
-    type: 'timestamptz',
-    nullable: true,
-  })
-  lastErrorAt?: Date;
-
-  @Column({
-    name: 'error_count',
-    type: 'integer',
-    default: 0,
-  })
-  errorCount: number;
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🛠️ Settings
+  // 📊 Common Fields
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Column({
@@ -309,29 +243,83 @@ export class Channel extends BaseEntity {
   })
   settings: Record<string, unknown>;
 
+  @Column({
+    name: 'connected_at',
+    type: 'timestamptz',
+    nullable: true,
+    comment: 'تاريخ الاتصال',
+  })
+  connectedAt?: Date;
+
+  @Column({
+    name: 'disconnected_at',
+    type: 'timestamptz',
+    nullable: true,
+    comment: 'تاريخ قطع الاتصال',
+  })
+  disconnectedAt?: Date;
+
+  @Column({
+    name: 'last_activity_at',
+    type: 'timestamptz',
+    nullable: true,
+    comment: 'آخر نشاط',
+  })
+  lastActivityAt?: Date;
+
+  @Column({
+    name: 'messages_sent',
+    type: 'integer',
+    default: 0,
+    comment: 'عدد الرسائل المُرسلة',
+  })
+  messagesSent: number;
+
+  @Column({
+    name: 'messages_received',
+    type: 'integer',
+    default: 0,
+    comment: 'عدد الرسائل المُستلمة',
+  })
+  messagesReceived: number;
+
+  @Column({
+    name: 'last_error',
+    type: 'text',
+    nullable: true,
+    comment: 'آخر خطأ',
+  })
+  lastError?: string;
+
+  @Column({
+    name: 'last_error_at',
+    type: 'timestamptz',
+    nullable: true,
+    comment: 'تاريخ آخر خطأ',
+  })
+  lastErrorAt?: Date;
+
+  @Column({
+    name: 'error_count',
+    type: 'integer',
+    default: 0,
+    comment: 'عدد الأخطاء المتتالية',
+  })
+  errorCount: number;
+
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 🛠️ Computed properties
+  // 🛠️ Computed Properties
   // ═══════════════════════════════════════════════════════════════════════════════
 
   get isConnected(): boolean {
     return this.status === ChannelStatus.CONNECTED;
   }
 
-  get totalMessages(): number {
-    return this.messagesSent + this.messagesReceived;
+  get isWhatsApp(): boolean {
+    return this.type === ChannelType.WHATSAPP_OFFICIAL || this.type === ChannelType.WHATSAPP_QR;
   }
 
-  get displayIdentifier(): string | undefined {
-    switch (this.type) {
-      case ChannelType.WHATSAPP_OFFICIAL:
-      case ChannelType.WHATSAPP_UNOFFICIAL:
-        return this.whatsappPhoneNumber;
-      case ChannelType.INSTAGRAM:
-        return this.instagramUsername;
-      case ChannelType.DISCORD:
-        return this.discordBotUsername;
-      default:
-        return undefined;
-    }
+  get displayPhoneNumber(): string | undefined {
+    return this.whatsappPhoneNumber;
   }
 }
