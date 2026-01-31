@@ -1,431 +1,386 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║                RAFIQ PLATFORM - Salla OAuth Service                            ║
+ * ║                    RAFIQ PLATFORM - Store Entity                               ║
  * ║                                                                                ║
- * ║  ✅ يدعم النمط السهل (app.store.authorize webhook)                            ║
- * ║  ✅ يدعم النمط المخصص (OAuth redirect flow)                                   ║
+ * ║  ✅ يدعم النمط السهل: tenantId nullable حتى يتم الربط                         ║
+ * ║  ✅ يدعم سلة وزد                                                               ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
-import { Injectable, Logger, UnauthorizedException, BadRequestException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { HttpService } from '@nestjs/axios';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { firstValueFrom } from 'rxjs';
-import * as crypto from 'crypto';
+import {
+  Entity,
+  Column,
+  Index,
+  ManyToOne,
+  JoinColumn,
+} from 'typeorm';
+import { Exclude } from 'class-transformer';
+import { BaseEntity } from '../../../database/entities/base.entity';
+import { Tenant } from '../../../database/entities/tenant.entity';
 
-// Entities
-import { Store, StorePlatform, StoreStatus } from './entities/store.entity';
-
-export interface SallaTokenResponse {
-  access_token: string;
-  refresh_token: string;
-  expires_in: number;
-  token_type: string;
+export enum StoreStatus {
+  PENDING = 'pending',
+  ACTIVE = 'active',
+  DISCONNECTED = 'disconnected',
+  TOKEN_EXPIRED = 'token_expired',
+  SUSPENDED = 'suspended',
+  UNINSTALLED = 'uninstalled',
 }
 
-export interface SallaMerchantInfo {
-  id: number;
-  username: string;
+export enum StorePlatform {
+  SALLA = 'salla',
+  ZID = 'zid',
+  SHOPIFY = 'shopify',
+}
+
+@Entity('stores')
+@Index(['tenantId', 'platform'])
+@Index(['sallaMerchantId'], { unique: true, where: '"salla_merchant_id" IS NOT NULL' })
+@Index(['zidStoreId'], { unique: true, where: '"zid_store_id" IS NOT NULL' })
+@Index(['status'])
+export class Store extends BaseEntity {
+  // ✅ tenantId الآن nullable لدعم النمط السهل
+  // المتجر يُنشأ أولاً، ثم يُربط بـ Tenant لاحقاً
+  @Column({
+    name: 'tenant_id',
+    type: 'uuid',
+    nullable: true,  // ✅ مهم للنمط السهل
+    comment: 'معرّف الـ Tenant المالك (nullable حتى يتم الربط)',
+  })
+  @Index()
+  tenantId?: string;
+
+  @ManyToOne(() => Tenant, { onDelete: 'CASCADE', nullable: true })
+  @JoinColumn({ name: 'tenant_id' })
+  tenant?: Tenant;
+
+  @Column({
+    type: 'varchar',
+    length: 255,
+    comment: 'اسم المتجر',
+  })
   name: string;
-  email: string;
-  mobile: string;
-  domain: string;
-  avatar: string;
-  plan: string;
-  created_at: string;
-}
 
-// ✅ Interface لـ app.store.authorize webhook
-export interface SallaAppAuthorizeData {
-  access_token: string;
-  expires: number;
-  refresh_token: string;
-  scope: string;
-  token_type: string;
-}
+  @Column({
+    type: 'text',
+    nullable: true,
+    comment: 'وصف أو ملاحظات',
+  })
+  description?: string;
 
-interface StateData {
-  tenantId: string;
-  csrfState?: string;
-  expiresAt: number;
-}
+  @Column({
+    type: 'enum',
+    enum: StorePlatform,
+    default: StorePlatform.SALLA,
+    comment: 'نوع المنصة',
+  })
+  platform: StorePlatform;
 
-@Injectable()
-export class SallaOAuthService {
-  private readonly logger = new Logger(SallaOAuthService.name);
-
-  private readonly SALLA_AUTH_URL = 'https://accounts.salla.sa/oauth2/authorize';
-  private readonly SALLA_TOKEN_URL = 'https://accounts.salla.sa/oauth2/token';
-  private readonly SALLA_API_URL = 'https://api.salla.dev/admin/v2';
-
-  // ⚠️ Use Redis in production
-  private readonly stateStorage = new Map<string, StateData>();
-
-  constructor(
-    private readonly configService: ConfigService,
-    private readonly httpService: HttpService,
-    
-    @InjectRepository(Store)
-    private readonly storeRepository: Repository<Store>,
-  ) {}
+  @Column({
+    type: 'enum',
+    enum: StoreStatus,
+    default: StoreStatus.PENDING,
+    comment: 'حالة الربط',
+  })
+  status: StoreStatus;
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // ✅ النمط السهل - معالجة app.store.authorize webhook
+  // 🔐 Tokens (مشتركة)
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * ✅ معالجة حدث app.store.authorize من سلة
-   * هذا هو النمط السهل - التاجر يثبّت من متجر سلة مباشرة
-   */
-  async handleAppStoreAuthorize(
-    merchantId: number,
-    data: SallaAppAuthorizeData,
-    createdAt: string,
-  ): Promise<Store> {
-    this.logger.log(`🔐 Processing app.store.authorize for merchant ${merchantId}`);
+  @Column({
+    name: 'access_token',
+    type: 'text',
+    nullable: true,
+    comment: 'Access Token',
+  })
+  @Exclude()
+  accessToken?: string;
 
-    const { access_token, refresh_token, expires, scope } = data;
+  @Column({
+    name: 'refresh_token',
+    type: 'text',
+    nullable: true,
+    comment: 'Refresh Token',
+  })
+  @Exclude()
+  refreshToken?: string;
 
-    try {
-      // 1. جلب معلومات المتجر من سلة
-      const merchantInfo = await this.getMerchantInfo(access_token);
-      
-      this.logger.log(`📊 Merchant info retrieved`, {
-        merchantId,
-        storeName: merchantInfo.name,
-        email: merchantInfo.email,
-      });
+  @Column({
+    name: 'token_expires_at',
+    type: 'timestamptz',
+    nullable: true,
+    comment: 'تاريخ انتهاء الـ Token',
+  })
+  tokenExpiresAt?: Date;
 
-      // 2. البحث عن متجر موجود
-      let store = await this.storeRepository.findOne({
-        where: { sallaMerchantId: merchantId },
-      });
-
-      if (store) {
-        // ✅ تحديث المتجر الموجود
-        this.logger.log(`Updating existing store for merchant ${merchantId}`);
-        
-        store.accessToken = access_token;
-        store.refreshToken = refresh_token;
-        store.tokenExpiresAt = new Date(expires * 1000);
-        store.status = StoreStatus.ACTIVE;
-        store.lastSyncedAt = new Date();
-        store.lastTokenRefreshAt = new Date();
-        store.consecutiveErrors = 0;
-        store.lastError = undefined;
-        
-        // تحديث معلومات سلة
-        store.sallaStoreName = merchantInfo.name;
-        store.sallaEmail = merchantInfo.email;
-        store.sallaMobile = merchantInfo.mobile;
-        store.sallaDomain = merchantInfo.domain;
-        store.sallaAvatar = merchantInfo.avatar;
-        store.sallaPlan = merchantInfo.plan;
-        
-      } else {
-        // ✅ إنشاء متجر جديد
-        this.logger.log(`Creating new store for merchant ${merchantId}`);
-        
-        store = this.storeRepository.create({
-          // ⚠️ tenantId مؤقتاً - سيحتاج ربط لاحقاً عبر Dashboard
-          // يمكن للتاجر ربطه من صفحة المتاجر
-          name: merchantInfo.name,
-          platform: StorePlatform.SALLA,
-          status: StoreStatus.ACTIVE,
-          
-          // Tokens
-          accessToken: access_token,
-          refreshToken: refresh_token,
-          tokenExpiresAt: new Date(expires * 1000),
-          
-          // Salla info
-          sallaMerchantId: merchantId,
-          sallaStoreName: merchantInfo.name,
-          sallaEmail: merchantInfo.email,
-          sallaMobile: merchantInfo.mobile,
-          sallaDomain: merchantInfo.domain,
-          sallaAvatar: merchantInfo.avatar,
-          sallaPlan: merchantInfo.plan,
-          
-          // Settings
-          currency: 'SAR',
-          subscribedEvents: scope.split(' '),
-          lastSyncedAt: new Date(),
-          lastTokenRefreshAt: new Date(),
-          settings: {
-            connectedVia: 'easy_mode',
-            connectedAt: createdAt,
-          },
-        });
-      }
-
-      const savedStore = await this.storeRepository.save(store);
-
-      this.logger.log(`✅ Store saved successfully`, {
-        storeId: savedStore.id,
-        merchantId,
-        status: savedStore.status,
-      });
-
-      return savedStore;
-
-    } catch (error) {
-      this.logger.error(`❌ Failed to handle app.store.authorize`, {
-        merchantId,
-        error: error instanceof Error ? error.message : 'Unknown',
-      });
-      throw error;
-    }
-  }
-
-  /**
-   * ✅ معالجة حدث app.uninstalled من سلة
-   */
-  async handleAppUninstalled(merchantId: number): Promise<void> {
-    this.logger.log(`🗑️ Processing app.uninstalled for merchant ${merchantId}`);
-
-    try {
-      await this.storeRepository.update(
-        { sallaMerchantId: merchantId },
-        {
-          status: StoreStatus.UNINSTALLED,
-          accessToken: undefined,
-          refreshToken: undefined,
-        },
-      );
-
-      this.logger.log(`✅ Store marked as uninstalled for merchant ${merchantId}`);
-
-    } catch (error) {
-      this.logger.error(`❌ Failed to handle app.uninstalled`, {
-        merchantId,
-        error: error instanceof Error ? error.message : 'Unknown',
-      });
-    }
-  }
-
-  /**
-   * ✅ ربط متجر بـ Tenant (من Dashboard)
-   */
-  async linkStoreToTenant(merchantId: number, tenantId: string): Promise<Store> {
-    const store = await this.storeRepository.findOne({
-      where: { sallaMerchantId: merchantId },
-    });
-
-    if (!store) {
-      throw new BadRequestException(`Store not found for merchant ${merchantId}`);
-    }
-
-    if (store.tenantId && store.tenantId !== tenantId) {
-      throw new BadRequestException('Store already linked to another tenant');
-    }
-
-    store.tenantId = tenantId;
-    return this.storeRepository.save(store);
-  }
-
-  /**
-   * ✅ الحصول على متاجر غير مربوطة (للعرض في Dashboard)
-   */
-  async getUnlinkedStores(): Promise<Store[]> {
-    return this.storeRepository.find({
-      where: { tenantId: undefined as any, status: StoreStatus.ACTIVE },
-      order: { createdAt: 'DESC' },
-    });
-  }
+  @Column({
+    name: 'webhook_secret',
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+    comment: 'Secret للتحقق من Webhooks',
+  })
+  @Exclude()
+  webhookSecret?: string;
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 🔗 النمط المخصص - OAuth redirect flow
+  // 🛒 Salla-specific fields
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * توليد رابط OAuth
-   */
-  generateAuthorizationUrl(tenantId: string, csrfState?: string): string {
-    const state = this.generateState(tenantId, csrfState);
+  @Column({
+    name: 'salla_merchant_id',
+    type: 'bigint',
+    nullable: true,
+    comment: 'معرّف المتجر في سلة',
+  })
+  sallaMerchantId?: number;
 
-    const clientId = this.configService.get<string>('SALLA_CLIENT_ID');
-    const redirectUri = this.configService.get<string>('SALLA_REDIRECT_URI');
+  @Column({
+    name: 'salla_store_name',
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+    comment: 'اسم المتجر في سلة',
+  })
+  sallaStoreName?: string;
 
-    const scopes = ['offline_access'].join(' ');
+  @Column({
+    name: 'salla_email',
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+    comment: 'البريد في سلة',
+  })
+  sallaEmail?: string;
 
-    const params = new URLSearchParams({
-      client_id: clientId!,
-      redirect_uri: redirectUri!,
-      response_type: 'code',
-      scope: scopes,
-      state,
-    });
+  @Column({
+    name: 'salla_mobile',
+    type: 'varchar',
+    length: 20,
+    nullable: true,
+    comment: 'رقم الهاتف في سلة',
+  })
+  sallaMobile?: string;
 
-    const authUrl = `${this.SALLA_AUTH_URL}?${params.toString()}`;
+  @Column({
+    name: 'salla_domain',
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+    comment: 'رابط المتجر في سلة',
+  })
+  sallaDomain?: string;
 
-    this.logger.log(`Generated OAuth URL for tenant: ${tenantId}`);
+  @Column({
+    name: 'salla_avatar',
+    type: 'varchar',
+    length: 500,
+    nullable: true,
+    comment: 'شعار المتجر من سلة',
+  })
+  sallaAvatar?: string;
 
-    return authUrl;
-  }
-
-  /**
-   * استبدال الكود بـ tokens
-   */
-  async exchangeCodeForTokens(
-    code: string,
-    state: string,
-  ): Promise<{ tokens: SallaTokenResponse; tenantId: string; csrfState?: string }> {
-    const stateData = this.verifyState(state);
-
-    if (!stateData) {
-      throw new UnauthorizedException('Invalid or expired state');
-    }
-
-    const { tenantId, csrfState } = stateData;
-
-    try {
-      const clientId = this.configService.get<string>('SALLA_CLIENT_ID');
-      const clientSecret = this.configService.get<string>('SALLA_CLIENT_SECRET');
-      const redirectUri = this.configService.get<string>('SALLA_REDIRECT_URI');
-
-      const response = await firstValueFrom(
-        this.httpService.post<SallaTokenResponse>(
-          this.SALLA_TOKEN_URL,
-          new URLSearchParams({
-            grant_type: 'authorization_code',
-            code,
-            client_id: clientId!,
-            client_secret: clientSecret!,
-            redirect_uri: redirectUri!,
-          }),
-          {
-            headers: {
-              'Content-Type': 'application/x-www-form-urlencoded',
-            },
-          },
-        ),
-      );
-
-      this.logger.log(`Successfully exchanged code for tokens, tenant: ${tenantId}`);
-
-      return {
-        tokens: response.data,
-        tenantId,
-        csrfState,
-      };
-
-    } catch (error: any) {
-      this.logger.error('Failed to exchange code for tokens', {
-        error: error instanceof Error ? error.message : 'Unknown',
-      });
-      throw new BadRequestException('Failed to exchange authorization code');
-    }
-  }
+  @Column({
+    name: 'salla_plan',
+    type: 'varchar',
+    length: 50,
+    nullable: true,
+    comment: 'خطة الاشتراك في سلة',
+  })
+  sallaPlan?: string;
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 🔄 Token Management
+  // 🏪 Zid-specific fields
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  async refreshAccessToken(refreshToken: string): Promise<SallaTokenResponse> {
-    try {
-      const clientId = this.configService.get<string>('SALLA_CLIENT_ID');
-      const clientSecret = this.configService.get<string>('SALLA_CLIENT_SECRET');
+  @Column({
+    name: 'zid_store_id',
+    type: 'varchar',
+    length: 100,
+    nullable: true,
+    comment: 'معرّف المتجر في زد',
+  })
+  zidStoreId?: string;
 
-      const response = await firstValueFrom(
-        this.httpService.post<SallaTokenResponse>(
-          this.SALLA_TOKEN_URL,
-          new URLSearchParams({
-            grant_type: 'refresh_token',
-            refresh_token: refreshToken,
-            client_id: clientId!,
-            client_secret: clientSecret!,
-          }),
-          {
-            headers: {
-              'Content-Type': 'application/x-www-form-urlencoded',
-            },
-          },
-        ),
-      );
+  @Column({
+    name: 'zid_store_uuid',
+    type: 'varchar',
+    length: 100,
+    nullable: true,
+    comment: 'UUID المتجر في زد',
+  })
+  zidStoreUuid?: string;
 
-      this.logger.log('Successfully refreshed access token');
+  @Column({
+    name: 'zid_store_name',
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+    comment: 'اسم المتجر في زد',
+  })
+  zidStoreName?: string;
 
-      return response.data;
+  @Column({
+    name: 'zid_email',
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+    comment: 'البريد في زد',
+  })
+  zidEmail?: string;
 
-    } catch (error: any) {
-      this.logger.error('Failed to refresh access token', {
-        error: error instanceof Error ? error.message : 'Unknown',
-      });
-      throw new UnauthorizedException('Failed to refresh access token');
-    }
-  }
+  @Column({
+    name: 'zid_mobile',
+    type: 'varchar',
+    length: 20,
+    nullable: true,
+    comment: 'رقم الهاتف في زد',
+  })
+  zidMobile?: string;
+
+  @Column({
+    name: 'zid_domain',
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+    comment: 'رابط المتجر في زد',
+  })
+  zidDomain?: string;
+
+  @Column({
+    name: 'zid_logo',
+    type: 'varchar',
+    length: 500,
+    nullable: true,
+    comment: 'شعار المتجر من زد',
+  })
+  zidLogo?: string;
+
+  @Column({
+    name: 'zid_currency',
+    type: 'varchar',
+    length: 10,
+    nullable: true,
+    comment: 'عملة المتجر في زد',
+  })
+  zidCurrency?: string;
+
+  @Column({
+    name: 'zid_language',
+    type: 'varchar',
+    length: 10,
+    nullable: true,
+    comment: 'لغة المتجر في زد',
+  })
+  zidLanguage?: string;
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 📊 Salla API
+  // 📊 Common fields
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  async getMerchantInfo(accessToken: string): Promise<SallaMerchantInfo> {
-    try {
-      const response = await firstValueFrom(
-        this.httpService.get(`${this.SALLA_API_URL}/store/info`, {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
-        }),
-      );
+  @Column({
+    name: 'currency',
+    type: 'varchar',
+    length: 3,
+    default: 'SAR',
+    comment: 'عملة المتجر',
+  })
+  currency: string;
 
-      return response.data.data;
+  @Column({
+    type: 'jsonb',
+    default: {},
+    comment: 'إعدادات المتجر',
+  })
+  settings: Record<string, unknown>;
 
-    } catch (error: any) {
-      this.logger.error('Failed to get merchant info', {
-        error: error instanceof Error ? error.message : 'Unknown',
-      });
-      throw new BadRequestException('Failed to get merchant information');
-    }
-  }
+  @Column({
+    name: 'subscribed_events',
+    type: 'jsonb',
+    default: [],
+    comment: 'الأحداث المُشترك فيها',
+  })
+  subscribedEvents: string[];
+
+  @Column({
+    name: 'last_synced_at',
+    type: 'timestamptz',
+    nullable: true,
+    comment: 'آخر مزامنة',
+  })
+  lastSyncedAt?: Date;
+
+  @Column({
+    name: 'last_token_refresh_at',
+    type: 'timestamptz',
+    nullable: true,
+    comment: 'آخر تجديد للـ Token',
+  })
+  lastTokenRefreshAt?: Date;
+
+  @Column({
+    name: 'last_error',
+    type: 'text',
+    nullable: true,
+    comment: 'آخر خطأ',
+  })
+  lastError?: string;
+
+  @Column({
+    name: 'last_error_at',
+    type: 'timestamptz',
+    nullable: true,
+    comment: 'تاريخ آخر خطأ',
+  })
+  lastErrorAt?: Date;
+
+  @Column({
+    name: 'consecutive_errors',
+    type: 'integer',
+    default: 0,
+    comment: 'عدد الأخطاء المتتالية',
+  })
+  consecutiveErrors: number;
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 🛠️ Helper Methods
+  // 🛠️ Computed properties
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  private generateState(tenantId: string, csrfState?: string): string {
-    const state = crypto.randomBytes(32).toString('hex');
-
-    this.stateStorage.set(state, {
-      tenantId,
-      csrfState,
-      expiresAt: Date.now() + 10 * 60 * 1000,
-    });
-
-    this.cleanupExpiredStates();
-
-    return state;
+  get isActive(): boolean {
+    return this.status === StoreStatus.ACTIVE;
   }
 
-  private verifyState(state: string): StateData | null {
-    const stateData = this.stateStorage.get(state);
-
-    if (!stateData) {
-      return null;
-    }
-
-    this.stateStorage.delete(state);
-
-    if (Date.now() > stateData.expiresAt) {
-      return null;
-    }
-
-    return stateData;
+  get isLinked(): boolean {
+    return !!this.tenantId;
   }
 
-  private cleanupExpiredStates(): void {
-    const now = Date.now();
-    for (const [state, data] of this.stateStorage.entries()) {
-      if (now > data.expiresAt) {
-        this.stateStorage.delete(state);
-      }
-    }
+  get isTokenExpired(): boolean {
+    if (!this.tokenExpiresAt) return true;
+    return new Date() > this.tokenExpiresAt;
   }
 
-  calculateTokenExpiry(expiresIn: number): Date {
-    return new Date(Date.now() + expiresIn * 1000);
+  get needsTokenRefresh(): boolean {
+    if (!this.tokenExpiresAt) return true;
+    const tenMinutesFromNow = new Date(Date.now() + 10 * 60 * 1000);
+    return this.tokenExpiresAt < tenMinutesFromNow;
+  }
+
+  get platformStoreId(): string | number | undefined {
+    if (this.platform === StorePlatform.SALLA) return this.sallaMerchantId;
+    if (this.platform === StorePlatform.ZID) return this.zidStoreId;
+    return undefined;
+  }
+
+  get platformStoreName(): string | undefined {
+    if (this.platform === StorePlatform.SALLA) return this.sallaStoreName;
+    if (this.platform === StorePlatform.ZID) return this.zidStoreName;
+    return this.name;
+  }
+
+  get platformLogo(): string | undefined {
+    if (this.platform === StorePlatform.SALLA) return this.sallaAvatar;
+    if (this.platform === StorePlatform.ZID) return this.zidLogo;
+    return undefined;
   }
 }
