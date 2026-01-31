@@ -37,11 +37,12 @@ FROM node:20-alpine AS base
 # تثبيت الأدوات الأساسية
 # apk = مدير الحزم في Alpine Linux
 RUN apk add --no-cache \
-    # dumb-init: يدير العمليات بشكل صحيح في Docker
-    # يحل مشكلة "zombie processes" ويمرر الإشارات (signals) بشكل صحيح
     dumb-init \
-    # curl: للتحقق من صحة الخدمة (health checks)
-    curl
+    curl \
+    git \
+    python3 \
+    make \
+    g++
 
 # تحديد مجلد العمل
 # كل الأوامر التالية تُنفذ من هذا المجلد
@@ -92,6 +93,9 @@ COPY --from=deps /app/node_modules ./node_modules
 
 # نسخ كل الكود المصدري
 COPY . .
+
+# إنشاء مجلد جلسات WhatsApp
+RUN mkdir -p /app/whatsapp-sessions && chown -R nodejs:nodejs /app/whatsapp-sessions
 
 # المنفذ الذي يستمع عليه التطبيق
 EXPOSE 3000
@@ -146,6 +150,7 @@ FROM base AS production
 
 # تحديد البيئة
 ENV NODE_ENV=production
+ENV WHATSAPP_SESSIONS_PATH=/app/whatsapp-sessions
 
 # نسخ المكتبات الإنتاجية فقط
 COPY --from=builder --chown=nodejs:nodejs /app/node_modules ./node_modules
@@ -155,6 +160,9 @@ COPY --from=builder --chown=nodejs:nodejs /app/dist ./dist
 
 # نسخ ملفات الإعداد الضرورية
 COPY --from=builder --chown=nodejs:nodejs /app/package.json ./
+
+# إنشاء مجلد جلسات WhatsApp
+RUN mkdir -p /app/whatsapp-sessions && chown -R nodejs:nodejs /app/whatsapp-sessions
 
 # المنفذ
 EXPOSE 3000
