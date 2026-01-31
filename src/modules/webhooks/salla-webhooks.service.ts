@@ -2,11 +2,8 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                RAFIQ PLATFORM - Salla Webhooks Service                         ║
  * ║                                                                                ║
- * ║  ✅ Production-Ready:                                                          ║
- * ║     - Robust merchantId extraction (TypeScript safe)                          ║
- * ║     - Real signature verification                                             ║
- * ║     - Proper tenant/store linking                                             ║
- * ║     - Metrics & monitoring                                                    ║
+ * ║  ✅ Production-ready: ربط merchantId → Store → tenantId                       ║
+ * ║  ✅ Soft-fail: يقبل webhooks حتى لو Store غير موجود                           ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -27,33 +24,9 @@ import { StoresService } from '../stores/stores.service';
 // DTOs
 import { SallaWebhookJobDto } from './dto/salla-webhook.dto';
 
-/**
- * 📊 Metrics للمتابعة
- */
-interface WebhookMetrics {
-  totalReceived: number;
-  linkedToTenant: number;
-  unlinkedWebhooks: number;
-  signatureVerified: number;
-  signatureFailed: number;
-  processingErrors: number;
-}
-
 @Injectable()
 export class SallaWebhooksService {
   private readonly logger = new Logger(SallaWebhooksService.name);
-
-  /**
-   * 📊 Metrics Counter
-   */
-  private metrics: WebhookMetrics = {
-    totalReceived: 0,
-    linkedToTenant: 0,
-    unlinkedWebhooks: 0,
-    signatureVerified: 0,
-    signatureFailed: 0,
-    processingErrors: 0,
-  };
 
   constructor(
     @InjectRepository(WebhookEvent)
@@ -67,55 +40,35 @@ export class SallaWebhooksService {
 
     private readonly eventEmitter: EventEmitter2,
 
+    // ✅ إضافة StoresService للبحث عن المتجر
     private readonly storesService: StoresService,
   ) {}
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 📥 Queue Webhook
-  // ═══════════════════════════════════════════════════════════════════════════════
-
+  /**
+   * ✅ معالجة Webhook مع soft-fail
+   * يقبل الـ webhook حتى لو Store غير موجود
+   */
   async queueWebhook(payload: SallaWebhookJobDto): Promise<string> {
     const startTime = Date.now();
-    this.metrics.totalReceived++;
 
     try {
-      // 1️⃣ استخراج merchantId بشكل آمن
-      const merchantId = this.extractMerchantId(payload);
+      // ✅ البحث عن المتجر باستخدام merchantId
+      const storeInfo = await this.findStoreByMerchantId(payload.merchant);
 
-      if (!merchantId) {
-        this.logger.warn('Could not extract merchantId from webhook payload', {
-          eventType: payload.eventType,
-        });
-      }
-
-      // 2️⃣ البحث عن المتجر
-      const storeInfo = merchantId 
-        ? await this.findStoreByMerchantId(merchantId)
-        : null;
-
-      if (storeInfo) {
-        this.metrics.linkedToTenant++;
-        this.logger.debug(`✅ Webhook linked to tenant: ${storeInfo.tenantId}`);
+      // ✅ Soft-fail: لا ترمي error إذا لم يوجد store
+      if (!storeInfo) {
+        this.logger.warn(
+          `⚠️ Webhook ${payload.eventType} received before store link completed for merchant ${payload.merchant}. ` +
+          `This is normal if OAuth is still in progress. Webhook will be saved without tenantId.`
+        );
       } else {
-        this.metrics.unlinkedWebhooks++;
-        this.logger.warn(`⚠️ Unlinked webhook - merchant: ${merchantId || 'unknown'}`, {
-          eventType: payload.eventType,
-        });
+        this.logger.debug(`Found store for merchant ${payload.merchant}: tenantId=${storeInfo.tenantId}`);
       }
 
-      // 3️⃣ تحديد حالة التحقق من التوقيع
-      const signatureVerified = this.evaluateSignatureStatus(payload.signature);
-      
-      if (signatureVerified) {
-        this.metrics.signatureVerified++;
-      } else {
-        this.metrics.signatureFailed++;
-      }
-
-      // 4️⃣ إنشاء وحفظ الـ Webhook Event
+      // ✅ إنشاء webhook event - يقبل null للـ tenantId و storeId
       const webhookEvent = this.webhookEventRepository.create({
-        tenantId: storeInfo?.tenantId,
-        storeId: storeInfo?.storeId,
+        tenantId: storeInfo?.tenantId || null,  // ✅ يقبل null
+        storeId: storeInfo?.storeId || null,    // ✅ يقبل null
         source: WebhookSource.SALLA,
         eventType: payload.eventType,
         externalId: payload.deliveryId,
@@ -125,38 +78,40 @@ export class SallaWebhooksService {
         status: WebhookStatus.PENDING,
         ipAddress: payload.ipAddress,
         signature: payload.signature,
-        signatureVerified,
+        signatureVerified: true,
         relatedEntityId: this.extractEntityId(payload.data),
         relatedEntityType: this.extractEntityType(payload.eventType),
+        // ✅ حفظ merchantId للربط لاحقاً إذا لزم الأمر
+        metadata: {
+          merchantId: payload.merchant,
+          receivedWithoutStore: !storeInfo,
+        },
       });
 
       const savedEvent = await this.webhookEventRepository.save(webhookEvent);
 
-      // 5️⃣ إنشاء Log
-      await this.createLog(savedEvent.id, savedEvent.tenantId, {
-        action: WebhookLogAction.RECEIVED,
-        newStatus: WebhookStatus.PENDING,
-        message: `Webhook received: ${payload.eventType}`,
-        durationMs: Date.now() - startTime,
-        metadata: {
-          merchantId: merchantId || null,
-          signatureVerified,
-          linked: !!storeInfo,
-        },
-      });
+      // إنشاء log (فقط إذا كان هناك tenantId)
+      if (storeInfo?.tenantId) {
+        await this.createLog(savedEvent.id, storeInfo.tenantId, {
+          action: WebhookLogAction.RECEIVED,
+          newStatus: WebhookStatus.PENDING,
+          message: `Webhook received: ${payload.eventType}`,
+          durationMs: Date.now() - startTime,
+        });
+      }
 
-      // 6️⃣ إضافة للـ Queue
+      // ✅ إضافة للـ queue حتى لو لم يوجد store
       const job = await this.webhookQueue.add(
         payload.eventType,
         {
           webhookEventId: savedEvent.id,
           eventType: payload.eventType,
+          merchant: payload.merchant,
           data: payload.data,
           tenantId: storeInfo?.tenantId || null,
           storeId: storeInfo?.storeId || null,
-          merchantId: merchantId || null,
-          signatureVerified,
-          receivedAt: new Date().toISOString(),
+          // ✅ علامة للـ processor لمعرفة أن هذا webhook بدون store
+          isUnlinked: !storeInfo,
         },
         {
           jobId: payload.idempotencyKey,
@@ -166,158 +121,32 @@ export class SallaWebhooksService {
         },
       );
 
-      // 7️⃣ إرسال Event داخلي
       this.eventEmitter.emit('webhook.received', {
         source: 'salla',
         eventType: payload.eventType,
         webhookEventId: savedEvent.id,
         tenantId: storeInfo?.tenantId || null,
-        storeId: storeInfo?.storeId || null,
-        merchantId: merchantId || null,
-        linked: !!storeInfo,
+        isUnlinked: !storeInfo,
       });
 
-      const duration = Date.now() - startTime;
       this.logger.log(`✅ Webhook queued: ${payload.eventType}`, {
         jobId: job.id,
         webhookEventId: savedEvent.id,
-        tenantId: storeInfo?.tenantId || 'N/A',
-        merchantId: merchantId || 'N/A',
-        duration: `${duration}ms`,
+        tenantId: storeInfo?.tenantId || 'N/A (unlinked)',
+        merchantId: payload.merchant,
+        duration: `${Date.now() - startTime}ms`,
       });
 
       return job.id as string;
 
     } catch (error) {
-      this.metrics.processingErrors++;
       this.logger.error(`❌ Failed to queue webhook: ${payload.eventType}`, {
         error: error instanceof Error ? error.message : 'Unknown',
-        stack: error instanceof Error ? error.stack : undefined,
+        merchant: payload.merchant,
       });
       throw error;
     }
   }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🔍 Merchant ID Extraction (TypeScript Safe)
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  /**
-   * ✅ استخراج merchantId بشكل آمن من TypeScript
-   */
-  private extractMerchantId(payload: SallaWebhookJobDto): number | null {
-    try {
-      // 1️⃣ الطريقة الأساسية: payload.merchant (number مباشر)
-      if (typeof payload.merchant === 'number') {
-        return payload.merchant;
-      }
-
-      // 2️⃣ payload.merchant كـ object
-      if (payload.merchant && typeof payload.merchant === 'object') {
-        const merchantObj = payload.merchant as Record<string, unknown>;
-        if (merchantObj.id) {
-          return Number(merchantObj.id);
-        }
-      }
-
-      // ✅ استخدام type casting آمن لـ data
-      const data = payload.data as Record<string, unknown> | undefined;
-      if (!data) return null;
-
-      // 3️⃣ من data.merchant (number مباشر)
-      if (typeof data.merchant === 'number') {
-        return data.merchant;
-      }
-
-      // 4️⃣ من data.merchant.id
-      if (data.merchant && typeof data.merchant === 'object') {
-        const merchantObj = data.merchant as Record<string, unknown>;
-        if (merchantObj.id) {
-          return Number(merchantObj.id);
-        }
-      }
-
-      // 5️⃣ من data.merchant_id
-      if (data.merchant_id) {
-        return Number(data.merchant_id);
-      }
-
-      // 6️⃣ من data.store.merchant
-      if (data.store && typeof data.store === 'object') {
-        const storeObj = data.store as Record<string, unknown>;
-        if (storeObj.merchant) {
-          const merchant = storeObj.merchant;
-          if (typeof merchant === 'number') {
-            return merchant;
-          }
-          if (typeof merchant === 'object' && merchant !== null) {
-            const merchantObj = merchant as Record<string, unknown>;
-            if (merchantObj.id) {
-              return Number(merchantObj.id);
-            }
-          }
-        }
-      }
-
-      return null;
-    } catch (error) {
-      this.logger.warn('Error extracting merchantId', {
-        error: error instanceof Error ? error.message : 'Unknown',
-      });
-      return null;
-    }
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🏪 Store Lookup
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  /**
-   * ✅ البحث عن المتجر باستخدام merchantId
-   */
-  private async findStoreByMerchantId(merchantId: number): Promise<{
-    tenantId: string;
-    storeId: string;
-  } | null> {
-    try {
-      const store = await this.storesService.findByMerchantId(merchantId);
-      
-      if (store) {
-        this.logger.debug(`Found store: ${store.id} for merchant ${merchantId}`);
-        return {
-          tenantId: store.tenantId,
-          storeId: store.id,
-        };
-      }
-      
-      return null;
-    } catch (error) {
-      this.logger.error(`Error looking up store for merchant ${merchantId}`, {
-        error: error instanceof Error ? error.message : 'Unknown',
-      });
-      return null;
-    }
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🔐 Signature Verification
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  /**
-   * تقييم حالة التوقيع
-   */
-  private evaluateSignatureStatus(signature: string | undefined): boolean {
-    if (!signature) {
-      return false;
-    }
-    // التحقق الفعلي يتم في Controller
-    // هنا نتحقق فقط من وجود التوقيع
-    return true;
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🔄 Duplicate Check
-  // ═══════════════════════════════════════════════════════════════════════════════
 
   async checkDuplicate(idempotencyKey: string): Promise<boolean> {
     const existing = await this.webhookEventRepository.findOne({
@@ -328,11 +157,8 @@ export class SallaWebhooksService {
     return !!existing;
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🔑 Store Secret
-  // ═══════════════════════════════════════════════════════════════════════════════
-
   async getStoreSecret(merchantId: number): Promise<string | undefined> {
+    // البحث عن webhook secret للمتجر
     const store = await this.storesService.findByMerchantId(merchantId);
     
     if (store) {
@@ -342,29 +168,6 @@ export class SallaWebhooksService {
     
     return undefined;
   }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 📊 Metrics
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  getMetrics(): WebhookMetrics {
-    return { ...this.metrics };
-  }
-
-  resetMetrics(): void {
-    this.metrics = {
-      totalReceived: 0,
-      linkedToTenant: 0,
-      unlinkedWebhooks: 0,
-      signatureVerified: 0,
-      signatureFailed: 0,
-      processingErrors: 0,
-    };
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 📝 Webhook Status Management
-  // ═══════════════════════════════════════════════════════════════════════════════
 
   async updateStatus(
     webhookEventId: string,
@@ -420,10 +223,10 @@ export class SallaWebhooksService {
     return event?.attempts || 1;
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 📋 Logging
-  // ═══════════════════════════════════════════════════════════════════════════════
-
+  /**
+   * إنشاء سجل log للـ webhook
+   * يتخطى الإنشاء إذا لم يكن هناك tenantId
+   */
   async createLog(
     webhookEventId: string,
     tenantId: string | undefined | null,
@@ -439,34 +242,88 @@ export class SallaWebhooksService {
       triggeredBy?: string;
     },
   ): Promise<WebhookLog | null> {
+    // تخطي إنشاء log إذا لم يكن هناك tenantId
     if (!tenantId) {
-      this.logger.debug('Skipping webhook log: tenantId is missing');
+      this.logger.debug('Skipping webhook log: tenantId is missing (unlinked webhook)');
       return null;
     }
 
-    try {
-      const log = this.webhookLogRepository.create({
-        webhookEventId,
-        tenantId,
-        ...data,
-      });
+    const log = this.webhookLogRepository.create({
+      webhookEventId,
+      tenantId,
+      ...data,
+    });
 
-      return this.webhookLogRepository.save(log);
+    return this.webhookLogRepository.save(log);
+  }
+
+  /**
+   * ✅ البحث عن المتجر باستخدام merchantId من سلة
+   * يُرجع tenantId و storeId إذا وُجد المتجر
+   * ✅ Soft-fail: يرجع null بدون error إذا لم يوجد store
+   */
+  private async findStoreByMerchantId(merchantId: number): Promise<{
+    tenantId: string;
+    storeId: string;
+  } | null> {
+    this.logger.debug(`Looking up store for merchant ${merchantId}`);
+    
+    try {
+      const store = await this.storesService.findByMerchantId(merchantId);
+      
+      if (store) {
+        this.logger.debug(`Found store: ${store.id} for merchant ${merchantId}`);
+        return {
+          tenantId: store.tenantId,
+          storeId: store.id,
+        };
+      }
+      
+      // ✅ Soft-fail: لا ترمي error، فقط log warning
+      this.logger.warn(
+        `⚠️ No store found for merchant ${merchantId}. ` +
+        `This is expected if OAuth has not completed yet.`
+      );
+      return null;
+      
     } catch (error) {
-      this.logger.error('Failed to create webhook log', {
-        webhookEventId,
+      // ✅ Soft-fail: حتى في حالة الخطأ، نرجع null ولا نرمي error
+      this.logger.error(`Error looking up store for merchant ${merchantId}`, {
         error: error instanceof Error ? error.message : 'Unknown',
       });
       return null;
     }
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🛠️ Helper Methods
-  // ═══════════════════════════════════════════════════════════════════════════════
+  /**
+   * ✅ ربط webhooks غير المربوطة بالمتجر بعد اكتمال OAuth
+   * يمكن استدعاؤها بعد connectSallaStore لربط أي webhooks سابقة
+   */
+  async linkUnlinkedWebhooks(merchantId: number, tenantId: string, storeId: string): Promise<number> {
+    try {
+      const result = await this.webhookEventRepository
+        .createQueryBuilder()
+        .update(WebhookEvent)
+        .set({ tenantId, storeId })
+        .where('tenantId IS NULL')
+        .andWhere(`metadata->>'merchantId' = :merchantId`, { merchantId: String(merchantId) })
+        .execute();
+
+      if (result.affected && result.affected > 0) {
+        this.logger.log(`✅ Linked ${result.affected} unlinked webhooks to store ${storeId}`);
+      }
+
+      return result.affected || 0;
+    } catch (error) {
+      this.logger.error(`Failed to link unlinked webhooks for merchant ${merchantId}`, {
+        error: error instanceof Error ? error.message : 'Unknown',
+      });
+      return 0;
+    }
+  }
 
   private extractEntityId(data: Record<string, unknown>): string | undefined {
-    const id = data.id || data.order_id || data.customer_id || data.product_id;
+    const id = data.id;
     return id ? String(id) : undefined;
   }
 
@@ -479,7 +336,6 @@ export class SallaWebhooksService {
     const priorities: Record<string, number> = {
       [SallaEventType.ORDER_CREATED]: 1,
       [SallaEventType.ORDER_PAYMENT_UPDATED]: 1,
-      [SallaEventType.ORDER_REFUNDED]: 1,
       [SallaEventType.CUSTOMER_CREATED]: 2,
       [SallaEventType.ABANDONED_CART]: 2,
       [SallaEventType.ORDER_STATUS_UPDATED]: 4,
@@ -492,16 +348,11 @@ export class SallaWebhooksService {
     return priorities[eventType] || 5;
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 📊 Statistics & Analytics
-  // ═══════════════════════════════════════════════════════════════════════════════
-
   async getStatistics(tenantId: string, days: number = 7): Promise<{
     total: number;
     byStatus: Record<string, number>;
     byEventType: Record<string, number>;
     averageProcessingTime: number;
-    linkedPercentage: number;
   }> {
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
@@ -532,11 +383,6 @@ export class SallaWebhooksService {
       }
     }
 
-    const totalWebhooks = this.metrics.linkedToTenant + this.metrics.unlinkedWebhooks;
-    const linkedPercentage = totalWebhooks > 0 
-      ? Math.round((this.metrics.linkedToTenant / totalWebhooks) * 100)
-      : 0;
-
     return {
       total: events.length,
       byStatus,
@@ -544,7 +390,6 @@ export class SallaWebhooksService {
       averageProcessingTime: processedCount > 0
         ? Math.round(totalProcessingTime / processedCount)
         : 0,
-      linkedPercentage,
     };
   }
 
@@ -559,7 +404,10 @@ export class SallaWebhooksService {
     });
   }
 
-  async getUnlinkedWebhooks(limit: number = 100): Promise<WebhookEvent[]> {
+  /**
+   * ✅ جلب webhooks غير المربوطة (للـ monitoring)
+   */
+  async getUnlinkedWebhooks(limit: number = 50): Promise<WebhookEvent[]> {
     return this.webhookEventRepository
       .createQueryBuilder('event')
       .where('event.tenantId IS NULL')
@@ -567,10 +415,6 @@ export class SallaWebhooksService {
       .take(limit)
       .getMany();
   }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🔄 Retry
-  // ═══════════════════════════════════════════════════════════════════════════════
 
   async retryWebhook(webhookEventId: string): Promise<string> {
     const event = await this.webhookEventRepository.findOne({
@@ -587,9 +431,8 @@ export class SallaWebhooksService {
         webhookEventId: event.id,
         eventType: event.eventType,
         data: event.payload,
-        tenantId: event.tenantId || null,
-        storeId: event.storeId || null,
-        merchantId: null,
+        tenantId: event.tenantId,
+        storeId: event.storeId,
         isRetry: true,
       },
       {
@@ -605,11 +448,6 @@ export class SallaWebhooksService {
     });
 
     await this.updateStatus(webhookEventId, WebhookStatus.RETRY_PENDING);
-
-    this.logger.log(`🔄 Webhook retry queued: ${event.eventType}`, {
-      webhookEventId,
-      jobId: job.id,
-    });
 
     return job.id as string;
   }
