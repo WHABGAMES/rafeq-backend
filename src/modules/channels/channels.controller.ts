@@ -1,8 +1,6 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Channels Controller                        ║
- * ║                                                                                ║
- * ║  API endpoints لإدارة قنوات التواصل                                           ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -14,204 +12,122 @@ import {
   Body,
   Param,
   Query,
-  Req,
-  UseGuards,
+  HttpCode,
+  HttpStatus,
   Logger,
 } from '@nestjs/common';
-import { Request } from 'express';
+import { ApiTags, ApiOperation, ApiQuery } from '@nestjs/swagger';
 
-// Guards
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-
-// Services
 import { ChannelsService, ConnectWhatsAppOfficialDto, ConnectDiscordDto } from './channels.service';
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// Request DTOs
-// ═══════════════════════════════════════════════════════════════════════════════
-
-interface AuthenticatedRequest extends Request {
-  user: {
-    id: string;
-    tenantId: string;
-  };
-}
-
+@ApiTags('Channels')
 @Controller('channels')
-@UseGuards(JwtAuthGuard)
 export class ChannelsController {
   private readonly logger = new Logger(ChannelsController.name);
 
   constructor(private readonly channelsService: ChannelsService) {}
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 📋 CRUD
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  /**
-   * GET /channels
-   * جلب جميع القنوات للمتجر
-   */
   @Get()
-  async findAll(
-    @Query('storeId') storeId: string,
-    @Req() req: AuthenticatedRequest,
-  ) {
-    this.logger.log(`Fetching channels for store ${storeId}`);
-    
-    const channels = await this.channelsService.findAll(storeId);
-    
+  @ApiOperation({ summary: 'Get all channels for a store' })
+  @ApiQuery({ name: 'storeId', required: true })
+  async getAll(@Query('storeId') storeId: string) {
     return {
       success: true,
-      data: channels,
+      data: await this.channelsService.findAll(storeId),
     };
   }
 
-  /**
-   * GET /channels/:id
-   * جلب قناة محددة
-   */
   @Get(':id')
-  async findOne(
+  @ApiOperation({ summary: 'Get channel by ID' })
+  @ApiQuery({ name: 'storeId', required: true })
+  async getById(
     @Param('id') id: string,
     @Query('storeId') storeId: string,
   ) {
-    const channel = await this.channelsService.findById(id, storeId);
-    
     return {
       success: true,
-      data: channel,
+      data: await this.channelsService.findById(id, storeId),
     };
   }
 
-  /**
-   * DELETE /channels/:id
-   * فصل قناة
-   */
   @Delete(':id')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Disconnect a channel' })
+  @ApiQuery({ name: 'storeId', required: true })
   async disconnect(
     @Param('id') id: string,
     @Query('storeId') storeId: string,
   ) {
     await this.channelsService.disconnect(id, storeId);
-    
-    return {
-      success: true,
-      message: 'Channel disconnected',
-    };
+    return { success: true, message: 'Channel disconnected' };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
   // 💬 WhatsApp Official
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * POST /channels/whatsapp/official
-   * ربط WhatsApp Business API
-   */
   @Post('whatsapp/official')
+  @ApiOperation({ summary: 'Connect WhatsApp Business API' })
   async connectWhatsAppOfficial(
-    @Body() dto: ConnectWhatsAppOfficialDto & { storeId: string },
+    @Body() body: ConnectWhatsAppOfficialDto & { storeId: string },
   ) {
-    this.logger.log(`Connecting WhatsApp Official for store ${dto.storeId}`);
-    
-    const channel = await this.channelsService.connectWhatsAppOfficial(
-      dto.storeId,
-      dto,
-    );
-    
-    return {
-      success: true,
-      data: channel,
-      message: 'WhatsApp Business connected successfully',
-    };
+    const { storeId, ...dto } = body;
+    const channel = await this.channelsService.connectWhatsAppOfficial(storeId, dto);
+    return { success: true, data: channel };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 📱 WhatsApp Unofficial (QR)
+  // 📱 WhatsApp QR (معطل مؤقتاً)
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * POST /channels/whatsapp/qr/init
-   * بدء جلسة WhatsApp QR
-   */
   @Post('whatsapp/qr/init')
-  async initWhatsAppQR(@Body('storeId') storeId: string) {
-    this.logger.log(`Initializing WhatsApp QR for store ${storeId}`);
-    
-    const session = await this.channelsService.initWhatsAppSession(storeId);
-    
-    return {
-      success: true,
-      data: session,
-    };
+  @ApiOperation({ summary: 'Initialize WhatsApp QR session (DISABLED)' })
+  async initWhatsAppQR(@Body() body: { storeId: string }) {
+    const session = await this.channelsService.initWhatsAppSession(body.storeId);
+    return { success: true, data: session };
   }
 
-  /**
-   * GET /channels/whatsapp/qr/:sessionId/status
-   * حالة جلسة WhatsApp QR
-   */
   @Get('whatsapp/qr/:sessionId/status')
+  @ApiOperation({ summary: 'Get WhatsApp QR session status (DISABLED)' })
   async getWhatsAppQRStatus(@Param('sessionId') sessionId: string) {
-    const session = await this.channelsService.getWhatsAppSessionStatus(sessionId);
-    
-    return {
-      success: true,
-      data: session,
-    };
+    const status = await this.channelsService.getWhatsAppSessionStatus(sessionId);
+    return { success: true, data: status };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
   // 📸 Instagram
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * POST /channels/instagram
-   * ربط انستقرام (بعد OAuth callback)
-   */
   @Post('instagram')
+  @ApiOperation({ summary: 'Connect Instagram account' })
   async connectInstagram(
-    @Body() dto: {
+    @Body() body: {
       storeId: string;
       accessToken: string;
       userId: string;
       pageId: string;
     },
   ) {
-    this.logger.log(`Connecting Instagram for store ${dto.storeId}`);
-    
     const channel = await this.channelsService.connectInstagram(
-      dto.storeId,
-      dto.accessToken,
-      dto.userId,
-      dto.pageId,
+      body.storeId,
+      body.accessToken,
+      body.userId,
+      body.pageId,
     );
-    
-    return {
-      success: true,
-      data: channel,
-      message: 'Instagram connected successfully',
-    };
+    return { success: true, data: channel };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
   // 🎮 Discord
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * POST /channels/discord
-   * ربط Discord Bot
-   */
   @Post('discord')
-  async connectDiscord(@Body() dto: ConnectDiscordDto & { storeId: string }) {
-    this.logger.log(`Connecting Discord for store ${dto.storeId}`);
-    
-    const channel = await this.channelsService.connectDiscord(dto.storeId, dto);
-    
-    return {
-      success: true,
-      data: channel,
-      message: 'Discord bot connected successfully',
-    };
+  @ApiOperation({ summary: 'Connect Discord bot' })
+  async connectDiscord(
+    @Body() body: ConnectDiscordDto & { storeId: string },
+  ) {
+    const { storeId, ...dto } = body;
+    const channel = await this.channelsService.connectDiscord(storeId, dto);
+    return { success: true, data: channel };
   }
 }
