@@ -27,7 +27,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 // Services
 import { SallaOAuthService } from './salla-oauth.service';
 
-// ✅ DTOs inline - لا حاجة لملفات خارجية
+// ✅ DTOs inline
 interface SallaConnectDto {
   state?: string;
 }
@@ -49,9 +49,7 @@ export class SallaOAuthController {
   ) {}
 
   /**
-   * ═══════════════════════════════════════════════════════════════════════════════
    * ✅ POST /stores/salla/connect
-   * ═══════════════════════════════════════════════════════════════════════════════
    */
   @Post('connect')
   @UseGuards(JwtAuthGuard)
@@ -67,7 +65,6 @@ export class SallaOAuthController {
       hasState: !!dto.state,
     });
 
-    // توليد رابط التفويض
     const redirectUrl = this.sallaOAuthService.generateAuthorizationUrl(
       user.tenantId,
       dto.state,
@@ -77,9 +74,7 @@ export class SallaOAuthController {
   }
 
   /**
-   * ═══════════════════════════════════════════════════════════════════════════════
    * ✅ GET /stores/salla/callback
-   * ═══════════════════════════════════════════════════════════════════════════════
    */
   @Get('callback')
   async callback(
@@ -96,7 +91,6 @@ export class SallaOAuthController {
         hasError: !!query.error,
       });
 
-      // التحقق من الأخطاء من سلة
       if (query.error) {
         this.logger.warn(`OAuth error from Salla: ${query.error}`);
         return res.redirect(
@@ -104,7 +98,6 @@ export class SallaOAuthController {
         );
       }
 
-      // التحقق من وجود code
       if (!query.code) {
         this.logger.warn('OAuth callback missing code');
         return res.redirect(
@@ -112,17 +105,16 @@ export class SallaOAuthController {
         );
       }
 
-      // استبدال الـ code بـ tokens وحفظ المتجر
+      // ✅ إصلاح: query.state || '' لتجنب undefined
       const result = await this.sallaOAuthService.exchangeCodeForTokens(
         query.code,
-        query.state,
+        query.state || '',
       );
 
       this.logger.log(`OAuth completed successfully`, {
         tenantId: result.tenantId,
       });
 
-      // ✅ توجيه مع status فقط
       return res.redirect(
         `${frontendUrl}${redirectPath}?status=success&state=${query.state || ''}`,
       );
@@ -130,7 +122,6 @@ export class SallaOAuthController {
     } catch (error) {
       this.logger.error(`OAuth callback error`, {
         error: error instanceof Error ? error.message : 'Unknown',
-        stack: error instanceof Error ? error.stack : undefined,
       });
 
       return res.redirect(
