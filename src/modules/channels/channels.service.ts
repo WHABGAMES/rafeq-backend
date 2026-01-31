@@ -14,6 +14,7 @@ import { firstValueFrom } from 'rxjs';
 import * as crypto from 'crypto';
 
 import { Channel, ChannelType, ChannelStatus } from './entities/channel.entity';
+// ✅ استيراد QRSessionResult واستخدامه بدلاً من تعريف محلي
 import { WhatsAppBaileysService, QRSessionResult } from './whatsapp/whatsapp-baileys.service';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -30,13 +31,6 @@ export interface ConnectWhatsAppOfficialDto {
 export interface ConnectDiscordDto {
   botToken: string;
   guildId?: string;
-}
-
-export interface WhatsAppQRSession {
-  sessionId: string;
-  qrCode: string;
-  expiresAt: Date;
-  status: 'pending' | 'scanning' | 'connected' | 'expired';
 }
 
 @Injectable()
@@ -162,7 +156,11 @@ export class ChannelsService {
   // 📱 WhatsApp QR (Baileys)
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  async initWhatsAppSession(storeId: string): Promise<WhatsAppQRSession> {
+  /**
+   * ✅ بدء جلسة WhatsApp QR جديدة
+   * @returns QRSessionResult من WhatsApp Baileys Service
+   */
+  async initWhatsAppSession(storeId: string): Promise<QRSessionResult> {
     this.logger.log(`Initializing WhatsApp QR session for store ${storeId}`);
 
     // إنشاء قناة جديدة
@@ -188,12 +186,7 @@ export class ChannelsService {
         sessionId: session.sessionId,
       });
 
-      return {
-        sessionId: savedChannel.id,
-        qrCode: session.qrCode,
-        expiresAt: session.expiresAt,
-        status: session.status,
-      };
+      return session;
     } catch (error: any) {
       // حذف القناة إذا فشل
       await this.channelRepository.delete(savedChannel.id);
@@ -203,7 +196,11 @@ export class ChannelsService {
     }
   }
 
-  async getWhatsAppSessionStatus(sessionId: string): Promise<WhatsAppQRSession> {
+  /**
+   * ✅ الحصول على حالة جلسة WhatsApp QR
+   * @returns QRSessionResult من WhatsApp Baileys Service
+   */
+  async getWhatsAppSessionStatus(sessionId: string): Promise<QRSessionResult> {
     const status = await this.whatsappBaileysService.getSessionStatus(sessionId);
 
     if (!status) {
