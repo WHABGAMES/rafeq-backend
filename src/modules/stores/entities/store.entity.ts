@@ -2,7 +2,8 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Store Entity                               ║
  * ║                                                                                ║
- * ║  كيان المتجر - يدعم سلة وزد                                                     ║
+ * ║  ✅ يدعم النمط السهل: tenantId nullable حتى يتم الربط                         ║
+ * ║  ✅ يدعم سلة وزد                                                               ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -38,17 +39,20 @@ export enum StorePlatform {
 @Index(['zidStoreId'], { unique: true, where: '"zid_store_id" IS NOT NULL' })
 @Index(['status'])
 export class Store extends BaseEntity {
+  // ✅ tenantId الآن nullable لدعم النمط السهل
+  // المتجر يُنشأ أولاً، ثم يُربط بـ Tenant لاحقاً
   @Column({
     name: 'tenant_id',
     type: 'uuid',
-    comment: 'معرّف الـ Tenant المالك',
+    nullable: true,  // ✅ مهم للنمط السهل
+    comment: 'معرّف الـ Tenant المالك (nullable حتى يتم الربط)',
   })
   @Index()
-  tenantId: string;
+  tenantId?: string;
 
-  @ManyToOne(() => Tenant, { onDelete: 'CASCADE' })
+  @ManyToOne(() => Tenant, { onDelete: 'CASCADE', nullable: true })
   @JoinColumn({ name: 'tenant_id' })
-  tenant: Tenant;
+  tenant?: Tenant;
 
   @Column({
     type: 'varchar',
@@ -345,6 +349,10 @@ export class Store extends BaseEntity {
 
   get isActive(): boolean {
     return this.status === StoreStatus.ACTIVE;
+  }
+
+  get isLinked(): boolean {
+    return !!this.tenantId;
   }
 
   get isTokenExpired(): boolean {
