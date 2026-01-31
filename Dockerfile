@@ -1,37 +1,211 @@
-# Rafiq Platform - Production Dockerfile
-FROM node:20-alpine
+# ═══════════════════════════════════════════════════════════════════════════════
+# Dockerfile - ملف بناء صورة Docker
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# 🐳 ما هو Dockerfile؟
+# ملف يحتوي على تعليمات لبناء "صورة" Docker
+# الصورة = قالب جاهز لإنشاء حاويات
+#
+# 📦 Multi-Stage Build
+# نستخدم عدة مراحل لتقليل حجم الصورة النهائية:
+# 1. base       - الإعدادات الأساسية
+# 2. deps       - تثبيت المكتبات
+# 3. development - للتطوير (مع أدوات إضافية)
+# 4. builder    - بناء الكود
+# 5. production - للإنتاج (خفيفة وآمنة)
+#
+# ═══════════════════════════════════════════════════════════════════════════════
 
-# Install build tools
-RUN apk add --no-cache python3 make g++
 
-# Set working directory
+# ─────────────────────────────────────────────────────────────────────────────
+# 🏠 المرحلة الأولى: base
+# ─────────────────────────────────────────────────────────────────────────────
+# تُعد البيئة الأساسية التي ترث منها باقي المراحل
+
+FROM node:20-alpine AS base
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# شرح السطر أعلاه:
+# ─────────────────
+# FROM = نبدأ من صورة موجودة
+# node:20-alpine = صورة Node.js الرسمية
+#   - 20 = إصدار Node.js
+#   - alpine = نظام Alpine Linux (خفيف جداً، ~5MB بدلاً من ~900MB)
+# AS base = نسمي هذه المرحلة "base" للإشارة إليها لاحقاً
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# تثبيت الأدوات الأساسية
+# apk = مدير الحزم في Alpine Linux
+RUN apk add --no-cache \
+    dumb-init \
+    curl \
+    git \
+    python3 \
+    make \
+    g++
+
+# تحديد مجلد العمل
+# كل الأوامر التالية تُنفذ من هذا المجلد
 WORKDIR /app
 
-# Copy package files
+# إنشاء مستخدم غير root للأمان
+# ⚠️ تشغيل التطبيق كـ root خطير!
+# إذا اختُرق التطبيق، المخترق يحصل على صلاحيات root
+RUN addgroup -g 1001 nodejs && \
+    adduser -S -u 1001 -G nodejs nodejs
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 📦 المرحلة الثانية: deps (Dependencies)
+# ─────────────────────────────────────────────────────────────────────────────
+# تثبيت جميع المكتبات (production + development)
+
+FROM base AS deps
+
+# نسخ ملفات الـ package
+# ننسخها أولاً لأن Docker يخزن كل طبقة (layer) مؤقتاً
+# إذا لم تتغير هذه الملفات، لا يُعيد تثبيت المكتبات (توفير وقت!)
 COPY package*.json ./
 
-# Install ALL dependencies (including devDependencies for build)
-RUN npm install
+# تثبيت جميع المكتبات
+# --legacy-peer-deps: لحل مشاكل توافق بعض المكتبات
+RUN npm ci --legacy-peer-deps
 
-# Copy source code
+# ═══════════════════════════════════════════════════════════════════════════════
+# شرح npm ci:
+# ────────────
+# npm ci (Clean Install) أفضل من npm install في Docker لأنه:
+# 1. أسرع (يتخطى بعض الفحوصات)
+# 2. أكثر موثوقية (يستخدم package-lock.json بالضبط)
+# 3. يحذف node_modules أولاً (بداية نظيفة)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 🛠️ المرحلة الثالثة: development
+# ─────────────────────────────────────────────────────────────────────────────
+# للتطوير المحلي مع Hot Reload
+
+FROM base AS development
+
+# نسخ المكتبات من مرحلة deps
+COPY --from=deps /app/node_modules ./node_modules
+
+# نسخ كل الكود المصدري
 COPY . .
 
-# Build the application
-RUN npm run build
+# إنشاء مجلد جلسات WhatsApp
+RUN mkdir -p /app/whatsapp-sessions && chown -R nodejs:nodejs /app/whatsapp-sessions
 
-# Remove devDependencies after build (but keep module-alias!)
-RUN npm prune --production
-
-# Set environment
-ENV NODE_ENV=production
-ENV PORT=3000
-
-# Expose port
+# المنفذ الذي يستمع عليه التطبيق
 EXPOSE 3000
 
-# Health check - use /api/health since we have global prefix
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD node -e "require('http').get('http://localhost:3000/api/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1))"
+# منفذ الـ Debug
+EXPOSE 9229
 
-# Start with module-alias for path resolution
-CMD ["node", "-r", "module-alias/register", "dist/main.js"]
+# تغيير المستخدم إلى nodejs (غير root)
+USER nodejs
+
+# أمر التشغيل
+# dumb-init يدير عملية npm
+CMD ["dumb-init", "npm", "run", "start:dev"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 🏗️ المرحلة الرابعة: builder
+# ─────────────────────────────────────────────────────────────────────────────
+# بناء الكود للإنتاج
+
+FROM base AS builder
+
+# نسخ المكتبات
+COPY --from=deps /app/node_modules ./node_modules
+
+# نسخ الكود
+COPY . .
+
+# بناء التطبيق
+# ينتج ملفات JavaScript في مجلد dist/
+RUN npm run build
+
+# حذف مكتبات التطوير (devDependencies)
+# يقلل حجم الصورة بشكل كبير
+RUN npm prune --production
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 🚀 المرحلة الخامسة: production
+# ─────────────────────────────────────────────────────────────────────────────
+# الصورة النهائية للإنتاج - خفيفة وآمنة
+
+FROM base AS production
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# لماذا مرحلة منفصلة للإنتاج؟
+# ────────────────────────────
+# 1. حجم أصغر: لا نحتاج الكود المصدري (.ts) ولا أدوات التطوير
+# 2. أمان أعلى: ملفات أقل = سطح هجوم أقل
+# 3. أداء أفضل: صور أصغر = نشر أسرع
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# تحديد البيئة
+ENV NODE_ENV=production
+ENV WHATSAPP_SESSIONS_PATH=/app/whatsapp-sessions
+
+# نسخ المكتبات الإنتاجية فقط
+COPY --from=builder --chown=nodejs:nodejs /app/node_modules ./node_modules
+
+# نسخ الكود المترجم فقط
+COPY --from=builder --chown=nodejs:nodejs /app/dist ./dist
+
+# نسخ ملفات الإعداد الضرورية
+COPY --from=builder --chown=nodejs:nodejs /app/package.json ./
+
+# إنشاء مجلد جلسات WhatsApp
+RUN mkdir -p /app/whatsapp-sessions && chown -R nodejs:nodejs /app/whatsapp-sessions
+
+# المنفذ
+EXPOSE 3000
+
+# تغيير المستخدم
+USER nodejs
+
+# فحص الصحة
+# Docker يتحقق دورياً أن التطبيق يعمل
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:3000/health || exit 1
+
+# أمر التشغيل
+# node dist/main = تشغيل الكود المترجم مباشرة (أفضل أداء)
+CMD ["dumb-init", "node", "dist/main"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 📊 ملخص أحجام الصور التقريبية:
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# | المرحلة      | الحجم التقريبي | الاستخدام              |
+# |--------------|----------------|------------------------|
+# | development  | ~500MB         | التطوير المحلي        |
+# | production   | ~150MB         | الإنتاج               |
+#
+# بدون Multi-Stage: ~1GB+ 😱
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# 🔧 أوامر البناء:
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# # بناء صورة التطوير:
+# docker build --target development -t rafiq:dev .
+#
+# # بناء صورة الإنتاج:
+# docker build --target production -t rafiq:prod .
+#
+# # تشغيل حاوية التطوير:
+# docker run -p 3000:3000 -v $(pwd)/src:/app/src rafiq:dev
+#
+# # تشغيل حاوية الإنتاج:
+# docker run -p 3000:3000 rafiq:prod
+#
+# ═══════════════════════════════════════════════════════════════════════════════
