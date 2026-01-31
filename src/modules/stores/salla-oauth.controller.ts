@@ -50,6 +50,7 @@ export class SallaOAuthController {
 
   /**
    * ✅ POST /stores/salla/connect
+   * يبدأ عملية OAuth مع سلة
    */
   @Post('connect')
   @UseGuards(JwtAuthGuard)
@@ -65,6 +66,7 @@ export class SallaOAuthController {
       hasState: !!dto.state,
     });
 
+    // ✅ generateAuthorizationUrl يقبل tenantId و state اختياري
     const redirectUrl = this.sallaOAuthService.generateAuthorizationUrl(
       user.tenantId,
       dto.state,
@@ -75,6 +77,7 @@ export class SallaOAuthController {
 
   /**
    * ✅ GET /stores/salla/callback
+   * يعالج الـ callback من سلة بعد موافقة المستخدم
    */
   @Get('callback')
   async callback(
@@ -91,6 +94,7 @@ export class SallaOAuthController {
         hasError: !!query.error,
       });
 
+      // ✅ معالجة الأخطاء من سلة
       if (query.error) {
         this.logger.warn(`OAuth error from Salla: ${query.error}`);
         return res.redirect(
@@ -98,6 +102,7 @@ export class SallaOAuthController {
         );
       }
 
+      // ✅ التحقق من وجود code
       if (!query.code) {
         this.logger.warn('OAuth callback missing code');
         return res.redirect(
@@ -105,18 +110,28 @@ export class SallaOAuthController {
         );
       }
 
-      // ✅ إصلاح: query.state || '' لتجنب undefined
+      // ✅ التحقق من وجود state
+      if (!query.state) {
+        this.logger.warn('OAuth callback missing state');
+        return res.redirect(
+          `${frontendUrl}${redirectPath}?status=error&reason=missing_state`,
+        );
+      }
+
+      // ✅ استبدال الـ code بـ tokens وإنشاء المتجر
       const result = await this.sallaOAuthService.exchangeCodeForTokens(
         query.code,
-        query.state || '',
+        query.state,
       );
 
       this.logger.log(`OAuth completed successfully`, {
         tenantId: result.tenantId,
+        merchantId: result.merchantId,
       });
 
+      // ✅ إعادة التوجيه للـ frontend مع نجاح
       return res.redirect(
-        `${frontendUrl}${redirectPath}?status=success&state=${query.state || ''}`,
+        `${frontendUrl}${redirectPath}?status=success&merchant=${result.merchantId}`,
       );
 
     } catch (error) {
