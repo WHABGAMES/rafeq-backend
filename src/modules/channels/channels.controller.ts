@@ -14,7 +14,6 @@ import {
   Query,
   HttpCode,
   HttpStatus,
-  Logger,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiQuery } from '@nestjs/swagger';
 
@@ -23,8 +22,6 @@ import { ChannelsService, ConnectWhatsAppOfficialDto, ConnectDiscordDto } from '
 @ApiTags('Channels')
 @Controller('channels')
 export class ChannelsController {
-  private readonly logger = new Logger(ChannelsController.name);
-
   constructor(private readonly channelsService: ChannelsService) {}
 
   @Get()
@@ -77,21 +74,34 @@ export class ChannelsController {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 📱 WhatsApp QR (معطل مؤقتاً)
+  // 📱 WhatsApp QR (Baileys)
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Post('whatsapp/qr/init')
-  @ApiOperation({ summary: 'Initialize WhatsApp QR session (DISABLED)' })
+  @ApiOperation({ summary: 'Initialize WhatsApp QR session' })
   async initWhatsAppQR(@Body() body: { storeId: string }) {
     const session = await this.channelsService.initWhatsAppSession(body.storeId);
     return { success: true, data: session };
   }
 
   @Get('whatsapp/qr/:sessionId/status')
-  @ApiOperation({ summary: 'Get WhatsApp QR session status (DISABLED)' })
+  @ApiOperation({ summary: 'Get WhatsApp QR session status' })
   async getWhatsAppQRStatus(@Param('sessionId') sessionId: string) {
     const status = await this.channelsService.getWhatsAppSessionStatus(sessionId);
     return { success: true, data: status };
+  }
+
+  @Post('whatsapp/send')
+  @ApiOperation({ summary: 'Send WhatsApp message' })
+  async sendWhatsAppMessage(
+    @Body() body: { channelId: string; to: string; message: string },
+  ) {
+    const result = await this.channelsService.sendWhatsAppMessage(
+      body.channelId,
+      body.to,
+      body.message,
+    );
+    return { success: true, data: result };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
