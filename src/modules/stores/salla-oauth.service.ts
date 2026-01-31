@@ -6,6 +6,7 @@
  * ║  ✅ يدعم Easy Mode و Standard OAuth                                           ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
+import { TenantsService } from '../tenants/tenants.service';
 
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -73,6 +74,7 @@ export class SallaOAuthService {
     private readonly httpService: HttpService,
     @InjectRepository(Store)
     private readonly storeRepository: Repository<Store>,
+    private readonly tenantsService: TenantsService,
   ) {
     this.clientId = this.configService.getOrThrow<string>('SALLA_CLIENT_ID');
     this.clientSecret = this.configService.getOrThrow<string>('SALLA_CLIENT_SECRET');
@@ -352,7 +354,16 @@ export class SallaOAuthService {
       this.logger.log(`Updated store for merchant ${merchantId}`);
     } else {
       // إنشاء متجر جديد - في Easy Mode لا يوجد tenantId بعد
+
+      // إنشاء Tenant تلقائي (حل Production)
+      const tenant = await this.tenantsService.create({
+        name: merchantInfo.name || `Salla Merchant ${merchantId}`,
+        status: 'active',
+        source: 'salla',
+      });
+
       store = this.storeRepository.create({
+        tenantId: tenant.id,
         name: merchantInfo.name || merchantInfo.username || `متجر سلة`,
         platform: StorePlatform.SALLA,
         status: StoreStatus.ACTIVE,
