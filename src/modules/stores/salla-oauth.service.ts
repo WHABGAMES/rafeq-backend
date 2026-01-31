@@ -356,11 +356,6 @@ export class SallaOAuthService {
       // إنشاء متجر جديد - في Easy Mode لا يوجد tenantId بعد
 
       // إنشاء Tenant تلقائي (حل Production)
-      const tenant = await this.tenantsService.create({
-        name: merchantInfo.name || `Salla Merchant ${merchantId}`,
-        status: 'active',
-        source: 'salla',
-      });
 
       store = this.storeRepository.create({
         tenantId: tenant.id,
