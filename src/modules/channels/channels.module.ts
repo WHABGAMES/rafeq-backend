@@ -2,7 +2,7 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Channels Module                            ║
  * ║                                                                                ║
- * ║  ⚠️ WhatsApp Baileys معطل مؤقتاً - يحتاج تثبيت المكتبات                        ║
+ * ║  ✅ يشمل WhatsApp Baileys                                                      ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -10,12 +10,12 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { HttpModule } from '@nestjs/axios';
 import { ConfigModule } from '@nestjs/config';
+import { EventEmitterModule } from '@nestjs/event-emitter';
 
 import { Channel } from './entities/channel.entity';
 import { ChannelsService } from './channels.service';
 import { ChannelsController } from './channels.controller';
-// ⚠️ WhatsApp Baileys معطل مؤقتاً
-// import { WhatsAppBaileysService } from './whatsapp/whatsapp-baileys.service';
+import { WhatsAppBaileysService } from './whatsapp/whatsapp-baileys.service';
 
 @Module({
   imports: [
@@ -25,16 +25,16 @@ import { ChannelsController } from './channels.controller';
       maxRedirects: 5,
     }),
     ConfigModule,
+    EventEmitterModule.forRoot(),
   ],
   controllers: [ChannelsController],
   providers: [
     ChannelsService,
-    // ⚠️ WhatsApp Baileys معطل مؤقتاً - شغله بعد تثبيت:
-    // npm install @whiskeysockets/baileys qrcode @hapi/boom
-    // WhatsAppBaileysService,
+    WhatsAppBaileysService,
   ],
   exports: [
     ChannelsService,
+    WhatsAppBaileysService,
   ],
 })
 export class ChannelsModule {}
