@@ -6,9 +6,9 @@
  * ║  ✅ يدعم Easy Mode و Standard OAuth                                           ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
-import { TenantsService } from '../tenants/tenants.service';
 
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import { TenantsService } from '../tenants/tenants.service';
 import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -354,11 +354,7 @@ export class SallaOAuthService {
       this.logger.log(`Updated store for merchant ${merchantId}`);
     } else {
       // إنشاء متجر جديد - في Easy Mode لا يوجد tenantId بعد
-
-      // إنشاء Tenant تلقائي (حل Production)
-
       store = this.storeRepository.create({
-        tenantId: tenant.id,
         name: merchantInfo.name || merchantInfo.username || `متجر سلة`,
         platform: StorePlatform.SALLA,
         status: StoreStatus.ACTIVE,
