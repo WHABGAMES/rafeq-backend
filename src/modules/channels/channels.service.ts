@@ -2,8 +2,7 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Channels Service                           ║
  * ║                                                                                ║
- * ║  ✅ WhatsApp Official, Instagram, Discord                                      ║
- * ║  ⚠️ WhatsApp QR معطل مؤقتاً - يحتاج تثبيت Baileys                              ║
+ * ║  ✅ WhatsApp Official + WhatsApp QR + Instagram + Discord                      ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -15,6 +14,7 @@ import { firstValueFrom } from 'rxjs';
 import * as crypto from 'crypto';
 
 import { Channel, ChannelType, ChannelStatus } from './entities/channel.entity';
+import { WhatsAppBaileysService, QRSessionResult } from './whatsapp/whatsapp-baileys.service';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DTOs
@@ -48,6 +48,8 @@ export class ChannelsService {
     private readonly channelRepository: Repository<Channel>,
     
     private readonly httpService: HttpService,
+    
+    private readonly whatsappBaileysService: WhatsAppBaileysService,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -75,6 +77,11 @@ export class ChannelsService {
 
   async disconnect(id: string, storeId: string): Promise<void> {
     const channel = await this.findById(id, storeId);
+
+    // إغلاق جلسة WhatsApp QR إن وجدت
+    if (channel.type === ChannelType.WHATSAPP_QR) {
+      await this.whatsappBaileysService.deleteSession(id);
+    }
 
     await this.channelRepository.update(id, {
       status: ChannelStatus.DISCONNECTED,
@@ -152,19 +159,121 @@ export class ChannelsService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 📱 WhatsApp Unofficial (QR) - معطل مؤقتاً
+  // 📱 WhatsApp QR (Baileys)
   // ═══════════════════════════════════════════════════════════════════════════════
 
   async initWhatsAppSession(storeId: string): Promise<WhatsAppQRSession> {
-    // ⚠️ معطل مؤقتاً - يحتاج تثبيت:
-    // npm install @whiskeysockets/baileys qrcode @hapi/boom
-    throw new BadRequestException(
-      'WhatsApp QR is temporarily disabled. Please install: npm install @whiskeysockets/baileys qrcode @hapi/boom'
-    );
+    this.logger.log(`Initializing WhatsApp QR session for store ${storeId}`);
+
+    // إنشاء قناة جديدة
+    const channel = this.channelRepository.create({
+      storeId,
+      type: ChannelType.WHATSAPP_QR,
+      name: 'WhatsApp (QR)',
+      status: ChannelStatus.PENDING,
+      isOfficial: false,
+    });
+
+    const savedChannel = await this.channelRepository.save(channel);
+
+    try {
+      // بدء جلسة Baileys
+      const session = await this.whatsappBaileysService.initSession(savedChannel.id);
+
+      // تحديث حالة القناة
+      await this.channelRepository.update(savedChannel.id, {
+        status: session.status === 'connected' 
+          ? ChannelStatus.CONNECTED 
+          : ChannelStatus.PENDING,
+        sessionId: session.sessionId,
+      });
+
+      return {
+        sessionId: savedChannel.id,
+        qrCode: session.qrCode,
+        expiresAt: session.expiresAt,
+        status: session.status,
+      };
+    } catch (error: any) {
+      // حذف القناة إذا فشل
+      await this.channelRepository.delete(savedChannel.id);
+      
+      this.logger.error('Failed to init WhatsApp session', error.message);
+      throw new BadRequestException('Failed to initialize WhatsApp session');
+    }
   }
 
   async getWhatsAppSessionStatus(sessionId: string): Promise<WhatsAppQRSession> {
-    throw new BadRequestException('WhatsApp QR is temporarily disabled');
+    const status = await this.whatsappBaileysService.getSessionStatus(sessionId);
+
+    if (!status) {
+      throw new NotFoundException('Session not found');
+    }
+
+    // تحديث حالة القناة في Database
+    if (status.status === 'connected') {
+      await this.channelRepository.update(sessionId, {
+        status: ChannelStatus.CONNECTED,
+        connectedAt: new Date(),
+      });
+    }
+
+    return status;
+  }
+
+  async sendWhatsAppMessage(
+    channelId: string,
+    to: string,
+    message: string,
+  ): Promise<{ messageId: string }> {
+    const channel = await this.channelRepository.findOne({
+      where: { id: channelId },
+    });
+
+    if (!channel) {
+      throw new NotFoundException('Channel not found');
+    }
+
+    if (channel.type === ChannelType.WHATSAPP_QR) {
+      // إرسال عبر Baileys
+      return this.whatsappBaileysService.sendTextMessage(channelId, to, message);
+    } else if (channel.type === ChannelType.WHATSAPP_OFFICIAL) {
+      // إرسال عبر Meta API
+      return this.sendWhatsAppOfficialMessage(channel, to, message);
+    }
+
+    throw new BadRequestException('Invalid channel type');
+  }
+
+  private async sendWhatsAppOfficialMessage(
+    channel: Channel,
+    to: string,
+    message: string,
+  ): Promise<{ messageId: string }> {
+    try {
+      const response = await firstValueFrom(
+        this.httpService.post(
+          `https://graph.facebook.com/v18.0/${channel.whatsappPhoneNumberId}/messages`,
+          {
+            messaging_product: 'whatsapp',
+            to,
+            type: 'text',
+            text: { body: message },
+          },
+          {
+            headers: {
+              Authorization: `Bearer ${channel.whatsappAccessToken}`,
+              'Content-Type': 'application/json',
+            },
+          },
+        ),
+      );
+
+      return { messageId: response.data.messages?.[0]?.id || '' };
+    } catch (error: any) {
+      this.logger.error('Failed to send WhatsApp Official message', error.message);
+      throw new BadRequestException('Failed to send message');
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
