@@ -88,6 +88,10 @@
 
     "discord.js": "^14.14.1",
 
+    "@whiskeysockets/baileys": "^6.7.9",
+    "@hapi/boom": "^10.0.1",
+    "qrcode": "^1.5.4",
+
     "uuid": "^9.0.0",
     "socket.io": "^4.7.2",
     "nanoid": "^3.3.7",
@@ -122,6 +126,8 @@
     "@types/lodash": "^4.14.202",
     "@types/compression": "^1.7.5",
     "@types/uuid": "^9.0.7",
+    "@types/qrcode": "^1.5.5",
+    "@types/hapi__boom": "^10.0.0",
 
     "typescript": "^5.3.3",
     "ts-node": "^10.9.2",
