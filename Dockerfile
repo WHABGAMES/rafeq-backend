@@ -69,12 +69,12 @@ COPY package*.json ./
 
 # تثبيت جميع المكتبات
 # --legacy-peer-deps: لحل مشاكل توافق بعض المكتبات
-RUN npm ci --legacy-peer-deps
+RUN npm install --legacy-peer-deps
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# شرح npm ci:
+# شرح npm install:
 # ────────────
-# npm ci (Clean Install) أفضل من npm install في Docker لأنه:
+# npm install (Clean Install) أفضل من npm install في Docker لأنه:
 # 1. أسرع (يتخطى بعض الفحوصات)
 # 2. أكثر موثوقية (يستخدم package-lock.json بالضبط)
 # 3. يحذف node_modules أولاً (بداية نظيفة)
