@@ -1,10 +1,10 @@
 /**
- * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║                RAFIQ PLATFORM - Salla OAuth Service                            ║
- * ║                                                                                ║
- * ║  ✅ OAuth 2.0 Flow مع سلة                                                      ║
- * ║  ✅ يدعم Easy Mode و Standard OAuth                                           ║
- * ╚═══════════════════════════════════════════════════════════════════════════════╝
+ * ╔══════════════════════════════════════════════════════════════════════════════╗
+ * ║                RAFIQ PLATFORM - Salla OAuth Service                          ║
+ * ║                                                                              ║
+ * ║  ✅ OAuth 2.0 Flow مع سلة                                                       ║
+ * ║  ✅ يدعم Easy Mode و Standard OAuth                                            ║
+ * ╚══════════════════════════════════════════════════════════════════════════════╝
  */
 
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
@@ -91,7 +91,6 @@ export class SallaOAuthService {
       custom: customState || '',
       timestamp: Date.now(),
     };
-    
     const state = Buffer.from(JSON.stringify(stateData)).toString('base64url');
 
     const params = new URLSearchParams({
@@ -103,9 +102,7 @@ export class SallaOAuthService {
     });
 
     const url = `${this.sallaAuthUrl}?${params.toString()}`;
-    
     this.logger.log(`Generated OAuth URL for tenant ${tenantId}`);
-    
     return url;
   }
 
@@ -128,7 +125,6 @@ export class SallaOAuthService {
     this.logger.log('Exchanging code for tokens');
 
     const tenantId = this.extractTenantIdFromState(state);
-    
     if (!tenantId) {
       throw new BadRequestException('Invalid state: missing tenantId');
     }
@@ -144,30 +140,18 @@ export class SallaOAuthService {
             redirect_uri: this.redirectUri,
             code,
           }).toString(),
-          {
-            headers: {
-              'Content-Type': 'application/x-www-form-urlencoded',
-            },
-          },
+          { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } },
         ),
       );
 
       const tokens = response.data;
       const merchantInfo = await this.fetchMerchantInfo(tokens.access_token);
-      
       await this.createOrUpdateStore(tenantId, tokens, merchantInfo);
 
       this.logger.log(`OAuth completed for tenant ${tenantId}, merchant ${merchantInfo.id}`);
-
-      return {
-        tokens,
-        tenantId,
-        merchantId: merchantInfo.id,
-      };
+      return { tokens, tenantId, merchantId: merchantInfo.id };
     } catch (error: any) {
-      this.logger.error('Failed to exchange code for tokens', {
-        error: error.response?.data || error.message,
-      });
+      this.logger.error('Failed to exchange code for tokens', { error: error.response?.data || error.message });
       throw new BadRequestException('Failed to exchange authorization code');
     }
   }
@@ -180,12 +164,9 @@ export class SallaOAuthService {
     try {
       const response = await firstValueFrom(
         this.httpService.get(`${this.sallaApiUrl}/store/info`, {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
+          headers: { Authorization: `Bearer ${accessToken}` },
         }),
       );
-
       return response.data.data;
     } catch (error: any) {
       this.logger.error('Failed to fetch merchant info', error.message);
@@ -203,9 +184,7 @@ export class SallaOAuthService {
     merchantInfo: SallaMerchantInfo,
   ): Promise<Store> {
     // ✅ استخدام sallaMerchantId بدلاً من merchantId
-    let store = await this.storeRepository.findOne({
-      where: { sallaMerchantId: merchantInfo.id },
-    });
+    let store = await this.storeRepository.findOne({ where: { sallaMerchantId: merchantInfo.id } });
 
     if (store) {
       // تحديث المتجر الموجود
@@ -248,7 +227,6 @@ export class SallaOAuthService {
         settings: {},
         subscribedEvents: [],
       });
-      
       this.logger.log(`Created new store for merchant ${merchantInfo.id}`);
     }
 
@@ -265,7 +243,6 @@ export class SallaOAuthService {
 
   async refreshAccessToken(refreshToken: string): Promise<SallaTokenResponse> {
     this.logger.log('Refreshing access token');
-
     try {
       const response = await firstValueFrom(
         this.httpService.post<SallaTokenResponse>(
@@ -276,14 +253,9 @@ export class SallaOAuthService {
             client_secret: this.clientSecret,
             refresh_token: refreshToken,
           }).toString(),
-          {
-            headers: {
-              'Content-Type': 'application/x-www-form-urlencoded',
-            },
-          },
+          { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } },
         ),
       );
-
       this.logger.log('Token refreshed successfully');
       return response.data;
     } catch (error: any) {
@@ -297,9 +269,7 @@ export class SallaOAuthService {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   async findByMerchantId(merchantId: number): Promise<Store | null> {
-    return this.storeRepository.findOne({
-      where: { sallaMerchantId: merchantId },
-    });
+    return this.storeRepository.findOne({ where: { sallaMerchantId: merchantId } });
   }
 
   async getUnlinkedStores(): Promise<Store[]> {
@@ -326,11 +296,7 @@ export class SallaOAuthService {
     this.logger.log(`App Store authorize for merchant ${merchantId}`, { createdAt });
 
     const merchantInfo = await this.fetchMerchantInfo(data.access_token);
-
-    let store = await this.storeRepository.findOne({
-      where: { sallaMerchantId: merchantId },
-    });
-
+    let store = await this.storeRepository.findOne({ where: { sallaMerchantId: merchantId } });
     const expiresIn = data.expires || 3600;
 
     if (store) {
@@ -338,7 +304,7 @@ export class SallaOAuthService {
       if (!store.tenantId) {
         const tenant = await this.tenantsService.createTenantFromSalla({
           merchantId,
-          storeName: merchantInfo.name || merchantInfo.username || `متجر سلة`,
+          name: merchantInfo.name || merchantInfo.username || `متجر سلة`,
           email: merchantInfo.email,
           phone: merchantInfo.mobile,
           logo: merchantInfo.avatar,
@@ -368,7 +334,7 @@ export class SallaOAuthService {
       // ✅ إنشاء Tenant تلقائي (Production) ثم إنشاء المتجر مرتبط بالـ tenantId
       const tenant = await this.tenantsService.createTenantFromSalla({
         merchantId,
-        storeName: merchantInfo.name || merchantInfo.username || `متجر سلة`,
+        name: merchantInfo.name || merchantInfo.username || `متجر سلة`,
         email: merchantInfo.email,
         phone: merchantInfo.mobile,
         logo: merchantInfo.avatar,
@@ -406,17 +372,12 @@ export class SallaOAuthService {
    */
   async handleAppUninstalled(merchantId: number): Promise<void> {
     this.logger.log(`App uninstalled for merchant ${merchantId}`);
-
-    const store = await this.storeRepository.findOne({
-      where: { sallaMerchantId: merchantId },
-    });
-
+    const store = await this.storeRepository.findOne({ where: { sallaMerchantId: merchantId } });
     if (store) {
       store.status = StoreStatus.UNINSTALLED;
       store.accessToken = undefined;
       store.refreshToken = undefined;
       store.tokenExpiresAt = undefined;
-      
       await this.storeRepository.save(store);
       this.logger.log(`Store uninstalled for merchant ${merchantId}`);
     }
@@ -426,18 +387,12 @@ export class SallaOAuthService {
    * ✅ ربط متجر بـ tenant
    */
   async linkStoreToTenant(storeId: string, tenantId: string): Promise<Store> {
-    const store = await this.storeRepository.findOne({
-      where: { id: storeId },
-    });
-
+    const store = await this.storeRepository.findOne({ where: { id: storeId } });
     if (!store) {
       throw new BadRequestException('Store not found');
     }
-
     store.tenantId = tenantId;
-    
     this.logger.log(`Linked store ${storeId} to tenant ${tenantId}`);
-    
     return this.storeRepository.save(store);
   }
 }
