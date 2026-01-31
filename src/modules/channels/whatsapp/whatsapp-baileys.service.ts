@@ -43,12 +43,6 @@ export interface QRSessionResult {
   status: 'pending' | 'scanning' | 'connected' | 'expired';
 }
 
-export interface ConnectionUpdate {
-  connection?: ConnectionState['connection'];
-  lastDisconnect?: { error?: Boom; date: Date };
-  qr?: string;
-}
-
 export interface MessageUpsert {
   messages: WAMessage[];
   type: MessageUpsertType;
@@ -126,8 +120,8 @@ export class WhatsAppBaileysService implements OnModuleDestroy {
     // حفظ credentials عند التحديث
     sock.ev.on('creds.update', saveCreds);
 
-    // معالجة تحديثات الاتصال
-    sock.ev.on('connection.update', async (update: ConnectionUpdate) => {
+    // ✅ معالجة تحديثات الاتصال - استخدام Partial<ConnectionState> من Baileys
+    sock.ev.on('connection.update', async (update: Partial<ConnectionState>) => {
       await this.handleConnectionUpdate(channelId, update);
     });
 
@@ -283,9 +277,13 @@ export class WhatsAppBaileysService implements OnModuleDestroy {
   // 🔧 Private Handlers
   // ═══════════════════════════════════════════════════════════════════════════════
 
+  /**
+   * ✅ معالجة تحديثات الاتصال من Baileys
+   * يستخدم Partial<ConnectionState> مباشرة من Baileys
+   */
   private async handleConnectionUpdate(
     channelId: string,
-    update: ConnectionUpdate,
+    update: Partial<ConnectionState>,
   ): Promise<void> {
     const { connection, lastDisconnect, qr } = update;
     const session = this.sessions.get(channelId);
@@ -337,7 +335,15 @@ export class WhatsAppBaileysService implements OnModuleDestroy {
 
     // الاتصال مغلق
     if (connection === 'close') {
-      const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
+      // ✅ استخراج الخطأ بشكل آمن - lastDisconnect.error قد يكون Error أو Boom
+      const disconnectError = lastDisconnect?.error;
+      let statusCode: number | undefined;
+      
+      // التحقق إذا كان Boom
+      if (disconnectError && 'output' in disconnectError) {
+        statusCode = (disconnectError as Boom).output?.statusCode;
+      }
+      
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
       
       this.logger.warn(`Connection closed for ${channelId}, code: ${statusCode}`);
