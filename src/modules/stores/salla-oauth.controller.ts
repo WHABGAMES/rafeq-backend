@@ -15,7 +15,6 @@ import {
   Res,
   Logger,
   BadRequestException,
-  UnauthorizedException,
   UseGuards,
   Request,
 } from '@nestjs/common';
