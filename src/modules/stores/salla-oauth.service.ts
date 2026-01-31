@@ -2,15 +2,21 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                RAFIQ PLATFORM - Salla OAuth Service                            ║
  * ║                                                                                ║
- * ║  ✅ Updated: Support for Frontend CSRF state                                   ║
+ * ║  ✅ يدعم النمط السهل (app.store.authorize webhook)                            ║
+ * ║  ✅ يدعم النمط المخصص (OAuth redirect flow)                                   ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
 import { Injectable, Logger, UnauthorizedException, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 import { firstValueFrom } from 'rxjs';
 import * as crypto from 'crypto';
+
+// Entities
+import { Store, StorePlatform, StoreStatus } from './entities/store.entity';
 
 export interface SallaTokenResponse {
   access_token: string;
@@ -31,10 +37,18 @@ export interface SallaMerchantInfo {
   created_at: string;
 }
 
-// ✅ Updated: State data now includes Frontend CSRF state
+// ✅ Interface لـ app.store.authorize webhook
+export interface SallaAppAuthorizeData {
+  access_token: string;
+  expires: number;
+  refresh_token: string;
+  scope: string;
+  token_type: string;
+}
+
 interface StateData {
   tenantId: string;
-  csrfState?: string;  // Frontend's CSRF state
+  csrfState?: string;
   expiresAt: number;
 }
 
@@ -52,29 +66,190 @@ export class SallaOAuthService {
   constructor(
     private readonly configService: ConfigService,
     private readonly httpService: HttpService,
+    
+    @InjectRepository(Store)
+    private readonly storeRepository: Repository<Store>,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 🔗 Generate Authorization URL
+  // ✅ النمط السهل - معالجة app.store.authorize webhook
   // ═══════════════════════════════════════════════════════════════════════════════
 
   /**
-   * ✅ Updated: Now accepts optional Frontend CSRF state
-   * 
-   * @param tenantId معرّف الـ Tenant
-   * @param csrfState CSRF state من الـ Frontend (اختياري)
-   * @returns رابط التوجيه
+   * ✅ معالجة حدث app.store.authorize من سلة
+   * هذا هو النمط السهل - التاجر يثبّت من متجر سلة مباشرة
+   */
+  async handleAppStoreAuthorize(
+    merchantId: number,
+    data: SallaAppAuthorizeData,
+    createdAt: string,
+  ): Promise<Store> {
+    this.logger.log(`🔐 Processing app.store.authorize for merchant ${merchantId}`);
+
+    const { access_token, refresh_token, expires, scope } = data;
+
+    try {
+      // 1. جلب معلومات المتجر من سلة
+      const merchantInfo = await this.getMerchantInfo(access_token);
+      
+      this.logger.log(`📊 Merchant info retrieved`, {
+        merchantId,
+        storeName: merchantInfo.name,
+        email: merchantInfo.email,
+      });
+
+      // 2. البحث عن متجر موجود
+      let store = await this.storeRepository.findOne({
+        where: { sallaMerchantId: merchantId },
+      });
+
+      if (store) {
+        // ✅ تحديث المتجر الموجود
+        this.logger.log(`Updating existing store for merchant ${merchantId}`);
+        
+        store.accessToken = access_token;
+        store.refreshToken = refresh_token;
+        store.tokenExpiresAt = new Date(expires * 1000);
+        store.status = StoreStatus.ACTIVE;
+        store.lastSyncedAt = new Date();
+        store.lastTokenRefreshAt = new Date();
+        store.consecutiveErrors = 0;
+        store.lastError = undefined;
+        
+        // تحديث معلومات سلة
+        store.sallaStoreName = merchantInfo.name;
+        store.sallaEmail = merchantInfo.email;
+        store.sallaMobile = merchantInfo.mobile;
+        store.sallaDomain = merchantInfo.domain;
+        store.sallaAvatar = merchantInfo.avatar;
+        store.sallaPlan = merchantInfo.plan;
+        
+      } else {
+        // ✅ إنشاء متجر جديد
+        this.logger.log(`Creating new store for merchant ${merchantId}`);
+        
+        store = this.storeRepository.create({
+          // ⚠️ tenantId مؤقتاً - سيحتاج ربط لاحقاً عبر Dashboard
+          // يمكن للتاجر ربطه من صفحة المتاجر
+          name: merchantInfo.name,
+          platform: StorePlatform.SALLA,
+          status: StoreStatus.ACTIVE,
+          
+          // Tokens
+          accessToken: access_token,
+          refreshToken: refresh_token,
+          tokenExpiresAt: new Date(expires * 1000),
+          
+          // Salla info
+          sallaMerchantId: merchantId,
+          sallaStoreName: merchantInfo.name,
+          sallaEmail: merchantInfo.email,
+          sallaMobile: merchantInfo.mobile,
+          sallaDomain: merchantInfo.domain,
+          sallaAvatar: merchantInfo.avatar,
+          sallaPlan: merchantInfo.plan,
+          
+          // Settings
+          currency: 'SAR',
+          subscribedEvents: scope.split(' '),
+          lastSyncedAt: new Date(),
+          lastTokenRefreshAt: new Date(),
+          settings: {
+            connectedVia: 'easy_mode',
+            connectedAt: createdAt,
+          },
+        });
+      }
+
+      const savedStore = await this.storeRepository.save(store);
+
+      this.logger.log(`✅ Store saved successfully`, {
+        storeId: savedStore.id,
+        merchantId,
+        status: savedStore.status,
+      });
+
+      return savedStore;
+
+    } catch (error) {
+      this.logger.error(`❌ Failed to handle app.store.authorize`, {
+        merchantId,
+        error: error instanceof Error ? error.message : 'Unknown',
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * ✅ معالجة حدث app.uninstalled من سلة
+   */
+  async handleAppUninstalled(merchantId: number): Promise<void> {
+    this.logger.log(`🗑️ Processing app.uninstalled for merchant ${merchantId}`);
+
+    try {
+      await this.storeRepository.update(
+        { sallaMerchantId: merchantId },
+        {
+          status: StoreStatus.UNINSTALLED,
+          accessToken: undefined,
+          refreshToken: undefined,
+        },
+      );
+
+      this.logger.log(`✅ Store marked as uninstalled for merchant ${merchantId}`);
+
+    } catch (error) {
+      this.logger.error(`❌ Failed to handle app.uninstalled`, {
+        merchantId,
+        error: error instanceof Error ? error.message : 'Unknown',
+      });
+    }
+  }
+
+  /**
+   * ✅ ربط متجر بـ Tenant (من Dashboard)
+   */
+  async linkStoreToTenant(merchantId: number, tenantId: string): Promise<Store> {
+    const store = await this.storeRepository.findOne({
+      where: { sallaMerchantId: merchantId },
+    });
+
+    if (!store) {
+      throw new BadRequestException(`Store not found for merchant ${merchantId}`);
+    }
+
+    if (store.tenantId && store.tenantId !== tenantId) {
+      throw new BadRequestException('Store already linked to another tenant');
+    }
+
+    store.tenantId = tenantId;
+    return this.storeRepository.save(store);
+  }
+
+  /**
+   * ✅ الحصول على متاجر غير مربوطة (للعرض في Dashboard)
+   */
+  async getUnlinkedStores(): Promise<Store[]> {
+    return this.storeRepository.find({
+      where: { tenantId: undefined as any, status: StoreStatus.ACTIVE },
+      order: { createdAt: 'DESC' },
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔗 النمط المخصص - OAuth redirect flow
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * توليد رابط OAuth
    */
   generateAuthorizationUrl(tenantId: string, csrfState?: string): string {
-    // Generate backend state (includes tenantId + frontend csrfState)
     const state = this.generateState(tenantId, csrfState);
 
-    const clientId = this.configService.get<string>('salla.clientId');
-    const redirectUri = this.configService.get<string>('salla.redirectUri');
+    const clientId = this.configService.get<string>('SALLA_CLIENT_ID');
+    const redirectUri = this.configService.get<string>('SALLA_REDIRECT_URI');
 
-    const scopes = [
-      'offline_access',
-    ].join(' ');
+    const scopes = ['offline_access'].join(' ');
 
     const params = new URLSearchParams({
       client_id: clientId!,
@@ -91,18 +266,13 @@ export class SallaOAuthService {
     return authUrl;
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🔄 Exchange Code for Tokens
-  // ═══════════════════════════════════════════════════════════════════════════════
-
   /**
-   * ✅ Updated: Returns csrfState for Frontend verification
+   * استبدال الكود بـ tokens
    */
   async exchangeCodeForTokens(
     code: string,
     state: string,
   ): Promise<{ tokens: SallaTokenResponse; tenantId: string; csrfState?: string }> {
-    // Verify state
     const stateData = this.verifyState(state);
 
     if (!stateData) {
@@ -112,9 +282,9 @@ export class SallaOAuthService {
     const { tenantId, csrfState } = stateData;
 
     try {
-      const clientId = this.configService.get<string>('salla.clientId');
-      const clientSecret = this.configService.get<string>('salla.clientSecret');
-      const redirectUri = this.configService.get<string>('salla.redirectUri');
+      const clientId = this.configService.get<string>('SALLA_CLIENT_ID');
+      const clientSecret = this.configService.get<string>('SALLA_CLIENT_SECRET');
+      const redirectUri = this.configService.get<string>('SALLA_REDIRECT_URI');
 
       const response = await firstValueFrom(
         this.httpService.post<SallaTokenResponse>(
@@ -139,7 +309,7 @@ export class SallaOAuthService {
       return {
         tokens: response.data,
         tenantId,
-        csrfState,  // ✅ Return Frontend's CSRF state
+        csrfState,
       };
 
     } catch (error: any) {
@@ -151,13 +321,13 @@ export class SallaOAuthService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 🔄 Refresh Access Token
+  // 🔄 Token Management
   // ═══════════════════════════════════════════════════════════════════════════════
 
   async refreshAccessToken(refreshToken: string): Promise<SallaTokenResponse> {
     try {
-      const clientId = this.configService.get<string>('salla.clientId');
-      const clientSecret = this.configService.get<string>('salla.clientSecret');
+      const clientId = this.configService.get<string>('SALLA_CLIENT_ID');
+      const clientSecret = this.configService.get<string>('SALLA_CLIENT_SECRET');
 
       const response = await firstValueFrom(
         this.httpService.post<SallaTokenResponse>(
@@ -189,7 +359,7 @@ export class SallaOAuthService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 📊 Get Merchant Info
+  // 📊 Salla API
   // ═══════════════════════════════════════════════════════════════════════════════
 
   async getMerchantInfo(accessToken: string): Promise<SallaMerchantInfo> {
@@ -216,17 +386,13 @@ export class SallaOAuthService {
   // 🛠️ Helper Methods
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * ✅ Updated: Now stores Frontend CSRF state
-   */
   private generateState(tenantId: string, csrfState?: string): string {
     const state = crypto.randomBytes(32).toString('hex');
 
-    // ✅ Store tenantId + Frontend's csrfState
     this.stateStorage.set(state, {
       tenantId,
       csrfState,
-      expiresAt: Date.now() + 10 * 60 * 1000,  // 10 minutes
+      expiresAt: Date.now() + 10 * 60 * 1000,
     });
 
     this.cleanupExpiredStates();
@@ -234,9 +400,6 @@ export class SallaOAuthService {
     return state;
   }
 
-  /**
-   * ✅ Updated: Returns csrfState
-   */
   private verifyState(state: string): StateData | null {
     const stateData = this.stateStorage.get(state);
 
@@ -244,7 +407,6 @@ export class SallaOAuthService {
       return null;
     }
 
-    // Single use
     this.stateStorage.delete(state);
 
     if (Date.now() > stateData.expiresAt) {
