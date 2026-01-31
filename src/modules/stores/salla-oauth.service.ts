@@ -2,8 +2,7 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                RAFIQ PLATFORM - Salla OAuth Service                            ║
  * ║                                                                                ║
- * ║  خدمة OAuth للربط مع سلة                                                        ║
- * ║  تتولى كل شيء متعلق بالـ authorization                                         ║
+ * ║  ✅ Updated: Support for Frontend CSRF state                                   ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -13,29 +12,10 @@ import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 import * as crypto from 'crypto';
 
-/**
- * 📌 OAuth 2.0 - شرح مبسط:
- * 
- * OAuth = معيار للسماح لتطبيق بالوصول لحساب المستخدم في تطبيق آخر
- * بدون الحاجة لمعرفة كلمة المرور
- * 
- * الأطراف:
- * 1. Resource Owner: المستخدم (صاحب المتجر)
- * 2. Client: تطبيقنا (رفيق)
- * 3. Authorization Server: سلة
- * 4. Resource Server: API سلة
- * 
- * Flow:
- * 1. نوجه المستخدم لسلة للموافقة
- * 2. سلة تعطينا code
- * 3. نستبدل الـ code بـ tokens
- * 4. نستخدم الـ tokens للوصول للـ API
- */
-
 export interface SallaTokenResponse {
   access_token: string;
   refresh_token: string;
-  expires_in: number; // seconds
+  expires_in: number;
   token_type: string;
 }
 
@@ -51,17 +31,23 @@ export interface SallaMerchantInfo {
   created_at: string;
 }
 
+// ✅ Updated: State data now includes Frontend CSRF state
+interface StateData {
+  tenantId: string;
+  csrfState?: string;  // Frontend's CSRF state
+  expiresAt: number;
+}
+
 @Injectable()
 export class SallaOAuthService {
   private readonly logger = new Logger(SallaOAuthService.name);
 
-  // Salla OAuth endpoints
   private readonly SALLA_AUTH_URL = 'https://accounts.salla.sa/oauth2/authorize';
   private readonly SALLA_TOKEN_URL = 'https://accounts.salla.sa/oauth2/token';
   private readonly SALLA_API_URL = 'https://api.salla.dev/admin/v2';
 
-  // State storage (يجب استخدام Redis في الإنتاج)
-  private readonly stateStorage = new Map<string, { tenantId: string; expiresAt: number }>();
+  // ⚠️ Use Redis in production
+  private readonly stateStorage = new Map<string, StateData>();
 
   constructor(
     private readonly configService: ConfigService,
@@ -73,38 +59,19 @@ export class SallaOAuthService {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   /**
-   * إنشاء رابط OAuth لسلة
+   * ✅ Updated: Now accepts optional Frontend CSRF state
    * 
    * @param tenantId معرّف الـ Tenant
+   * @param csrfState CSRF state من الـ Frontend (اختياري)
    * @returns رابط التوجيه
    */
-  generateAuthorizationUrl(tenantId: string): string {
-    // ─────────────────────────────────────────────────────────────────────────────
-    // 1️⃣ إنشاء State (لمنع CSRF)
-    // ─────────────────────────────────────────────────────────────────────────────
-    /**
-     * State = قيمة عشوائية نرسلها لسلة
-     * سلة ترجعها مع الـ callback
-     * نتحقق أنها نفسها = الطلب أصلي
-     * 
-     * لماذا مهم؟
-     * بدون state، مهاجم يمكنه:
-     * 1. إنشاء رابط OAuth
-     * 2. إقناع الضحية بالضغط عليه
-     * 3. ربط متجر الضحية بحساب المهاجم
-     */
-    const state = this.generateState(tenantId);
+  generateAuthorizationUrl(tenantId: string, csrfState?: string): string {
+    // Generate backend state (includes tenantId + frontend csrfState)
+    const state = this.generateState(tenantId, csrfState);
 
-    // ─────────────────────────────────────────────────────────────────────────────
-    // 2️⃣ بناء URL
-    // ─────────────────────────────────────────────────────────────────────────────
     const clientId = this.configService.get<string>('salla.clientId');
     const redirectUri = this.configService.get<string>('salla.redirectUri');
 
-    /**
-     * Scopes تحدد ما يمكن لتطبيقنا الوصول له:
-     * - offline_access: للحصول على refresh_token
-     */
     const scopes = [
       'offline_access',
     ].join(' ');
@@ -129,29 +96,21 @@ export class SallaOAuthService {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   /**
-   * استبدال الـ code بـ tokens
-   * 
-   * @param code الـ code من سلة
-   * @param state الـ state للتحقق
+   * ✅ Updated: Returns csrfState for Frontend verification
    */
   async exchangeCodeForTokens(
     code: string,
     state: string,
-  ): Promise<{ tokens: SallaTokenResponse; tenantId: string }> {
-    // ─────────────────────────────────────────────────────────────────────────────
-    // 1️⃣ التحقق من الـ State
-    // ─────────────────────────────────────────────────────────────────────────────
+  ): Promise<{ tokens: SallaTokenResponse; tenantId: string; csrfState?: string }> {
+    // Verify state
     const stateData = this.verifyState(state);
 
     if (!stateData) {
       throw new UnauthorizedException('Invalid or expired state');
     }
 
-    const { tenantId } = stateData;
+    const { tenantId, csrfState } = stateData;
 
-    // ─────────────────────────────────────────────────────────────────────────────
-    // 2️⃣ استبدال الـ Code بـ Tokens
-    // ─────────────────────────────────────────────────────────────────────────────
     try {
       const clientId = this.configService.get<string>('salla.clientId');
       const clientSecret = this.configService.get<string>('salla.clientSecret');
@@ -180,6 +139,7 @@ export class SallaOAuthService {
       return {
         tokens: response.data,
         tenantId,
+        csrfState,  // ✅ Return Frontend's CSRF state
       };
 
     } catch (error: any) {
@@ -194,11 +154,6 @@ export class SallaOAuthService {
   // 🔄 Refresh Access Token
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * تجديد الـ Access Token
-   * 
-   * يُستدعى عندما يكون الـ token قارب على الانتهاء
-   */
   async refreshAccessToken(refreshToken: string): Promise<SallaTokenResponse> {
     try {
       const clientId = this.configService.get<string>('salla.clientId');
@@ -237,9 +192,6 @@ export class SallaOAuthService {
   // 📊 Get Merchant Info
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * جلب معلومات المتجر من API سلة
-   */
   async getMerchantInfo(accessToken: string): Promise<SallaMerchantInfo> {
     try {
       const response = await firstValueFrom(
@@ -265,48 +217,43 @@ export class SallaOAuthService {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   /**
-   * إنشاء State عشوائي وآمن
+   * ✅ Updated: Now stores Frontend CSRF state
    */
-  private generateState(tenantId: string): string {
-    // إنشاء state عشوائي
+  private generateState(tenantId: string, csrfState?: string): string {
     const state = crypto.randomBytes(32).toString('hex');
 
-    // حفظه مع الـ tenantId ووقت الانتهاء (10 دقائق)
+    // ✅ Store tenantId + Frontend's csrfState
     this.stateStorage.set(state, {
       tenantId,
-      expiresAt: Date.now() + 10 * 60 * 1000,
+      csrfState,
+      expiresAt: Date.now() + 10 * 60 * 1000,  // 10 minutes
     });
 
-    // تنظيف الـ states المنتهية
     this.cleanupExpiredStates();
 
     return state;
   }
 
   /**
-   * التحقق من الـ State
+   * ✅ Updated: Returns csrfState
    */
-  private verifyState(state: string): { tenantId: string } | null {
+  private verifyState(state: string): StateData | null {
     const stateData = this.stateStorage.get(state);
 
     if (!stateData) {
       return null;
     }
 
-    // حذف الـ state بعد الاستخدام (single use)
+    // Single use
     this.stateStorage.delete(state);
 
-    // التحقق من عدم انتهاء الصلاحية
     if (Date.now() > stateData.expiresAt) {
       return null;
     }
 
-    return { tenantId: stateData.tenantId };
+    return stateData;
   }
 
-  /**
-   * تنظيف الـ States المنتهية
-   */
   private cleanupExpiredStates(): void {
     const now = Date.now();
     for (const [state, data] of this.stateStorage.entries()) {
@@ -316,30 +263,7 @@ export class SallaOAuthService {
     }
   }
 
-  /**
-   * حساب تاريخ انتهاء الـ Token
-   */
   calculateTokenExpiry(expiresIn: number): Date {
     return new Date(Date.now() + expiresIn * 1000);
   }
 }
-
-/**
- * 📌 ملاحظات أمنية:
- * 
- * 1. State Storage:
- *    - في الإنتاج، يجب استخدام Redis بدلاً من Map
- *    - Map يُفقد عند إعادة تشغيل السيرفر
- * 
- * 2. Token Storage:
- *    - الـ tokens يجب تشفيرها قبل حفظها في DB
- *    - استخدم encryption-at-rest
- * 
- * 3. HTTPS:
- *    - كل الـ redirects يجب أن تكون عبر HTTPS
- *    - لا ترسل tokens عبر HTTP أبداً
- * 
- * 4. Token Rotation:
- *    - عند تجديد الـ token، سلة قد تعطي refresh_token جديد
- *    - يجب حفظه واستخدامه في المرة القادمة
- */
