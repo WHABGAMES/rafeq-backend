@@ -2,21 +2,19 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Channels Service                           ║
  * ║                                                                                ║
- * ║  ✅ إدارة قنوات التواصل: واتساب، انستقرام، ديسكورد                            ║
- * ║  ✅ متكامل مع WhatsAppBaileysService                                          ║
+ * ║  ✅ WhatsApp Official, Instagram, Discord                                      ║
+ * ║  ⚠️ WhatsApp QR معطل مؤقتاً - يحتاج تثبيت Baileys                              ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
-import { Injectable, Logger, BadRequestException, NotFoundException, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 import * as crypto from 'crypto';
 
 import { Channel, ChannelType, ChannelStatus } from './entities/channel.entity';
-import { WhatsAppBaileysService } from './whatsapp-baileys.service';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DTOs
@@ -49,11 +47,7 @@ export class ChannelsService {
     @InjectRepository(Channel)
     private readonly channelRepository: Repository<Channel>,
     
-    private readonly configService: ConfigService,
     private readonly httpService: HttpService,
-    
-    @Inject(forwardRef(() => WhatsAppBaileysService))
-    private readonly baileysService: WhatsAppBaileysService,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -82,15 +76,6 @@ export class ChannelsService {
   async disconnect(id: string, storeId: string): Promise<void> {
     const channel = await this.findById(id, storeId);
 
-    switch (channel.type) {
-      case ChannelType.WHATSAPP_UNOFFICIAL:
-        await this.baileysService.disconnectSession(channel.id);
-        break;
-      case ChannelType.DISCORD:
-        this.logger.log(`Discord bot disconnected: ${channel.discordBotId}`);
-        break;
-    }
-
     await this.channelRepository.update(id, {
       status: ChannelStatus.DISCONNECTED,
       disconnectedAt: new Date(),
@@ -113,10 +98,8 @@ export class ChannelsService {
   ): Promise<Channel> {
     this.logger.log(`Connecting WhatsApp Official for store ${storeId}`);
 
-    // التحقق من صحة الـ credentials مع Meta API
     const phoneInfo = await this.verifyWhatsAppCredentials(dto);
 
-    // التحقق من عدم وجود قناة مكررة
     const existing = await this.channelRepository.findOne({
       where: {
         storeId,
@@ -147,9 +130,7 @@ export class ChannelsService {
     });
 
     const saved = await this.channelRepository.save(channel);
-    
     this.logger.log(`WhatsApp Official connected: ${saved.id}`);
-    
     return saved;
   }
 
@@ -159,66 +140,31 @@ export class ChannelsService {
         this.httpService.get(
           `https://graph.facebook.com/v18.0/${dto.phoneNumberId}`,
           {
-            headers: {
-              Authorization: `Bearer ${dto.accessToken}`,
-            },
+            headers: { Authorization: `Bearer ${dto.accessToken}` },
           },
         ),
       );
-
       return response.data;
     } catch (error: any) {
       this.logger.error('Failed to verify WhatsApp credentials', error.message);
-      throw new BadRequestException('Invalid WhatsApp credentials. Please check your Phone Number ID and Access Token.');
+      throw new BadRequestException('Invalid WhatsApp credentials');
     }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 📱 WhatsApp Unofficial (Baileys/QR)
+  // 📱 WhatsApp Unofficial (QR) - معطل مؤقتاً
   // ═══════════════════════════════════════════════════════════════════════════════
 
   async initWhatsAppSession(storeId: string): Promise<WhatsAppQRSession> {
-    this.logger.log(`Initializing WhatsApp QR for store ${storeId}`);
-
-    // البحث عن قناة موجودة أو إنشاء جديدة
-    let channel = await this.channelRepository.findOne({
-      where: {
-        storeId,
-        type: ChannelType.WHATSAPP_UNOFFICIAL,
-      },
-    });
-
-    if (!channel) {
-      channel = this.channelRepository.create({
-        storeId,
-        type: ChannelType.WHATSAPP_UNOFFICIAL,
-        name: 'WhatsApp (QR)',
-        status: ChannelStatus.PENDING,
-        isOfficial: false,
-      });
-      channel = await this.channelRepository.save(channel);
-    }
-
-    // بدء جلسة Baileys
-    const result = await this.baileysService.initSession(channel.id);
-    
-    return {
-      sessionId: result.sessionId,
-      qrCode: result.qrCode || '',
-      expiresAt: new Date(Date.now() + 60000),
-      status: result.status as 'pending' | 'scanning' | 'connected' | 'expired',
-    };
+    // ⚠️ معطل مؤقتاً - يحتاج تثبيت:
+    // npm install @whiskeysockets/baileys qrcode @hapi/boom
+    throw new BadRequestException(
+      'WhatsApp QR is temporarily disabled. Please install: npm install @whiskeysockets/baileys qrcode @hapi/boom'
+    );
   }
 
   async getWhatsAppSessionStatus(sessionId: string): Promise<WhatsAppQRSession> {
-    const result = await this.baileysService.getSessionStatus(sessionId);
-
-    return {
-      sessionId,
-      qrCode: result.qrCode || '',
-      expiresAt: result.expiresAt || new Date(),
-      status: result.status as 'pending' | 'scanning' | 'connected' | 'expired',
-    };
+    throw new BadRequestException('WhatsApp QR is temporarily disabled');
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -233,10 +179,8 @@ export class ChannelsService {
   ): Promise<Channel> {
     this.logger.log(`Connecting Instagram for store ${storeId}`);
 
-    // جلب معلومات الحساب من Instagram Graph API
     const userInfo = await this.getInstagramUserInfo(accessToken, userId);
 
-    // التحقق من عدم وجود قناة مكررة
     const existing = await this.channelRepository.findOne({
       where: {
         storeId,
@@ -265,9 +209,7 @@ export class ChannelsService {
     });
 
     const saved = await this.channelRepository.save(channel);
-    
     this.logger.log(`Instagram connected: ${saved.id}`);
-    
     return saved;
   }
 
@@ -284,11 +226,10 @@ export class ChannelsService {
           },
         ),
       );
-
       return response.data;
     } catch (error: any) {
       this.logger.error('Failed to get Instagram user info', error.message);
-      throw new BadRequestException('Failed to get Instagram account info.');
+      throw new BadRequestException('Failed to get Instagram account info');
     }
   }
 
@@ -299,10 +240,8 @@ export class ChannelsService {
   async connectDiscord(storeId: string, dto: ConnectDiscordDto): Promise<Channel> {
     this.logger.log(`Connecting Discord for store ${storeId}`);
 
-    // التحقق من صحة الـ Bot Token مع Discord API
     const botInfo = await this.verifyDiscordBot(dto.botToken);
 
-    // التحقق من عدم وجود قناة مكررة
     const existing = await this.channelRepository.findOne({
       where: {
         storeId,
@@ -329,9 +268,7 @@ export class ChannelsService {
     });
 
     const saved = await this.channelRepository.save(channel);
-
     this.logger.log(`Discord connected: ${saved.id}`);
-
     return saved;
   }
 
@@ -339,16 +276,13 @@ export class ChannelsService {
     try {
       const response = await firstValueFrom(
         this.httpService.get('https://discord.com/api/v10/users/@me', {
-          headers: {
-            Authorization: `Bot ${botToken}`,
-          },
+          headers: { Authorization: `Bot ${botToken}` },
         }),
       );
-
       return response.data;
     } catch (error: any) {
       this.logger.error('Failed to verify Discord bot', error.message);
-      throw new BadRequestException('Invalid Discord bot token.');
+      throw new BadRequestException('Invalid Discord bot token');
     }
   }
 
@@ -361,7 +295,7 @@ export class ChannelsService {
   }
 
   async updateStatus(id: string, status: ChannelStatus, error?: string): Promise<void> {
-    const updateData: Partial<Channel> = { status };
+    const updateData: any = { status };
 
     if (error) {
       updateData.lastError = error;
