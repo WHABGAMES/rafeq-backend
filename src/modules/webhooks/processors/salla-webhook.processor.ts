@@ -12,8 +12,8 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 // Services
 import { SallaWebhooksService } from '../salla-webhooks.service';
 
-// Entities
-import { WebhookStatus, SallaEventType } from '../entities/webhook-event.entity';
+// ✅ Entities - Import from database (single source of truth)
+import { WebhookStatus, SallaEventType } from '@database/entities/webhook-event.entity';
 import { WebhookLogAction } from '../entities/webhook-log.entity';
 
 interface SallaWebhookJobData {
