@@ -20,6 +20,10 @@ import {
   MinLength,
   MaxLength,
   Matches,
+  IsNumber,
+  IsOptional,
+  IsIn,
+  Length,
 } from 'class-validator';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -230,4 +234,231 @@ export class ResetPasswordDto {
     { message: 'كلمة المرور يجب أن تحتوي على حرف كبير ورقم على الأقل' },
   )
   newPassword: string;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 🔐 OTP DTOs - للتسجيل الدخول من سلة
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * قنوات إرسال OTP
+ */
+export enum OtpChannelDto {
+  EMAIL = 'email',
+  WHATSAPP = 'whatsapp',
+}
+
+/**
+ * جلب طرق التحقق المتاحة للتاجر
+ * 
+ * GET /api/auth/otp/methods?merchant_id=426101474
+ */
+export class GetVerificationMethodsDto {
+  @ApiProperty({
+    description: 'رقم التاجر في سلة',
+    example: 426101474,
+  })
+  @IsNumber({}, { message: 'رقم التاجر يجب أن يكون رقم' })
+  @IsNotEmpty({ message: 'رقم التاجر مطلوب' })
+  merchantId: number;
+}
+
+/**
+ * طريقة التحقق المتاحة
+ */
+export class VerificationMethodDto {
+  @ApiProperty({
+    description: 'القناة',
+    enum: OtpChannelDto,
+    example: 'email',
+  })
+  channel: OtpChannelDto;
+
+  @ApiProperty({
+    description: 'القيمة المخفية',
+    example: 'fo***h@gmail.com',
+  })
+  maskedValue: string;
+
+  @ApiProperty({
+    description: 'هل متاحة للاستخدام',
+    example: true,
+  })
+  isAvailable: boolean;
+}
+
+/**
+ * Response طرق التحقق المتاحة
+ */
+export class VerificationMethodsResponseDto {
+  @ApiProperty({
+    description: 'اسم المتجر',
+    example: 'متجر الإلكترونيات',
+  })
+  merchantName: string;
+
+  @ApiProperty({
+    description: 'طرق التحقق المتاحة',
+    type: [VerificationMethodDto],
+  })
+  methods: VerificationMethodDto[];
+}
+
+/**
+ * طلب إرسال OTP للتاجر من سلة
+ * 
+ * POST /api/auth/otp/send
+ */
+export class SendOtpDto {
+  @ApiProperty({
+    description: 'رقم التاجر في سلة',
+    example: 426101474,
+  })
+  @IsNumber({}, { message: 'رقم التاجر يجب أن يكون رقم' })
+  @IsNotEmpty({ message: 'رقم التاجر مطلوب' })
+  merchantId: number;
+
+  @ApiProperty({
+    description: 'قناة الإرسال',
+    enum: OtpChannelDto,
+    example: 'email',
+    required: false,
+    default: 'email',
+  })
+  @IsString({ message: 'القناة يجب أن تكون نص' })
+  @IsIn(['email', 'whatsapp'], { message: 'القناة يجب أن تكون email أو whatsapp' })
+  @IsOptional()
+  channel?: OtpChannelDto = OtpChannelDto.EMAIL;
+}
+
+/**
+ * التحقق من OTP
+ * 
+ * POST /api/auth/otp/verify
+ */
+export class VerifyOtpDto {
+  @ApiProperty({
+    description: 'رقم التاجر في سلة',
+    example: 426101474,
+  })
+  @IsNumber({}, { message: 'رقم التاجر يجب أن يكون رقم' })
+  @IsNotEmpty({ message: 'رقم التاجر مطلوب' })
+  merchantId: number;
+
+  @ApiProperty({
+    description: 'رمز التحقق (6 أرقام)',
+    example: '123456',
+  })
+  @IsString({ message: 'رمز التحقق يجب أن يكون نص' })
+  @IsNotEmpty({ message: 'رمز التحقق مطلوب' })
+  @Length(6, 6, { message: 'رمز التحقق يجب أن يكون 6 أرقام' })
+  @Matches(/^\d{6}$/, { message: 'رمز التحقق يجب أن يكون 6 أرقام فقط' })
+  otp: string;
+
+  @ApiProperty({
+    description: 'قناة التحقق',
+    enum: OtpChannelDto,
+    example: 'email',
+    required: false,
+    default: 'email',
+  })
+  @IsString({ message: 'القناة يجب أن تكون نص' })
+  @IsIn(['email', 'whatsapp'], { message: 'القناة يجب أن تكون email أو whatsapp' })
+  @IsOptional()
+  channel?: OtpChannelDto = OtpChannelDto.EMAIL;
+}
+
+/**
+ * إعادة إرسال OTP
+ * 
+ * POST /api/auth/otp/resend
+ */
+export class ResendOtpDto {
+  @ApiProperty({
+    description: 'المُعرّف (البريد الإلكتروني أو رقم الهاتف)',
+    example: 'merchant@example.com',
+  })
+  @IsString({ message: 'المُعرّف يجب أن يكون نص' })
+  @IsNotEmpty({ message: 'المُعرّف مطلوب' })
+  identifier: string;
+
+  @ApiProperty({
+    description: 'رقم التاجر في سلة (اختياري)',
+    example: 426101474,
+    required: false,
+  })
+  @IsNumber({}, { message: 'رقم التاجر يجب أن يكون رقم' })
+  @IsOptional()
+  merchantId?: number;
+
+  @ApiProperty({
+    description: 'قناة الإرسال',
+    enum: OtpChannelDto,
+    example: 'email',
+    required: false,
+    default: 'email',
+  })
+  @IsString({ message: 'القناة يجب أن تكون نص' })
+  @IsIn(['email', 'whatsapp'], { message: 'القناة يجب أن تكون email أو whatsapp' })
+  @IsOptional()
+  channel?: OtpChannelDto = OtpChannelDto.EMAIL;
+}
+
+/**
+ * Response بعد إرسال OTP
+ */
+export class OtpSentResponseDto {
+  @ApiProperty({
+    description: 'هل تم الإرسال بنجاح',
+    example: true,
+  })
+  success: boolean;
+
+  @ApiProperty({
+    description: 'رسالة',
+    example: 'تم إرسال رمز التحقق إلى بريدك الإلكتروني',
+  })
+  message: string;
+
+  @ApiProperty({
+    description: 'القناة المُستخدمة',
+    enum: OtpChannelDto,
+    example: 'email',
+  })
+  channel: OtpChannelDto;
+
+  @ApiProperty({
+    description: 'القيمة المخفية (بريد أو رقم هاتف)',
+    example: 'fo***h@gmail.com',
+  })
+  maskedValue: string;
+
+  @ApiProperty({
+    description: 'تاريخ انتهاء صلاحية الرمز',
+    example: '2025-02-01T15:30:00.000Z',
+  })
+  expiresAt: Date;
+}
+
+/**
+ * Response بعد التحقق من OTP - يحتوي على Tokens
+ */
+export class OtpVerifiedResponseDto extends TokensDto {
+  @ApiProperty({
+    description: 'هل أول تسجيل دخول',
+    example: true,
+  })
+  isFirstLogin: boolean;
+
+  @ApiProperty({
+    description: 'معرف التاجر',
+    example: 'uuid-here',
+  })
+  userId: string;
+
+  @ApiProperty({
+    description: 'معرف المتجر',
+    example: 'uuid-here',
+  })
+  tenantId: string;
 }
