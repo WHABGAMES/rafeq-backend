@@ -14,7 +14,10 @@ export { BaseEntity } from './base.entity';
 // ═══════════════════════════════════════════════════════════════════════════════
 export { Tenant, TenantStatus } from './tenant.entity';
 export { User, UserStatus, UserRole } from './user.entity';
-export { Store } from './store.entity';
+
+// ✅ استيراد Store من modules/stores (الملف الجديد والصحيح)
+export { Store, StoreStatus, StorePlatform } from '../../modules/stores/entities/store.entity';
+
 export { Channel, ChannelType, ChannelStatus } from './channel.entity';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -57,7 +60,8 @@ export { Subscription, SubscriptionStatus, BillingInterval, PaymentProvider, Usa
 // ═══════════════════════════════════════════════════════════════════════════════
 import { Tenant } from './tenant.entity';
 import { User } from './user.entity';
-import { Store } from './store.entity';
+// ✅ استيراد Store من المسار الصحيح
+import { Store } from '../../modules/stores/entities/store.entity';
 import { Channel } from './channel.entity';
 import { Conversation } from './conversation.entity';
 import { Message } from './message.entity';
