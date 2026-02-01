@@ -23,34 +23,13 @@ import { WebhookVerificationService } from './webhook-verification.service';
 // Processors (BullMQ)
 import { SallaWebhookProcessor } from './processors/salla-webhook.processor';
 
-// Entities
-import { WebhookEvent } from './entities/webhook-event.entity';
+// ✅ Entities - Import from database (single source of truth)
+import { WebhookEvent } from '@database/entities/webhook-event.entity';
 import { WebhookLog } from './entities/webhook-log.entity';
 
 // Related Modules
 import { StoresModule } from '../stores/stores.module';
 import { MessagingModule } from '../messaging/messaging.module';
-
-/**
- * 📌 ماهو Webhook؟
- * 
- * Webhook = رسالة HTTP يرسلها نظام خارجي (مثل سلة) لإعلامك بحدث
- * 
- * مثال:
- * 1. عميل يشتري من متجرك في سلة
- * 2. سلة تُرسل POST request لـ API نظامك
- * 3. نظامك يستقبل الحدث ويعالجه (مثلاً: يرسل رسالة شكر للعميل)
- * 
- * لماذا Webhooks بدلاً من Polling؟
- * - Polling: تسأل سلة كل 5 دقائق "هل في طلبات جديدة؟" → مكلف وبطيء
- * - Webhooks: سلة تُخبرك فوراً عند حدوث أي شيء → سريع وفعال
- * 
- * تحديات الـ Webhooks:
- * 1. التحقق من الهوية (هل هذا فعلاً من سلة؟)
- * 2. التعامل مع الفشل (إعادة المحاولة)
- * 3. منع التكرار (idempotency)
- * 4. الأداء (معالجة آلاف الأحداث/ثانية)
- */
 
 @Module({
   imports: [
@@ -58,40 +37,27 @@ import { MessagingModule } from '../messaging/messaging.module';
     // 📁 Database Entities
     // ═══════════════════════════════════════════════════════════════════════════════
     TypeOrmModule.forFeature([
-      WebhookEvent,  // جدول الأحداث
-      WebhookLog,    // جدول سجل الـ webhooks
+      WebhookEvent,  // ✅ من @database/entities
+      WebhookLog,    // من ./entities (محلي - لا يوجد تكرار)
     ]),
 
     // ═══════════════════════════════════════════════════════════════════════════════
     // 📬 Queue للمعالجة غير المتزامنة
     // ═══════════════════════════════════════════════════════════════════════════════
-    /**
-     * لماذا Queue؟
-     * 
-     * عند استقبال webhook:
-     * 1. نحفظه في الـ queue فوراً (< 100ms)
-     * 2. نرد على سلة بـ 200 OK
-     * 3. الـ processor يعالج الحدث في الخلفية
-     * 
-     * فوائد:
-     * - سلة لن تنتظر (لا timeout)
-     * - يمكن إعادة المحاولة إذا فشلت المعالجة
-     * - يمكن معالجة آلاف الأحداث بالتوازي
-     */
     BullModule.registerQueue({
-      name: 'salla-webhooks', // اسم الـ Queue
+      name: 'salla-webhooks',
       defaultJobOptions: {
-        attempts: 5,           // 5 محاولات
+        attempts: 5,
         backoff: {
-          type: 'exponential', // زيادة تدريجية بين المحاولات
-          delay: 2000,         // تبدأ بثانيتين
+          type: 'exponential',
+          delay: 2000,
         },
         removeOnComplete: {
-          count: 1000,         // يحتفظ بآخر 1000 job مكتملة
-          age: 24 * 3600,      // أو jobs أقدم من 24 ساعة
+          count: 1000,
+          age: 24 * 3600,
         },
         removeOnFail: {
-          count: 5000,         // يحتفظ بآخر 5000 job فاشلة
+          count: 5000,
         },
       },
     }),
@@ -100,27 +66,27 @@ import { MessagingModule } from '../messaging/messaging.module';
     // 📦 Related Modules
     // ═══════════════════════════════════════════════════════════════════════════════
     ConfigModule,
-    StoresModule,     // للوصول لبيانات المتجر
-    MessagingModule,  // لإرسال الرسائل
+    StoresModule,
+    MessagingModule,
   ],
 
   controllers: [
-    WebhooksController,       // Controller عام
-    SallaWebhooksController,  // Controller خاص بسلة
+    WebhooksController,
+    SallaWebhooksController,
   ],
 
   providers: [
     // ═══════════════════════════════════════════════════════════════════════════════
     // 🔧 Services
     // ═══════════════════════════════════════════════════════════════════════════════
-    WebhooksService,           // خدمة عامة للـ webhooks
-    SallaWebhooksService,      // خدمة خاصة بسلة
-    WebhookVerificationService, // التحقق من صحة الـ webhooks
+    WebhooksService,
+    SallaWebhooksService,
+    WebhookVerificationService,
 
     // ═══════════════════════════════════════════════════════════════════════════════
     // ⚙️ Queue Processors
     // ═══════════════════════════════════════════════════════════════════════════════
-    SallaWebhookProcessor,     // معالج أحداث سلة
+    SallaWebhookProcessor,
   ],
 
   exports: [
@@ -129,61 +95,3 @@ import { MessagingModule } from '../messaging/messaging.module';
   ],
 })
 export class WebhooksModule {}
-
-/**
- * 📌 Flow كامل لاستقبال Webhook من سلة:
- * 
- * ┌─────────────────────────────────────────────────────────────────────────────┐
- * │                              WEBHOOK FLOW                                   │
- * ├─────────────────────────────────────────────────────────────────────────────┤
- * │                                                                             │
- * │  ┌─────────┐      POST /webhooks/salla      ┌──────────────────┐           │
- * │  │  سلة    │ ─────────────────────────────> │ SallaWebhooks    │           │
- * │  │         │                                │ Controller       │           │
- * │  └─────────┘                                └────────┬─────────┘           │
- * │                                                      │                     │
- * │                                                      ▼                     │
- * │                                          ┌──────────────────────┐          │
- * │                                          │ WebhookVerification  │          │
- * │                                          │ Service              │          │
- * │                                          │ (التحقق من التوقيع)    │          │
- * │                                          └──────────┬───────────┘          │
- * │                                                     │                      │
- * │                                     ┌───────────────┼───────────────┐      │
- * │                                     │               │               │      │
- * │                                     ▼               ▼               ▼      │
- * │                               صحيح ✓         خطأ ✗          مكرر 🔄        │
- * │                                     │               │               │      │
- * │                                     │               │               │      │
- * │                                     ▼               ▼               ▼      │
- * │                        ┌────────────────┐    Return 401      Return 200   │
- * │                        │ Save to Queue  │    (Unauthorized)  (Already     │
- * │                        │ (BullMQ)       │                    processed)   │
- * │                        └───────┬────────┘                                 │
- * │                                │                                          │
- * │                                ▼                                          │
- * │                    ┌────────────────────┐                                 │
- * │                    │ Return 200 OK      │  ◄── سلة تنتظر هذا              │
- * │                    │ (< 100ms)          │                                 │
- * │                    └────────────────────┘                                 │
- * │                                                                           │
- * │  ════════════════════════ Background Processing ════════════════════════  │
- * │                                                                           │
- * │                        ┌────────────────────┐                             │
- * │                        │ SallaWebhook       │                             │
- * │                        │ Processor          │                             │
- * │                        │ (BullMQ Worker)    │                             │
- * │                        └────────┬───────────┘                             │
- * │                                 │                                         │
- * │            ┌────────────────────┼────────────────────┐                   │
- * │            │                    │                    │                   │
- * │            ▼                    ▼                    ▼                   │
- * │     order.created       customer.created      shipment.updated          │
- * │            │                    │                    │                   │
- * │            ▼                    ▼                    ▼                   │
- * │     Save Order &         Save Customer        Update Order &            │
- * │     Send Welcome         Send Welcome         Notify Customer           │
- * │     Message              Message                                         │
- * │                                                                           │
- * └─────────────────────────────────────────────────────────────────────────┘
- */
