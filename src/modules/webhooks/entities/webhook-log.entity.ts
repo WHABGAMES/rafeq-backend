@@ -11,9 +11,10 @@ import {
   ManyToOne,
   JoinColumn,
 } from 'typeorm';
-import { BaseEntity } from '../../../database/entities/base.entity';
-import { WebhookEvent } from './webhook-event.entity';
-import { Tenant } from '../../../database/entities/tenant.entity';
+import { BaseEntity } from '@database/entities/base.entity';
+import { Tenant } from '@database/entities/tenant.entity';
+// ✅ Import from database (single source of truth)
+import { WebhookEvent } from '@database/entities/webhook-event.entity';
 
 export enum WebhookLogAction {
   RECEIVED = 'received',
