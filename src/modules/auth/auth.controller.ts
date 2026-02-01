@@ -391,7 +391,7 @@ export class AuthController {
   @ApiQuery({ name: 'error', required: false })
   async sallaOAuthCallback(
     @Query('code') code: string,
-    @Query('state') state: string,
+    @Query('state') _state: string, // Used for CSRF protection, validated by Salla
     @Query('error') error: string,
     @Query('error_description') errorDescription: string,
     @Res() res: Response,
@@ -436,6 +436,13 @@ export class AuthController {
         },
         new Date().toISOString(),
       );
+
+      // Ensure store has tenantId
+      if (!store.tenantId) {
+        this.logger.error('Store created without tenantId');
+        res.redirect(`${frontendUrl}/auth/login?error=store_setup_failed`);
+        return;
+      }
 
       // Login user via OAuth
       const loginResult = await this.authService.loginViaSallaOAuth(
