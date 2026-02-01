@@ -13,8 +13,8 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
-// Entities
-import { WebhookEvent, WebhookSource, WebhookStatus, SallaEventType } from './entities/webhook-event.entity';
+// ✅ Entities - Import from database (single source of truth)
+import { WebhookEvent, WebhookSource, WebhookStatus, SallaEventType } from '@database/entities/webhook-event.entity';
 import { WebhookLog, WebhookLogAction } from './entities/webhook-log.entity';
 
 // Services
