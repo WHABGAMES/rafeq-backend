@@ -15,21 +15,9 @@ import {
 } from 'typeorm';
 import { BaseEntity } from '../../../database/entities/base.entity';
 import { Tenant } from '../../../database/entities/tenant.entity';
-import { Store } from '../../../database/entities/store.entity';
+// ✅ تم تصحيح المسار - يشير مباشرة للـ Store entity الجديد
+import { Store } from '../../stores/entities/store.entity';
 
-/**
- * 📌 لماذا نحفظ الـ Webhook Events؟
- * 
- * 1. Debugging: لمعرفة ما حدث إذا في مشكلة
- * 2. Audit Trail: سجل كامل لكل الأحداث
- * 3. Replay: إعادة معالجة event إذا فشل
- * 4. Analytics: تحليل أنماط الأحداث
- * 5. Idempotency: منع معالجة نفس الحدث مرتين
- */
-
-/**
- * مصدر الـ Webhook
- */
 export enum WebhookSource {
   SALLA = 'salla',
   WHATSAPP = 'whatsapp',
@@ -40,31 +28,17 @@ export enum WebhookSource {
   CUSTOM = 'custom',
 }
 
-/**
- * حالة معالجة الـ Webhook
- */
 export enum WebhookStatus {
-  /** استُقبل وينتظر المعالجة */
   PENDING = 'pending',
-  /** قيد المعالجة */
   PROCESSING = 'processing',
-  /** تمت المعالجة بنجاح */
   PROCESSED = 'processed',
-  /** فشلت المعالجة */
   FAILED = 'failed',
-  /** تم تخطيه (مكرر أو غير مهم) */
   SKIPPED = 'skipped',
-  /** في انتظار إعادة المحاولة */
   RETRY_PENDING = 'retry_pending',
 }
 
-/**
- * أنواع أحداث سلة الرئيسية
- */
 export enum SallaEventType {
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🛒 Order Events - أحداث الطلبات
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // Order Events
   ORDER_CREATED = 'order.created',
   ORDER_UPDATED = 'order.updated',
   ORDER_STATUS_UPDATED = 'order.status.updated',
@@ -74,32 +48,24 @@ export enum SallaEventType {
   ORDER_SHIPPED = 'order.shipped',
   ORDER_DELIVERED = 'order.delivered',
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 👤 Customer Events - أحداث العملاء
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // Customer Events
   CUSTOMER_CREATED = 'customer.created',
   CUSTOMER_UPDATED = 'customer.updated',
   CUSTOMER_LOGIN = 'customer.login',
   CUSTOMER_OTP_REQUEST = 'customer.otp.request',
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 📦 Product Events - أحداث المنتجات
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // Product Events
   PRODUCT_CREATED = 'product.created',
   PRODUCT_UPDATED = 'product.updated',
   PRODUCT_DELETED = 'product.deleted',
   PRODUCT_AVAILABLE = 'product.available',
   PRODUCT_QUANTITY_LOW = 'product.quantity.low',
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🛒 Cart Events - أحداث السلة
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // Cart Events
   ABANDONED_CART = 'abandoned.cart',
   CART_UPDATED = 'cart.updated',
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🚚 Shipment Events - أحداث الشحن
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // Shipment Events
   SHIPMENT_CREATED = 'shipment.created',
   SHIPMENT_CREATING = 'shipment.creating',
   SHIPMENT_CANCELLED = 'shipment.cancelled',
@@ -107,46 +73,32 @@ export enum SallaEventType {
   SHIPMENT_RETURN_CREATED = 'shipment.return.created',
   SHIPMENT_RETURN_CANCELLED = 'shipment.return.cancelled',
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 📍 Tracking Events - أحداث التتبع
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // Tracking Events
   TRACKING_REFRESHED = 'tracking.refreshed',
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // ⭐ Review Events - أحداث التقييمات
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // Review Events
   REVIEW_ADDED = 'review.added',
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🎁 Coupon Events - أحداث الكوبونات
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // Coupon Events
   COUPON_APPLIED = 'coupon.applied',
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🏪 Store Events - أحداث المتجر
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // Store Events
   STORE_BRANCH_SETDEFAULT = 'store.branch.setDefault',
   STOREBRANCH_CREATED = 'storebranch.created',
   STOREBRANCH_UPDATED = 'storebranch.updated',
   STOREBRANCH_DELETED = 'storebranch.deleted',
   STOREBRANCH_ACTIVATED = 'storebranch.activated',
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🔐 App Events - أحداث التطبيق
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // App Events
   APP_INSTALLED = 'app.installed',
   APP_UNINSTALLED = 'app.uninstalled',
   APP_TOKEN_CREATED = 'app.token.created',
   APP_STORE_AUTHORIZE = 'app.store.authorize',
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 💰 Invoice Events - أحداث الفواتير
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // Invoice Events
   INVOICE_CREATED = 'invoice.created',
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 📱 Specialoffer Events - العروض الخاصة
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // Specialoffer Events
   SPECIALOFFER_CREATED = 'specialoffer.created',
   SPECIALOFFER_UPDATED = 'specialoffer.updated',
 }
@@ -157,14 +109,6 @@ export enum SallaEventType {
 @Index(['idempotencyKey'], { unique: true, where: '"idempotency_key" IS NOT NULL' })
 @Index(['externalId', 'source'])
 export class WebhookEvent extends BaseEntity {
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🔗 Relations - العلاقات
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  /**
-   * الـ Tenant (المتجر) المالك للحدث
-   * nullable: true - لأن بعض الـ webhooks تصل قبل ربط المتجر
-   */
   @Column({
     name: 'tenant_id',
     type: 'uuid',
@@ -178,9 +122,6 @@ export class WebhookEvent extends BaseEntity {
   @JoinColumn({ name: 'tenant_id' })
   tenant?: Tenant;
 
-  /**
-   * المتجر المرتبط (إذا كان الـ webhook من سلة)
-   */
   @Column({
     name: 'store_id',
     type: 'uuid',
@@ -193,24 +134,6 @@ export class WebhookEvent extends BaseEntity {
   @JoinColumn({ name: 'store_id' })
   store?: Store;
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 📋 Event Identification - تحديد الحدث
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  /**
-   * 🔑 Idempotency Key
-   * 
-   * مفتاح فريد لمنع معالجة نفس الحدث مرتين
-   * 
-   * كيف يعمل:
-   * 1. سلة ترسل webhook مع event ID
-   * 2. نحسب hash من (source + event_type + external_id)
-   * 3. إذا كان الـ hash موجود = الحدث مكرر → نتجاهله
-   * 
-   * لماذا مهم؟
-   * - سلة قد ترسل نفس الـ webhook أكثر من مرة (retry)
-   * - نريد معالجة كل حدث مرة واحدة فقط
-   */
   @Column({
     name: 'idempotency_key',
     type: 'varchar',
@@ -220,12 +143,6 @@ export class WebhookEvent extends BaseEntity {
   })
   idempotencyKey?: string;
 
-  /**
-   * 🆔 External ID
-   * 
-   * معرّف الحدث من المصدر الخارجي
-   * مثال: event_id من سلة
-   */
   @Column({
     name: 'external_id',
     type: 'varchar',
@@ -235,11 +152,6 @@ export class WebhookEvent extends BaseEntity {
   })
   externalId?: string;
 
-  /**
-   * 📡 Source
-   * 
-   * مصدر الـ webhook
-   */
   @Column({
     type: 'enum',
     enum: WebhookSource,
@@ -247,11 +159,6 @@ export class WebhookEvent extends BaseEntity {
   })
   source: WebhookSource;
 
-  /**
-   * 📌 Event Type
-   * 
-   * نوع الحدث (مثل: order.created, customer.updated)
-   */
   @Column({
     name: 'event_type',
     type: 'varchar',
@@ -261,28 +168,12 @@ export class WebhookEvent extends BaseEntity {
   @Index()
   eventType: string;
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 📦 Payload - البيانات
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  /**
-   * 📦 Payload
-   * 
-   * البيانات الكاملة للـ webhook
-   * نحفظها كـ JSONB للمرونة
-   */
   @Column({
     type: 'jsonb',
     comment: 'بيانات الـ Webhook كاملة',
   })
   payload: Record<string, unknown>;
 
-  /**
-   * 📋 Headers
-   * 
-   * الـ HTTP headers الواردة مع الـ webhook
-   * مفيدة للـ debugging
-   */
   @Column({
     type: 'jsonb',
     nullable: true,
@@ -290,15 +181,6 @@ export class WebhookEvent extends BaseEntity {
   })
   headers?: Record<string, string>;
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 📊 Processing Status - حالة المعالجة
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  /**
-   * 📊 Status
-   * 
-   * حالة معالجة الـ webhook
-   */
   @Column({
     type: 'enum',
     enum: WebhookStatus,
@@ -307,11 +189,6 @@ export class WebhookEvent extends BaseEntity {
   })
   status: WebhookStatus;
 
-  /**
-   * 🔄 Attempts
-   * 
-   * عدد محاولات المعالجة
-   */
   @Column({
     type: 'integer',
     default: 0,
@@ -319,11 +196,6 @@ export class WebhookEvent extends BaseEntity {
   })
   attempts: number;
 
-  /**
-   * ⏰ Processed At
-   * 
-   * تاريخ اكتمال المعالجة
-   */
   @Column({
     name: 'processed_at',
     type: 'timestamptz',
@@ -332,11 +204,6 @@ export class WebhookEvent extends BaseEntity {
   })
   processedAt?: Date;
 
-  /**
-   * ❌ Error Message
-   * 
-   * رسالة الخطأ إذا فشلت المعالجة
-   */
   @Column({
     name: 'error_message',
     type: 'text',
@@ -345,11 +212,6 @@ export class WebhookEvent extends BaseEntity {
   })
   errorMessage?: string;
 
-  /**
-   * 📝 Processing Result
-   * 
-   * نتيجة المعالجة (للـ debugging)
-   */
   @Column({
     name: 'processing_result',
     type: 'jsonb',
@@ -358,15 +220,6 @@ export class WebhookEvent extends BaseEntity {
   })
   processingResult?: Record<string, unknown>;
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 📊 Metadata - بيانات إضافية
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  /**
-   * 🌐 IP Address
-   * 
-   * عنوان IP المُرسل
-   */
   @Column({
     name: 'ip_address',
     type: 'varchar',
@@ -376,11 +229,6 @@ export class WebhookEvent extends BaseEntity {
   })
   ipAddress?: string;
 
-  /**
-   * 🔐 Signature
-   * 
-   * التوقيع المُستخدم للتحقق
-   */
   @Column({
     type: 'varchar',
     length: 255,
@@ -389,11 +237,6 @@ export class WebhookEvent extends BaseEntity {
   })
   signature?: string;
 
-  /**
-   * ✅ Signature Verified
-   * 
-   * هل تم التحقق من التوقيع؟
-   */
   @Column({
     name: 'signature_verified',
     type: 'boolean',
@@ -402,11 +245,6 @@ export class WebhookEvent extends BaseEntity {
   })
   signatureVerified: boolean;
 
-  /**
-   * ⏱️ Processing Duration (ms)
-   * 
-   * مدة المعالجة بالـ milliseconds
-   */
   @Column({
     name: 'processing_duration_ms',
     type: 'integer',
@@ -415,11 +253,6 @@ export class WebhookEvent extends BaseEntity {
   })
   processingDurationMs?: number;
 
-  /**
-   * 🔗 Related Entity ID
-   * 
-   * معرّف الكيان المرتبط (مثل: order_id, customer_id)
-   */
   @Column({
     name: 'related_entity_id',
     type: 'varchar',
@@ -429,11 +262,6 @@ export class WebhookEvent extends BaseEntity {
   })
   relatedEntityId?: string;
 
-  /**
-   * 📋 Related Entity Type
-   * 
-   * نوع الكيان المرتبط
-   */
   @Column({
     name: 'related_entity_type',
     type: 'varchar',
@@ -443,33 +271,3 @@ export class WebhookEvent extends BaseEntity {
   })
   relatedEntityType?: string;
 }
-
-/**
- * 📌 الجدول الناتج:
- * 
- * CREATE TABLE webhook_events (
- *   id UUID PRIMARY KEY,
- *   tenant_id UUID NOT NULL REFERENCES tenants(id),
- *   store_id UUID REFERENCES stores(id),
- *   idempotency_key VARCHAR(255) UNIQUE,
- *   external_id VARCHAR(255),
- *   source webhook_source NOT NULL,
- *   event_type VARCHAR(100) NOT NULL,
- *   payload JSONB NOT NULL,
- *   headers JSONB,
- *   status webhook_status DEFAULT 'pending',
- *   attempts INTEGER DEFAULT 0,
- *   processed_at TIMESTAMPTZ,
- *   error_message TEXT,
- *   processing_result JSONB,
- *   ip_address VARCHAR(45),
- *   signature VARCHAR(255),
- *   signature_verified BOOLEAN DEFAULT FALSE,
- *   processing_duration_ms INTEGER,
- *   related_entity_id VARCHAR(255),
- *   related_entity_type VARCHAR(50),
- *   created_at TIMESTAMPTZ NOT NULL,
- *   updated_at TIMESTAMPTZ NOT NULL,
- *   deleted_at TIMESTAMPTZ
- * );
- */
