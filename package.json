@@ -108,7 +108,9 @@
     "rxjs": "^7.8.1",
     "reflect-metadata": "^0.2.1",
     
-    "module-alias": "^2.2.3"
+    "module-alias": "^2.2.3",
+
+    "nodemailer": "^6.9.8"
   },
 
   "devDependencies": {
@@ -127,6 +129,7 @@
     "@types/compression": "^1.7.5",
     "@types/uuid": "^9.0.7",
     "@types/qrcode": "^1.5.5",
+    "@types/nodemailer": "^6.4.14",
 
     "typescript": "^5.3.3",
     "ts-node": "^10.9.2",
