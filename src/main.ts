@@ -59,6 +59,7 @@ async function bootstrap() {
     const app = await NestFactory.create<NestExpressApplication>(AppModule, {
       logger: ['error', 'warn', 'log'],
       abortOnError: false,
+      rawBody: true, // ✅ مطلوب للتحقق من توقيع Webhooks
     });
     
     logger.log('✅ NestJS application created successfully');
