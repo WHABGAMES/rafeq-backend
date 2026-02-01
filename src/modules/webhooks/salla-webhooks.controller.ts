@@ -38,7 +38,18 @@ export class SallaWebhooksController {
     private readonly sallaOAuthService: SallaOAuthService,
     private readonly configService: ConfigService,
   ) {
-    this.webhookSecret = this.configService.get<string>('SALLA_WEBHOOK_SECRET', '');
+    // ✅ جلب الـ secret من متغيرات البيئة مباشرة أو من الـ config المتداخل
+    this.webhookSecret = 
+      this.configService.get<string>('SALLA_WEBHOOK_SECRET') ||
+      this.configService.get<string>('salla.webhookSecret') ||
+      '';
+    
+    // ✅ تسجيل للتصحيح
+    if (this.webhookSecret) {
+      console.log(`✅ Salla webhook secret loaded (length: ${this.webhookSecret.length})`);
+    } else {
+      console.warn('⚠️ SALLA_WEBHOOK_SECRET is not configured!');
+    }
   }
 
   /**
@@ -161,7 +172,27 @@ export class SallaWebhooksController {
    * 🔐 التحقق من التوقيع
    */
   private verifySignature(rawBody: Buffer | undefined, signature: string | undefined): boolean {
-    if (!this.webhookSecret || !signature || !rawBody) {
+    // ✅ تسجيل تفاصيل للتصحيح
+    this.logger.debug('Signature verification:', {
+      hasSecret: !!this.webhookSecret,
+      secretLength: this.webhookSecret?.length || 0,
+      hasSignature: !!signature,
+      hasRawBody: !!rawBody,
+      rawBodyLength: rawBody?.length || 0,
+    });
+
+    if (!this.webhookSecret) {
+      this.logger.warn('❌ Webhook secret not configured');
+      return false;
+    }
+
+    if (!signature) {
+      this.logger.warn('❌ No signature provided in request');
+      return false;
+    }
+
+    if (!rawBody) {
+      this.logger.warn('❌ No raw body available - make sure rawBody: true in NestFactory.create');
       return false;
     }
 
@@ -171,11 +202,28 @@ export class SallaWebhooksController {
         .update(rawBody)
         .digest('hex');
 
+      // ✅ إزالة prefix إذا موجود (sha256= أو sha1=)
+      const cleanSignature = signature.replace(/^sha256=|^sha1=/, '');
+
+      this.logger.debug('Comparing signatures:', {
+        received: cleanSignature.substring(0, 16) + '...',
+        expected: expectedSignature.substring(0, 16) + '...',
+        receivedLength: cleanSignature.length,
+        expectedLength: expectedSignature.length,
+      });
+
+      // ✅ التحقق من تطابق الطول أولاً
+      if (cleanSignature.length !== expectedSignature.length) {
+        this.logger.warn('Signature length mismatch');
+        return false;
+      }
+
       return crypto.timingSafeEqual(
-        Buffer.from(signature),
+        Buffer.from(cleanSignature),
         Buffer.from(expectedSignature),
       );
-    } catch {
+    } catch (error) {
+      this.logger.error('Signature verification error:', error);
       return false;
     }
   }
