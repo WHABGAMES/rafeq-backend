@@ -84,6 +84,7 @@ import { QuickRepliesModule } from '@modules/quick-replies/quick-replies.module'
 import { TagsModule } from '@modules/tags/tags.module';
 import { SettingsModule } from '@modules/settings/settings.module';
 import { GatewayModule } from '@modules/gateway/gateway.module';
+import { MailModule } from '@modules/mail/mail.module';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // تعريف الوحدة
@@ -438,6 +439,9 @@ import { GatewayModule } from '@modules/gateway/gateway.module';
 
     // 🔌 WebSocket Gateway
     GatewayModule,
+
+    // 📧 Mail Module للـ OTP
+    MailModule,
   ],
 
   // ═══════════════════════════════════════════════════════════════════════════════
