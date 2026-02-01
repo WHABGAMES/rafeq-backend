@@ -33,11 +33,7 @@ import {
 /**
  * بيانات تسجيل الدخول
  * 
- * POST /api/v1/auth/login
- * {
- *   "email": "user@example.com",
- *   "password": "password123"
- * }
+ * POST /api/auth/login
  */
 export class LoginDto {
   @ApiProperty({
@@ -64,7 +60,7 @@ export class LoginDto {
 /**
  * بيانات إنشاء حساب جديد
  * 
- * POST /api/v1/auth/register
+ * POST /api/auth/register
  */
 export class RegisterDto {
   @ApiProperty({
@@ -126,7 +122,7 @@ export class RegisterDto {
 /**
  * بيانات تجديد الـ Token
  * 
- * POST /api/v1/auth/refresh
+ * POST /api/auth/refresh
  */
 export class RefreshTokenDto {
   @ApiProperty({
@@ -161,8 +157,59 @@ export class TokensDto {
   @ApiProperty({
     description: 'مدة صلاحية الـ Access Token بالثواني',
     example: 900,
+    required: false,
   })
-  expiresIn: number;
+  expiresIn?: number;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 🔑 SET PASSWORD DTO (جديد - بعد OTP/OAuth login)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * تعيين كلمة مرور جديدة بعد أول تسجيل دخول بـ OTP أو Salla OAuth
+ * 
+ * POST /api/auth/set-password
+ */
+export class SetPasswordDto {
+  @ApiProperty({
+    description: 'كلمة المرور الجديدة (8-50 حرف، يجب أن تحتوي على حرف كبير ورقم)',
+    example: 'NewPassword123',
+  })
+  @IsString({ message: 'كلمة المرور يجب أن تكون نص' })
+  @IsNotEmpty({ message: 'كلمة المرور مطلوبة' })
+  @MinLength(8, { message: 'كلمة المرور يجب أن تكون 8 أحرف على الأقل' })
+  @MaxLength(50, { message: 'كلمة المرور يجب ألا تتجاوز 50 حرف' })
+  @Matches(
+    /^(?=.*[A-Z])(?=.*[0-9])/,
+    { message: 'كلمة المرور يجب أن تحتوي على حرف كبير ورقم على الأقل' },
+  )
+  password: string;
+
+  @ApiProperty({
+    description: 'تأكيد كلمة المرور',
+    example: 'NewPassword123',
+  })
+  @IsString({ message: 'تأكيد كلمة المرور يجب أن يكون نص' })
+  @IsNotEmpty({ message: 'تأكيد كلمة المرور مطلوب' })
+  confirmPassword: string;
+}
+
+/**
+ * Response بعد تعيين كلمة المرور بنجاح
+ */
+export class SetPasswordResponseDto {
+  @ApiProperty({
+    description: 'هل تمت العملية بنجاح',
+    example: true,
+  })
+  success: boolean;
+
+  @ApiProperty({
+    description: 'رسالة',
+    example: 'تم تعيين كلمة المرور بنجاح',
+  })
+  message: string;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -292,16 +339,31 @@ export class VerificationMethodDto {
  */
 export class VerificationMethodsResponseDto {
   @ApiProperty({
+    description: 'رقم التاجر',
+    example: 426101474,
+    required: false,
+  })
+  merchantId?: number;
+
+  @ApiProperty({
     description: 'اسم المتجر',
     example: 'متجر الإلكترونيات',
   })
-  merchantName: string;
+  storeName?: string;
+
+  @ApiProperty({
+    description: 'اسم المتجر (deprecated - استخدم storeName)',
+    example: 'متجر الإلكترونيات',
+    required: false,
+    deprecated: true,
+  })
+  merchantName?: string;
 
   @ApiProperty({
     description: 'طرق التحقق المتاحة',
     type: [VerificationMethodDto],
   })
-  methods: VerificationMethodDto[];
+  methods: VerificationMethodDto[] | any[];
 }
 
 /**
@@ -461,4 +523,49 @@ export class OtpVerifiedResponseDto extends TokensDto {
     example: 'uuid-here',
   })
   tenantId: string;
+
+  @ApiProperty({
+    description: 'هل يحتاج لتعيين كلمة مرور',
+    example: true,
+  })
+  needsPassword: boolean;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 🔗 Salla OAuth DTOs
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Response بعد تسجيل الدخول عبر Salla OAuth
+ */
+export class SallaOAuthResponseDto extends TokensDto {
+  @ApiProperty({
+    description: 'هل أول تسجيل دخول',
+    example: true,
+  })
+  isFirstLogin: boolean;
+
+  @ApiProperty({
+    description: 'معرف المستخدم',
+    example: 'uuid-here',
+  })
+  userId: string;
+
+  @ApiProperty({
+    description: 'معرف المتجر (Tenant)',
+    example: 'uuid-here',
+  })
+  tenantId: string;
+
+  @ApiProperty({
+    description: 'هل يحتاج لتعيين كلمة مرور',
+    example: true,
+  })
+  needsPassword: boolean;
+
+  @ApiProperty({
+    description: 'رقم التاجر في سلة',
+    example: 426101474,
+  })
+  merchantId: number;
 }
