@@ -1,6 +1,8 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Database Entities Index                    ║
+ * ║                                                                                ║
+ * ║  ✅ تم تصحيح جميع مسارات Import                                                ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -15,8 +17,8 @@ export { BaseEntity } from './base.entity';
 export { Tenant, TenantStatus } from './tenant.entity';
 export { User, UserStatus, UserRole } from './user.entity';
 
-// ✅ Store - يُعاد تصديره من store.entity.ts الذي يشير للملف الجديد
-export { Store, StoreStatus, StorePlatform } from './store.entity';
+// ✅ Store - يُستورد مباشرة من الموقع الجديد
+export { Store, StoreStatus, StorePlatform } from '../../modules/stores/entities/store.entity';
 
 export { Channel, ChannelType, ChannelStatus } from './channel.entity';
 
@@ -60,7 +62,8 @@ export { Subscription, SubscriptionStatus, BillingInterval, PaymentProvider, Usa
 // ═══════════════════════════════════════════════════════════════════════════════
 import { Tenant } from './tenant.entity';
 import { User } from './user.entity';
-import { Store } from './store.entity';
+// ✅ Store - يُستورد مباشرة من الموقع الجديد
+import { Store } from '../../modules/stores/entities/store.entity';
 import { Channel } from './channel.entity';
 import { Conversation } from './conversation.entity';
 import { Message } from './message.entity';
