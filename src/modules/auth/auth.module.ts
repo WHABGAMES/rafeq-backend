@@ -3,11 +3,12 @@
  * ║                    RAFIQ PLATFORM - Auth Module                                ║
  * ║                                                                                ║
  * ║  📌 مسؤول عن:                                                                   ║
- * ║  - تسجيل الدخول                                                                ║
- * ║  - تسجيل الخروج                                                                ║
+ * ║  - تسجيل الدخول (Email + Password)                                             ║
+ * ║  - تسجيل الدخول بـ OTP (Email + WhatsApp)                                      ║
+ * ║  - تسجيل الدخول عبر Salla OAuth                                                ║
+ * ║  - تعيين كلمة المرور (بعد OTP/OAuth)                                            ║
  * ║  - تجديد الـ Token                                                             ║
  * ║  - تغيير كلمة المرور                                                           ║
- * ║  - OTP للدخول من سلة (Email + WhatsApp)                                        ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -50,13 +51,13 @@ import { MailModule } from '../mail/mail.module';
       }),
     }),
 
-    // HTTP Module for WhatsApp API calls
+    // HTTP Module for OAuth & WhatsApp API calls
     HttpModule.register({
       timeout: 30000,
       maxRedirects: 5,
     }),
 
-    // ✅ StoresModule للبحث عن المتجر بـ merchantId
+    // ✅ StoresModule للبحث عن المتجر بـ merchantId + SallaOAuthService
     forwardRef(() => StoresModule),
     
     // ✅ MailModule لإرسال OTP عبر البريد
