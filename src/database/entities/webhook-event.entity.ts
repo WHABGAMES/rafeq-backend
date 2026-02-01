@@ -3,13 +3,6 @@
  * ║                    RAFIQ PLATFORM - Webhook Event Entity                       ║
  * ║                                                                                ║
  * ║  جدول لحفظ جميع الـ Webhook Events الواردة                                      ║
- * ║                                                                                ║
- * ║  ⚠️ مهم: هذا الملف يجب أن يطابق:                                              ║
- * ║     /src/modules/webhooks/entities/webhook-event.entity.ts                    ║
- * ║                                                                                ║
- * ║  📌 ملاحظة: لا نستخدم event_id كعمود مطلوب لأن:                               ║
- * ║     - بعض الـ webhooks (مثل test webhooks) لا ترسل event_id                   ║
- * ║     - نستخدم idempotency_key بدلاً منه للتحقق من التكرار                       ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -22,11 +15,9 @@ import {
 } from 'typeorm';
 import { BaseEntity } from './base.entity';
 import { Tenant } from './tenant.entity';
-import { Store } from './store.entity';
+// ✅ تم تصحيح المسار - يشير مباشرة للـ Store entity الجديد
+import { Store } from '../../modules/stores/entities/store.entity';
 
-/**
- * مصدر الـ Webhook
- */
 export enum WebhookSource {
   SALLA = 'salla',
   WHATSAPP = 'whatsapp',
@@ -37,27 +28,15 @@ export enum WebhookSource {
   CUSTOM = 'custom',
 }
 
-/**
- * حالة معالجة الـ Webhook
- */
 export enum WebhookStatus {
-  /** استُقبل وينتظر المعالجة */
   PENDING = 'pending',
-  /** قيد المعالجة */
   PROCESSING = 'processing',
-  /** تمت المعالجة بنجاح */
   PROCESSED = 'processed',
-  /** فشلت المعالجة */
   FAILED = 'failed',
-  /** تم تخطيه (مكرر أو غير مهم) */
   SKIPPED = 'skipped',
-  /** في انتظار إعادة المحاولة */
   RETRY_PENDING = 'retry_pending',
 }
 
-/**
- * أنواع أحداث سلة الرئيسية
- */
 export enum SallaEventType {
   // Order Events
   ORDER_CREATED = 'order.created',
@@ -130,10 +109,6 @@ export enum SallaEventType {
 @Index(['idempotencyKey'], { unique: true, where: '"idempotency_key" IS NOT NULL' })
 @Index(['externalId', 'source'])
 export class WebhookEvent extends BaseEntity {
-  /**
-   * الـ Tenant (المتجر) المالك للحدث
-   * nullable: true - لأن بعض الـ webhooks تصل قبل ربط المتجر
-   */
   @Column({
     name: 'tenant_id',
     type: 'uuid',
@@ -147,9 +122,6 @@ export class WebhookEvent extends BaseEntity {
   @JoinColumn({ name: 'tenant_id' })
   tenant?: Tenant;
 
-  /**
-   * المتجر المرتبط (إذا كان الـ webhook من سلة)
-   */
   @Column({
     name: 'store_id',
     type: 'uuid',
@@ -162,10 +134,6 @@ export class WebhookEvent extends BaseEntity {
   @JoinColumn({ name: 'store_id' })
   store?: Store;
 
-  /**
-   * Idempotency Key - مفتاح فريد لمنع معالجة نفس الحدث مرتين
-   * هذا هو البديل عن event_id - نولّده داخلياً
-   */
   @Column({
     name: 'idempotency_key',
     type: 'varchar',
@@ -175,9 +143,6 @@ export class WebhookEvent extends BaseEntity {
   })
   idempotencyKey?: string;
 
-  /**
-   * External ID - معرّف الحدث من المصدر الخارجي (اختياري)
-   */
   @Column({
     name: 'external_id',
     type: 'varchar',
@@ -187,10 +152,6 @@ export class WebhookEvent extends BaseEntity {
   })
   externalId?: string;
 
-  /**
-   * Source - مصدر الـ webhook
-   * نستخدم varchar بدلاً من enum للمرونة
-   */
   @Column({
     type: 'varchar',
     length: 50,
@@ -198,9 +159,6 @@ export class WebhookEvent extends BaseEntity {
   })
   source: string;
 
-  /**
-   * Event Type - نوع الحدث
-   */
   @Column({
     name: 'event_type',
     type: 'varchar',
@@ -210,18 +168,12 @@ export class WebhookEvent extends BaseEntity {
   @Index()
   eventType: string;
 
-  /**
-   * Payload - البيانات الكاملة للـ webhook
-   */
   @Column({
     type: 'jsonb',
     comment: 'بيانات الـ Webhook كاملة',
   })
   payload: Record<string, unknown>;
 
-  /**
-   * Headers - الـ HTTP headers الواردة
-   */
   @Column({
     type: 'jsonb',
     nullable: true,
@@ -229,10 +181,6 @@ export class WebhookEvent extends BaseEntity {
   })
   headers?: Record<string, string>;
 
-  /**
-   * Status - حالة معالجة الـ webhook
-   * نستخدم varchar بدلاً من enum للمرونة
-   */
   @Column({
     type: 'varchar',
     length: 50,
@@ -241,9 +189,6 @@ export class WebhookEvent extends BaseEntity {
   })
   status: string;
 
-  /**
-   * Attempts - عدد محاولات المعالجة
-   */
   @Column({
     type: 'integer',
     default: 0,
@@ -251,9 +196,6 @@ export class WebhookEvent extends BaseEntity {
   })
   attempts: number;
 
-  /**
-   * Processed At - تاريخ اكتمال المعالجة
-   */
   @Column({
     name: 'processed_at',
     type: 'timestamptz',
@@ -262,9 +204,6 @@ export class WebhookEvent extends BaseEntity {
   })
   processedAt?: Date;
 
-  /**
-   * Error Message - رسالة الخطأ إذا فشلت المعالجة
-   */
   @Column({
     name: 'error_message',
     type: 'text',
@@ -273,9 +212,6 @@ export class WebhookEvent extends BaseEntity {
   })
   errorMessage?: string;
 
-  /**
-   * Processing Result - نتيجة المعالجة
-   */
   @Column({
     name: 'processing_result',
     type: 'jsonb',
@@ -284,9 +220,6 @@ export class WebhookEvent extends BaseEntity {
   })
   processingResult?: Record<string, unknown>;
 
-  /**
-   * IP Address - عنوان IP المُرسل
-   */
   @Column({
     name: 'ip_address',
     type: 'varchar',
@@ -296,9 +229,6 @@ export class WebhookEvent extends BaseEntity {
   })
   ipAddress?: string;
 
-  /**
-   * Signature - التوقيع المُستخدم للتحقق
-   */
   @Column({
     type: 'varchar',
     length: 255,
@@ -307,9 +237,6 @@ export class WebhookEvent extends BaseEntity {
   })
   signature?: string;
 
-  /**
-   * Signature Verified - هل تم التحقق من التوقيع
-   */
   @Column({
     name: 'signature_verified',
     type: 'boolean',
@@ -318,9 +245,6 @@ export class WebhookEvent extends BaseEntity {
   })
   signatureVerified: boolean;
 
-  /**
-   * Processing Duration (ms)
-   */
   @Column({
     name: 'processing_duration_ms',
     type: 'integer',
@@ -329,9 +253,6 @@ export class WebhookEvent extends BaseEntity {
   })
   processingDurationMs?: number;
 
-  /**
-   * Related Entity ID - معرّف الكيان المرتبط
-   */
   @Column({
     name: 'related_entity_id',
     type: 'varchar',
@@ -341,9 +262,6 @@ export class WebhookEvent extends BaseEntity {
   })
   relatedEntityId?: string;
 
-  /**
-   * Related Entity Type - نوع الكيان المرتبط
-   */
   @Column({
     name: 'related_entity_type',
     type: 'varchar',
