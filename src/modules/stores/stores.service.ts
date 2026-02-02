@@ -2,7 +2,8 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Stores Service                             ║
  * ║                                                                                ║
- * ║  خدمة إدارة المتاجر (سلة + زد)                                                  ║
+ * ║  ✅ Fixed: إضافة syncStore method                                              ║
+ * ║  ✅ يدعم سلة وزد                                                               ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -11,6 +12,7 @@ import {
   Logger,
   NotFoundException,
   ConflictException,
+  BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -21,7 +23,11 @@ import { Store, StoreStatus, StorePlatform } from './entities/store.entity';
 
 // Services
 import { SallaOAuthService, SallaMerchantInfo } from './salla-oauth.service';
+// Note: SallaApiService و ZidApiService يجب أن تحتوي على getMerchantInfo/getStoreInfo
+// إذا لم تكن موجودة، أضفها كما هو موضح في الملفات المرفقة
+import { SallaApiService } from './salla-api.service';
 import { ZidOAuthService, ZidStoreInfo } from './zid-oauth.service';
+import { ZidApiService } from './zid-api.service';
 
 interface ConnectSallaStoreData {
   tokens: {
@@ -50,7 +56,9 @@ export class StoresService {
     private readonly storeRepository: Repository<Store>,
 
     private readonly sallaOAuthService: SallaOAuthService,
+    private readonly sallaApiService: SallaApiService,
     private readonly zidOAuthService: ZidOAuthService,
+    private readonly zidApiService: ZidApiService,
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
@@ -288,6 +296,113 @@ export class StoresService {
     return this.storeRepository.save(store);
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ✅ NEW: Sync Store - مزامنة بيانات المتجر من المنصة
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async syncStore(tenantId: string, storeId: string): Promise<Store> {
+    const store = await this.findById(tenantId, storeId);
+
+    // التحقق من أن المتجر نشط
+    if (store.status !== StoreStatus.ACTIVE) {
+      throw new BadRequestException('لا يمكن مزامنة متجر غير مربوط');
+    }
+
+    this.logger.log(`Starting sync for store: ${storeId} (${store.platform})`);
+
+    try {
+      // تأكد من صلاحية الـ Token
+      const accessToken = await this.ensureValidToken(store);
+
+      if (store.platform === StorePlatform.SALLA) {
+        await this.syncSallaStore(store, accessToken);
+      } else if (store.platform === StorePlatform.ZID) {
+        await this.syncZidStore(store, accessToken);
+      }
+
+      // تحديث وقت آخر مزامنة
+      store.lastSyncedAt = new Date();
+      store.consecutiveErrors = 0;
+      store.lastError = undefined;
+
+      const updatedStore = await this.storeRepository.save(store);
+
+      this.eventEmitter.emit('store.synced', {
+        storeId: store.id,
+        tenantId,
+        platform: store.platform,
+      });
+
+      this.logger.log(`Store synced successfully: ${storeId}`);
+
+      return updatedStore;
+
+    } catch (error: any) {
+      this.logger.error(`Failed to sync store: ${storeId}`, error);
+
+      store.lastError = error.message || 'Sync failed';
+      store.lastErrorAt = new Date();
+      store.consecutiveErrors += 1;
+
+      await this.storeRepository.save(store);
+
+      throw new BadRequestException(`فشل في المزامنة: ${error.message}`);
+    }
+  }
+
+  private async syncSallaStore(store: Store, accessToken: string): Promise<void> {
+    this.logger.debug(`Syncing Salla store: ${store.sallaMerchantId}`);
+
+    try {
+      // جلب بيانات المتجر من سلة
+      const merchantInfo = await this.sallaApiService.getMerchantInfo(accessToken);
+
+      // تحديث بيانات المتجر
+      store.sallaStoreName = merchantInfo.name;
+      store.sallaEmail = merchantInfo.email;
+      store.sallaMobile = merchantInfo.mobile;
+      store.sallaDomain = merchantInfo.domain;
+      store.sallaAvatar = merchantInfo.avatar;
+      store.sallaPlan = merchantInfo.plan;
+      store.name = merchantInfo.name || store.name;
+
+      this.logger.debug(`Salla store synced: ${merchantInfo.name}`);
+
+    } catch (error: any) {
+      this.logger.error(`Failed to sync Salla store: ${store.id}`, error);
+      throw error;
+    }
+  }
+
+  private async syncZidStore(store: Store, accessToken: string): Promise<void> {
+    this.logger.debug(`Syncing Zid store: ${store.zidStoreId}`);
+
+    try {
+      // جلب بيانات المتجر من زد
+      const storeInfo = await this.zidApiService.getStoreInfo(accessToken);
+
+      // تحديث بيانات المتجر
+      store.zidStoreName = storeInfo.name;
+      store.zidEmail = storeInfo.email;
+      store.zidMobile = storeInfo.mobile;
+      store.zidDomain = storeInfo.url;
+      store.zidLogo = storeInfo.logo;
+      store.zidCurrency = storeInfo.currency;
+      store.zidLanguage = storeInfo.language;
+      store.name = storeInfo.name || store.name;
+
+      this.logger.debug(`Zid store synced: ${storeInfo.name}`);
+
+    } catch (error: any) {
+      this.logger.error(`Failed to sync Zid store: ${store.id}`, error);
+      throw error;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔐 Token Management
+  // ═══════════════════════════════════════════════════════════════════════════════
+
   async ensureValidToken(store: Store): Promise<string> {
     if (!store.needsTokenRefresh && store.accessToken) {
       return store.accessToken;
@@ -330,6 +445,10 @@ export class StoresService {
       throw error;
     }
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔌 Disconnect Store
+  // ═══════════════════════════════════════════════════════════════════════════════
 
   async disconnectStore(tenantId: string, storeId: string): Promise<void> {
     const store = await this.findById(tenantId, storeId);
