@@ -3,14 +3,16 @@
  * ║                    RAFIQ PLATFORM - Stores Module                              ║
  * ║                                                                                ║
  * ║  Module لإدارة المتاجر المرتبطة بالمنصة (سلة + زد)                              ║
+ * ║  ✅ مع دعم Auto Registration للتجار                                            ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { HttpModule } from '@nestjs/axios';
 import { ConfigModule } from '@nestjs/config';
 import { TenantsModule } from '../tenants/tenants.module';
+import { AuthModule } from '../auth/auth.module'; // ✅ إضافة AuthModule للتسجيل التلقائي
 
 // Controllers
 import { StoresController } from './stores.controller';
@@ -32,6 +34,7 @@ import { Store } from './entities/store.entity';
     TypeOrmModule.forFeature([Store]),
     ConfigModule,
     TenantsModule,
+    forwardRef(() => AuthModule), // ✅ forwardRef لتجنب circular dependency
     
     HttpModule.register({
       timeout: 30000,
@@ -89,7 +92,9 @@ export class StoresModule {}
  * │     ↓                                                                       │
  * │  6. نحفظ المتجر في قاعدة البيانات                                           │
  * │     ↓                                                                       │
- * │  7. Done! المتجر مربوط ✅                                                    │
+ * │  7. ✅ Auto Registration - إنشاء حساب للتاجر + إرسال بيانات الدخول           │
+ * │     ↓                                                                       │
+ * │  8. Done! المتجر مربوط + التاجر مسجل ✅                                       │
  * │                                                                             │
  * └─────────────────────────────────────────────────────────────────────────────┘
  */
