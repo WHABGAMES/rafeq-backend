@@ -44,7 +44,7 @@ export interface AutoRegistrationResult {
   success: boolean;
   isNewUser: boolean;
   userId: string;
-  tenantId: string;
+  tenantId: string | null;
   email: string;
   message: string;
 }
@@ -128,7 +128,7 @@ export class AutoRegistrationService {
         success: true,
         isNewUser,
         userId: user.id,
-        tenantId: store.tenantId,
+        tenantId: store.tenantId || null,
         email: email.toLowerCase(),
         message: isNewUser ? 'تم إنشاء حساب جديد' : 'تم إرسال تذكير ببيانات الدخول',
       };
@@ -148,6 +148,11 @@ export class AutoRegistrationService {
     password: string,
   ): Promise<{ user: User }> {
     const { email, mobile, name, storeName, avatar, merchantId } = merchantData;
+
+    // التحقق من وجود tenantId
+    if (!store.tenantId) {
+      throw new Error('Store must have a tenantId for user creation');
+    }
 
     const hashedPassword = await bcrypt.hash(password, 12);
     const nameParts = (name || storeName || 'مستخدم رفيق').split(' ');
