@@ -10,6 +10,9 @@ import { Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 
+// ✅ Import from zid-oauth.service.ts to avoid duplicate definitions
+import { ZidStoreInfo } from './zid-oauth.service';
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 📊 Type Definitions
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -17,18 +20,6 @@ import { firstValueFrom } from 'rxjs';
 export interface ZidApiResponse<T> {
   status: string;
   data: T;
-}
-
-export interface ZidStoreInfo {
-  id: string;
-  uuid: string;
-  name: string;
-  email: string;
-  mobile: string;
-  url: string;
-  logo: string;
-  currency: string;
-  language: string;
 }
 
 export interface ZidOrder {
@@ -101,6 +92,7 @@ export class ZidApiService {
         logo: storeInfo.logo,
         currency: storeInfo.currency,
         language: storeInfo.language,
+        created_at: storeInfo.created_at || new Date().toISOString(),
       };
 
     } catch (error: any) {
