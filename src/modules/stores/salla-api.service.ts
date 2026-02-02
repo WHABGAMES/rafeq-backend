@@ -10,6 +10,9 @@ import { Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 
+// ✅ Import from salla-oauth.service.ts to avoid duplicate definitions
+import { SallaMerchantInfo } from './salla-oauth.service';
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 📊 Type Definitions
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -25,17 +28,6 @@ export interface SallaApiResponse<T> {
     currentPage: number;
     totalPages: number;
   };
-}
-
-export interface SallaMerchantInfo {
-  id: number;
-  username: string;
-  name: string;
-  email: string;
-  mobile: string;
-  domain: string;
-  avatar: string;
-  plan: string;
 }
 
 export interface SallaOrder {
