@@ -2,8 +2,7 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                RAFIQ PLATFORM - Zid API Service                                ║
  * ║                                                                                ║
- * ║  خدمة للتواصل مع API زد                                                         ║
- * ║  جلب الطلبات، العملاء، المنتجات، إلخ                                            ║
+ * ║  ✅ Fixed: إضافة getStoreInfo method للمزامنة                                   ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -11,281 +10,204 @@ import { Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 
-/**
- * 📌 Zid API Documentation:
- * https://docs.zid.sa/
- * 
- * Base URL: https://api.zid.sa/v1
- */
+// ═══════════════════════════════════════════════════════════════════════════════
+// 📊 Type Definitions
+// ═══════════════════════════════════════════════════════════════════════════════
 
 export interface ZidApiResponse<T> {
   status: string;
-  message?: string;
   data: T;
-  pagination?: {
-    total: number;
-    per_page: number;
-    current_page: number;
-    last_page: number;
-  };
 }
 
-export interface ZidOrder {
-  id: number;
-  order_number: string;
-  status: string;
-  payment_status: string;
-  payment_method: string;
-  currency: string;
-  sub_total: number;
-  shipping_cost: number;
-  tax: number;
-  total: number;
-  customer: ZidCustomer;
-  items: ZidOrderItem[];
-  shipping_address?: ZidAddress;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface ZidOrderItem {
-  id: number;
-  product_id: number;
-  product_name: string;
-  sku: string;
-  quantity: number;
-  price: number;
-  total: number;
-  image?: string;
-}
-
-export interface ZidCustomer {
-  id: number;
+export interface ZidStoreInfo {
+  id: string;
+  uuid: string;
   name: string;
   email: string;
   mobile: string;
-  city?: string;
-  country?: string;
-  orders_count?: number;
-  total_spent?: number;
+  url: string;
+  logo: string;
+  currency: string;
+  language: string;
+}
+
+export interface ZidOrder {
+  id: string;
+  order_number: string;
+  status: string;
+  payment_status: string;
+  total: { amount: number; currency: string };
+  customer: ZidCustomer;
+  items: ZidOrderItem[];
   created_at: string;
+}
+
+export interface ZidCustomer {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+}
+
+export interface ZidOrderItem {
+  id: string;
+  name: string;
+  sku: string;
+  quantity: number;
+  price: number;
 }
 
 export interface ZidProduct {
-  id: number;
+  id: string;
   name: string;
   sku: string;
   price: number;
-  sale_price?: number;
   quantity: number;
   status: string;
-  images: string[];
-  categories: { id: number; name: string }[];
-  created_at: string;
-}
-
-export interface ZidAddress {
-  city: string;
-  street: string;
-  district?: string;
-  postal_code?: string;
-  country: string;
 }
 
 @Injectable()
 export class ZidApiService {
   private readonly logger = new Logger(ZidApiService.name);
-  private readonly ZID_API_URL = 'https://api.zid.sa/v1';
+  private readonly BASE_URL = 'https://api.zid.sa/v1';
 
   constructor(private readonly httpService: HttpService) {}
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 📦 Orders
+  // ✅ NEW: getStoreInfo - جلب معلومات المتجر للمزامنة
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * جلب الطلبات
-   */
+  async getStoreInfo(accessToken: string): Promise<ZidStoreInfo> {
+    this.logger.debug('Fetching store info from Zid');
+
+    try {
+      const response = await this.makeRequest<{ store: ZidStoreInfo }>(
+        accessToken,
+        'GET',
+        '/store/info',
+      );
+
+      const storeInfo = response.data?.store || response.data;
+
+      this.logger.debug(`Zid store info retrieved: ${storeInfo.name}`);
+
+      return {
+        id: storeInfo.id,
+        uuid: storeInfo.uuid,
+        name: storeInfo.name,
+        email: storeInfo.email,
+        mobile: storeInfo.mobile,
+        url: storeInfo.url,
+        logo: storeInfo.logo,
+        currency: storeInfo.currency,
+        language: storeInfo.language,
+      };
+
+    } catch (error: any) {
+      this.logger.error('Failed to fetch Zid store info', error);
+      throw new Error(`فشل في جلب بيانات المتجر: ${error.message}`);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🛒 Orders API
+  // ═══════════════════════════════════════════════════════════════════════════════
+
   async getOrders(
     accessToken: string,
-    params: { page?: number; per_page?: number; status?: string } = {},
+    options?: { page?: number; limit?: number; status?: string },
   ): Promise<ZidApiResponse<ZidOrder[]>> {
-    try {
-      const queryParams = new URLSearchParams();
-      if (params.page) queryParams.append('page', params.page.toString());
-      if (params.per_page) queryParams.append('per_page', params.per_page.toString());
-      if (params.status) queryParams.append('status', params.status);
+    const params = new URLSearchParams();
+    if (options?.page) params.append('page', options.page.toString());
+    if (options?.limit) params.append('limit', options.limit.toString());
+    if (options?.status) params.append('status', options.status);
 
-      const response = await firstValueFrom(
-        this.httpService.get(
-          `${this.ZID_API_URL}/managers/store/orders?${queryParams.toString()}`,
-          {
-            headers: this.getHeaders(accessToken),
-          },
-        ),
-      );
-
-      this.logger.debug(`Fetched ${response.data.data?.length || 0} orders from Zid`);
-      return response.data;
-    } catch (error: any) {
-      this.logger.error('Failed to fetch Zid orders', {
-        error: error?.response?.data || error.message,
-      });
-      throw error;
-    }
+    return this.makeRequest<ZidOrder[]>(accessToken, 'GET', `/orders?${params.toString()}`);
   }
 
-  /**
-   * جلب طلب واحد
-   */
-  async getOrder(accessToken: string, orderId: number): Promise<ZidOrder> {
-    try {
-      const response = await firstValueFrom(
-        this.httpService.get(
-          `${this.ZID_API_URL}/managers/store/orders/${orderId}`,
-          {
-            headers: this.getHeaders(accessToken),
-          },
-        ),
-      );
-
-      return response.data.data;
-    } catch (error: any) {
-      this.logger.error(`Failed to fetch Zid order ${orderId}`, {
-        error: error?.response?.data || error.message,
-      });
-      throw error;
-    }
+  async getOrder(accessToken: string, orderId: string): Promise<ZidApiResponse<ZidOrder>> {
+    return this.makeRequest<ZidOrder>(accessToken, 'GET', `/orders/${orderId}`);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 👥 Customers
+  // 👤 Customers API
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * جلب العملاء
-   */
   async getCustomers(
     accessToken: string,
-    params: { page?: number; per_page?: number; search?: string } = {},
+    options?: { page?: number; limit?: number },
   ): Promise<ZidApiResponse<ZidCustomer[]>> {
-    try {
-      const queryParams = new URLSearchParams();
-      if (params.page) queryParams.append('page', params.page.toString());
-      if (params.per_page) queryParams.append('per_page', params.per_page.toString());
-      if (params.search) queryParams.append('search', params.search);
+    const params = new URLSearchParams();
+    if (options?.page) params.append('page', options.page.toString());
+    if (options?.limit) params.append('limit', options.limit.toString());
 
-      const response = await firstValueFrom(
-        this.httpService.get(
-          `${this.ZID_API_URL}/managers/store/customers?${queryParams.toString()}`,
-          {
-            headers: this.getHeaders(accessToken),
-          },
-        ),
-      );
-
-      this.logger.debug(`Fetched ${response.data.data?.length || 0} customers from Zid`);
-      return response.data;
-    } catch (error: any) {
-      this.logger.error('Failed to fetch Zid customers', {
-        error: error?.response?.data || error.message,
-      });
-      throw error;
-    }
+    return this.makeRequest<ZidCustomer[]>(accessToken, 'GET', `/customers?${params.toString()}`);
   }
 
-  /**
-   * جلب عميل واحد
-   */
-  async getCustomer(accessToken: string, customerId: number): Promise<ZidCustomer> {
-    try {
-      const response = await firstValueFrom(
-        this.httpService.get(
-          `${this.ZID_API_URL}/managers/store/customers/${customerId}`,
-          {
-            headers: this.getHeaders(accessToken),
-          },
-        ),
-      );
-
-      return response.data.data;
-    } catch (error: any) {
-      this.logger.error(`Failed to fetch Zid customer ${customerId}`, {
-        error: error?.response?.data || error.message,
-      });
-      throw error;
-    }
+  async getCustomer(accessToken: string, customerId: string): Promise<ZidApiResponse<ZidCustomer>> {
+    return this.makeRequest<ZidCustomer>(accessToken, 'GET', `/customers/${customerId}`);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 🛍️ Products
+  // 📦 Products API
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * جلب المنتجات
-   */
   async getProducts(
     accessToken: string,
-    params: { page?: number; per_page?: number; status?: string } = {},
+    options?: { page?: number; limit?: number },
   ): Promise<ZidApiResponse<ZidProduct[]>> {
-    try {
-      const queryParams = new URLSearchParams();
-      if (params.page) queryParams.append('page', params.page.toString());
-      if (params.per_page) queryParams.append('per_page', params.per_page.toString());
-      if (params.status) queryParams.append('status', params.status);
+    const params = new URLSearchParams();
+    if (options?.page) params.append('page', options.page.toString());
+    if (options?.limit) params.append('limit', options.limit.toString());
 
+    return this.makeRequest<ZidProduct[]>(accessToken, 'GET', `/products?${params.toString()}`);
+  }
+
+  async getProduct(accessToken: string, productId: string): Promise<ZidApiResponse<ZidProduct>> {
+    return this.makeRequest<ZidProduct>(accessToken, 'GET', `/products/${productId}`);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🛠️ Private Methods
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  private async makeRequest<T>(
+    accessToken: string,
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
+    endpoint: string,
+    data?: Record<string, unknown>,
+  ): Promise<ZidApiResponse<T>> {
+    const url = `${this.BASE_URL}${endpoint}`;
+
+    this.logger.debug(`Zid API ${method} ${endpoint}`);
+
+    try {
       const response = await firstValueFrom(
-        this.httpService.get(
-          `${this.ZID_API_URL}/managers/store/products?${queryParams.toString()}`,
-          {
-            headers: this.getHeaders(accessToken),
+        this.httpService.request({
+          method,
+          url,
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
           },
-        ),
+          data,
+        }),
       );
 
-      this.logger.debug(`Fetched ${response.data.data?.length || 0} products from Zid`);
       return response.data;
+
     } catch (error: any) {
-      this.logger.error('Failed to fetch Zid products', {
-        error: error?.response?.data || error.message,
+      this.logger.error(`Zid API Error: ${method} ${endpoint}`, {
+        status: error.response?.status,
+        message: error.response?.data?.message || error.message,
       });
-      throw error;
+
+      throw {
+        status: error.response?.status,
+        message: error.response?.data?.message || error.message,
+        endpoint,
+      };
     }
-  }
-
-  /**
-   * جلب منتج واحد
-   */
-  async getProduct(accessToken: string, productId: number): Promise<ZidProduct> {
-    try {
-      const response = await firstValueFrom(
-        this.httpService.get(
-          `${this.ZID_API_URL}/managers/store/products/${productId}`,
-          {
-            headers: this.getHeaders(accessToken),
-          },
-        ),
-      );
-
-      return response.data.data;
-    } catch (error: any) {
-      this.logger.error(`Failed to fetch Zid product ${productId}`, {
-        error: error?.response?.data || error.message,
-      });
-      throw error;
-    }
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🛠️ Helpers
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  private getHeaders(accessToken: string) {
-    return {
-      Authorization: `Bearer ${accessToken}`,
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-      'Accept-Language': 'ar',
-    };
   }
 }
