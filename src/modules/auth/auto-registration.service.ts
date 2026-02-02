@@ -188,11 +188,20 @@ export class AutoRegistrationService {
    * 🔐 توليد الباسورد
    * Format: Aa + رقم التلفون
    * Example: Aa966512345678
+   * Fallback: Aa + رقم عشوائي
    */
-  private generatePassword(mobile: string): string {
+  private generatePassword(mobile?: string): string {
     // تنظيف رقم الجوال من أي رموز
-    const cleanMobile = mobile.replace(/\D/g, '');
-    return `Aa${cleanMobile}`;
+    if (mobile && typeof mobile === 'string') {
+      const cleanMobile = mobile.replace(/\D/g, '');
+      if (cleanMobile.length >= 6) {
+        return `Aa${cleanMobile}`;
+      }
+    }
+    // fallback - توليد رقم عشوائي إذا لم يكن هناك رقم جوال
+    const randomNum = Date.now().toString().slice(-8);
+    this.logger.warn(`⚠️ No valid mobile, using fallback password`);
+    return `Aa${randomNum}`;
   }
 
   /**
