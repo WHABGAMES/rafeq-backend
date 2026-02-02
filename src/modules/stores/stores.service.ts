@@ -161,7 +161,6 @@ export class StoresService {
   ): Promise<Store> {
     const { tokens, storeInfo } = data;
 
-    // Check if store already connected
     const existingStore = await this.storeRepository.findOne({
       where: { zidStoreId: storeInfo.id },
     });
@@ -353,7 +352,8 @@ export class StoresService {
 
     try {
       // جلب بيانات المتجر من سلة
-      const merchantInfo = await this.sallaApiService.getMerchantInfo(accessToken);
+      const response = await this.sallaApiService.getStoreInfo(accessToken);
+      const merchantInfo = response.data;
 
       // تحديث بيانات المتجر
       store.sallaStoreName = merchantInfo.name;
@@ -377,7 +377,8 @@ export class StoresService {
 
     try {
       // جلب بيانات المتجر من زد
-      const storeInfo = await this.zidApiService.getStoreInfo(accessToken);
+      const response = await this.zidApiService.getStoreInfo(accessToken);
+      const storeInfo = response.data;
 
       // تحديث بيانات المتجر
       store.zidStoreName = storeInfo.name;
