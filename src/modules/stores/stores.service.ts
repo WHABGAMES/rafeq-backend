@@ -23,8 +23,6 @@ import { Store, StoreStatus, StorePlatform } from './entities/store.entity';
 
 // Services
 import { SallaOAuthService, SallaMerchantInfo } from './salla-oauth.service';
-// Note: SallaApiService و ZidApiService يجب أن تحتوي على getMerchantInfo/getStoreInfo
-// إذا لم تكن موجودة، أضفها كما هو موضح في الملفات المرفقة
 import { SallaApiService } from './salla-api.service';
 import { ZidOAuthService, ZidStoreInfo } from './zid-oauth.service';
 import { ZidApiService } from './zid-api.service';
