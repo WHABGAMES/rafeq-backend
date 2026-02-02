@@ -376,9 +376,8 @@ export class StoresService {
     this.logger.debug(`Syncing Zid store: ${store.zidStoreId}`);
 
     try {
-      // جلب بيانات المتجر من زد
-      const response = await this.zidApiService.getStoreInfo(accessToken);
-      const storeInfo = response.data;
+      // جلب بيانات المتجر من زد - يرجع الـ object مباشرة
+      const storeInfo = await this.zidApiService.getStoreInfo(accessToken);
 
       // تحديث بيانات المتجر
       store.zidStoreName = storeInfo.name;
