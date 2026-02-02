@@ -1,12 +1,17 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Stores Controller                          ║
+ * ║                                                                                ║
+ * ║  ✅ Fixed: Response transformation لمطابقة Frontend                           ║
+ * ║  ✅ Fixed: إضافة endpoint للمزامنة                                             ║
+ * ║  ✅ Fixed: Status mapping (active → connected)                                ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
 import {
   Controller,
   Get,
+  Post,
   Put,
   Delete,
   Body,
@@ -16,6 +21,7 @@ import {
   HttpStatus,
   UseGuards,
   Request,
+  Logger,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
 
@@ -29,8 +35,65 @@ import { UpdateStoreSettingsDto } from './dto/update-store-settings.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { User } from '@database/entities';
 
+// Entities
+import { Store, StoreStatus, StorePlatform } from './entities/store.entity';
+
 interface RequestWithUser extends Request {
   user: User;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ✅ Response Transformer - تحويل البيانات لمطابقة Frontend
+// ═══════════════════════════════════════════════════════════════════════════════
+
+interface StoreResponse {
+  id: string;
+  name: string;
+  platform: string;
+  status: 'connected' | 'disconnected' | 'pending' | 'error';
+  url: string | null;
+  lastSync: string | null;
+  createdAt: string;
+  stats: {
+    orders: number;
+    products: number;
+    customers: number;
+  };
+}
+
+function transformStoreResponse(store: Store): StoreResponse {
+  // ✅ تحويل status من Backend إلى Frontend format
+  const statusMap: Record<string, 'connected' | 'disconnected' | 'pending' | 'error'> = {
+    [StoreStatus.ACTIVE]: 'connected',
+    [StoreStatus.PENDING]: 'pending',
+    [StoreStatus.DISCONNECTED]: 'disconnected',
+    [StoreStatus.TOKEN_EXPIRED]: 'error',
+    [StoreStatus.SUSPENDED]: 'error',
+    [StoreStatus.UNINSTALLED]: 'disconnected',
+  };
+
+  // ✅ تحويل URL حسب المنصة
+  let url: string | null = null;
+  if (store.platform === StorePlatform.SALLA) {
+    url = store.sallaDomain || null;
+  } else if (store.platform === StorePlatform.ZID) {
+    url = store.zidDomain || null;
+  }
+
+  return {
+    id: store.id,
+    name: store.name || store.sallaStoreName || store.zidStoreName || 'متجر',
+    platform: store.platform,
+    status: statusMap[store.status] || 'disconnected',
+    url,
+    lastSync: store.lastSyncedAt ? store.lastSyncedAt.toISOString() : null,
+    createdAt: store.createdAt.toISOString(),
+    stats: {
+      orders: 0,  // TODO: جلب من الإحصائيات
+      products: 0,
+      customers: 0,
+    },
+  };
 }
 
 @Controller('stores')
@@ -38,7 +101,13 @@ interface RequestWithUser extends Request {
 @UseGuards(JwtAuthGuard)
 @ApiBearerAuth('JWT-auth')
 export class StoresController {
+  private readonly logger = new Logger(StoresController.name);
+
   constructor(private readonly storesService: StoresService) {}
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ✅ GET /stores - قائمة المتاجر (مع تحويل Response)
+  // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get()
   @ApiOperation({
@@ -49,15 +118,30 @@ export class StoresController {
     status: 200,
     description: 'قائمة المتاجر',
   })
-  async listStores(@Request() req: RequestWithUser) {
-    return this.storesService.findByTenant(req.user.tenantId);
+  async listStores(@Request() req: RequestWithUser): Promise<StoreResponse[]> {
+    this.logger.debug(`Fetching stores for tenant: ${req.user.tenantId}`);
+    
+    const stores = await this.storesService.findByTenant(req.user.tenantId);
+    
+    this.logger.debug(`Found ${stores.length} stores`);
+    
+    // ✅ تحويل كل متجر للـ Frontend format
+    return stores.map(transformStoreResponse);
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ✅ GET /stores/statistics - إحصائيات المتاجر
+  // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get('statistics')
   @ApiOperation({ summary: 'إحصائيات المتاجر' })
   async getStatistics(@Request() req: RequestWithUser) {
     return this.storesService.getStatistics(req.user.tenantId);
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ✅ GET /stores/:id - تفاصيل متجر (مع تحويل Response)
+  // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get(':id')
   @ApiOperation({ summary: 'تفاصيل متجر' })
@@ -66,9 +150,38 @@ export class StoresController {
   async getStore(
     @Request() req: RequestWithUser,
     @Param('id', ParseUUIDPipe) id: string,
-  ) {
-    return this.storesService.findById(req.user.tenantId, id);
+  ): Promise<StoreResponse> {
+    const store = await this.storesService.findById(req.user.tenantId, id);
+    return transformStoreResponse(store);
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ✅ POST /stores/:id/sync - مزامنة المتجر (جديد!)
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Post(':id/sync')
+  @ApiOperation({ 
+    summary: 'مزامنة المتجر',
+    description: 'تحديث بيانات المتجر من المنصة'
+  })
+  @ApiResponse({ status: 200, description: 'تمت المزامنة بنجاح' })
+  @ApiResponse({ status: 404, description: 'المتجر غير موجود' })
+  async syncStore(
+    @Request() req: RequestWithUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<StoreResponse> {
+    this.logger.log(`Syncing store: ${id} for tenant: ${req.user.tenantId}`);
+    
+    const store = await this.storesService.syncStore(req.user.tenantId, id);
+    
+    this.logger.log(`Store synced successfully: ${id}`);
+    
+    return transformStoreResponse(store);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ✅ PUT /stores/:id/settings - تحديث إعدادات المتجر
+  // ═══════════════════════════════════════════════════════════════════════════════
 
   @Put(':id/settings')
   @ApiOperation({ summary: 'تحديث إعدادات المتجر' })
@@ -77,9 +190,14 @@ export class StoresController {
     @Request() req: RequestWithUser,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateStoreSettingsDto,
-  ) {
-    return this.storesService.updateSettings(req.user.tenantId, id, dto.settings);
+  ): Promise<StoreResponse> {
+    const store = await this.storesService.updateSettings(req.user.tenantId, id, dto.settings);
+    return transformStoreResponse(store);
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ✅ DELETE /stores/:id - فصل المتجر
+  // ═══════════════════════════════════════════════════════════════════════════════
 
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
@@ -89,6 +207,10 @@ export class StoresController {
     @Request() req: RequestWithUser,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
+    this.logger.log(`Disconnecting store: ${id} for tenant: ${req.user.tenantId}`);
+    
     await this.storesService.disconnectStore(req.user.tenantId, id);
+    
+    this.logger.log(`Store disconnected successfully: ${id}`);
   }
 }
