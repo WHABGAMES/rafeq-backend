@@ -6,7 +6,7 @@
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
-import { IsEmail, IsString, IsNotEmpty, MinLength, IsOptional } from 'class-validator';
+import { IsEmail, IsString, IsNotEmpty, MinLength } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 // ═══════════════════════════════════════════════════════════════════════════════
