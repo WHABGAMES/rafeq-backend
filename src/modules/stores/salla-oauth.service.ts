@@ -269,7 +269,7 @@ export class SallaOAuthService {
     }
   }
 
-  private calculateTokenExpiry(expiresIn: number): Date {
+  public calculateTokenExpiry(expiresIn: number): Date {
     return new Date(Date.now() + expiresIn * 1000);
   }
 
@@ -370,7 +370,7 @@ export class SallaOAuthService {
           merchantId,
           email: merchantInfo.email,
           mobile: merchantInfo.mobile,
-          name: merchantInfo.name || merchantInfo.username,
+          name: merchantInfo.name || merchantInfo.username || 'تاجر',
           storeName: merchantInfo.name,
           avatar: merchantInfo.avatar,
         },
