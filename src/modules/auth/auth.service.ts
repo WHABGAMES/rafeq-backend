@@ -150,7 +150,7 @@ export class AuthService {
       }
 
       return this.generateTokens(user);
-    } catch (error) {
+    } catch (error: any) {
       this.logger.warn(`Token refresh failed: ${error.message}`);
       throw new UnauthorizedException('التوكن غير صالح أو منتهي الصلاحية');
     }
