@@ -323,16 +323,36 @@ export class MailService {
   <meta name="supported-color-schemes" content="light only" />
   <title>RAFEQ</title>
   <style type="text/css">
-    :root { color-scheme: light only; }
+    :root { color-scheme: light only; supported-color-schemes: light only; }
+    body, .body-bg { background-color: #0f172a !important; }
+    .card-bg { background-color: #1e293b !important; }
+    .dark-bg { background-color: #0f172a !important; }
+    .text-white { color: #ffffff !important; }
+    .text-teal { color: #2dd4bf !important; }
+    .text-purple { color: #a855f7 !important; }
+    .text-gray { color: #94a3b8 !important; }
+    @media (prefers-color-scheme: dark) {
+      body, .body-bg { background-color: #0f172a !important; }
+      .card-bg { background-color: #1e293b !important; }
+      .dark-bg { background-color: #0f172a !important; }
+      .text-white { color: #ffffff !important; }
+    }
     @media only screen and (max-width: 600px) {
       .container { width: 100% !important; }
       .content-padding { padding: 24px 20px !important; }
     }
   </style>
+  <!--[if mso]>
+  <style type="text/css">
+    body, table, td { font-family: Arial, sans-serif !important; }
+  </style>
+  <![endif]-->
 </head>
-<body style="margin: 0; padding: 0; background-color: #0f172a; font-family: Arial, Tahoma, sans-serif;" bgcolor="#0f172a">
+<body class="body-bg" style="margin: 0; padding: 0; background-color: #0f172a !important; font-family: Arial, Tahoma, sans-serif;" bgcolor="#0f172a">
   
-  <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background-color: #0f172a;" bgcolor="#0f172a">
+  <!-- Protective wrapper for dark mode -->
+  <div class="body-bg" style="background-color: #0f172a !important; width: 100%; min-height: 100%;">
+  <table role="presentation" cellpadding="0" cellspacing="0" width="100%" class="body-bg" style="background-color: #0f172a !important;" bgcolor="#0f172a">
     <tr>
       <td align="center" style="padding: 32px 16px;">
         
@@ -348,7 +368,7 @@ export class MailService {
           <!-- MAIN CARD -->
           <tr>
             <td>
-              <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background-color: #1e293b; border-radius: 20px; border: 1px solid #334155;" bgcolor="#1e293b">
+              <table role="presentation" cellpadding="0" cellspacing="0" width="100%" class="card-bg" style="background-color: #1e293b !important; border-radius: 20px; border: 1px solid #334155;" bgcolor="#1e293b">
                 <tr>
                   <td>
                     <div style="height: 5px; background: linear-gradient(90deg, #2dd4bf 0%, #8b5cf6 50%, #a855f7 100%); border-radius: 20px 20px 0 0;"></div>
@@ -430,6 +450,7 @@ export class MailService {
       </td>
     </tr>
   </table>
+  </div>
   
 </body>
 </html>
