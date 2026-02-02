@@ -1,82 +1,58 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║                    RAFIQ PLATFORM - Auth Module                                ║
+ * ║                    RAFIQ PLATFORM - Auth Module (Simplified)                  ║
  * ║                                                                                ║
- * ║  📌 مسؤول عن:                                                                   ║
- * ║  - تسجيل الدخول (Email + Password)                                             ║
- * ║  - تسجيل الدخول بـ OTP (Email + WhatsApp)                                      ║
- * ║  - تسجيل الدخول عبر Salla OAuth                                                ║
- * ║  - تعيين كلمة المرور (بعد OTP/OAuth)                                            ║
- * ║  - تجديد الـ Token                                                             ║
- * ║  - تغيير كلمة المرور                                                           ║
+ * ║  🎯 وحدة المصادقة المبسطة - Email + Password فقط                              ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
-import { Module, forwardRef } from '@nestjs/common';
-import { JwtModule } from '@nestjs/jwt';
-import { PassportModule } from '@nestjs/passport';
-import { ConfigModule, ConfigService } from '@nestjs/config';
+import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { HttpModule } from '@nestjs/axios';
+import { JwtModule } from '@nestjs/jwt';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { PassportModule } from '@nestjs/passport';
 
+// Entities
+import { User } from '@database/entities/user.entity';
+
+// Controllers
 import { AuthController } from './auth.controller';
+
+// Services
 import { AuthService } from './auth.service';
-import { OtpService } from './otp.service';
-import { WhatsAppOtpService } from './whatsapp-otp.service';
+import { AutoRegistrationService } from './auto-registration.service';
+
+// Strategies
 import { JwtStrategy } from './strategies/jwt.strategy';
-import { JwtAuthGuard } from './guards/jwt-auth.guard';
-import { User, Tenant } from '@database/entities';
-import { StoresModule } from '../stores/stores.module';
+
+// Mail Module
 import { MailModule } from '../mail/mail.module';
 
 @Module({
   imports: [
-    // User & Tenant Entities للوصول لقاعدة البيانات
-    TypeOrmModule.forFeature([User, Tenant]),
-
-    // Passport للـ authentication strategies
-    PassportModule.register({
-      defaultStrategy: 'jwt',
-    }),
-
-    // JWT Module
+    TypeOrmModule.forFeature([User]),
+    
+    PassportModule.register({ defaultStrategy: 'jwt' }),
+    
     JwtModule.registerAsync({
       imports: [ConfigModule],
-      inject: [ConfigService],
-      useFactory: (configService: ConfigService) => ({
-        secret: configService.get('jwt.secret'),
+      useFactory: async (configService: ConfigService) => ({
+        secret: configService.get('JWT_SECRET'),
         signOptions: {
-          expiresIn: configService.get('jwt.accessExpiration'),
+          expiresIn: configService.get('JWT_EXPIRES_IN', '15m'),
         },
       }),
+      inject: [ConfigService],
     }),
-
-    // HTTP Module for OAuth & WhatsApp API calls
-    HttpModule.register({
-      timeout: 30000,
-      maxRedirects: 5,
-    }),
-
-    // ✅ StoresModule للبحث عن المتجر بـ merchantId + SallaOAuthService
-    forwardRef(() => StoresModule),
     
-    // ✅ MailModule لإرسال OTP عبر البريد
     MailModule,
   ],
   controllers: [AuthController],
   providers: [
     AuthService,
-    OtpService,
-    WhatsAppOtpService,
+    AutoRegistrationService,
     JwtStrategy,
-    JwtAuthGuard,
   ],
-  exports: [
-    AuthService,
-    OtpService,
-    WhatsAppOtpService,
-    JwtAuthGuard,
-    JwtModule,
-  ],
+  exports: [AuthService, AutoRegistrationService],
 })
 export class AuthModule {}
