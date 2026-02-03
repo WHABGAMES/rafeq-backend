@@ -64,6 +64,7 @@ import { UsersModule } from '@modules/users/users.module';
 import { TenantsModule } from '@modules/tenants/tenants.module';
 import { StoresModule } from '@modules/stores/stores.module';
 import { ChannelsModule } from '@modules/channels/channels.module';
+import { WhatsAppModule } from '@modules/channels/whatsapp/whatsapp.module';
 import { WebhooksModule } from '@modules/webhooks/webhooks.module';
 import { MessagingModule } from '@modules/messaging/messaging.module';
 import { AiModule } from '@modules/ai/ai.module';
@@ -399,6 +400,7 @@ import { MailModule } from '@modules/mail/mail.module';
     // 🏪 المتاجر والقنوات
     StoresModule,
     ChannelsModule,
+    WhatsAppModule, // ✅ تحميل WhatsApp routes مباشرة (webhook, send/text, etc.)
     WebhooksModule,
     
     // 💬 الرسائل والذكاء الاصطناعي
