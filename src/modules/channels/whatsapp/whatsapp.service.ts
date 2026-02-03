@@ -275,9 +275,9 @@ export class WhatsAppService {
    * 📌 WhatsApp Cloud API URLs
    * 
    * Meta تستضيف الـ API على graph.facebook.com
-   * الإصدار الحالي: v18.0
+   * الإصدار الحالي: v21.0
    */
-  private readonly API_VERSION = 'v18.0';
+  private readonly API_VERSION = 'v21.0';
   private readonly BASE_URL = `https://graph.facebook.com/${this.API_VERSION}`;
 
   constructor(
