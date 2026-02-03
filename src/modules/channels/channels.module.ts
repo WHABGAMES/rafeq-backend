@@ -2,7 +2,9 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Channels Module                            ║
  * ║                                                                                ║
- * ║  ✅ يشمل WhatsApp Baileys                                                      ║
+ * ║  ✅ إصلاحات:                                                                   ║
+ * ║  - إزالة EventEmitterModule.forRoot() المكرر (موجود في AppModule)              ║
+ * ║  - الاحتفاظ بباقي التبعيات كما هي                                              ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -10,7 +12,6 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { HttpModule } from '@nestjs/axios';
 import { ConfigModule } from '@nestjs/config';
-import { EventEmitterModule } from '@nestjs/event-emitter';
 
 import { Channel } from './entities/channel.entity';
 import { ChannelsService } from './channels.service';
@@ -25,7 +26,7 @@ import { WhatsAppBaileysService } from './whatsapp/whatsapp-baileys.service';
       maxRedirects: 5,
     }),
     ConfigModule,
-    EventEmitterModule.forRoot(),
+    // ✅ إزالة EventEmitterModule.forRoot() - يتم تسجيله مرة واحدة في AppModule
   ],
   controllers: [ChannelsController],
   providers: [
@@ -35,6 +36,7 @@ import { WhatsAppBaileysService } from './whatsapp/whatsapp-baileys.service';
   exports: [
     ChannelsService,
     WhatsAppBaileysService,
+    TypeOrmModule, // ✅ تصدير TypeOrmModule ليستخدمه WhatsAppModule
   ],
 })
 export class ChannelsModule {}
