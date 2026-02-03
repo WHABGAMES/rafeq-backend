@@ -174,7 +174,7 @@ export class MessageService {
     const channel = await this.channelRepo.findOne({
       where: {
         id: data.channelId,
-        tenantId: data.tenantId,
+        storeId: data.tenantId,
       },
     });
 
@@ -257,7 +257,7 @@ export class MessageService {
       await queryRunner.manager.update(Conversation, conversation.id, updateData);
 
       await queryRunner.manager.update(Channel, channel.id, {
-        lastMessageAt: data.timestamp,
+        lastActivityAt: data.timestamp,
       });
 
       await queryRunner.commitTransaction();
