@@ -17,6 +17,7 @@ import { Channel } from './entities/channel.entity';
 import { ChannelsService } from './channels.service';
 import { ChannelsController } from './channels.controller';
 import { WhatsAppBaileysService } from './whatsapp/whatsapp-baileys.service';
+import { WhatsAppModule } from './whatsapp/whatsapp.module';
 
 @Module({
   imports: [
@@ -26,7 +27,7 @@ import { WhatsAppBaileysService } from './whatsapp/whatsapp-baileys.service';
       maxRedirects: 5,
     }),
     ConfigModule,
-    // ✅ إزالة EventEmitterModule.forRoot() - يتم تسجيله مرة واحدة في AppModule
+    WhatsAppModule, // ✅ تحميل WhatsApp Controller و Service و Routes
   ],
   controllers: [ChannelsController],
   providers: [
