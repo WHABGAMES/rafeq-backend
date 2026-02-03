@@ -61,8 +61,7 @@ interface StoreResponse {
   };
 }
 
-function transformStoreResponse(store: Store): StoreResponse {
-  // ✅ تحويل status من Backend إلى Frontend format
+function transformStoreResponse(store: Store, stats?: { orders: number; products: number; customers: number }): StoreResponse {
   const statusMap: Record<string, 'connected' | 'disconnected' | 'pending' | 'error'> = {
     [StoreStatus.ACTIVE]: 'connected',
     [StoreStatus.PENDING]: 'pending',
@@ -72,7 +71,6 @@ function transformStoreResponse(store: Store): StoreResponse {
     [StoreStatus.UNINSTALLED]: 'disconnected',
   };
 
-  // ✅ تحويل URL حسب المنصة
   let url: string | null = null;
   if (store.platform === StorePlatform.SALLA) {
     url = store.sallaDomain || null;
@@ -88,11 +86,7 @@ function transformStoreResponse(store: Store): StoreResponse {
     url,
     lastSync: store.lastSyncedAt ? store.lastSyncedAt.toISOString() : null,
     createdAt: store.createdAt.toISOString(),
-    stats: {
-      orders: 0,  // TODO: جلب من الإحصائيات
-      products: 0,
-      customers: 0,
-    },
+    stats: stats || { orders: 0, products: 0, customers: 0 },
   };
 }
 
@@ -125,8 +119,21 @@ export class StoresController {
     
     this.logger.debug(`Found ${stores.length} stores`);
     
-    // ✅ تحويل كل متجر للـ Frontend format
-    return stores.map(transformStoreResponse);
+    // ✅ جلب الإحصائيات الحقيقية لكل متجر مربوط
+    const results: StoreResponse[] = [];
+    for (const store of stores) {
+      let stats = { orders: 0, products: 0, customers: 0 };
+      if (store.status === StoreStatus.ACTIVE && store.accessToken) {
+        try {
+          stats = await this.storesService.getStoreStats(store);
+        } catch (err) {
+          this.logger.warn(`Failed to get stats for store ${store.id}: ${err}`);
+        }
+      }
+      results.push(transformStoreResponse(store, stats));
+    }
+    
+    return results;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -152,7 +159,17 @@ export class StoresController {
     @Param('id', ParseUUIDPipe) id: string,
   ): Promise<StoreResponse> {
     const store = await this.storesService.findById(req.user.tenantId, id);
-    return transformStoreResponse(store);
+    
+    let stats = { orders: 0, products: 0, customers: 0 };
+    if (store.status === StoreStatus.ACTIVE && store.accessToken) {
+      try {
+        stats = await this.storesService.getStoreStats(store);
+      } catch (err) {
+        this.logger.warn(`Failed to get stats for store ${id}: ${err}`);
+      }
+    }
+    
+    return transformStoreResponse(store, stats);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -174,9 +191,17 @@ export class StoresController {
     
     const store = await this.storesService.syncStore(req.user.tenantId, id);
     
-    this.logger.log(`Store synced successfully: ${id}`);
+    // ✅ جلب الإحصائيات بعد المزامنة
+    let stats = { orders: 0, products: 0, customers: 0 };
+    try {
+      stats = await this.storesService.getStoreStats(store);
+    } catch (err) {
+      this.logger.warn(`Failed to get stats after sync for store ${id}: ${err}`);
+    }
     
-    return transformStoreResponse(store);
+    this.logger.log(`Store synced successfully: ${id}`, { stats });
+    
+    return transformStoreResponse(store, stats);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -212,5 +237,23 @@ export class StoresController {
     await this.storesService.disconnectStore(req.user.tenantId, id);
     
     this.logger.log(`Store disconnected successfully: ${id}`);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ✅ DELETE /stores/:id/permanent - حذف المتجر نهائياً
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Delete(':id/permanent')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'حذف المتجر نهائياً من قاعدة البيانات' })
+  @ApiResponse({ status: 204, description: 'تم الحذف نهائياً' })
+  @ApiResponse({ status: 404, description: 'المتجر غير موجود' })
+  async deleteStorePermanently(
+    @Request() req: RequestWithUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    this.logger.log(`Permanently deleting store: ${id} for tenant: ${req.user.tenantId}`);
+    await this.storesService.deleteStorePermanently(req.user.tenantId, id);
+    this.logger.log(`Store permanently deleted: ${id}`);
   }
 }
