@@ -3,6 +3,7 @@
  * ║                    RAFIQ PLATFORM - WhatsApp Baileys Service                   ║
  * ║                                                                                ║
  * ║  ✅ WhatsApp QR Connection via Baileys                                         ║
+ * ║  ✅ إصلاحات: مسار الجلسات، معالجة الأخطاء، التوافق مع DigitalOcean             ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -19,6 +20,7 @@ import makeWASocket, {
   ConnectionState,
   MessageUpsertType,
   WAMessage,
+  fetchLatestBaileysVersion,
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import * as QRCode from 'qrcode';
@@ -34,6 +36,7 @@ export interface WhatsAppSession {
   qrCode?: string;
   qrExpiresAt?: Date;
   phoneNumber?: string;
+  retryCount: number;
 }
 
 export interface QRSessionResult {
@@ -58,14 +61,37 @@ export class WhatsAppBaileysService implements OnModuleDestroy {
     private readonly configService: ConfigService,
     private readonly eventEmitter: EventEmitter2,
   ) {
+    // ✅ إصلاح #1: استخدام /tmp كمسار افتراضي (قابل للكتابة في DigitalOcean)
+    const defaultPath = path.join('/tmp', 'whatsapp-sessions');
     this.sessionsPath = this.configService.get<string>(
       'WHATSAPP_SESSIONS_PATH',
-      path.join(process.cwd(), 'whatsapp-sessions'),
+      defaultPath,
     );
 
-    // إنشاء مجلد الجلسات
-    if (!fs.existsSync(this.sessionsPath)) {
-      fs.mkdirSync(this.sessionsPath, { recursive: true });
+    this.logger.log(`WhatsApp sessions path: ${this.sessionsPath}`);
+
+    // إنشاء مجلد الجلسات مع معالجة أخطاء
+    try {
+      if (!fs.existsSync(this.sessionsPath)) {
+        fs.mkdirSync(this.sessionsPath, { recursive: true });
+        this.logger.log(`Created sessions directory: ${this.sessionsPath}`);
+      }
+      // ✅ اختبار إمكانية الكتابة
+      const testFile = path.join(this.sessionsPath, '.write-test');
+      fs.writeFileSync(testFile, 'test');
+      fs.unlinkSync(testFile);
+      this.logger.log('Sessions directory is writable ✅');
+    } catch (error) {
+      this.logger.error(`❌ Sessions directory NOT writable: ${this.sessionsPath}`, error);
+      // محاولة استخدام /tmp كبديل
+      const fallbackPath = path.join('/tmp', 'wa-sessions-fallback');
+      try {
+        fs.mkdirSync(fallbackPath, { recursive: true });
+        (this as any).sessionsPath = fallbackPath;
+        this.logger.warn(`Using fallback sessions path: ${fallbackPath}`);
+      } catch (e) {
+        this.logger.error('❌ Even fallback path failed!', e);
+      }
     }
   }
 
@@ -89,77 +115,150 @@ export class WhatsAppBaileysService implements OnModuleDestroy {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   async initSession(channelId: string): Promise<QRSessionResult> {
-    this.logger.log(`Initializing WhatsApp session for channel: ${channelId}`);
+    this.logger.log(`🔄 Initializing WhatsApp session for channel: ${channelId}`);
 
     // إغلاق جلسة قديمة إن وجدت
     if (this.sessions.has(channelId)) {
+      this.logger.log(`Closing existing session for: ${channelId}`);
       await this.closeSession(channelId);
     }
 
     const sessionPath = path.join(this.sessionsPath, `wa_${channelId}`);
-    const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
+    this.logger.log(`Session path: ${sessionPath}`);
 
-    const sock = makeWASocket({
-      auth: state,
-      printQRInTerminal: false,
-      browser: ['Rafiq Platform', 'Chrome', '120.0.0'],
-      connectTimeoutMs: 60000,
-      defaultQueryTimeoutMs: 60000,
-      keepAliveIntervalMs: 30000,
-      markOnlineOnConnect: true,
-    });
+    try {
+      // ✅ إصلاح #2: جلب أحدث إصدار من Baileys
+      const { version, isLatest } = await fetchLatestBaileysVersion();
+      this.logger.log(`Using Baileys version: ${version}, isLatest: ${isLatest}`);
 
-    const session: WhatsAppSession = {
-      socket: sock,
-      channelId,
-      status: 'connecting',
-    };
+      const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
+      this.logger.log('Auth state loaded successfully');
 
-    this.sessions.set(channelId, session);
+      const sock = makeWASocket({
+        auth: state,
+        printQRInTerminal: true, // ✅ طباعة QR في Terminal للتشخيص
+        version, // ✅ استخدام أحدث إصدار
+        browser: ['Rafiq Platform', 'Chrome', '120.0.0'],
+        connectTimeoutMs: 60000,
+        defaultQueryTimeoutMs: 60000,
+        keepAliveIntervalMs: 30000,
+        markOnlineOnConnect: true,
+        // ✅ إصلاح #3: إضافة logger مخصص لتقليل الضوضاء
+        logger: {
+          level: 'warn',
+          child: () => ({
+            level: 'warn',
+            trace: () => {},
+            debug: () => {},
+            info: (...args: any[]) => this.logger.debug(`[Baileys] ${args.join(' ')}`),
+            warn: (...args: any[]) => this.logger.warn(`[Baileys] ${args.join(' ')}`),
+            error: (...args: any[]) => this.logger.error(`[Baileys] ${args.join(' ')}`),
+            fatal: (...args: any[]) => this.logger.error(`[Baileys FATAL] ${args.join(' ')}`),
+          }),
+          trace: () => {},
+          debug: () => {},
+          info: (...args: any[]) => this.logger.debug(`[Baileys] ${args.join(' ')}`),
+          warn: (...args: any[]) => this.logger.warn(`[Baileys] ${args.join(' ')}`),
+          error: (...args: any[]) => this.logger.error(`[Baileys] ${args.join(' ')}`),
+          fatal: (...args: any[]) => this.logger.error(`[Baileys FATAL] ${args.join(' ')}`),
+        } as any,
+      });
 
-    // حفظ credentials عند التحديث
-    sock.ev.on('creds.update', saveCreds);
+      this.logger.log('WASocket created successfully');
 
-    // ✅ معالجة تحديثات الاتصال - استخدام Partial<ConnectionState> من Baileys
-    sock.ev.on('connection.update', async (update: Partial<ConnectionState>) => {
-      await this.handleConnectionUpdate(channelId, update);
-    });
+      const session: WhatsAppSession = {
+        socket: sock,
+        channelId,
+        status: 'connecting',
+        retryCount: 0,
+      };
 
-    // معالجة الرسائل الواردة
-    sock.ev.on('messages.upsert', async (messageUpdate: MessageUpsert) => {
-      await this.handleIncomingMessages(channelId, messageUpdate);
-    });
+      this.sessions.set(channelId, session);
 
-    // انتظار QR أو الاتصال
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error('Session initialization timeout'));
-      }, 60000);
+      // حفظ credentials عند التحديث
+      sock.ev.on('creds.update', saveCreds);
 
-      const checkStatus = setInterval(() => {
-        const currentSession = this.sessions.get(channelId);
+      // ✅ معالجة تحديثات الاتصال
+      sock.ev.on('connection.update', async (update: Partial<ConnectionState>) => {
+        this.logger.debug(`Connection update for ${channelId}: ${JSON.stringify({
+          connection: update.connection,
+          hasQR: !!update.qr,
+          lastDisconnect: update.lastDisconnect ? 'yes' : 'no',
+        })}`);
+        await this.handleConnectionUpdate(channelId, update);
+      });
+
+      // معالجة الرسائل الواردة
+      sock.ev.on('messages.upsert', async (messageUpdate: MessageUpsert) => {
+        await this.handleIncomingMessages(channelId, messageUpdate);
+      });
+
+      // ✅ إصلاح #4: انتظار QR أو الاتصال مع timeout أطول ومعالجة أفضل
+      return new Promise((resolve, reject) => {
+        const TIMEOUT = 90000; // 90 ثانية بدل 60
         
-        if (currentSession?.status === 'qr_ready' && currentSession.qrCode) {
+        const timeout = setTimeout(() => {
           clearInterval(checkStatus);
-          clearTimeout(timeout);
-          resolve({
-            sessionId: channelId,
-            qrCode: currentSession.qrCode,
-            expiresAt: currentSession.qrExpiresAt || new Date(Date.now() + 60000),
-            status: 'pending',
-          });
-        } else if (currentSession?.status === 'connected') {
-          clearInterval(checkStatus);
-          clearTimeout(timeout);
-          resolve({
-            sessionId: channelId,
-            qrCode: '',
-            expiresAt: new Date(),
-            status: 'connected',
-          });
-        }
-      }, 500);
-    });
+          this.logger.error(`❌ Session initialization timeout for ${channelId} after ${TIMEOUT}ms`);
+          
+          // لا نحذف الجلسة فوراً - ممكن QR يظهر بعد شوي
+          const currentSession = this.sessions.get(channelId);
+          if (currentSession?.status === 'connecting') {
+            currentSession.status = 'disconnected';
+          }
+          
+          reject(new Error(`Session initialization timeout after ${TIMEOUT / 1000}s. Please check server logs and try again.`));
+        }, TIMEOUT);
+
+        const checkStatus = setInterval(() => {
+          const currentSession = this.sessions.get(channelId);
+          
+          if (!currentSession) {
+            clearInterval(checkStatus);
+            clearTimeout(timeout);
+            reject(new Error('Session was destroyed'));
+            return;
+          }
+          
+          if (currentSession.status === 'qr_ready' && currentSession.qrCode) {
+            clearInterval(checkStatus);
+            clearTimeout(timeout);
+            this.logger.log(`✅ QR Code ready for channel: ${channelId}`);
+            resolve({
+              sessionId: channelId,
+              qrCode: currentSession.qrCode,
+              expiresAt: currentSession.qrExpiresAt || new Date(Date.now() + 60000),
+              status: 'pending',
+            });
+          } else if (currentSession.status === 'connected') {
+            clearInterval(checkStatus);
+            clearTimeout(timeout);
+            this.logger.log(`✅ Already connected for channel: ${channelId}`);
+            resolve({
+              sessionId: channelId,
+              qrCode: '',
+              expiresAt: new Date(),
+              status: 'connected',
+            });
+          } else if (currentSession.status === 'disconnected') {
+            clearInterval(checkStatus);
+            clearTimeout(timeout);
+            reject(new Error('Session disconnected during initialization'));
+          }
+        }, 500);
+      });
+
+    } catch (error) {
+      this.logger.error(`❌ Fatal error initializing session for ${channelId}:`, {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+      
+      // تنظيف
+      this.sessions.delete(channelId);
+      
+      throw error;
+    }
   }
 
   async getSessionStatus(channelId: string): Promise<QRSessionResult | null> {
@@ -197,9 +296,13 @@ export class WhatsAppBaileysService implements OnModuleDestroy {
 
     const sessionPath = path.join(this.sessionsPath, `wa_${channelId}`);
     
-    if (fs.existsSync(sessionPath)) {
-      fs.rmSync(sessionPath, { recursive: true, force: true });
-      this.logger.log(`Session files deleted: ${channelId}`);
+    try {
+      if (fs.existsSync(sessionPath)) {
+        fs.rmSync(sessionPath, { recursive: true, force: true });
+        this.logger.log(`Session files deleted: ${channelId}`);
+      }
+    } catch (error) {
+      this.logger.error(`Error deleting session files for ${channelId}`, error);
     }
   }
 
@@ -279,7 +382,6 @@ export class WhatsAppBaileysService implements OnModuleDestroy {
 
   /**
    * ✅ معالجة تحديثات الاتصال من Baileys
-   * يستخدم Partial<ConnectionState> مباشرة من Baileys
    */
   private async handleConnectionUpdate(
     channelId: string,
@@ -293,16 +395,22 @@ export class WhatsAppBaileysService implements OnModuleDestroy {
     // QR Code جديد
     if (qr) {
       try {
+        this.logger.log(`📱 QR Code received for channel: ${channelId}`);
+        
         const qrDataUrl = await QRCode.toDataURL(qr, {
           width: 300,
           margin: 2,
+          color: {
+            dark: '#000000',
+            light: '#FFFFFF',
+          },
         });
         
         session.qrCode = qrDataUrl;
         session.qrExpiresAt = new Date(Date.now() + 60000);
         session.status = 'qr_ready';
         
-        this.logger.log(`QR Code generated for channel: ${channelId}`);
+        this.logger.log(`✅ QR Code generated successfully for channel: ${channelId} (length: ${qrDataUrl.length})`);
         
         this.eventEmitter.emit('whatsapp.qr.generated', {
           channelId,
@@ -310,7 +418,7 @@ export class WhatsAppBaileysService implements OnModuleDestroy {
           expiresAt: session.qrExpiresAt,
         });
       } catch (error) {
-        this.logger.error(`Error generating QR for ${channelId}`, error);
+        this.logger.error(`❌ Error generating QR for ${channelId}:`, error);
       }
     }
 
@@ -318,6 +426,7 @@ export class WhatsAppBaileysService implements OnModuleDestroy {
     if (connection === 'open') {
       session.status = 'connected';
       session.qrCode = undefined;
+      session.retryCount = 0;
       
       // جلب رقم الهاتف
       const user = session.socket.user;
@@ -325,7 +434,7 @@ export class WhatsAppBaileysService implements OnModuleDestroy {
         session.phoneNumber = user.id.split(':')[0].split('@')[0];
       }
       
-      this.logger.log(`WhatsApp connected: ${channelId}, phone: ${session.phoneNumber}`);
+      this.logger.log(`✅ WhatsApp connected: ${channelId}, phone: ${session.phoneNumber}`);
       
       this.eventEmitter.emit('whatsapp.connected', {
         channelId,
@@ -335,7 +444,6 @@ export class WhatsAppBaileysService implements OnModuleDestroy {
 
     // الاتصال مغلق
     if (connection === 'close') {
-      // ✅ استخراج الخطأ بشكل آمن - lastDisconnect.error قد يكون Error أو Boom
       const disconnectError = lastDisconnect?.error;
       let statusCode: number | undefined;
       
@@ -346,23 +454,28 @@ export class WhatsAppBaileysService implements OnModuleDestroy {
       
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
       
-      this.logger.warn(`Connection closed for ${channelId}, code: ${statusCode}`);
+      this.logger.warn(`⚠️ Connection closed for ${channelId}, code: ${statusCode}, error: ${disconnectError?.message || 'unknown'}`);
       
       if (statusCode === DisconnectReason.loggedOut) {
-        // المستخدم سجل خروج
         session.status = 'disconnected';
         await this.deleteSession(channelId);
-        
         this.eventEmitter.emit('whatsapp.logged_out', { channelId });
-      } else if (shouldReconnect) {
-        // محاولة إعادة الاتصال
-        this.logger.log(`Attempting to reconnect: ${channelId}`);
+      } else if (shouldReconnect && session.retryCount < 3) {
+        // ✅ إصلاح #5: حد أقصى لمحاولات إعادة الاتصال
+        session.retryCount++;
+        const delay = Math.min(5000 * session.retryCount, 15000);
+        
+        this.logger.log(`🔄 Attempting reconnect ${session.retryCount}/3 for ${channelId} in ${delay}ms`);
         
         setTimeout(() => {
           this.initSession(channelId).catch((err) => {
-            this.logger.error(`Reconnection failed for ${channelId}`, err);
+            this.logger.error(`❌ Reconnection failed for ${channelId}:`, err.message);
+            session.status = 'disconnected';
           });
-        }, 5000);
+        }, delay);
+      } else {
+        session.status = 'disconnected';
+        this.logger.error(`❌ Max retries reached for ${channelId}, giving up`);
       }
     }
   }
@@ -387,7 +500,7 @@ export class WhatsAppBaileysService implements OnModuleDestroy {
         ? new Date(Number(msg.messageTimestamp) * 1000) 
         : new Date();
 
-      this.logger.log(`Incoming message from ${from} on channel ${channelId}`);
+      this.logger.log(`📩 Incoming message from ${from} on channel ${channelId}`);
 
       this.eventEmitter.emit('whatsapp.message.received', {
         channelId,
@@ -405,9 +518,7 @@ export class WhatsAppBaileysService implements OnModuleDestroy {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   private formatJid(phoneNumber: string): string {
-    // إزالة + و 00 من البداية
     let cleaned = phoneNumber.replace(/^\+|^00/, '');
-    // إزالة أي حروف غير رقمية
     cleaned = cleaned.replace(/\D/g, '');
     return `${cleaned}@s.whatsapp.net`;
   }
@@ -442,5 +553,23 @@ export class WhatsAppBaileysService implements OnModuleDestroy {
     }
     
     return connected;
+  }
+
+  /**
+   * ✅ تشخيص حالة الخدمة
+   */
+  getDiagnostics(): Record<string, any> {
+    return {
+      sessionsPath: this.sessionsPath,
+      sessionsPathExists: fs.existsSync(this.sessionsPath),
+      activeSessions: this.sessions.size,
+      sessions: Array.from(this.sessions.entries()).map(([id, s]) => ({
+        id,
+        status: s.status,
+        hasQR: !!s.qrCode,
+        phoneNumber: s.phoneNumber,
+        retryCount: s.retryCount,
+      })),
+    };
   }
 }
