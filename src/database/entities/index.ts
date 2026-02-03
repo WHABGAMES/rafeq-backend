@@ -20,7 +20,7 @@ export { User, UserStatus, UserRole } from './user.entity';
 // ✅ Store - يُستورد مباشرة من الموقع الجديد
 export { Store, StoreStatus, StorePlatform } from '../../modules/stores/entities/store.entity';
 
-export { Channel, ChannelType, ChannelStatus } from './channel.entity';
+export { Channel, ChannelType, ChannelStatus } from '../../modules/channels/entities/channel.entity';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // MESSAGING ENTITIES
@@ -64,7 +64,7 @@ import { Tenant } from './tenant.entity';
 import { User } from './user.entity';
 // ✅ Store - يُستورد مباشرة من الموقع الجديد
 import { Store } from '../../modules/stores/entities/store.entity';
-import { Channel } from './channel.entity';
+import { Channel } from '../../modules/channels/entities/channel.entity';
 import { Conversation } from './conversation.entity';
 import { Message } from './message.entity';
 import { Customer } from './customer.entity';
