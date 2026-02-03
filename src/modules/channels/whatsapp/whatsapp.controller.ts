@@ -1,6 +1,13 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║              RAFIQ PLATFORM - WhatsApp Controller                              ║
+ * ║                                                                                ║
+ * ║  ✅ إصلاحات:                                                                   ║
+ * ║  - إزالة جميع القيم الوهمية (PHONE_NUMBER_ID, ACCESS_TOKEN, CHANNEL_ID)       ║
+ * ║  - حقن Channel Repository للبحث في قاعدة البيانات                              ║
+ * ║  - نقل التحقق من التوقيع قبل إرسال 200 OK                                     ║
+ * ║  - استخدام ConfigService لمتغيرات البيئة                                       ║
+ * ║  - توحيد مسار الإرسال مع ChannelsService                                      ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -17,11 +24,18 @@ import {
   HttpStatus,
   Logger,
   RawBodyRequest,
+  BadRequestException,
+  NotFoundException,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
+import { ConfigService } from '@nestjs/config';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import * as crypto from 'crypto';
 
 import { WhatsAppService, WhatsAppWebhookPayload } from './whatsapp.service';
+import { Channel, ChannelType, ChannelStatus } from '../entities/channel.entity';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 📌 DTOs
@@ -75,7 +89,57 @@ export class WhatsAppController {
 
   constructor(
     private readonly whatsAppService: WhatsAppService,
+    private readonly configService: ConfigService,
+    @InjectRepository(Channel)
+    private readonly channelRepository: Repository<Channel>,
   ) {}
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔍 HELPER: البحث عن القناة والتحقق منها
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * البحث عن قناة WhatsApp Official بالـ channelId واسترجاع credentials
+   */
+  private async getChannelCredentials(channelId: string): Promise<{
+    phoneNumberId: string;
+    accessToken: string;
+    channel: Channel;
+  }> {
+    const channel = await this.channelRepository.findOne({
+      where: { id: channelId, type: ChannelType.WHATSAPP_OFFICIAL },
+    });
+
+    if (!channel) {
+      throw new NotFoundException(`Channel not found: ${channelId}`);
+    }
+
+    if (channel.status !== ChannelStatus.CONNECTED) {
+      throw new BadRequestException(`Channel is not connected: ${channel.status}`);
+    }
+
+    if (!channel.whatsappPhoneNumberId || !channel.whatsappAccessToken) {
+      throw new BadRequestException('Channel missing WhatsApp credentials. Please reconnect.');
+    }
+
+    return {
+      phoneNumberId: channel.whatsappPhoneNumberId,
+      accessToken: channel.whatsappAccessToken,
+      channel,
+    };
+  }
+
+  /**
+   * البحث عن قناة بواسطة phoneNumberId (للـ Webhooks)
+   */
+  private async findChannelByPhoneNumberId(phoneNumberId: string): Promise<Channel | null> {
+    return this.channelRepository.findOne({
+      where: {
+        whatsappPhoneNumberId: phoneNumberId,
+        type: ChannelType.WHATSAPP_OFFICIAL,
+      },
+    });
+  }
 
   // ═══════════════════════════════════════════════════════════════════════════════
   // 📤 SENDING MESSAGES
@@ -91,8 +155,7 @@ export class WhatsAppController {
       channelId: dto.channelId,
     });
 
-    const phoneNumberId = 'PHONE_NUMBER_ID';
-    const accessToken = 'ACCESS_TOKEN';
+    const { phoneNumberId, accessToken } = await this.getChannelCredentials(dto.channelId);
 
     const result = await this.whatsAppService.sendTextMessage(
       phoneNumberId,
@@ -100,6 +163,10 @@ export class WhatsAppController {
       dto.text,
       accessToken,
     );
+
+    // تحديث إحصائيات القناة
+    await this.channelRepository.increment({ id: dto.channelId }, 'messagesSent', 1);
+    await this.channelRepository.update(dto.channelId, { lastActivityAt: new Date() });
 
     return {
       success: true,
@@ -112,8 +179,7 @@ export class WhatsAppController {
   async sendImageMessage(
     @Body() dto: SendImageMessageDto,
   ) {
-    const phoneNumberId = 'PHONE_NUMBER_ID';
-    const accessToken = 'ACCESS_TOKEN';
+    const { phoneNumberId, accessToken } = await this.getChannelCredentials(dto.channelId);
 
     const result = await this.whatsAppService.sendImageMessage(
       phoneNumberId,
@@ -122,6 +188,9 @@ export class WhatsAppController {
       dto.caption,
       accessToken,
     );
+
+    await this.channelRepository.increment({ id: dto.channelId }, 'messagesSent', 1);
+    await this.channelRepository.update(dto.channelId, { lastActivityAt: new Date() });
 
     return {
       success: true,
@@ -134,8 +203,7 @@ export class WhatsAppController {
   async sendTemplateMessage(
     @Body() dto: SendTemplateMessageDto,
   ) {
-    const phoneNumberId = 'PHONE_NUMBER_ID';
-    const accessToken = 'ACCESS_TOKEN';
+    const { phoneNumberId, accessToken } = await this.getChannelCredentials(dto.channelId);
 
     const result = await this.whatsAppService.sendTemplateMessage(
       phoneNumberId,
@@ -145,6 +213,9 @@ export class WhatsAppController {
       dto.components,
       accessToken,
     );
+
+    await this.channelRepository.increment({ id: dto.channelId }, 'messagesSent', 1);
+    await this.channelRepository.update(dto.channelId, { lastActivityAt: new Date() });
 
     return {
       success: true,
@@ -157,8 +228,7 @@ export class WhatsAppController {
   async sendButtonMessage(
     @Body() dto: SendButtonMessageDto,
   ) {
-    const phoneNumberId = 'PHONE_NUMBER_ID';
-    const accessToken = 'ACCESS_TOKEN';
+    const { phoneNumberId, accessToken } = await this.getChannelCredentials(dto.channelId);
 
     const result = await this.whatsAppService.sendButtonMessage(
       phoneNumberId,
@@ -169,6 +239,9 @@ export class WhatsAppController {
       dto.headerText,
       dto.footerText,
     );
+
+    await this.channelRepository.increment({ id: dto.channelId }, 'messagesSent', 1);
+    await this.channelRepository.update(dto.channelId, { lastActivityAt: new Date() });
 
     return {
       success: true,
@@ -213,18 +286,21 @@ export class WhatsAppController {
     @Req() req: RawBodyRequest<Request>,
     @Res() res: Response,
   ) {
-    res.status(HttpStatus.OK).send('EVENT_RECEIVED');
-
+    // ✅ إصلاح #3: التحقق من التوقيع أولاً قبل إرسال 200 OK
     const signature = req.headers['x-hub-signature-256'] as string;
     if (signature && req.rawBody) {
       const isValid = this.verifySignature(req.rawBody, signature);
       if (!isValid) {
-        this.logger.warn('Invalid webhook signature', {
+        this.logger.warn('Invalid webhook signature - rejecting', {
           signature: signature.substring(0, 20) + '...',
         });
+        res.status(HttpStatus.UNAUTHORIZED).send('Invalid signature');
         return;
       }
     }
+
+    // ✅ إرسال 200 OK بعد التحقق من التوقيع
+    res.status(HttpStatus.OK).send('EVENT_RECEIVED');
 
     if (payload.object !== 'whatsapp_business_account') {
       this.logger.warn('Received non-WhatsApp webhook', {
@@ -241,8 +317,27 @@ export class WhatsAppController {
         return;
       }
 
-      const channelId = 'CHANNEL_ID';
-      await this.whatsAppService.processWebhook(payload, channelId);
+      // ✅ إصلاح #1,2: البحث عن القناة في قاعدة البيانات بدلاً من القيمة الوهمية
+      const channel = await this.findChannelByPhoneNumberId(phoneNumberId);
+
+      if (!channel) {
+        this.logger.warn('No channel found for phone_number_id', { phoneNumberId });
+        return;
+      }
+
+      this.logger.log('Processing webhook for channel', {
+        channelId: channel.id,
+        phoneNumberId,
+      });
+
+      await this.whatsAppService.processWebhook(payload, channel.id);
+
+      // تحديث إحصائيات الرسائل المستلمة
+      const messagesCount = payload.entry?.[0]?.changes?.[0]?.value?.messages?.length || 0;
+      if (messagesCount > 0) {
+        await this.channelRepository.increment({ id: channel.id }, 'messagesReceived', messagesCount);
+        await this.channelRepository.update(channel.id, { lastActivityAt: new Date() });
+      }
 
     } catch (error: any) {
       this.logger.error('Error processing WhatsApp webhook', {
@@ -260,15 +355,27 @@ export class WhatsAppController {
     @Req() req: RawBodyRequest<Request>,
     @Res() res: Response,
   ) {
-    res.status(HttpStatus.OK).send('EVENT_RECEIVED');
-
+    // ✅ التحقق من التوقيع أولاً
     const signature = req.headers['x-hub-signature-256'] as string;
     if (signature && req.rawBody && !this.verifySignature(req.rawBody, signature)) {
       this.logger.warn('Invalid webhook signature for channel', { channelId });
+      res.status(HttpStatus.UNAUTHORIZED).send('Invalid signature');
       return;
     }
 
+    res.status(HttpStatus.OK).send('EVENT_RECEIVED');
+
     if (payload.object !== 'whatsapp_business_account') {
+      return;
+    }
+
+    // التحقق من وجود القناة
+    const channel = await this.channelRepository.findOne({
+      where: { id: channelId, type: ChannelType.WHATSAPP_OFFICIAL },
+    });
+
+    if (!channel) {
+      this.logger.warn('Channel-specific webhook: channel not found', { channelId });
       return;
     }
 
@@ -286,12 +393,19 @@ export class WhatsAppController {
   // 🛠️ HELPER METHODS
   // ═══════════════════════════════════════════════════════════════════════════════
 
+  /**
+   * ✅ إصلاح #7: استخدام ConfigService + META_APP_SECRET الموحد
+   */
   private verifySignature(rawBody: Buffer, signature: string): boolean {
-    const crypto = require('crypto');
-    const appSecret = process.env.WHATSAPP_APP_SECRET;
+    const appSecret = this.configService.get<string>('whatsapp.appSecret');
 
     if (!appSecret) {
-      this.logger.warn('WHATSAPP_APP_SECRET not configured');
+      const isProduction = this.configService.get<string>('app.env') === 'production';
+      if (isProduction) {
+        this.logger.error('🚨 META_APP_SECRET not configured in PRODUCTION - rejecting webhook');
+        return false;
+      }
+      this.logger.warn('META_APP_SECRET not configured (dev mode) - skipping signature verification');
       return true;
     }
 
@@ -306,9 +420,13 @@ export class WhatsAppController {
       .update(rawBody)
       .digest('hex');
 
-    return crypto.timingSafeEqual(
-      Buffer.from(hash),
-      Buffer.from(expectedHash),
-    );
+    try {
+      return crypto.timingSafeEqual(
+        Buffer.from(hash),
+        Buffer.from(expectedHash),
+      );
+    } catch {
+      return false;
+    }
   }
 }
