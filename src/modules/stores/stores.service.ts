@@ -532,4 +532,84 @@ export class StoresService {
       byPlatform,
     };
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ✅ جلب إحصائيات المتجر الحقيقية من API المنصة
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async getStoreStats(store: Store): Promise<{ orders: number; products: number; customers: number }> {
+    const stats = { orders: 0, products: 0, customers: 0 };
+
+    if (store.status !== StoreStatus.ACTIVE || !store.accessToken) {
+      return stats;
+    }
+
+    try {
+      const accessToken = await this.ensureValidToken(store);
+
+      if (store.platform === StorePlatform.SALLA) {
+        // Salla API - نجلب صفحة واحدة ونقرأ pagination.total
+        const [ordersRes, productsRes, customersRes] = await Promise.allSettled([
+          this.sallaApiService.getOrders(accessToken, { page: 1, perPage: 1 }),
+          this.sallaApiService.getProducts(accessToken, { page: 1, perPage: 1 }),
+          this.sallaApiService.getCustomers(accessToken, { page: 1, perPage: 1 }),
+        ]);
+
+        if (ordersRes.status === 'fulfilled' && ordersRes.value.pagination) {
+          stats.orders = ordersRes.value.pagination.total;
+        }
+        if (productsRes.status === 'fulfilled' && productsRes.value.pagination) {
+          stats.products = productsRes.value.pagination.total;
+        }
+        if (customersRes.status === 'fulfilled' && customersRes.value.pagination) {
+          stats.customers = customersRes.value.pagination.total;
+        }
+
+      } else if (store.platform === StorePlatform.ZID) {
+        // Zid API - نفس المبدأ
+        const [ordersRes, productsRes, customersRes] = await Promise.allSettled([
+          this.zidApiService.getOrders(accessToken, { page: 1, per_page: 1 }),
+          this.zidApiService.getProducts(accessToken, { page: 1, per_page: 1 }),
+          this.zidApiService.getCustomers(accessToken, { page: 1, per_page: 1 }),
+        ]);
+
+        if (ordersRes.status === 'fulfilled' && ordersRes.value.pagination) {
+          stats.orders = ordersRes.value.pagination.total;
+        }
+        if (productsRes.status === 'fulfilled' && productsRes.value.pagination) {
+          stats.products = productsRes.value.pagination.total;
+        }
+        if (customersRes.status === 'fulfilled' && customersRes.value.pagination) {
+          stats.customers = customersRes.value.pagination.total;
+        }
+      }
+
+      this.logger.debug(`Store stats for ${store.id}: orders=${stats.orders}, products=${stats.products}, customers=${stats.customers}`);
+
+    } catch (error: any) {
+      this.logger.warn(`Failed to fetch stats for store ${store.id}: ${error.message}`);
+    }
+
+    return stats;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ✅ حذف المتجر نهائياً من قاعدة البيانات
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async deleteStorePermanently(tenantId: string, storeId: string): Promise<void> {
+    const store = await this.findById(tenantId, storeId);
+
+    this.eventEmitter.emit('store.deleted', {
+      storeId: store.id,
+      tenantId,
+      platform: store.platform,
+      merchantId: store.sallaMerchantId,
+      zidStoreId: store.zidStoreId,
+    });
+
+    await this.storeRepository.remove(store);
+
+    this.logger.log(`Store permanently deleted: ${storeId}`);
+  }
 }
