@@ -548,39 +548,43 @@ export class StoresService {
       const accessToken = await this.ensureValidToken(store);
 
       if (store.platform === StorePlatform.SALLA) {
-        // Salla API - نجلب صفحة واحدة ونقرأ pagination.total
         const [ordersRes, productsRes, customersRes] = await Promise.allSettled([
-          this.sallaApiService.getOrders(accessToken, { page: 1, perPage: 1 }),
+          this.sallaApiService.getOrders(accessToken, { page: 1, perPage: 50 }),
           this.sallaApiService.getProducts(accessToken, { page: 1, perPage: 1 }),
           this.sallaApiService.getCustomers(accessToken, { page: 1, perPage: 1 }),
         ]);
 
-        if (ordersRes.status === 'fulfilled' && ordersRes.value.pagination) {
-          stats.orders = ordersRes.value.pagination.total;
+        if (ordersRes.status === 'fulfilled') {
+          stats.orders = ordersRes.value.pagination?.total
+            ?? (Array.isArray(ordersRes.value.data) ? ordersRes.value.data.length : 0);
         }
-        if (productsRes.status === 'fulfilled' && productsRes.value.pagination) {
-          stats.products = productsRes.value.pagination.total;
+        if (productsRes.status === 'fulfilled') {
+          stats.products = productsRes.value.pagination?.total
+            ?? (Array.isArray(productsRes.value.data) ? productsRes.value.data.length : 0);
         }
-        if (customersRes.status === 'fulfilled' && customersRes.value.pagination) {
-          stats.customers = customersRes.value.pagination.total;
+        if (customersRes.status === 'fulfilled') {
+          stats.customers = customersRes.value.pagination?.total
+            ?? (Array.isArray(customersRes.value.data) ? customersRes.value.data.length : 0);
         }
 
       } else if (store.platform === StorePlatform.ZID) {
-        // Zid API - نفس المبدأ
         const [ordersRes, productsRes, customersRes] = await Promise.allSettled([
-          this.zidApiService.getOrders(accessToken, { page: 1, per_page: 1 }),
+          this.zidApiService.getOrders(accessToken, { page: 1, per_page: 50 }),
           this.zidApiService.getProducts(accessToken, { page: 1, per_page: 1 }),
           this.zidApiService.getCustomers(accessToken, { page: 1, per_page: 1 }),
         ]);
 
-        if (ordersRes.status === 'fulfilled' && ordersRes.value.pagination) {
-          stats.orders = ordersRes.value.pagination.total;
+        if (ordersRes.status === 'fulfilled') {
+          stats.orders = ordersRes.value.pagination?.total
+            ?? (Array.isArray(ordersRes.value.data) ? ordersRes.value.data.length : 0);
         }
-        if (productsRes.status === 'fulfilled' && productsRes.value.pagination) {
-          stats.products = productsRes.value.pagination.total;
+        if (productsRes.status === 'fulfilled') {
+          stats.products = productsRes.value.pagination?.total
+            ?? (Array.isArray(productsRes.value.data) ? productsRes.value.data.length : 0);
         }
-        if (customersRes.status === 'fulfilled' && customersRes.value.pagination) {
-          stats.customers = customersRes.value.pagination.total;
+        if (customersRes.status === 'fulfilled') {
+          stats.customers = customersRes.value.pagination?.total
+            ?? (Array.isArray(customersRes.value.data) ? customersRes.value.data.length : 0);
         }
       }
 
