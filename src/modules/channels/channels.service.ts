@@ -139,7 +139,7 @@ export class ChannelsService {
     try {
       const response = await firstValueFrom(
         this.httpService.get(
-          `https://graph.facebook.com/v18.0/${dto.phoneNumberId}`,
+          `https://graph.facebook.com/v21.0/${dto.phoneNumberId}`,
           {
             headers: { Authorization: `Bearer ${dto.accessToken}` },
           },
@@ -250,7 +250,7 @@ export class ChannelsService {
     try {
       const response = await firstValueFrom(
         this.httpService.post(
-          `https://graph.facebook.com/v18.0/${channel.whatsappPhoneNumberId}/messages`,
+          `https://graph.facebook.com/v21.0/${channel.whatsappPhoneNumberId}/messages`,
           {
             messaging_product: 'whatsapp',
             to,
@@ -323,7 +323,7 @@ export class ChannelsService {
     try {
       const response = await firstValueFrom(
         this.httpService.get(
-          `https://graph.facebook.com/v18.0/${userId}`,
+          `https://graph.facebook.com/v21.0/${userId}`,
           {
             params: {
               fields: 'username,name,profile_picture_url',
