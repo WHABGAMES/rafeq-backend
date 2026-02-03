@@ -268,8 +268,8 @@ export class SallaWebhookProcessor extends WorkerHost {
       tenantId: context.tenantId,
       storeId: context.storeId,
       orderId: data.id,
-      paymentStatus: data.payment?.status || data.payment_status,
-      paymentMethod: data.payment?.method || data.payment_method,
+      paymentStatus: (data.payment as Record<string, unknown>)?.status || data.payment_status,
+      paymentMethod: (data.payment as Record<string, unknown>)?.method || data.payment_method,
       raw: data,
     });
 
