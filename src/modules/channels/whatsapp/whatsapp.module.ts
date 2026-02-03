@@ -1,18 +1,32 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║              RAFIQ PLATFORM - WhatsApp Module                                  ║
+ * ║                                                                                ║
+ * ║  ✅ إصلاحات:                                                                   ║
+ * ║  - إضافة TypeOrmModule مع Channel Entity                                      ║
+ * ║  - إضافة ConfigModule للوصول لمتغيرات البيئة                                   ║
+ * ║  - ربط كامل مع نظام القنوات                                                    ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
 import { Module } from '@nestjs/common';
 import { HttpModule } from '@nestjs/axios';
 import { BullModule } from '@nestjs/bullmq';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { ConfigModule } from '@nestjs/config';
 
 import { WhatsAppService } from './whatsapp.service';
 import { WhatsAppController } from './whatsapp.controller';
+import { Channel } from '../entities/channel.entity';
 
 @Module({
   imports: [
+    // ✅ إضافة Channel Entity للوصول لقاعدة البيانات
+    TypeOrmModule.forFeature([Channel]),
+
+    // ✅ إضافة ConfigModule للوصول لمتغيرات البيئة
+    ConfigModule,
+
     HttpModule.register({
       timeout: 30000,
       maxRedirects: 5,
