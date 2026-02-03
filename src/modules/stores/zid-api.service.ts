@@ -1,8 +1,8 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║                RAFIQ PLATFORM - Salla API Service                              ║
+ * ║                RAFIQ PLATFORM - Zid API Service                                ║
  * ║                                                                                ║
- * ║  خدمة للتواصل مع API سلة                                                        ║
+ * ║  خدمة للتواصل مع API زد                                                         ║
  * ║  جلب الطلبات، العملاء، المنتجات، إلخ                                            ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
@@ -12,421 +12,329 @@ import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 
 /**
- * 📌 Salla API Documentation:
- * https://docs.salla.dev/
+ * 📌 Zid API Documentation:
+ * https://docs.zid.sa/
  * 
- * Base URL: https://api.salla.dev/admin/v2
- * 
- * Authentication: Bearer Token
- * 
- * Rate Limits:
- * - 120 requests per minute (standard)
- * - بعض الـ endpoints لها limits مختلفة
+ * Base URL: https://api.zid.sa/v1
  */
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// 📊 Type Definitions
-// ═══════════════════════════════════════════════════════════════════════════════
-
-export interface SallaApiResponse<T> {
-  status: number;
-  success: boolean;
+export interface ZidApiResponse<T> {
+  status: string;
+  message?: string;
   data: T;
   pagination?: {
-    count: number;
     total: number;
-    perPage: number;
-    currentPage: number;
-    totalPages: number;
-    links: {
-      first: string;
-      last: string;
-      prev: string | null;
-      next: string | null;
-    };
+    per_page: number;
+    current_page: number;
+    last_page: number;
   };
 }
 
-export interface SallaOrder {
+export interface ZidOrder {
   id: number;
-  reference_id: string;
-  date: {
-    date: string;
-    timezone: string;
-    timestamp: number;
-  };
-  status: {
-    id: number;
-    name: string;
-    slug: string;
-    customized: {
-      id: number;
-      name: string;
-      slug: string;
-    };
-  };
-  payment: {
-    status: string;
-    method: {
-      id: number;
-      name: string;
-    };
-  };
-  amounts: {
-    sub_total: {
-      amount: number;
-      currency: string;
-    };
-    shipping_cost: {
-      amount: number;
-      currency: string;
-    };
-    tax: {
-      amount: number;
-      currency: string;
-    };
-    total: {
-      amount: number;
-      currency: string;
-    };
-  };
-  customer: SallaCustomer;
-  items: SallaOrderItem[];
-  shipping?: {
-    company?: {
-      id: number;
-      name: string;
-    };
-    receiver?: {
-      name: string;
-      phone: string;
-    };
-    address?: {
-      city: string;
-      country: string;
-      street_number: string;
-      block: string;
-      postal_code: string;
-    };
-  };
-}
-
-export interface SallaCustomer {
-  id: number;
-  first_name: string;
-  last_name: string;
-  email: string;
-  mobile: string;
-  mobile_code: string;
-  avatar: string;
-  city: string;
-  country: string;
-  country_code: string;
+  order_number: string;
+  status: string;
+  payment_status: string;
+  payment_method: string;
   currency: string;
-  location: string;
-  gender: string;
-  birthday: string;
+  sub_total: number;
+  shipping_cost: number;
+  tax: number;
+  total: number;
+  customer: ZidCustomer;
+  items: ZidOrderItem[];
+  shipping_address?: ZidAddress;
+  created_at: string;
   updated_at: string;
 }
 
-export interface SallaOrderItem {
+export interface ZidOrderItem {
   id: number;
-  name: string;
+  product_id: number;
+  product_name: string;
   sku: string;
   quantity: number;
-  price: {
-    amount: number;
-    currency: string;
-  };
-  thumbnail: string;
-  product_id: number;
+  price: number;
+  total: number;
+  image?: string;
 }
 
-export interface SallaProduct {
+export interface ZidCustomer {
+  id: number;
+  name: string;
+  email: string;
+  mobile: string;
+  city?: string;
+  country?: string;
+  orders_count?: number;
+  total_spent?: number;
+  created_at: string;
+}
+
+export interface ZidProduct {
   id: number;
   name: string;
   sku: string;
-  description: string;
-  price: {
-    amount: number;
-    currency: string;
-  };
-  sale_price?: {
-    amount: number;
-    currency: string;
-  };
+  price: number;
+  sale_price?: number;
   quantity: number;
   status: string;
-  images: Array<{
-    id: number;
-    url: string;
-    main: boolean;
-  }>;
+  images: string[];
+  categories: { id: number; name: string }[];
+  created_at: string;
+}
+
+export interface ZidAddress {
+  city: string;
+  street: string;
+  district?: string;
+  postal_code?: string;
+  country: string;
 }
 
 @Injectable()
-export class SallaApiService {
-  private readonly logger = new Logger(SallaApiService.name);
-  private readonly BASE_URL = 'https://api.salla.dev/admin/v2';
+export class ZidApiService {
+  private readonly logger = new Logger(ZidApiService.name);
+  private readonly ZID_API_URL = 'https://api.zid.sa/v1';
 
   constructor(private readonly httpService: HttpService) {}
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 🛒 Orders API
+  // 📦 Orders
   // ═══════════════════════════════════════════════════════════════════════════════
 
   /**
-   * جلب قائمة الطلبات
+   * جلب الطلبات
    */
   async getOrders(
     accessToken: string,
-    options?: {
-      page?: number;
-      perPage?: number;
-      status?: string;
-    },
-  ): Promise<SallaApiResponse<SallaOrder[]>> {
-    const params = new URLSearchParams();
-    
-    if (options?.page) params.append('page', options.page.toString());
-    if (options?.perPage) params.append('per_page', options.perPage.toString());
-    if (options?.status) params.append('status', options.status);
+    params: { page?: number; per_page?: number; status?: string } = {},
+  ): Promise<ZidApiResponse<ZidOrder[]>> {
+    try {
+      const queryParams = new URLSearchParams();
+      if (params.page) queryParams.append('page', params.page.toString());
+      if (params.per_page) queryParams.append('per_page', params.per_page.toString());
+      if (params.status) queryParams.append('status', params.status);
 
-    return this.makeRequest<SallaOrder[]>(
-      accessToken,
-      'GET',
-      `/orders?${params.toString()}`,
-    );
+      const response = await firstValueFrom(
+        this.httpService.get(
+          `${this.ZID_API_URL}/managers/store/orders?${queryParams.toString()}`,
+          {
+            headers: this.getHeaders(accessToken),
+          },
+        ),
+      );
+
+      this.logger.debug(`Fetched ${response.data.data?.length || 0} orders from Zid`);
+      return response.data;
+    } catch (error: any) {
+      this.logger.error('Failed to fetch Zid orders', {
+        error: error?.response?.data || error.message,
+      });
+      throw error;
+    }
   }
 
   /**
-   * جلب طلب معين
+   * جلب طلب واحد
    */
-  async getOrder(accessToken: string, orderId: number): Promise<SallaApiResponse<SallaOrder>> {
-    return this.makeRequest<SallaOrder>(
-      accessToken,
-      'GET',
-      `/orders/${orderId}`,
-    );
-  }
+  async getOrder(accessToken: string, orderId: number): Promise<ZidOrder> {
+    try {
+      const response = await firstValueFrom(
+        this.httpService.get(
+          `${this.ZID_API_URL}/managers/store/orders/${orderId}`,
+          {
+            headers: this.getHeaders(accessToken),
+          },
+        ),
+      );
 
-  /**
-   * تحديث حالة الطلب
-   */
-  async updateOrderStatus(
-    accessToken: string,
-    orderId: number,
-    statusId: number,
-  ): Promise<SallaApiResponse<SallaOrder>> {
-    return this.makeRequest<SallaOrder>(
-      accessToken,
-      'PUT',
-      `/orders/${orderId}/status`,
-      { status_id: statusId },
-    );
+      return response.data.data;
+    } catch (error: any) {
+      this.logger.error(`Failed to fetch Zid order ${orderId}`, {
+        error: error?.response?.data || error.message,
+      });
+      throw error;
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 👤 Customers API
+  // 👥 Customers
   // ═══════════════════════════════════════════════════════════════════════════════
 
   /**
-   * جلب قائمة العملاء
+   * جلب العملاء
    */
   async getCustomers(
     accessToken: string,
-    options?: {
-      page?: number;
-      perPage?: number;
-      keyword?: string;
-    },
-  ): Promise<SallaApiResponse<SallaCustomer[]>> {
-    const params = new URLSearchParams();
-    
-    if (options?.page) params.append('page', options.page.toString());
-    if (options?.perPage) params.append('per_page', options.perPage.toString());
-    if (options?.keyword) params.append('keyword', options.keyword);
+    params: { page?: number; per_page?: number; search?: string } = {},
+  ): Promise<ZidApiResponse<ZidCustomer[]>> {
+    try {
+      const queryParams = new URLSearchParams();
+      if (params.page) queryParams.append('page', params.page.toString());
+      if (params.per_page) queryParams.append('per_page', params.per_page.toString());
+      if (params.search) queryParams.append('search', params.search);
 
-    return this.makeRequest<SallaCustomer[]>(
-      accessToken,
-      'GET',
-      `/customers?${params.toString()}`,
-    );
+      const response = await firstValueFrom(
+        this.httpService.get(
+          `${this.ZID_API_URL}/managers/store/customers?${queryParams.toString()}`,
+          {
+            headers: this.getHeaders(accessToken),
+          },
+        ),
+      );
+
+      this.logger.debug(`Fetched ${response.data.data?.length || 0} customers from Zid`);
+      return response.data;
+    } catch (error: any) {
+      this.logger.error('Failed to fetch Zid customers', {
+        error: error?.response?.data || error.message,
+      });
+      throw error;
+    }
   }
 
   /**
-   * جلب عميل معين
+   * جلب عميل واحد
    */
-  async getCustomer(accessToken: string, customerId: number): Promise<SallaApiResponse<SallaCustomer>> {
-    return this.makeRequest<SallaCustomer>(
-      accessToken,
-      'GET',
-      `/customers/${customerId}`,
-    );
-  }
+  async getCustomer(accessToken: string, customerId: number): Promise<ZidCustomer> {
+    try {
+      const response = await firstValueFrom(
+        this.httpService.get(
+          `${this.ZID_API_URL}/managers/store/customers/${customerId}`,
+          {
+            headers: this.getHeaders(accessToken),
+          },
+        ),
+      );
 
-  /**
-   * جلب طلبات عميل
-   */
-  async getCustomerOrders(
-    accessToken: string,
-    customerId: number,
-    options?: { page?: number },
-  ): Promise<SallaApiResponse<SallaOrder[]>> {
-    const params = new URLSearchParams();
-    if (options?.page) params.append('page', options.page.toString());
-
-    return this.makeRequest<SallaOrder[]>(
-      accessToken,
-      'GET',
-      `/customers/${customerId}/orders?${params.toString()}`,
-    );
+      return response.data.data;
+    } catch (error: any) {
+      this.logger.error(`Failed to fetch Zid customer ${customerId}`, {
+        error: error?.response?.data || error.message,
+      });
+      throw error;
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 📦 Products API
+  // 🛍️ Products
   // ═══════════════════════════════════════════════════════════════════════════════
 
   /**
-   * جلب قائمة المنتجات
+   * جلب المنتجات
    */
   async getProducts(
     accessToken: string,
-    options?: {
-      page?: number;
-      perPage?: number;
-      keyword?: string;
-      status?: string;
-    },
-  ): Promise<SallaApiResponse<SallaProduct[]>> {
-    const params = new URLSearchParams();
-    
-    if (options?.page) params.append('page', options.page.toString());
-    if (options?.perPage) params.append('per_page', options.perPage.toString());
-    if (options?.keyword) params.append('keyword', options.keyword);
-    if (options?.status) params.append('status', options.status);
+    params: { page?: number; per_page?: number; status?: string } = {},
+  ): Promise<ZidApiResponse<ZidProduct[]>> {
+    try {
+      const queryParams = new URLSearchParams();
+      if (params.page) queryParams.append('page', params.page.toString());
+      if (params.per_page) queryParams.append('per_page', params.per_page.toString());
+      if (params.status) queryParams.append('status', params.status);
 
-    return this.makeRequest<SallaProduct[]>(
-      accessToken,
-      'GET',
-      `/products?${params.toString()}`,
-    );
+      const response = await firstValueFrom(
+        this.httpService.get(
+          `${this.ZID_API_URL}/managers/store/products?${queryParams.toString()}`,
+          {
+            headers: this.getHeaders(accessToken),
+          },
+        ),
+      );
+
+      this.logger.debug(`Fetched ${response.data.data?.length || 0} products from Zid`);
+      return response.data;
+    } catch (error: any) {
+      this.logger.error('Failed to fetch Zid products', {
+        error: error?.response?.data || error.message,
+      });
+      throw error;
+    }
   }
 
   /**
-   * جلب منتج معين
+   * جلب منتج واحد
    */
-  async getProduct(accessToken: string, productId: number): Promise<SallaApiResponse<SallaProduct>> {
-    return this.makeRequest<SallaProduct>(
-      accessToken,
-      'GET',
-      `/products/${productId}`,
-    );
+  async getProduct(accessToken: string, productId: number): Promise<ZidProduct> {
+    try {
+      const response = await firstValueFrom(
+        this.httpService.get(
+          `${this.ZID_API_URL}/managers/store/products/${productId}`,
+          {
+            headers: this.getHeaders(accessToken),
+          },
+        ),
+      );
+
+      return response.data.data;
+    } catch (error: any) {
+      this.logger.error(`Failed to fetch Zid product ${productId}`, {
+        error: error?.response?.data || error.message,
+      });
+      throw error;
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 🏪 Store API
+  // ✅ NEW: Store Info - للمزامنة
   // ═══════════════════════════════════════════════════════════════════════════════
 
   /**
-   * جلب معلومات المتجر
+   * جلب معلومات المتجر للمزامنة
    */
-  async getStoreInfo(accessToken: string): Promise<SallaApiResponse<{
-    id: number;
-    username: string;
+  async getStoreInfo(accessToken: string): Promise<{
+    id: string;
+    uuid: string;
     name: string;
     email: string;
     mobile: string;
-    domain: string;
-    avatar: string;
-    plan: string;
-  }>> {
-    return this.makeRequest(
-      accessToken,
-      'GET',
-      '/store/info',
-    );
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🚚 Shipment API
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  /**
-   * جلب شركات الشحن
-   */
-  async getShippingCompanies(accessToken: string): Promise<SallaApiResponse<Array<{
-    id: number;
-    name: string;
-    code: string;
-    logo: string;
-  }>>> {
-    return this.makeRequest(
-      accessToken,
-      'GET',
-      '/shipping/companies',
-    );
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🛠️ Private Methods
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  /**
-   * إجراء طلب للـ API
-   */
-  private async makeRequest<T>(
-    accessToken: string,
-    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
-    endpoint: string,
-    data?: Record<string, unknown>,
-  ): Promise<SallaApiResponse<T>> {
-    const url = `${this.BASE_URL}${endpoint}`;
-
-    this.logger.debug(`Salla API ${method} ${endpoint}`);
-
+    url: string;
+    logo?: string;
+    currency: string;
+    language: string;
+  }> {
     try {
       const response = await firstValueFrom(
-        this.httpService.request({
-          method,
-          url,
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            'Content-Type': 'application/json',
-            Accept: 'application/json',
+        this.httpService.get(
+          `${this.ZID_API_URL}/managers/store/info`,
+          {
+            headers: this.getHeaders(accessToken),
           },
-          data,
-        }),
+        ),
       );
 
-      return response.data;
+      const storeData = response.data.data || response.data;
 
-    } catch (error: any) {
-      this.logger.error(`Salla API Error: ${method} ${endpoint}`, {
-        status: error.response?.status,
-        message: error.response?.data?.message || error.message,
-      });
-
-      // إعادة رمي الخطأ مع معلومات إضافية
-      throw {
-        status: error.response?.status,
-        message: error.response?.data?.message || error.message,
-        endpoint,
-        originalError: error,
+      return {
+        id: storeData.id?.toString() || storeData.store_id?.toString(),
+        uuid: storeData.uuid || storeData.id?.toString(),
+        name: storeData.name || storeData.store_name,
+        email: storeData.email || '',
+        mobile: storeData.mobile || storeData.phone || '',
+        url: storeData.url || storeData.domain || '',
+        logo: storeData.logo || storeData.image,
+        currency: storeData.currency || 'SAR',
+        language: storeData.language || 'ar',
       };
+    } catch (error: any) {
+      this.logger.error('Failed to fetch Zid store info', {
+        error: error?.response?.data || error.message,
+      });
+      throw error;
     }
   }
-}
 
-/**
- * 📌 أمثلة على استخدام الـ Service:
- * 
- * // جلب آخر 10 طلبات
- * const orders = await sallaApiService.getOrders(accessToken, { perPage: 10 });
- * 
- * // جلب عميل معين
- * const customer = await sallaApiService.getCustomer(accessToken, 12345);
- * 
- * // البحث في المنتجات
- * const products = await sallaApiService.getProducts(accessToken, { keyword: 'عباية' });
- */
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🛠️ Helpers
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  private getHeaders(accessToken: string) {
+    return {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      'Accept-Language': 'ar',
+    };
+  }
+}
