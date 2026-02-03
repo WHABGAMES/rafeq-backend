@@ -89,7 +89,7 @@ export default () => ({
     phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID || '',
     accessToken: process.env.WHATSAPP_ACCESS_TOKEN || '',
     webhookVerifyToken: process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN || '',
-    apiVersion: process.env.WHATSAPP_API_VERSION || 'v18.0',
+    apiVersion: process.env.WHATSAPP_API_VERSION || 'v21.0',
   },
 
   // ═══════════════════════════════════════════════════════════════════════════════
