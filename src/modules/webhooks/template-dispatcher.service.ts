@@ -256,13 +256,32 @@ export class TemplateDispatcherService {
    * استخراج رقم هاتف العميل من بيانات الـ webhook
    */
   private extractCustomerPhone(data: Record<string, unknown>): string | null {
-    // 1. من كائن customer
+    // 1. من كائن customer (top-level)
     const customer = data.customer as Record<string, unknown> | undefined;
     if (customer) {
       const mobile = customer.mobile || customer.phone || customer.mobile_code;
       if (mobile) {
         this.logger.log(`📞 Phone found in webhook customer object: ${mobile}`);
         return this.normalizePhone(String(mobile));
+      }
+    }
+
+    // ✅ v4: من كائن order.customer (سلة ترسل order.status.updated بهالشكل)
+    const orderObj = data.order as Record<string, unknown> | undefined;
+    if (orderObj) {
+      const orderCustomer = orderObj.customer as Record<string, unknown> | undefined;
+      if (orderCustomer) {
+        const mobile = orderCustomer.mobile || orderCustomer.phone || orderCustomer.mobile_code;
+        if (mobile) {
+          this.logger.log(`📞 Phone found in order.customer: ${mobile}`);
+          return this.normalizePhone(String(mobile));
+        }
+      }
+      // ✅ v4: من order.shipping_address
+      const orderShipping = orderObj.shipping_address as Record<string, unknown> | undefined;
+      if (orderShipping?.phone) {
+        this.logger.log(`📞 Phone found in order.shipping_address: ${orderShipping.phone}`);
+        return this.normalizePhone(String(orderShipping.phone));
       }
     }
 
@@ -273,7 +292,7 @@ export class TemplateDispatcherService {
       return this.normalizePhone(String(directPhone));
     }
 
-    // 3. من عنوان الشحن
+    // 3. من عنوان الشحن (top-level)
     const shipping = data.shipping_address as Record<string, unknown> | undefined;
     if (shipping?.phone) {
       this.logger.log(`📞 Phone found in shipping_address: ${shipping.phone}`);
@@ -303,7 +322,9 @@ export class TemplateDispatcherService {
     if (!storeId) return null;
 
     try {
-      const orderId = data.id || data.orderId || data.order_id;
+      // ✅ v4: البحث في data.id أو داخل data.order.id (سلة ترسل بيانات مختلفة حسب الحدث)
+      const orderObj = data.order as Record<string, unknown> | undefined;
+      const orderId = data.id || data.orderId || data.order_id || orderObj?.id || orderObj?.order_id;
       if (!orderId) {
         this.logger.log(`🔍 No order ID in data to lookup phone`);
         return null;
@@ -352,6 +373,23 @@ export class TemplateDispatcherService {
         if (customer?.phone) {
           this.logger.log(`📞 Phone found from customer lookup: ${customer.phone}`);
           return this.normalizePhone(customer.phone);
+        }
+      }
+
+      // ✅ v4: محاولة أخيرة - البحث في metadata.sallaData عن رقم العميل
+      const sallaData = (order.metadata as any)?.sallaData as Record<string, unknown> | undefined;
+      if (sallaData) {
+        const sallaCustomer = sallaData.customer as Record<string, unknown> | undefined;
+        const sallaPhone = sallaCustomer?.mobile || sallaCustomer?.phone || sallaData.customer_phone;
+        if (sallaPhone) {
+          this.logger.log(`📞 Phone found from order sallaData: ${sallaPhone}`);
+          return this.normalizePhone(String(sallaPhone));
+        }
+        // من shipping_address في sallaData
+        const sallaShipping = sallaData.shipping_address as Record<string, unknown> | undefined;
+        if (sallaShipping?.phone) {
+          this.logger.log(`📞 Phone found from sallaData shipping: ${sallaShipping.phone}`);
+          return this.normalizePhone(String(sallaShipping.phone));
         }
       }
 
