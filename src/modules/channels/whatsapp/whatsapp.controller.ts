@@ -37,6 +37,7 @@ import * as crypto from 'crypto';
 
 import { WhatsAppService, WhatsAppWebhookPayload } from './whatsapp.service';
 import { Channel, ChannelType, ChannelStatus } from '../entities/channel.entity';
+import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 📌 DTOs
@@ -84,8 +85,6 @@ class SendButtonMessageDto {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 @ApiTags('WhatsApp')
-import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
-
 @Controller('channels/whatsapp')
 export class WhatsAppController {
   private readonly logger = new Logger(WhatsAppController.name);
