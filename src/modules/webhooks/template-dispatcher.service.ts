@@ -55,6 +55,52 @@ export class TemplateDispatcherService {
     await this.dispatch('order.status.updated', payload);
   }
 
+  // ✅ v7: Events خاصة بكل حالة طلب - كل حالة ترسل القالب الصحيح
+  @OnEvent('order.status.processing')
+  async onOrderProcessing(payload: Record<string, unknown>) {
+    await this.dispatch('order.status.processing', payload);
+  }
+
+  @OnEvent('order.status.completed')
+  async onOrderCompleted(payload: Record<string, unknown>) {
+    await this.dispatch('order.status.completed', payload);
+  }
+
+  @OnEvent('order.status.in_transit')
+  async onOrderInTransit(payload: Record<string, unknown>) {
+    await this.dispatch('order.status.in_transit', payload);
+  }
+
+  @OnEvent('order.status.under_review')
+  async onOrderUnderReview(payload: Record<string, unknown>) {
+    await this.dispatch('order.status.under_review', payload);
+  }
+
+  @OnEvent('order.status.restoring')
+  async onOrderRestoring(payload: Record<string, unknown>) {
+    await this.dispatch('order.status.restoring', payload);
+  }
+
+  @OnEvent('order.status.shipped')
+  async onOrderStatusShipped(payload: Record<string, unknown>) {
+    await this.dispatch('order.status.shipped', payload);
+  }
+
+  @OnEvent('order.status.ready_to_ship')
+  async onOrderReadyToShip(payload: Record<string, unknown>) {
+    await this.dispatch('order.status.ready_to_ship', payload);
+  }
+
+  @OnEvent('order.status.pending_payment')
+  async onOrderPendingPayment(payload: Record<string, unknown>) {
+    await this.dispatch('order.status.pending_payment', payload);
+  }
+
+  @OnEvent('order.status.on_hold')
+  async onOrderOnHold(payload: Record<string, unknown>) {
+    await this.dispatch('order.status.on_hold', payload);
+  }
+
   @OnEvent('order.payment.updated')
   async onOrderPaymentUpdated(payload: Record<string, unknown>) {
     await this.dispatch('order.payment.updated', payload);
