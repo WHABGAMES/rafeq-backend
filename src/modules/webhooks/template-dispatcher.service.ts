@@ -259,10 +259,10 @@ export class TemplateDispatcherService {
     // 1. من كائن customer (top-level)
     const customer = data.customer as Record<string, unknown> | undefined;
     if (customer) {
-      const mobile = customer.mobile || customer.phone || customer.mobile_code;
-      if (mobile) {
-        this.logger.log(`📞 Phone found in webhook customer object: ${mobile}`);
-        return this.normalizePhone(String(mobile));
+      const fullPhone = this.buildFullPhone(customer);
+      if (fullPhone) {
+        this.logger.log(`📞 Phone found in webhook customer object: ${fullPhone}`);
+        return this.normalizePhone(fullPhone);
       }
     }
 
@@ -271,10 +271,10 @@ export class TemplateDispatcherService {
     if (orderObj) {
       const orderCustomer = orderObj.customer as Record<string, unknown> | undefined;
       if (orderCustomer) {
-        const mobile = orderCustomer.mobile || orderCustomer.phone || orderCustomer.mobile_code;
-        if (mobile) {
-          this.logger.log(`📞 Phone found in order.customer: ${mobile}`);
-          return this.normalizePhone(String(mobile));
+        const fullPhone = this.buildFullPhone(orderCustomer);
+        if (fullPhone) {
+          this.logger.log(`📞 Phone found in order.customer: ${fullPhone}`);
+          return this.normalizePhone(fullPhone);
         }
       }
       // ✅ v4: من order.shipping_address
@@ -426,18 +426,46 @@ export class TemplateDispatcherService {
   /**
    * تنظيف رقم الهاتف
    */
+  /**
+   * ✅ v7: بناء الرقم الكامل من mobile_code + mobile
+   * سلة ترسل: { mobile: "561667877", mobile_code: "971" }
+   * النتيجة: "971561667877"
+   * 
+   * القاعدة: نأخذ الرقم كما هو من سلة بدون أي تعديل
+   * يشتغل مع أي دولة (سعودي، إماراتي، أمريكي، روسي...)
+   */
+  private buildFullPhone(obj: Record<string, unknown>): string | null {
+    const mobileCode = obj.mobile_code || obj.country_code || obj.countryCode;
+    const mobile = obj.mobile;
+
+    // ✅ لو فيه mobile_code + mobile → نجمعهم
+    if (mobileCode && mobile) {
+      const code = String(mobileCode).replace(/[^0-9]/g, '');
+      const num = String(mobile).replace(/[^0-9]/g, '');
+      if (code && num) {
+        this.logger.log(`📞 Built phone from mobile_code(${code}) + mobile(${num})`);
+        return code + num;
+      }
+    }
+
+    // ✅ لو فيه phone كامل (مثل "+971561667877") → نستخدمه كما هو
+    if (obj.phone) return String(obj.phone);
+
+    // ✅ لو فيه mobile بس بدون code → نرجعه كما هو
+    if (mobile) return String(mobile);
+
+    return null;
+  }
+
+  /**
+   * ✅ v7: تنظيف رقم الهاتف - فقط إزالة رموز بدون تغيير كود الدولة
+   * 
+   * القاعدة: لا نفترض أي كود دولة - الرقم يمر كما هو
+   * الأرقام اللي تجي من buildFullPhone أو من سلة مباشرة تكون كاملة
+   */
   private normalizePhone(phone: string): string {
-    let cleaned = phone.replace(/[\s\-\(\)\+]/g, '');
-
-    // رقم سعودي يبدأ بـ 05
-    if (cleaned.startsWith('05') && cleaned.length === 10) {
-      cleaned = '966' + cleaned.substring(1);
-    }
-    // رقم بدون كود الدولة
-    else if (cleaned.startsWith('5') && cleaned.length === 9) {
-      cleaned = '966' + cleaned;
-    }
-
+    // فقط إزالة الرموز والمسافات
+    const cleaned = phone.replace(/[\s\-\(\)\+]/g, '');
     return cleaned;
   }
 
