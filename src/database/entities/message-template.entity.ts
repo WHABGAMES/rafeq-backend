@@ -166,12 +166,13 @@ export class MessageTemplate extends BaseEntity {
   })
   language: TemplateLanguage;
 
+  /** ✅ varchar بدل enum - يقبل أي حالة بدون constraint */
   @Column({
-    type: 'enum',
-    enum: TemplateStatus,
-    default: TemplateStatus.DRAFT,
+    type: 'varchar',
+    length: 50,
+    default: 'draft',
   })
-  status: TemplateStatus;
+  status: string;
 
   /**
    * ✅ الحدث المرتبط بالقالب
