@@ -2,9 +2,36 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Configuration                              ║
  * ║                                                                                ║
- * ║  📌 هذا الملف يجمع كل Environment Variables في مكان واحد                        ║
+ * ║  ✅ v5: Security Fixes                                                         ║
+ * ║  🔧 FIX C3: إزالة كل default secrets - فشل عند التشغيل إذا مفقودة            ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
+
+/**
+ * 🔧 FIX C3: التحقق من المتغيرات الحرجة عند التشغيل
+ * إذا كنا في production ومتغير حرج مفقود → فشل فوري
+ */
+function requireEnv(key: string, fallbackForDev?: string): string {
+  const value = process.env[key];
+  if (value) return value;
+
+  const isProduction = process.env.NODE_ENV === 'production';
+
+  if (isProduction) {
+    throw new Error(
+      `🚨 FATAL: Environment variable "${key}" is required in production but not set. ` +
+      `Set it in your environment or .env file before deploying.`
+    );
+  }
+
+  // في بيئة التطوير فقط: نرجع fallback مع تحذير
+  if (fallbackForDev) {
+    console.warn(`⚠️ [DEV] Using fallback for ${key} - NEVER use in production!`);
+    return fallbackForDev;
+  }
+
+  return '';
+}
 
 export default () => ({
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -15,8 +42,9 @@ export default () => ({
     port: parseInt(process.env.PORT || '3000', 10),
     apiBaseUrl: process.env.API_BASE_URL || 'https://api.rafeq.ai',
     frontendUrl: process.env.FRONTEND_URL || 'https://rafeq.ai',
-    secret: process.env.APP_SECRET || 'default-secret-change-me',
-    
+    // 🔧 FIX C3: APP_SECRET مطلوب في الإنتاج
+    secret: requireEnv('APP_SECRET', 'dev-only-secret-not-for-production'),
+
     isDevelopment: process.env.NODE_ENV === 'development',
     isProduction: process.env.NODE_ENV === 'production',
     isStaging: process.env.NODE_ENV === 'staging',
@@ -30,7 +58,8 @@ export default () => ({
     port: parseInt(process.env.DB_PORT || '5432', 10),
     name: process.env.DB_NAME || 'rafiq_db',
     username: process.env.DB_USERNAME || 'rafiq_user',
-    password: process.env.DB_PASSWORD || 'rafiq_secure_password_123',
+    // 🔧 FIX C3: DB_PASSWORD مطلوب في الإنتاج - لا default
+    password: requireEnv('DB_PASSWORD', 'dev-local-password'),
     synchronize: process.env.DB_SYNCHRONIZE === 'true',
     logging: process.env.DB_LOGGING === 'true',
     ssl: process.env.DB_SSL === 'true',
@@ -50,7 +79,8 @@ export default () => ({
   // 🔐 JWT
   // ═══════════════════════════════════════════════════════════════════════════════
   jwt: {
-    secret: process.env.JWT_SECRET || 'jwt-secret-change-me',
+    // 🔧 FIX C3: JWT_SECRET مطلوب في الإنتاج
+    secret: requireEnv('JWT_SECRET', 'dev-only-jwt-secret-32-chars-min!'),
     accessExpiration: process.env.JWT_ACCESS_EXPIRATION || '15m',
     refreshExpiration: process.env.JWT_REFRESH_EXPIRATION || '7d',
   },
