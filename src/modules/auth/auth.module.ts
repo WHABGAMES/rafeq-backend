@@ -14,6 +14,7 @@ import { PassportModule } from '@nestjs/passport';
 
 // Entities
 import { User } from '@database/entities/user.entity';
+import { Tenant } from '@database/entities/tenant.entity';
 
 // Controllers
 import { AuthController } from './auth.controller';
@@ -30,7 +31,7 @@ import { MailModule } from '../mail/mail.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([User]),
+    TypeOrmModule.forFeature([User, Tenant]),
     
     PassportModule.register({ defaultStrategy: 'jwt' }),
     
