@@ -259,12 +259,16 @@ export class SallaWebhooksService {
     try {
       const store = await this.storesService.findByMerchantId(merchantId);
       
-      if (store) {
+      if (store && store.tenantId) {
         this.logger.debug(`Found store: ${store.id} for merchant ${merchantId}`);
         return {
           tenantId: store.tenantId,
           storeId: store.id,
         };
+      }
+      
+      if (store && !store.tenantId) {
+        this.logger.warn(`Store ${store.id} found for merchant ${merchantId} but tenantId is not linked yet`);
       }
       
       this.logger.debug(`No store found for merchant ${merchantId}`);
