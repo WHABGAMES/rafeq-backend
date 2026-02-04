@@ -50,6 +50,7 @@ export {
 // WEBHOOK ENTITY
 // ═══════════════════════════════════════════════════════════════════════════════
 export { WebhookEvent } from './webhook-event.entity';
+export { WebhookLog, WebhookLogAction } from '../../modules/webhooks/entities/webhook-log.entity';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // BILLING ENTITIES
@@ -72,6 +73,7 @@ import { Order } from './order.entity';
 import { Campaign } from './campaign.entity';
 import { MessageTemplate } from './message-template.entity';
 import { WebhookEvent } from './webhook-event.entity';
+import { WebhookLog } from '../../modules/webhooks/entities/webhook-log.entity';
 import { SubscriptionPlan } from './subscription-plan.entity';
 import { Subscription } from './subscription.entity';
 
@@ -87,6 +89,7 @@ export const allEntities = [
   Campaign,
   MessageTemplate,
   WebhookEvent,
+  WebhookLog,
   SubscriptionPlan,
   Subscription,
 ];
