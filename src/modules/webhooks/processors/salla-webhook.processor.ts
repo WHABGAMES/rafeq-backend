@@ -333,19 +333,20 @@ export class SallaWebhookProcessor extends WorkerHost {
 
     const eventPayload = { tenantId: context.tenantId, storeId: context.storeId, orderId: data.id, newStatus: data.status, previousStatus: data.previous_status, raw: data };
 
-    // ✅ v7: إرسال event عام + event خاص بالحالة
-    // Event عام (للتوافق مع القوالب القديمة)
-    this.eventEmitter.emit('order.status.updated', eventPayload);
-
-    // ✅ v7: Event خاص بالحالة الدقيقة - كل حالة تشغّل قالبها الخاص
+    // ✅ v8 CRITICAL FIX: نرسل فقط event خاص بالحالة - بدون event عام
+    // order.status.updated العام كان يسبب إرسال القالب الغلط
     const statusSlug = this.extractStatusString(data.status)?.toLowerCase() || '';
     const specificEvent = this.mapStatusToSpecificEvent(statusSlug, newStatus);
-    if (specificEvent && specificEvent !== 'order.status.updated') {
-      this.logger.log(`📌 Emitting specific status event: ${specificEvent} (slug: ${statusSlug})`);
+    
+    if (specificEvent) {
+      this.logger.log(`📌 Emitting ONLY specific event: ${specificEvent} (slug: "${statusSlug}", dbStatus: ${newStatus})`);
       this.eventEmitter.emit(specificEvent, eventPayload);
+    } else {
+      this.logger.warn(`⚠️ Unknown status slug: "${statusSlug}" (dbStatus: ${newStatus}) - no template will be sent`);
+      // لا نرسل order.status.updated العام - لأنه يسبب إرسال قالب غلط
     }
 
-    return { handled: true, action: 'order_status_updated', orderId: data.id, newStatus: data.status, dbStatus: newStatus, specificEvent: specificEvent || 'none', emittedEvent: 'order.status.updated' };
+    return { handled: true, action: 'order_status_updated', orderId: data.id, newStatus: data.status, dbStatus: newStatus, specificEvent: specificEvent || 'NONE_MATCHED' };
   }
 
   /**
