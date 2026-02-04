@@ -1,6 +1,7 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║              RAFIQ PLATFORM - Templates Module                                 ║
+ * ║  ✅ v2: تصدير TypeOrmModule للـ modules الأخرى                                ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -14,6 +15,9 @@ import { TemplatesService } from './templates.service';
   imports: [TypeOrmModule.forFeature([MessageTemplate])],
   controllers: [TemplatesController],
   providers: [TemplatesService],
-  exports: [TemplatesService],
+  exports: [
+    TemplatesService,
+    TypeOrmModule, // ✅ تصدير لتوفير MessageTemplate Repository للـ modules الأخرى
+  ],
 })
 export class TemplatesModule {}
