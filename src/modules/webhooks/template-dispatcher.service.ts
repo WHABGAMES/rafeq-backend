@@ -15,7 +15,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { MessageTemplate, TemplateStatus } from '@database/entities';
+import { MessageTemplate } from '@database/entities';
 import { Channel, ChannelType, ChannelStatus } from '../channels/entities/channel.entity';
 import { ChannelsService } from '../channels/channels.service';
 
@@ -117,8 +117,8 @@ export class TemplateDispatcherService {
       // 1️⃣ البحث عن القوالب المفعّلة بنفس triggerEvent
       const templates = await this.templateRepository.find({
         where: [
-          { tenantId, triggerEvent, status: TemplateStatus.APPROVED },
-          { tenantId, triggerEvent, status: TemplateStatus.ACTIVE },
+          { tenantId, triggerEvent, status: 'approved' },
+          { tenantId, triggerEvent, status: 'active' },
         ],
       });
 
