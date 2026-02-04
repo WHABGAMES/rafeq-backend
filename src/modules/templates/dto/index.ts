@@ -1,7 +1,7 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║              RAFIQ PLATFORM - Templates DTOs                                   ║
- * ║  ✅ إصلاح: type و channel اختياريين مع قيم افتراضية                          ║
+ * ║  ✅ v2: type/channel اختياري + triggerEvent + بدون IsEnum                     ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -9,7 +9,7 @@ import { IsString, IsOptional, IsArray, IsObject, MaxLength, MinLength } from 'c
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Enums
+// Enums (للتوثيق فقط - لا تُستخدم في validation)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export enum TemplateType {
@@ -35,7 +35,6 @@ export enum TemplateCategory {
   COD_CONFIRMATION = 'cod_confirmation',
   PAYMENT_REMINDER = 'payment_reminder',
   PRODUCT_RESTOCK = 'product_restock',
-  // ✅ إضافة تصنيفات القوالب الجاهزة
   ORDER_NOTIFICATIONS = 'order_notifications',
   SHIPPING_NOTIFICATIONS = 'shipping_notifications',
   SALES_RECOVERY = 'sales_recovery',
@@ -62,7 +61,7 @@ export enum TemplateChannel {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Button Types
+// Button Type
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export class TemplateButton {
@@ -83,7 +82,7 @@ export class TemplateButton {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ✅ Create Template DTO - type و channel اختياريين
+// Create Template DTO
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export class CreateTemplateDto {
@@ -99,20 +98,17 @@ export class CreateTemplateDto {
   @MaxLength(500)
   description?: string;
 
-  /** ✅ اختياري - الافتراضي text */
-  @ApiPropertyOptional({ enum: TemplateType, description: 'نوع القالب', default: 'text' })
+  @ApiPropertyOptional({ description: 'نوع القالب', default: 'text' })
   @IsOptional()
   @IsString()
   type?: string;
 
-  /** ✅ category كـ string عادي (بدون enum validation صارم) */
   @ApiPropertyOptional({ description: 'فئة القالب' })
   @IsOptional()
   @IsString()
   category?: string;
 
-  /** ✅ اختياري - الافتراضي whatsapp */
-  @ApiPropertyOptional({ enum: TemplateChannel, description: 'القناة', default: 'whatsapp' })
+  @ApiPropertyOptional({ description: 'القناة', default: 'whatsapp' })
   @IsOptional()
   @IsString()
   channel?: string;
@@ -123,7 +119,7 @@ export class CreateTemplateDto {
   @MaxLength(4096)
   content: string;
 
-  @ApiPropertyOptional({ description: 'عنوان القالب (للصور والفيديو)' })
+  @ApiPropertyOptional({ description: 'عنوان القالب' })
   @IsOptional()
   @IsString()
   @MaxLength(60)
@@ -150,7 +146,7 @@ export class CreateTemplateDto {
   @IsString()
   language?: string;
 
-  @ApiPropertyOptional({ description: 'المتغيرات المطلوبة' })
+  @ApiPropertyOptional({ description: 'المتغيرات' })
   @IsOptional()
   @IsArray()
   variables?: string[];
@@ -160,7 +156,7 @@ export class CreateTemplateDto {
   @IsString()
   status?: string;
 
-  @ApiPropertyOptional({ description: 'الحدث المرتبط' })
+  @ApiPropertyOptional({ description: 'الحدث المرتبط مثل order.created' })
   @IsOptional()
   @IsString()
   triggerEvent?: string;
@@ -176,58 +172,63 @@ export class CreateTemplateDto {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export class UpdateTemplateDto {
-  @ApiPropertyOptional({ description: 'اسم القالب' })
+  @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   @MinLength(1)
   @MaxLength(100)
   name?: string;
 
-  @ApiPropertyOptional({ description: 'وصف القالب' })
+  @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   @MaxLength(500)
   description?: string;
 
-  @ApiPropertyOptional({ description: 'فئة القالب' })
+  @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   category?: string;
 
-  @ApiPropertyOptional({ description: 'محتوى القالب' })
+  @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   @MaxLength(4096)
   content?: string;
 
-  @ApiPropertyOptional({ description: 'عنوان القالب' })
+  @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   @MaxLength(60)
   header?: string;
 
-  @ApiPropertyOptional({ description: 'تذييل القالب' })
+  @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   @MaxLength(60)
   footer?: string;
 
-  @ApiPropertyOptional({ description: 'رابط الوسائط' })
+  @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   mediaUrl?: string;
 
-  @ApiPropertyOptional({ description: 'أزرار تفاعلية', type: [TemplateButton] })
+  @ApiPropertyOptional({ type: [TemplateButton] })
   @IsOptional()
   @IsArray()
   buttons?: TemplateButton[];
 
-  @ApiPropertyOptional({ description: 'حالة القالب' })
+  @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   status?: string;
 
-  @ApiPropertyOptional({ description: 'بيانات إضافية' })
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  triggerEvent?: string;
+
+  @ApiPropertyOptional()
   @IsOptional()
   @IsObject()
   metadata?: Record<string, unknown>;
@@ -269,7 +270,7 @@ export class TemplateFiltersDto {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export class SubmitWhatsAppTemplateDto {
-  @ApiProperty({ description: 'اسم القالب (باللاتينية، بدون مسافات)' })
+  @ApiProperty()
   @IsString()
   @MinLength(1)
   @MaxLength(512)
@@ -279,11 +280,11 @@ export class SubmitWhatsAppTemplateDto {
   @IsString()
   category: 'MARKETING' | 'UTILITY' | 'AUTHENTICATION';
 
-  @ApiProperty({ description: 'كود اللغة', default: 'ar' })
+  @ApiProperty({ default: 'ar' })
   @IsString()
   language: string;
 
-  @ApiProperty({ description: 'مكونات القالب' })
+  @ApiProperty()
   @IsArray()
   components: Array<{
     type: 'HEADER' | 'BODY' | 'FOOTER' | 'BUTTONS';
@@ -321,6 +322,7 @@ export class TemplateResponseDto {
   status: string;
   language: string;
   usageCount: number;
+  triggerEvent?: string;
   whatsappTemplateId?: string;
   createdAt: Date;
   updatedAt: Date;
