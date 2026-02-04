@@ -195,6 +195,19 @@ export class SallaWebhookProcessor extends WorkerHost {
       case SallaEventType.APP_UNINSTALLED:
         return this.handleAppUninstalled(data, context);
 
+      // ✅ v3: أحداث إضافية للقوالب
+      case SallaEventType.ORDER_REFUNDED:
+        return this.handleOrderRefunded(data, context);
+
+      case SallaEventType.PRODUCT_CREATED:
+        return this.handleProductCreated(data, context);
+
+      case SallaEventType.CUSTOMER_OTP_REQUEST:
+        return this.handleCustomerOtpRequest(data, context);
+
+      case SallaEventType.INVOICE_CREATED:
+        return this.handleInvoiceCreated(data, context);
+
       default:
         this.logger.warn(`Unhandled event type: ${eventType}`);
         return { handled: false, eventType };
@@ -601,6 +614,95 @@ export class SallaWebhookProcessor extends WorkerHost {
       action: 'app_uninstalled',
       merchant: data.merchant,
       emittedEvent: 'app.uninstalled',
+    };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ✅ v3: Handlers للأحداث الإضافية
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  private async handleOrderRefunded(
+    data: Record<string, unknown>,
+    context: { tenantId?: string; storeId?: string; webhookEventId: string },
+  ): Promise<Record<string, unknown>> {
+    this.logger.log('Processing order.refunded', { orderId: data.id, status: data.status });
+
+    this.eventEmitter.emit('order.refunded', {
+      tenantId: context.tenantId,
+      storeId: context.storeId,
+      orderId: data.id,
+      status: data.status,
+      raw: data,
+    });
+
+    return {
+      handled: true,
+      action: 'order_refunded',
+      orderId: data.id,
+      emittedEvent: 'order.refunded',
+    };
+  }
+
+  private async handleProductCreated(
+    data: Record<string, unknown>,
+    context: { tenantId?: string; storeId?: string; webhookEventId: string },
+  ): Promise<Record<string, unknown>> {
+    this.logger.log('Processing product.created', { productId: data.id, name: data.name });
+
+    this.eventEmitter.emit('product.created', {
+      tenantId: context.tenantId,
+      storeId: context.storeId,
+      productId: data.id,
+      raw: data,
+    });
+
+    return {
+      handled: true,
+      action: 'product_created',
+      productId: data.id,
+      emittedEvent: 'product.created',
+    };
+  }
+
+  private async handleCustomerOtpRequest(
+    data: Record<string, unknown>,
+    context: { tenantId?: string; storeId?: string; webhookEventId: string },
+  ): Promise<Record<string, unknown>> {
+    this.logger.log('Processing customer.otp.request', { customerId: data.id });
+
+    this.eventEmitter.emit('customer.otp.request', {
+      tenantId: context.tenantId,
+      storeId: context.storeId,
+      customerId: data.id,
+      raw: data,
+    });
+
+    return {
+      handled: true,
+      action: 'customer_otp_request',
+      customerId: data.id,
+      emittedEvent: 'customer.otp.request',
+    };
+  }
+
+  private async handleInvoiceCreated(
+    data: Record<string, unknown>,
+    context: { tenantId?: string; storeId?: string; webhookEventId: string },
+  ): Promise<Record<string, unknown>> {
+    this.logger.log('Processing invoice.created', { invoiceId: data.id });
+
+    this.eventEmitter.emit('invoice.created', {
+      tenantId: context.tenantId,
+      storeId: context.storeId,
+      invoiceId: data.id,
+      raw: data,
+    });
+
+    return {
+      handled: true,
+      action: 'invoice_created',
+      invoiceId: data.id,
+      emittedEvent: 'invoice.created',
     };
   }
 
