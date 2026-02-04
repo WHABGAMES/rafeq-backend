@@ -1,962 +1,546 @@
-'use client'
+/**
+ * ╔═══════════════════════════════════════════════════════════════════════════════╗
+ * ║              RAFIQ PLATFORM - Salla Webhook Processor                          ║
+ * ║                                                                                ║
+ * ║  ✅ v5: Security & Stability Fixes                                             ║
+ * ║  🔧 FIX #18: TS2538 Build Error - mapSallaOrderStatus type-safe               ║
+ * ║  🔧 FIX H5: Salla status object crash - handles object/string/undefined       ║
+ * ╚═══════════════════════════════════════════════════════════════════════════════╝
+ */
 
-import React, { useState, useEffect, useRef } from 'react'
-import { templatesService, Template } from '@/lib/api'
+import { Processor, WorkerHost, OnWorkerEvent } from '@nestjs/bullmq';
+import { Logger } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { Job } from 'bullmq';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { SallaWebhooksService } from '../salla-webhooks.service';
+import { WebhookStatus, SallaEventType } from '@database/entities/webhook-event.entity';
+import { WebhookLogAction } from '../entities/webhook-log.entity';
+import { Order, OrderStatus } from '@database/entities/order.entity';
+import { Customer, CustomerStatus } from '@database/entities/customer.entity';
 
-interface UITemplate extends Template {
-  triggerEvent?: string
+interface SallaWebhookJobData {
+  webhookEventId: string;
+  eventType: string;
+  merchant: number;
+  data: Record<string, unknown>;
+  tenantId?: string;
+  storeId?: string;
+  isRetry?: boolean;
 }
 
-interface Preset {
-  id: string
-  name: string
-  language: string
-  category: string
-  triggerEvent?: string | null
-  content: string
-  buttons?: { type: string; text: string; url?: string }[]
+/**
+ * 🔧 FIX H5: Interface لتعريف بنية status القادمة من سلة
+ * سلة قد ترسل الحالة كـ string أو كـ object {id, name, slug, customized}
+ */
+interface SallaStatusObject {
+  id?: number;
+  name?: string;
+  slug?: string;
+  customized?: {
+    id?: number;
+    name?: string;
+    slug?: string;
+  };
 }
 
-interface Variable {
-  key: string
-  label: string
-  example: string
-  category: string
-}
+@Processor('salla-webhooks', {
+  concurrency: 10,
+  limiter: { max: 100, duration: 1000 },
+})
+export class SallaWebhookProcessor extends WorkerHost {
+  private readonly logger = new Logger(SallaWebhookProcessor.name);
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// التصنيفات الرئيسية
-// ═══════════════════════════════════════════════════════════════════════════════
-const CATEGORIES = [
-  { id: 'all', label: 'الكل', icon: '📋' },
-  { id: 'order_notifications', label: 'إشعارات الطلبات', icon: '📦' },
-  { id: 'shipping_notifications', label: 'الشحن والتوصيل', icon: '🚚' },
-  { id: 'sales_recovery', label: 'استرداد المبيعات', icon: '🛒' },
-  { id: 'marketing', label: 'التسويق والحملات', icon: '📢' },
-  { id: 'engagement', label: 'التفاعل والولاء', icon: '⭐' },
-  { id: 'service', label: 'رسائل الخدمة', icon: '🔧' },
-]
-
-const CATEGORY_COLORS: Record<string, { border: string; bg: string; text: string }> = {
-  order_notifications: { border: 'border-blue-500/30', bg: 'bg-blue-500/10', text: 'text-blue-400' },
-  shipping_notifications: { border: 'border-violet-500/30', bg: 'bg-violet-500/10', text: 'text-violet-400' },
-  sales_recovery: { border: 'border-emerald-500/30', bg: 'bg-emerald-500/10', text: 'text-emerald-400' },
-  marketing: { border: 'border-amber-500/30', bg: 'bg-amber-500/10', text: 'text-amber-400' },
-  engagement: { border: 'border-pink-500/30', bg: 'bg-pink-500/10', text: 'text-pink-400' },
-  service: { border: 'border-cyan-500/30', bg: 'bg-cyan-500/10', text: 'text-cyan-400' },
-}
-
-const CATEGORY_ICONS: Record<string, string> = {
-  order_notifications: '📦',
-  shipping_notifications: '🚚',
-  sales_recovery: '🛒',
-  marketing: '📢',
-  engagement: '⭐',
-  service: '🔧',
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// المتغيرات المتاحة - دليل مرجعي
-// ═══════════════════════════════════════════════════════════════════════════════
-const VARIABLES: Variable[] = [
-  { key: '{{customer_name}}', label: 'اسم العميل', example: 'محمد', category: 'عميل' },
-  { key: '{{customer_first_name}}', label: 'الاسم الأول', example: 'محمد', category: 'عميل' },
-  { key: '{{order_id}}', label: 'رقم الطلب', example: '1234', category: 'طلب' },
-  { key: '{{order_total}}', label: 'مبلغ الطلب', example: '299', category: 'طلب' },
-  { key: '{{order_status}}', label: 'حالة الطلب', example: 'قيد التنفيذ', category: 'طلب' },
-  { key: '{{order_tracking}}', label: 'رابط التتبع', example: 'https://...', category: 'طلب' },
-  { key: '{{tracking_number}}', label: 'رقم التتبع', example: 'SA123456', category: 'شحن' },
-  { key: '{{shipping_company}}', label: 'شركة الشحن', example: 'أرامكس', category: 'شحن' },
-  { key: '{{store_name}}', label: 'اسم المتجر', example: 'متجري', category: 'متجر' },
-  { key: '{{store_url}}', label: 'رابط المتجر', example: 'https://...', category: 'متجر' },
-  { key: '{{cart_total}}', label: 'مبلغ السلة', example: '450', category: 'سلة' },
-  { key: '{{cart_link}}', label: 'رابط السلة', example: 'https://...', category: 'سلة' },
-  { key: '{{product_name}}', label: 'اسم المنتج', example: 'عطر فاخر', category: 'منتج' },
-  { key: '{{product_price}}', label: 'سعر المنتج', example: '199', category: 'منتج' },
-  { key: '{{payment_link}}', label: 'رابط الدفع', example: 'https://...', category: 'دفع' },
-]
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Edit Modal - نافذة تعديل نص القالب
-// ═══════════════════════════════════════════════════════════════════════════════
-const EditModal = ({
-  template,
-  defaultContent,
-  onSave,
-  onClose,
-  saving,
-}: {
-  template: UITemplate
-  defaultContent?: string
-  onSave: (content: string) => void
-  onClose: () => void
-  saving: boolean
-}) => {
-  const [content, setContent] = useState(template.content || '')
-  const [showVars, setShowVars] = useState(false)
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
-
-  const insertVariable = (varKey: string) => {
-    const textarea = textareaRef.current
-    if (!textarea) return
-    const start = textarea.selectionStart
-    const end = textarea.selectionEnd
-    const newContent = content.substring(0, start) + varKey + content.substring(end)
-    setContent(newContent)
-    setTimeout(() => {
-      textarea.focus()
-      textarea.setSelectionRange(start + varKey.length, start + varKey.length)
-    }, 0)
+  constructor(
+    private readonly sallaWebhooksService: SallaWebhooksService,
+    private readonly eventEmitter: EventEmitter2,
+    @InjectRepository(Order)
+    private readonly orderRepository: Repository<Order>,
+    @InjectRepository(Customer)
+    private readonly customerRepository: Repository<Customer>,
+  ) {
+    super();
   }
 
-  const handleReset = () => {
-    if (defaultContent) {
-      setContent(defaultContent)
-    }
-  }
+  async process(job: Job<SallaWebhookJobData>): Promise<void> {
+    const startTime = Date.now();
+    const { webhookEventId, eventType, data, tenantId, storeId } = job.data;
+    this.logger.log(`🔄 Processing webhook: ${eventType}`, { jobId: job.id, webhookEventId, attempt: job.attemptsMade + 1 });
 
-  // عدد الأحرف
-  const charCount = content.length
-
-  return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div
-        className="bg-slate-900 rounded-2xl border border-slate-700/50 w-full max-w-2xl max-h-[90vh] overflow-hidden"
-        onClick={e => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="p-5 border-b border-slate-700/50">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-violet-500/20 flex items-center justify-center text-xl">
-                ✏️
-              </div>
-              <div>
-                <h2 className="font-bold text-white">تعديل القالب</h2>
-                <p className="text-xs text-slate-400">{template.name}</p>
-              </div>
-            </div>
-            <button onClick={onClose} className="w-8 h-8 rounded-lg bg-slate-800 flex items-center justify-center text-slate-400 hover:text-white transition-colors">
-              ✕
-            </button>
-          </div>
-        </div>
-
-        {/* Content */}
-        <div className="p-5 space-y-4 overflow-y-auto max-h-[60vh]">
-          {/* Toolbar */}
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setShowVars(!showVars)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-                  showVars
-                    ? 'bg-violet-500/20 text-violet-400 border border-violet-500/30'
-                    : 'bg-slate-800 text-slate-400 border border-slate-700 hover:text-white'
-                }`}
-              >
-                🏷️ المتغيرات
-              </button>
-              {defaultContent && content !== defaultContent && (
-                <button
-                  onClick={handleReset}
-                  className="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-amber-400 border border-amber-500/30 hover:bg-amber-500/10 transition-all"
-                >
-                  🔄 رجّع الأصلي
-                </button>
-              )}
-            </div>
-            <span className={`text-xs ${charCount > 1000 ? 'text-red-400' : 'text-slate-500'}`}>
-              {charCount} حرف
-            </span>
-          </div>
-
-          {/* Variables Panel */}
-          {showVars && (
-            <div className="p-3 rounded-xl bg-slate-800/50 border border-slate-700/50 space-y-3">
-              <div className="flex items-center gap-2 mb-2">
-                <span className="text-sm font-medium text-white">📝 اضغط على المتغير لإضافته</span>
-              </div>
-              {['عميل', 'طلب', 'شحن', 'متجر', 'سلة', 'منتج', 'دفع'].map(cat => {
-                const vars = VARIABLES.filter(v => v.category === cat)
-                if (vars.length === 0) return null
-                return (
-                  <div key={cat}>
-                    <span className="text-xs text-slate-500 mb-1 block">{cat}</span>
-                    <div className="flex flex-wrap gap-1.5">
-                      {vars.map(v => (
-                        <button
-                          key={v.key}
-                          onClick={() => insertVariable(v.key)}
-                          className="group px-2 py-1 rounded-lg bg-slate-700/50 hover:bg-violet-500/20 border border-slate-600/50 hover:border-violet-500/30 transition-all"
-                          title={`${v.label} — مثال: ${v.example}`}
-                        >
-                          <span className="text-xs text-violet-400 font-mono">{v.key.replace(/\{\{|\}\}/g, '')}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )
-              })}
-              <div className="pt-2 border-t border-slate-700/50">
-                <p className="text-xs text-slate-400">
-                  💡 <strong>نصيحة:</strong> المتغيرات تتبدل تلقائي بمعلومات العميل والطلب وقت الإرسال.
-                  مثلاً <code className="text-violet-400">{'{{customer_name}}'}</code> بتصير &quot;محمد&quot;
-                </p>
-              </div>
-            </div>
-          )}
-
-          {/* Textarea */}
-          <textarea
-            ref={textareaRef}
-            value={content}
-            onChange={e => setContent(e.target.value)}
-            dir="rtl"
-            rows={10}
-            className="w-full bg-slate-800/50 border border-slate-700/50 rounded-xl p-4 text-sm text-white resize-none focus:outline-none focus:border-violet-500/50 focus:ring-1 focus:ring-violet-500/20 transition-all leading-relaxed"
-            placeholder="اكتب نص الرسالة هنا..."
-          />
-
-          {/* Preview */}
-          <div className="p-3 rounded-xl bg-emerald-500/5 border border-emerald-500/20">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-xs font-medium text-emerald-400">👁️ معاينة الرسالة</span>
-            </div>
-            <div className="text-xs text-slate-300 whitespace-pre-line leading-relaxed" dir="rtl">
-              {content
-                .replace(/\{\{customer_name\}\}/g, 'محمد')
-                .replace(/\{\{customer_first_name\}\}/g, 'محمد')
-                .replace(/\{\{order_id\}\}/g, '1234')
-                .replace(/\{\{order_total\}\}/g, '299')
-                .replace(/\{\{order_status\}\}/g, 'قيد التنفيذ')
-                .replace(/\{\{store_name\}\}/g, 'متجري')
-                .replace(/\{\{cart_total\}\}/g, '450')
-                .replace(/\{\{product_name\}\}/g, 'عطر فاخر')
-                .replace(/\{\{product_price\}\}/g, '199')
-                .replace(/\{\{shipping_company\}\}/g, 'أرامكس')
-                .replace(/\{\{tracking_number\}\}/g, 'SA123456')
-                .replace(/\{\{[^}]+\}\}/g, '...')
-              || 'اكتب النص وشوف المعاينة هنا...'}
-            </div>
-          </div>
-        </div>
-
-        {/* Footer */}
-        <div className="p-5 border-t border-slate-700/50 flex items-center justify-between">
-          <button
-            onClick={onClose}
-            className="px-5 py-2.5 rounded-xl bg-slate-800 text-slate-300 text-sm hover:bg-slate-700 transition-all"
-          >
-            إلغاء
-          </button>
-          <button
-            onClick={() => onSave(content)}
-            disabled={saving || !content.trim()}
-            className={`px-6 py-2.5 rounded-xl font-medium text-sm transition-all ${
-              saving || !content.trim()
-                ? 'bg-slate-700 text-slate-400 cursor-wait'
-                : 'bg-gradient-to-r from-emerald-500 to-violet-500 text-white hover:opacity-90'
-            }`}
-          >
-            {saving ? '⏳ جاري الحفظ...' : '💾 حفظ التعديلات'}
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Template Card - بطاقة القالب المفعّل (مع زر التعديل)
-// ═══════════════════════════════════════════════════════════════════════════════
-const TemplateCard = ({
-  template,
-  onToggle,
-  onEdit,
-  onDelete,
-  toggling,
-}: {
-  template: UITemplate
-  onToggle: () => void
-  onEdit: () => void
-  onDelete: () => void
-  toggling: boolean
-}) => {
-  const [showMenu, setShowMenu] = useState(false)
-  const status = template.status ?? 'draft'
-  const isEnabled = status === 'approved' || status === 'active'
-  const cat = template.category ?? 'order_notifications'
-  const colors = CATEGORY_COLORS[cat] || CATEGORY_COLORS.service
-  const catLabel = CATEGORIES.find(c => c.id === cat)?.label || cat
-
-  return (
-    <div className={`p-5 rounded-2xl bg-slate-900/50 border ${colors.border} hover:brightness-110 transition-all relative group`}>
-      <div className="flex items-start justify-between mb-3">
-        <div className="flex items-center gap-3 flex-1 min-w-0">
-          <div className="w-10 h-10 rounded-xl bg-slate-800 flex items-center justify-center text-xl shrink-0">
-            {CATEGORY_ICONS[cat] || '📝'}
-          </div>
-          <div className="min-w-0">
-            <h3 className="font-semibold text-white text-sm truncate">{template.name}</h3>
-            <span className={`px-2 py-0.5 text-xs rounded-full ${colors.bg} ${colors.text}`}>
-              {catLabel}
-            </span>
-          </div>
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          {/* Menu Button */}
-          <div className="relative">
-            <button
-              onClick={() => setShowMenu(!showMenu)}
-              className="w-8 h-8 rounded-lg bg-slate-800/50 flex items-center justify-center text-slate-400 hover:text-white opacity-0 group-hover:opacity-100 transition-all"
-            >
-              ⋮
-            </button>
-            {showMenu && (
-              <>
-                <div className="fixed inset-0 z-10" onClick={() => setShowMenu(false)} />
-                <div className="absolute left-0 top-9 bg-slate-800 border border-slate-700 rounded-xl shadow-xl z-20 py-1 min-w-[140px]">
-                  <button onClick={() => { onEdit(); setShowMenu(false) }} className="w-full px-3 py-2 text-right text-xs text-slate-300 hover:bg-slate-700 flex items-center gap-2">
-                    <span>✏️</span> تعديل النص
-                  </button>
-                  <button onClick={() => { onDelete(); setShowMenu(false) }} className="w-full px-3 py-2 text-right text-xs text-red-400 hover:bg-red-500/10 flex items-center gap-2">
-                    <span>🗑️</span> حذف القالب
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-          {/* Toggle */}
-          <button
-            onClick={onToggle}
-            disabled={toggling}
-            className={`relative w-11 h-6 rounded-full transition-all ${toggling ? 'opacity-50' : ''} ${isEnabled ? 'bg-emerald-500' : 'bg-slate-700'}`}
-          >
-            <span className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all ${isEnabled ? 'right-1' : 'left-1'}`} />
-          </button>
-        </div>
-      </div>
-
-      {/* Content Preview */}
-      <p className="text-xs text-slate-400 line-clamp-2 whitespace-pre-line mb-3">{template.content}</p>
-
-      {/* Footer */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2 text-xs text-slate-500">
-          <span>📊 {template.usageCount ?? 0} استخدام</span>
-        </div>
-        <button
-          onClick={onEdit}
-          className="px-2.5 py-1 rounded-lg text-xs bg-slate-800/50 text-slate-400 hover:text-violet-400 hover:bg-violet-500/10 border border-transparent hover:border-violet-500/30 transition-all"
-        >
-          ✏️ تعديل
-        </button>
-      </div>
-    </div>
-  )
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Preset Card - بطاقة القالب الجاهز (مع زر تعديل قبل التفعيل)
-// ═══════════════════════════════════════════════════════════════════════════════
-const PresetCard = ({
-  preset,
-  onActivate,
-  onCustomActivate,
-  activating,
-}: {
-  preset: Preset
-  onActivate: () => void
-  onCustomActivate: () => void
-  activating: boolean
-}) => {
-  const colors = CATEGORY_COLORS[preset.category] || CATEGORY_COLORS.service
-
-  return (
-    <div className={`p-4 rounded-2xl bg-slate-900/50 border ${colors.border} transition-all hover:brightness-110`}>
-      <div className="flex items-center gap-3 mb-3">
-        <div className="w-10 h-10 rounded-xl bg-slate-800 flex items-center justify-center text-xl">
-          {CATEGORY_ICONS[preset.category] || '📝'}
-        </div>
-        <div className="flex-1 min-w-0">
-          <h3 className="font-semibold text-white text-sm truncate">{preset.name}</h3>
-          {preset.triggerEvent && (
-            <span className="text-xs text-slate-500">🔗 {preset.triggerEvent}</span>
-          )}
-        </div>
-      </div>
-
-      <p className="text-xs text-slate-400 line-clamp-3 whitespace-pre-line mb-3">{preset.content}</p>
-
-      {preset.buttons && preset.buttons.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 mb-3">
-          {preset.buttons.map((btn, i) => (
-            <span key={i} className="px-2 py-0.5 rounded bg-slate-800 text-xs text-slate-300">
-              {btn.type === 'url' ? '🔗' : '⚡'} {btn.text}
-            </span>
-          ))}
-        </div>
-      )}
-
-      <div className="flex gap-2">
-        <button
-          onClick={onActivate}
-          disabled={activating}
-          className={`flex-1 py-2 rounded-xl font-medium text-xs transition-all ${
-            activating
-              ? 'bg-slate-700 text-slate-400 cursor-wait'
-              : 'bg-gradient-to-r from-emerald-500 to-violet-500 text-white hover:opacity-90'
-          }`}
-        >
-          {activating ? '⏳ جاري التفعيل...' : '➕ تفعيل'}
-        </button>
-        <button
-          onClick={onCustomActivate}
-          disabled={activating}
-          className="px-3 py-2 rounded-xl text-xs bg-slate-800 text-violet-400 border border-violet-500/30 hover:bg-violet-500/10 transition-all"
-          title="عدّل النص قبل التفعيل"
-        >
-          ✏️
-        </button>
-      </div>
-    </div>
-  )
-}
-
-// Loading
-const LoadingSkeleton = () => (
-  <div className="space-y-8 animate-pulse p-8">
-    <div className="h-8 w-48 bg-slate-800 rounded" />
-    <div className="grid grid-cols-4 gap-4">
-      {[1,2,3,4].map(i => <div key={i} className="h-24 bg-slate-800/50 rounded-2xl" />)}
-    </div>
-    <div className="grid grid-cols-3 gap-4">
-      {[1,2,3,4,5,6].map(i => <div key={i} className="h-48 bg-slate-800/50 rounded-2xl" />)}
-    </div>
-  </div>
-)
-
-// Toast notification
-const Toast = ({ message, type, onClose }: { message: string; type: 'success' | 'error'; onClose: () => void }) => {
-  useEffect(() => {
-    const t = setTimeout(onClose, 3000)
-    return () => clearTimeout(t)
-  }, [onClose])
-  return (
-    <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-xl text-sm font-medium shadow-xl transition-all ${
-      type === 'success' ? 'bg-emerald-500 text-white' : 'bg-red-500 text-white'
-    }`}>
-      {type === 'success' ? '✅' : '❌'} {message}
-    </div>
-  )
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Main Page
-// ═══════════════════════════════════════════════════════════════════════════════
-export default function TemplatesPage() {
-  const [templates, setTemplates] = useState<UITemplate[]>([])
-  const [presets, setPresets] = useState<Preset[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [activeCategory, setActiveCategory] = useState('all')
-  const [toggling, setToggling] = useState<string | null>(null)
-  const [activatingPreset, setActivatingPreset] = useState<string | null>(null)
-  const [editingTemplate, setEditingTemplate] = useState<UITemplate | null>(null)
-  const [editingPreset, setEditingPreset] = useState<Preset | null>(null)
-  const [saving, setSaving] = useState(false)
-  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
-
-  useEffect(() => { fetchData() }, [])
-
-  const showToast = (message: string, type: 'success' | 'error' = 'success') => {
-    setToast({ message, type })
-  }
-
-  const fetchData = async () => {
     try {
-      setLoading(true)
-      setError(null)
-      const [templatesData, presetsData] = await Promise.all([
-        templatesService.getAll(),
-        templatesService.getPresets(),
-      ])
-      setTemplates(templatesData || [])
-      const activeNames = new Set((templatesData || []).map(t => t.name))
-      const filtered = (presetsData || []).filter(p => !activeNames.has(p.name))
-      setPresets(filtered)
-    } catch (err: any) {
-      console.error('Error:', err)
-      setError('فشل في جلب القوالب')
-    } finally {
-      setLoading(false)
+      await this.sallaWebhooksService.updateStatus(webhookEventId, WebhookStatus.PROCESSING);
+      await this.sallaWebhooksService.createLog(webhookEventId, tenantId, {
+        action: WebhookLogAction.PROCESSING_STARTED, previousStatus: WebhookStatus.PENDING,
+        newStatus: WebhookStatus.PROCESSING, attemptNumber: job.attemptsMade + 1,
+      });
+
+      const result = await this.handleEvent(eventType, data, { tenantId, storeId, webhookEventId });
+      const dur = Date.now() - startTime;
+
+      await this.sallaWebhooksService.updateStatus(webhookEventId, WebhookStatus.PROCESSED, { processingResult: result, processingDurationMs: dur });
+      await this.sallaWebhooksService.createLog(webhookEventId, tenantId, {
+        action: WebhookLogAction.PROCESSED, previousStatus: WebhookStatus.PROCESSING,
+        newStatus: WebhookStatus.PROCESSED, message: `Processed in ${dur}ms`, durationMs: dur, metadata: result,
+      });
+      this.eventEmitter.emit(`salla.${eventType}`, { webhookEventId, tenantId, storeId, data, result });
+      this.logger.log(`✅ Webhook processed: ${eventType} in ${dur}ms`, { jobId: job.id, webhookEventId });
+    } catch (error) {
+      const dur = Date.now() - startTime;
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      const errorStack = error instanceof Error ? error.stack : undefined;
+      this.logger.error(`❌ Webhook failed: ${eventType}`, { jobId: job.id, webhookEventId, error: errorMessage });
+      const attempts = await this.sallaWebhooksService.incrementAttempts(webhookEventId);
+      await this.sallaWebhooksService.updateStatus(webhookEventId, WebhookStatus.FAILED, { errorMessage, processingDurationMs: dur });
+      await this.sallaWebhooksService.createLog(webhookEventId, tenantId, {
+        action: WebhookLogAction.PROCESSING_FAILED, previousStatus: WebhookStatus.PROCESSING, newStatus: WebhookStatus.FAILED,
+        message: errorMessage, errorDetails: { stack: errorStack }, durationMs: dur, attemptNumber: attempts,
+      });
+      throw error;
     }
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // تفعيل قالب جاهز
-  // ═══════════════════════════════════════════════════════════════════════════
-  const handleActivatePreset = async (preset: Preset, customContent?: string) => {
+  private async handleEvent(eventType: string, data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
+    switch (eventType) {
+      case SallaEventType.ORDER_CREATED:          return this.handleOrderCreated(data, context);
+      case SallaEventType.ORDER_STATUS_UPDATED:   return this.handleOrderStatusUpdated(data, context);
+      case SallaEventType.ORDER_PAYMENT_UPDATED:  return this.handleOrderPaymentUpdated(data, context);
+      case SallaEventType.ORDER_SHIPPED:          return this.handleOrderShipped(data, context);
+      case SallaEventType.ORDER_DELIVERED:        return this.handleOrderDelivered(data, context);
+      case SallaEventType.ORDER_CANCELLED:        return this.handleOrderCancelled(data, context);
+      case SallaEventType.CUSTOMER_CREATED:       return this.handleCustomerCreated(data, context);
+      case SallaEventType.CUSTOMER_UPDATED:       return this.handleCustomerUpdated(data, context);
+      case SallaEventType.ABANDONED_CART:         return this.handleAbandonedCart(data, context);
+      case SallaEventType.SHIPMENT_CREATED:       return this.handleShipmentCreated(data, context);
+      case SallaEventType.TRACKING_REFRESHED:     return this.handleTrackingRefreshed(data, context);
+      case SallaEventType.PRODUCT_AVAILABLE:      return this.handleProductAvailable(data, context);
+      case SallaEventType.PRODUCT_QUANTITY_LOW:   return this.handleProductQuantityLow(data, context);
+      case SallaEventType.REVIEW_ADDED:           return this.handleReviewAdded(data, context);
+      case SallaEventType.APP_INSTALLED:          return this.handleAppInstalled(data, context);
+      case SallaEventType.APP_UNINSTALLED:        return this.handleAppUninstalled(data, context);
+      case SallaEventType.ORDER_REFUNDED:         return this.handleOrderRefunded(data, context);
+      case SallaEventType.PRODUCT_CREATED:        return this.handleProductCreated(data, context);
+      case SallaEventType.CUSTOMER_OTP_REQUEST:   return this.handleCustomerOtpRequest(data, context);
+      case SallaEventType.INVOICE_CREATED:        return this.handleInvoiceCreated(data, context);
+      default: this.logger.warn(`Unhandled event: ${eventType}`); return { handled: false, eventType };
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🗄️ Database Sync
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  private async syncCustomerToDatabase(customerData: Record<string, unknown>, context: { tenantId?: string; storeId?: string }): Promise<Customer | null> {
+    if (!context.storeId || !customerData?.id) { this.logger.warn('⚠️ Cannot sync customer: missing storeId or id'); return null; }
+    const sallaCustomerId = String(customerData.id);
     try {
-      // ✅ v7: تحقق إذا فيه قالب مفعّل بنفس الـ trigger event
-      if (preset.triggerEvent) {
-        const conflicting = templates.find(
-          t => (t as UITemplate).triggerEvent === preset.triggerEvent 
-            && ['approved', 'active'].includes(t.status ?? '')
-        )
-        if (conflicting) {
-          const confirmed = confirm(
-            `⚠️ يوجد قالب مفعّل بنفس الحدث:\n\n` +
-            `"${conflicting.name}" مربوط بـ ${preset.triggerEvent}\n\n` +
-            `تفعيل "${preset.name}" سيعطّل "${conflicting.name}" تلقائياً.\n\n` +
-            `هل تريد المتابعة؟`
-          )
-          if (!confirmed) return
-          
-          // تعطيل القالب القديم
-          try {
-            await templatesService.update(conflicting.id, { status: 'disabled' })
-            setTemplates(prev => prev.map(t => 
-              t.id === conflicting.id ? { ...t, status: 'disabled' } : t
-            ))
-          } catch (err) {
-            console.error('Error disabling conflicting template:', err)
-          }
-        }
-      }
+      let customer = await this.customerRepository.findOne({ where: { storeId: context.storeId, sallaCustomerId } });
+      const firstName = (customerData.first_name as string) || (customerData.name as string) || undefined;
+      const lastName = (customerData.last_name as string) || undefined;
+      const fullName = firstName && lastName ? `${firstName} ${lastName}` : firstName || undefined;
+      const phone = (customerData.mobile as string) || (customerData.phone as string) || (customerData.mobile_code as string) || undefined;
+      const email = (customerData.email as string) || undefined;
 
-      setActivatingPreset(preset.id)
-      const newTemplate = await templatesService.create({
-        name: preset.name,
-        content: customContent || preset.content,
-        category: preset.category,
-        status: 'approved',
-        triggerEvent: preset.triggerEvent || undefined,
-      })
-      setTemplates(prev => [...prev, newTemplate])
-      setPresets(prev => prev.filter(p => p.id !== preset.id))
-      showToast(`تم تفعيل "${preset.name}" بنجاح`)
-    } catch (err) {
-      console.error('Error activating:', err)
-      showToast('فشل في تفعيل القالب', 'error')
-    } finally {
-      setActivatingPreset(null)
+      if (customer) {
+        if (firstName) customer.firstName = firstName;
+        if (lastName) customer.lastName = lastName;
+        if (fullName) customer.fullName = fullName;
+        if (phone) customer.phone = phone;
+        if (email) customer.email = email;
+        customer.metadata = { ...(customer.metadata || {}), sallaData: customerData } as any;
+        customer = await this.customerRepository.save(customer);
+        this.logger.log(`🔄 Customer updated: ${sallaCustomerId} (${fullName || 'N/A'})`);
+      } else {
+        customer = this.customerRepository.create({
+          tenantId: context.tenantId, storeId: context.storeId, sallaCustomerId,
+          firstName, lastName, fullName, phone, email,
+          status: CustomerStatus.ACTIVE, metadata: { sallaData: customerData } as any,
+        });
+        customer = await this.customerRepository.save(customer);
+        this.logger.log(`✅ Customer saved: ${sallaCustomerId} (${fullName || 'N/A'}, phone: ${phone || 'N/A'})`);
+      }
+      return customer;
+    } catch (error: unknown) {
+      this.logger.error(`❌ Customer sync failed ${sallaCustomerId}: ${error instanceof Error ? error.message : 'Unknown'}`);
+      return null;
     }
   }
 
-  const handleActivateCategory = async (categoryId: string) => {
-    const categoryPresets = presets.filter(p => p.category === categoryId)
-    
-    // ✅ v7: تتبع القوالب المفعّلة لكل trigger لتجنب التعارض
-    const activatedTriggers = new Set(
-      templates
-        .filter(t => ['approved', 'active'].includes(t.status ?? ''))
-        .map(t => (t as UITemplate).triggerEvent)
-        .filter(Boolean)
-    )
-    
-    let activated = 0
-    let skipped = 0
-    
-    for (const preset of categoryPresets) {
-      // تخطي إذا فيه قالب مفعّل بنفس الـ trigger
-      if (preset.triggerEvent && activatedTriggers.has(preset.triggerEvent)) {
-        skipped++
-        continue
+  private async syncOrderToDatabase(orderData: Record<string, unknown>, context: { tenantId?: string; storeId?: string }, customerId?: string): Promise<Order | null> {
+    if (!context.storeId || !orderData?.id) { this.logger.warn('⚠️ Cannot sync order: missing storeId or id'); return null; }
+    const sallaOrderId = String(orderData.id);
+    try {
+      let order = await this.orderRepository.findOne({ where: { storeId: context.storeId, sallaOrderId } });
+      const status = this.mapSallaOrderStatus(orderData.status);
+      const items = Array.isArray(orderData.items)
+        ? (orderData.items as Array<Record<string, unknown>>).map(item => ({
+            productId: String(item.product_id || item.id || ''), name: String(item.name || ''),
+            sku: (item.sku as string) || undefined, quantity: Number(item.quantity || 1),
+            unitPrice: Number(item.price || item.unit_price || 0), totalPrice: Number(item.total || 0),
+          }))
+        : [];
+
+      if (order) {
+        order.status = status;
+        if (customerId) order.customerId = customerId;
+        order.referenceId = (orderData.reference_id as string) || (orderData.order_number as string) || order.referenceId;
+        if (orderData.total) order.totalAmount = Number(orderData.total);
+        if (items.length > 0) order.items = items as any;
+        order.metadata = { ...(order.metadata || {}), sallaData: orderData } as any;
+        order = await this.orderRepository.save(order);
+        this.logger.log(`🔄 Order updated: ${sallaOrderId} → ${status}`);
+      } else {
+        order = this.orderRepository.create({
+          tenantId: context.tenantId, storeId: context.storeId, customerId: customerId || undefined,
+          sallaOrderId, referenceId: (orderData.reference_id as string) || (orderData.order_number as string) || undefined,
+          status, currency: (orderData.currency as string) || 'SAR',
+          totalAmount: Number(orderData.total || 0), subtotal: Number(orderData.sub_total || orderData.total || 0),
+          items: items as any, metadata: { sallaData: orderData } as any,
+        });
+        order = await this.orderRepository.save(order);
+        this.logger.log(`✅ Order saved: ${sallaOrderId} (${order.totalAmount} ${order.currency})`);
       }
-      
+      return order;
+    } catch (error: unknown) {
+      this.logger.error(`❌ Order sync failed ${sallaOrderId}: ${error instanceof Error ? error.message : 'Unknown'}`);
+      return null;
+    }
+  }
+
+  private async updateOrderStatusInDatabase(orderData: Record<string, unknown>, context: { tenantId?: string; storeId?: string }, newStatus: OrderStatus, extraUpdates?: Partial<Order>): Promise<Order | null> {
+    if (!context.storeId || !orderData?.id) return null;
+    const sallaOrderId = String(orderData.id);
+    try {
+      const order = await this.orderRepository.findOne({ where: { storeId: context.storeId, sallaOrderId } });
+      if (!order) {
+        this.logger.warn(`⚠️ Order ${sallaOrderId} not in DB - creating`);
+        return this.syncOrderToDatabase({ ...orderData, status: newStatus }, context);
+      }
+      order.status = newStatus;
+      if (extraUpdates) Object.assign(order, extraUpdates);
+      order.metadata = { ...(order.metadata || {}), sallaData: { ...(order.metadata?.sallaData || {}), lastWebhookData: orderData } } as any;
+      const saved = await this.orderRepository.save(order);
+      this.logger.log(`🔄 Order ${sallaOrderId} → ${newStatus}`);
+      return saved;
+    } catch (error: unknown) {
+      this.logger.error(`❌ Order status update failed ${sallaOrderId}: ${error instanceof Error ? error.message : 'Unknown'}`);
+      return null;
+    }
+  }
+
+  /**
+   * 🔧 FIX #18 (TS2538) + H5: استخراج نص الحالة بأمان من أي نوع بيانات
+   * سلة ترسل status بأشكال مختلفة:
+   *   - string: "processing"
+   *   - object: { id: 1, name: "قيد التنفيذ", slug: "processing", customized: {...} }
+   *   - undefined/null
+   */
+  private extractStatusString(sallaStatus: unknown): string | undefined {
+    if (!sallaStatus) return undefined;
+
+    // إذا كانت string → نستخدمها مباشرة
+    if (typeof sallaStatus === 'string') {
+      return sallaStatus;
+    }
+
+    // إذا كانت object → نستخرج slug أو name
+    if (typeof sallaStatus === 'object' && sallaStatus !== null) {
+      const statusObj = sallaStatus as SallaStatusObject;
+
+      // الأولوية: slug (إنجليزي) → customized.slug → name → customized.name
+      if (statusObj.slug && typeof statusObj.slug === 'string') return statusObj.slug;
+      if (statusObj.customized?.slug && typeof statusObj.customized.slug === 'string') return statusObj.customized.slug;
+      if (statusObj.name && typeof statusObj.name === 'string') return statusObj.name;
+      if (statusObj.customized?.name && typeof statusObj.customized.name === 'string') return statusObj.customized.name;
+    }
+
+    // إذا كانت number → نحولها لـ string
+    if (typeof sallaStatus === 'number') {
+      return String(sallaStatus);
+    }
+
+    this.logger.warn(`⚠️ Unexpected status type: ${typeof sallaStatus}`, { status: JSON.stringify(sallaStatus) });
+    return undefined;
+  }
+
+  /**
+   * 🔧 FIX #18 + H5: تحويل حالة سلة → OrderStatus بشكل آمن
+   * يقبل any type ويستخرج string قبل البحث في الخريطة
+   */
+  private mapSallaOrderStatus(sallaStatus: unknown): OrderStatus {
+    const statusStr = this.extractStatusString(sallaStatus);
+    if (!statusStr) return OrderStatus.CREATED;
+
+    const s = statusStr.toLowerCase();
+
+    const map: Record<string, OrderStatus> = {
+      'created': OrderStatus.CREATED, 'new': OrderStatus.CREATED, 'pending': OrderStatus.CREATED,
+      'processing': OrderStatus.PROCESSING, 'in_progress': OrderStatus.PROCESSING,
+      'pending_payment': OrderStatus.PENDING_PAYMENT, 'paid': OrderStatus.PAID,
+      'ready_to_ship': OrderStatus.READY_TO_SHIP, 'ready': OrderStatus.READY_TO_SHIP,
+      'shipped': OrderStatus.SHIPPED, 'delivering': OrderStatus.SHIPPED,
+      'delivered': OrderStatus.DELIVERED, 'completed': OrderStatus.COMPLETED,
+      'cancelled': OrderStatus.CANCELLED, 'canceled': OrderStatus.CANCELLED,
+      'refunded': OrderStatus.REFUNDED, 'failed': OrderStatus.FAILED, 'on_hold': OrderStatus.ON_HOLD,
+      'restored': OrderStatus.PROCESSING,
+    };
+
+    const arMap: Record<string, OrderStatus> = {
+      'جديد': OrderStatus.CREATED, 'قيد التنفيذ': OrderStatus.PROCESSING, 'قيد المعالجة': OrderStatus.PROCESSING,
+      'بانتظار الدفع': OrderStatus.PENDING_PAYMENT, 'مدفوع': OrderStatus.PAID,
+      'جاهز للشحن': OrderStatus.READY_TO_SHIP, 'تم الشحن': OrderStatus.SHIPPED,
+      'قيد التوصيل': OrderStatus.SHIPPED, 'تم التوصيل': OrderStatus.DELIVERED,
+      'مكتمل': OrderStatus.COMPLETED, 'ملغي': OrderStatus.CANCELLED, 'مسترجع': OrderStatus.REFUNDED,
+      'فشل': OrderStatus.FAILED, 'معلّق': OrderStatus.ON_HOLD, 'مستعاد': OrderStatus.PROCESSING,
+    };
+
+    // 🔧 FIX: البحث باستخدام string مضمون (لا object)
+    return map[s] || arMap[statusStr] || OrderStatus.PROCESSING;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🛒 Order Handlers
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  private async handleOrderCreated(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
+    this.logger.log('Processing order.created', { orderId: data.id, storeId: context.storeId });
+    let savedCustomer: Customer | null = null;
+    const cd = data.customer as Record<string, unknown> | undefined;
+    if (cd?.id) savedCustomer = await this.syncCustomerToDatabase(cd, context);
+    const savedOrder = await this.syncOrderToDatabase(data, context, savedCustomer?.id);
+
+    this.eventEmitter.emit('order.created', {
+      tenantId: context.tenantId, storeId: context.storeId, orderId: data.id,
+      orderNumber: data.reference_id || data.order_number,
+      customerName: cd?.first_name || cd?.name, customerPhone: cd?.mobile || cd?.phone,
+      totalAmount: data.total, currency: data.currency, items: data.items, status: data.status,
+      raw: data, dbOrderId: savedOrder?.id, dbCustomerId: savedCustomer?.id,
+    });
+    return { handled: true, action: 'order_created', orderId: data.id, dbOrderId: savedOrder?.id || 'sync_failed', dbCustomerId: savedCustomer?.id || 'no_customer', emittedEvent: 'order.created' };
+  }
+
+  private async handleOrderStatusUpdated(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
+    this.logger.log('Processing order.status.updated', { orderId: data.id, status: data.status });
+    // 🔧 FIX: نمرر data.status كـ unknown وnot as string
+    const newStatus = this.mapSallaOrderStatus(data.status);
+    await this.updateOrderStatusInDatabase(data, context, newStatus);
+
+    const orderObj = data.order as Record<string, unknown> | undefined;
+    const customerData = (data.customer || orderObj?.customer) as Record<string, unknown> | undefined;
+    if (customerData?.id) {
+      await this.syncCustomerToDatabase(customerData, context);
+    }
+
+    const eventPayload = { tenantId: context.tenantId, storeId: context.storeId, orderId: data.id, newStatus: data.status, previousStatus: data.previous_status, raw: data };
+
+    // ✅ v8 CRITICAL FIX: نرسل فقط event خاص بالحالة - بدون event عام
+    // order.status.updated العام كان يسبب إرسال القالب الغلط
+    const statusSlug = this.extractStatusString(data.status)?.toLowerCase() || '';
+    const specificEvent = this.mapStatusToSpecificEvent(statusSlug, newStatus);
+    
+    if (specificEvent) {
+      this.logger.log(`📌 Emitting ONLY specific event: ${specificEvent} (slug: "${statusSlug}", dbStatus: ${newStatus})`);
+      this.eventEmitter.emit(specificEvent, eventPayload);
+    } else {
+      this.logger.warn(`⚠️ Unknown status slug: "${statusSlug}" (dbStatus: ${newStatus}) - no template will be sent`);
+      // لا نرسل order.status.updated العام - لأنه يسبب إرسال قالب غلط
+    }
+
+    return { handled: true, action: 'order_status_updated', orderId: data.id, newStatus: data.status, dbStatus: newStatus, specificEvent: specificEvent || 'NONE_MATCHED' };
+  }
+
+  /**
+   * ✅ v7: ربط حالة سلة → event خاص للقالب
+   * هذا يخلي كل حالة طلب ترسل القالب الصحيح
+   */
+  private mapStatusToSpecificEvent(statusSlug: string, dbStatus: OrderStatus): string | null {
+    // أولاً: بالـ slug الإنجليزي من سلة
+    const slugMap: Record<string, string> = {
+      'processing': 'order.status.processing',
+      'in_progress': 'order.status.processing',
+      'under_review': 'order.status.under_review',
+      'awaiting_review': 'order.status.under_review',
+      'completed': 'order.status.completed',
+      'in_transit': 'order.status.in_transit',
+      'out_for_delivery': 'order.status.in_transit',
+      'delivering': 'order.status.in_transit',
+      'shipped': 'order.status.shipped',
+      'ready_to_ship': 'order.status.ready_to_ship',
+      'ready': 'order.status.ready_to_ship',
+      'pending_payment': 'order.status.pending_payment',
+      'restoring': 'order.status.restoring',
+      'restored': 'order.status.restoring',
+      'on_hold': 'order.status.on_hold',
+    };
+    if (slugMap[statusSlug]) return slugMap[statusSlug];
+
+    // ثانياً: بالـ slug العربي
+    const arMap: Record<string, string> = {
+      'قيد التنفيذ': 'order.status.processing',
+      'قيد المعالجة': 'order.status.processing',
+      'بانتظار المراجعة': 'order.status.under_review',
+      'تم التنفيذ': 'order.status.completed',
+      'جاري التوصيل': 'order.status.in_transit',
+      'قيد التوصيل': 'order.status.in_transit',
+      'تم الشحن': 'order.status.shipped',
+      'جاهز للشحن': 'order.status.ready_to_ship',
+      'بانتظار الدفع': 'order.status.pending_payment',
+      'قيد الاسترجاع': 'order.status.restoring',
+      'مستعاد': 'order.status.restoring',
+      'معلّق': 'order.status.on_hold',
+    };
+    if (arMap[statusSlug]) return arMap[statusSlug];
+
+    // ثالثاً: من OrderStatus المحوّل
+    const dbMap: Record<string, string> = {
+      [OrderStatus.PROCESSING]: 'order.status.processing',
+      [OrderStatus.SHIPPED]: 'order.status.shipped',
+      [OrderStatus.DELIVERED]: 'order.status.delivered',
+      [OrderStatus.COMPLETED]: 'order.status.completed',
+      [OrderStatus.READY_TO_SHIP]: 'order.status.ready_to_ship',
+      [OrderStatus.PENDING_PAYMENT]: 'order.status.pending_payment',
+      [OrderStatus.ON_HOLD]: 'order.status.on_hold',
+    };
+    return dbMap[dbStatus] || null;
+  }
+
+  private async handleOrderPaymentUpdated(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
+    this.logger.log('Processing order.payment.updated', { orderId: data.id });
+    if (context.storeId && data.id) {
       try {
-        setActivatingPreset(preset.id)
-        const newTemplate = await templatesService.create({
-          name: preset.name,
-          content: preset.content,
-          category: preset.category,
-          status: 'approved',
-          triggerEvent: preset.triggerEvent || undefined,
-        })
-        setTemplates(prev => [...prev, newTemplate])
-        setPresets(prev => prev.filter(p => p.id !== preset.id))
-        if (preset.triggerEvent) activatedTriggers.add(preset.triggerEvent)
-        activated++
-      } catch (err) {
-        console.error(`Error activating ${preset.id}:`, err)
-      }
-    }
-    setActivatingPreset(null)
-    const msg = skipped > 0 
-      ? `تم تفعيل ${activated} قالب (تم تخطي ${skipped} لتجنب التعارض)`
-      : `تم تفعيل ${activated} قالب`
-    showToast(msg)
-  }
-
-  const handleActivateAll = async () => {
-    // ✅ v7: تتبع القوالب المفعّلة لكل trigger لتجنب التعارض
-    const activatedTriggers = new Set(
-      templates
-        .filter(t => ['approved', 'active'].includes(t.status ?? ''))
-        .map(t => (t as UITemplate).triggerEvent)
-        .filter(Boolean)
-    )
-    
-    let activated = 0
-    let skipped = 0
-    
-    for (const preset of [...presets]) {
-      // تخطي إذا فيه قالب مفعّل بنفس الـ trigger
-      if (preset.triggerEvent && activatedTriggers.has(preset.triggerEvent)) {
-        skipped++
-        continue
-      }
-      
-      try {
-        setActivatingPreset(preset.id)
-        const newTemplate = await templatesService.create({
-          name: preset.name,
-          content: preset.content,
-          category: preset.category,
-          status: 'approved',
-          triggerEvent: preset.triggerEvent || undefined,
-        })
-        setTemplates(prev => [...prev, newTemplate])
-        setPresets(prev => prev.filter(p => p.id !== preset.id))
-        if (preset.triggerEvent) activatedTriggers.add(preset.triggerEvent)
-        activated++
-      } catch (err) {
-        console.error(`Error:`, err)
-      }
-    }
-    setActivatingPreset(null)
-    const msg = skipped > 0
-      ? `تم تفعيل ${activated} قالب بنجاح (تم تخطي ${skipped} لتجنب التعارض) 🎉`
-      : `تم تفعيل ${activated} قالب بنجاح 🎉`
-    showToast(msg)
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // تعديل نص القالب
-  // ═══════════════════════════════════════════════════════════════════════════
-  const handleSaveEdit = async (content: string) => {
-    if (!editingTemplate) return
-    try {
-      setSaving(true)
-      const updated = await templatesService.update(editingTemplate.id, { content })
-      setTemplates(templates.map(t => t.id === editingTemplate.id ? { ...t, ...updated, content } : t))
-      setEditingTemplate(null)
-      showToast('تم حفظ التعديلات ✏️')
-    } catch (err) {
-      console.error('Error saving:', err)
-      showToast('فشل في حفظ التعديلات', 'error')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // تعديل نص قالب جاهز قبل التفعيل
-  // ═══════════════════════════════════════════════════════════════════════════
-  const handleSavePresetEdit = async (content: string) => {
-    if (!editingPreset) return
-    await handleActivatePreset(editingPreset, content)
-    setEditingPreset(null)
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // تبديل حالة القالب
-  // ═══════════════════════════════════════════════════════════════════════════
-  const handleToggle = async (templateId: string) => {
-    const template = templates.find(t => t.id === templateId)
-    if (!template) return
-    try {
-      setToggling(templateId)
-      const currentStatus = template.status ?? 'draft'
-      const isActive = currentStatus === 'approved' || currentStatus === 'active'
-      const newStatus = isActive ? 'disabled' : 'approved'
-      
-      // ✅ v7: لو يفعّل قالب → تحقق من تعارض مع قالب آخر بنفس الـ trigger
-      if (!isActive && (template as UITemplate).triggerEvent) {
-        const triggerEvent = (template as UITemplate).triggerEvent
-        const conflicting = templates.find(
-          t => t.id !== templateId 
-            && (t as UITemplate).triggerEvent === triggerEvent 
-            && ['approved', 'active'].includes(t.status ?? '')
-        )
-        if (conflicting) {
-          const confirmed = confirm(
-            `⚠️ يوجد قالب مفعّل بنفس الحدث:\n\n` +
-            `"${conflicting.name}" مربوط بـ ${triggerEvent}\n\n` +
-            `تفعيل "${template.name}" سيعطّل "${conflicting.name}" تلقائياً.\n\n` +
-            `هل تريد المتابعة؟`
-          )
-          if (!confirmed) {
-            setToggling(null)
-            return
-          }
-          
-          // تعطيل القالب القديم
-          try {
-            await templatesService.update(conflicting.id, { status: 'disabled' })
-            setTemplates(prev => prev.map(t => 
-              t.id === conflicting.id ? { ...t, status: 'disabled' } : t
-            ))
-          } catch (err) {
-            console.error('Error disabling conflicting template:', err)
-          }
+        const order = await this.orderRepository.findOne({ where: { storeId: context.storeId, sallaOrderId: String(data.id) } });
+        if (order) {
+          const pd = data.payment as Record<string, unknown>;
+          if (pd?.status === 'paid') order.paymentStatus = 'paid' as any;
+          order.metadata = { ...(order.metadata || {}), sallaData: { ...(order.metadata?.sallaData || {}), lastPaymentWebhook: data } } as any;
+          await this.orderRepository.save(order);
+          this.logger.log(`🔄 Order ${data.id} payment updated`);
         }
-      }
-      
-      const updated = await templatesService.update(templateId, { status: newStatus })
-      setTemplates(templates.map(t => t.id === templateId ? { ...t, ...updated } : t))
-      showToast(isActive ? 'تم تعطيل القالب' : 'تم تفعيل القالب')
-    } catch (err) {
-      console.error('Error toggling:', err)
-      showToast('فشل في تحديث حالة القالب', 'error')
-    } finally {
-      setToggling(null)
+      } catch { this.logger.warn(`⚠️ Payment update failed for ${data.id}`); }
     }
+    this.eventEmitter.emit('order.payment.updated', { tenantId: context.tenantId, storeId: context.storeId, orderId: data.id, paymentStatus: (data.payment as Record<string, unknown>)?.status || data.payment_status, paymentMethod: (data.payment as Record<string, unknown>)?.method || data.payment_method, raw: data });
+    return { handled: true, action: 'order_payment_updated', orderId: data.id, emittedEvent: 'order.payment.updated' };
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // حذف قالب
-  // ═══════════════════════════════════════════════════════════════════════════
-  const handleDelete = async (templateId: string) => {
-    const template = templates.find(t => t.id === templateId)
-    if (!template) return
-    if (!confirm(`هل تريد حذف قالب "${template.name}"؟`)) return
-    try {
-      await templatesService.delete(templateId)
-      setTemplates(templates.filter(t => t.id !== templateId))
-      showToast('تم حذف القالب')
-      // إعادة جلب الـ presets عشان القالب المحذوف يرجع كـ preset
-      const presetsData = await templatesService.getPresets()
-      const activeNames = new Set(templates.filter(t => t.id !== templateId).map(t => t.name))
-      setPresets((presetsData || []).filter((p: Preset) => !activeNames.has(p.name)))
-    } catch (err) {
-      console.error('Error deleting:', err)
-      showToast('فشل في حذف القالب', 'error')
-    }
+  private async handleOrderShipped(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
+    this.logger.log('Processing order.shipped', { orderId: data.id });
+    await this.updateOrderStatusInDatabase(data, context, OrderStatus.SHIPPED, { shippedAt: new Date() });
+    this.eventEmitter.emit('order.shipped', { tenantId: context.tenantId, storeId: context.storeId, orderId: data.id, trackingNumber: data.tracking_number, shippingCompany: data.shipping_company, raw: data });
+    return { handled: true, action: 'order_shipped', orderId: data.id, emittedEvent: 'order.shipped' };
   }
 
-  // إحصائيات
-  const enabledCount = templates.filter(t => ['approved', 'active'].includes(t.status ?? '')).length
-  const totalUsage = templates.reduce((sum, t) => sum + (t.usageCount ?? 0), 0)
-
-  // فلترة حسب التصنيف
-  const filteredTemplates = activeCategory === 'all'
-    ? templates
-    : templates.filter(t => (t.category ?? '') === activeCategory)
-
-  const filteredPresets = activeCategory === 'all'
-    ? presets
-    : presets.filter(p => p.category === activeCategory)
-
-  const getCategoryCount = (catId: string) => {
-    if (catId === 'all') return templates.length + presets.length
-    return templates.filter(t => t.category === catId).length +
-           presets.filter(p => p.category === catId).length
+  private async handleOrderDelivered(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
+    this.logger.log('Processing order.delivered', { orderId: data.id });
+    await this.updateOrderStatusInDatabase(data, context, OrderStatus.DELIVERED, { deliveredAt: new Date() });
+    this.eventEmitter.emit('order.delivered', { tenantId: context.tenantId, storeId: context.storeId, orderId: data.id, raw: data });
+    return { handled: true, action: 'order_delivered', orderId: data.id, emittedEvent: 'order.delivered' };
   }
 
-  // الحصول على النص الأصلي للقالب من الـ presets
-  const getDefaultContent = (templateName: string): string | undefined => {
-    // هذا بيرجع undefined لو ما لقى — وهذا مقصود
-    return undefined
+  private async handleOrderCancelled(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
+    this.logger.log('Processing order.cancelled', { orderId: data.id });
+    await this.updateOrderStatusInDatabase(data, context, OrderStatus.CANCELLED, { cancelledAt: new Date() });
+    this.eventEmitter.emit('order.cancelled', { tenantId: context.tenantId, storeId: context.storeId, orderId: data.id, cancelReason: data.cancel_reason, raw: data });
+    return { handled: true, action: 'order_cancelled', orderId: data.id, emittedEvent: 'order.cancelled' };
   }
 
-  if (loading) return <LoadingSkeleton />
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 👤 Customer Handlers
+  // ═══════════════════════════════════════════════════════════════════════════════
 
-  if (error) {
-    return (
-      <div className="text-center py-12">
-        <div className="text-6xl mb-4">⚠️</div>
-        <h3 className="text-xl font-medium text-white mb-2">{error}</h3>
-        <button onClick={fetchData} className="px-6 py-3 rounded-xl bg-gradient-to-r from-emerald-500 to-violet-500 text-white">
-          إعادة المحاولة
-        </button>
-      </div>
-    )
+  private async handleCustomerCreated(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
+    this.logger.log('Processing customer.created', { customerId: data.id });
+    const saved = await this.syncCustomerToDatabase(data, context);
+    this.eventEmitter.emit('customer.created', { tenantId: context.tenantId, storeId: context.storeId, customerId: data.id, firstName: data.first_name, lastName: data.last_name, email: data.email, mobile: data.mobile, raw: data, dbCustomerId: saved?.id });
+    return { handled: true, action: 'customer_created', customerId: data.id, dbCustomerId: saved?.id || 'sync_failed', emittedEvent: 'customer.created' };
   }
 
-  return (
-    <div className="p-8 space-y-6">
-      {/* Toast */}
-      {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+  private async handleCustomerUpdated(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
+    this.logger.log('Processing customer.updated', { customerId: data.id });
+    await this.syncCustomerToDatabase(data, context);
+    this.eventEmitter.emit('customer.updated', { tenantId: context.tenantId, storeId: context.storeId, customerId: data.id, raw: data });
+    return { handled: true, action: 'customer_updated', customerId: data.id, emittedEvent: 'customer.updated' };
+  }
 
-      {/* Edit Modal */}
-      {editingTemplate && (
-        <EditModal
-          template={editingTemplate}
-          defaultContent={getDefaultContent(editingTemplate.name)}
-          onSave={handleSaveEdit}
-          onClose={() => setEditingTemplate(null)}
-          saving={saving}
-        />
-      )}
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🛒 Cart / 📦 Shipment / Product / Review / App / Extra
+  // ═══════════════════════════════════════════════════════════════════════════════
 
-      {/* Edit Preset Modal (تعديل قبل التفعيل) */}
-      {editingPreset && (
-        <EditModal
-          template={{
-            id: editingPreset.id,
-            name: editingPreset.name,
-            content: editingPreset.content,
-            category: editingPreset.category,
-          }}
-          defaultContent={editingPreset.content}
-          onSave={handleSavePresetEdit}
-          onClose={() => setEditingPreset(null)}
-          saving={saving}
-        />
-      )}
+  private async handleAbandonedCart(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
+    this.logger.log('Processing abandoned.cart', { cartId: data.id });
+    const cd = data.customer as Record<string, unknown> | undefined;
+    if (cd?.id) await this.syncCustomerToDatabase(cd, context);
+    this.eventEmitter.emit('cart.abandoned', { tenantId: context.tenantId, storeId: context.storeId, cartId: data.id, customerName: cd?.first_name, customerPhone: cd?.mobile, customerEmail: cd?.email, cartTotal: data.total, items: data.items, raw: data });
+    return { handled: true, action: 'abandoned_cart', cartId: data.id, emittedEvent: 'cart.abandoned' };
+  }
 
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold flex items-center gap-3">
-            <span className="text-3xl">📨</span>
-            قوالب الرسائل التلقائية
-          </h1>
-          <p className="text-slate-400 text-sm">إعداد رسائل واتساب تلقائية لكل حدث في متجرك • تقدر تعدّل النص على كيفك ✏️</p>
-        </div>
-        <div className="flex items-center gap-3">
-          {presets.length > 0 && (
-            <button
-              onClick={handleActivateAll}
-              disabled={activatingPreset !== null}
-              className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-violet-500 text-white text-sm hover:opacity-90 transition-all"
-            >
-              ⚡ تفعيل الكل ({presets.length})
-            </button>
-          )}
-          <div className="px-4 py-2 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-sm">
-            {enabledCount} قالب مفعّل
-          </div>
-        </div>
-      </div>
+  private async handleShipmentCreated(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
+    this.logger.log('Processing shipment.created', { shipmentId: data.id });
+    this.eventEmitter.emit('shipment.created', { tenantId: context.tenantId, storeId: context.storeId, shipmentId: data.id, orderId: data.order_id, trackingNumber: data.tracking_number, shippingCompany: data.shipping_company, raw: data });
+    return { handled: true, action: 'shipment_created', shipmentId: data.id, emittedEvent: 'shipment.created' };
+  }
 
-      {/* Stats */}
-      <div className="grid grid-cols-4 gap-4">
-        <div className="p-4 rounded-2xl border bg-emerald-500/10 border-emerald-500/30">
-          <div className="text-xl mb-1">📤</div>
-          <div className="text-2xl font-bold text-white">{totalUsage.toLocaleString()}</div>
-          <div className="text-xs text-slate-400">رسائل مُرسلة</div>
-        </div>
-        <div className="p-4 rounded-2xl border bg-violet-500/10 border-violet-500/30">
-          <div className="text-xl mb-1">📝</div>
-          <div className="text-2xl font-bold text-white">{templates.length}</div>
-          <div className="text-xs text-slate-400">قوالب مفعّلة</div>
-        </div>
-        <div className="p-4 rounded-2xl border bg-blue-500/10 border-blue-500/30">
-          <div className="text-xl mb-1">🎁</div>
-          <div className="text-2xl font-bold text-white">{presets.length}</div>
-          <div className="text-xs text-slate-400">قوالب جاهزة</div>
-        </div>
-        <div className="p-4 rounded-2xl border bg-amber-500/10 border-amber-500/30">
-          <div className="text-xl mb-1">📊</div>
-          <div className="text-2xl font-bold text-white">{CATEGORIES.length - 1}</div>
-          <div className="text-xs text-slate-400">تصنيفات</div>
-        </div>
-      </div>
+  private async handleTrackingRefreshed(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
+    this.logger.log('Processing tracking.refreshed', { orderId: data.id });
+    this.eventEmitter.emit('tracking.refreshed', { tenantId: context.tenantId, storeId: context.storeId, shipmentId: data.id, trackingStatus: data.status, raw: data });
+    return { handled: true, action: 'tracking_refreshed', shipmentId: data.id, emittedEvent: 'tracking.refreshed' };
+  }
 
-      {/* Info Banner */}
-      <div className="p-4 rounded-2xl bg-gradient-to-r from-violet-500/20 to-emerald-500/20 border border-violet-500/30">
-        <div className="flex items-start gap-3">
-          <div className="text-2xl">💡</div>
-          <div>
-            <h3 className="font-semibold text-white text-sm mb-1">تقدر تعدّل أي قالب!</h3>
-            <p className="text-xs text-slate-300">
-              اضغط على <strong className="text-violet-400">✏️ تعديل</strong> في أي قالب عشان تكتب النص بأسلوبك الخاص.
-              استخدم المتغيرات مثل <code className="text-emerald-400 bg-slate-800 px-1 rounded">{'{{customer_name}}'}</code> وبتتبدل تلقائي بمعلومات العميل.
-              رسائل واتساب تحقق معدل فتح <strong className="text-emerald-400">98%</strong> 🚀
-            </p>
-          </div>
-        </div>
-      </div>
+  private async handleProductAvailable(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
+    this.logger.log('Processing product.available', { productId: data.id });
+    this.eventEmitter.emit('product.available', { tenantId: context.tenantId, storeId: context.storeId, productId: data.id, productName: data.name, quantity: data.quantity, raw: data });
+    return { handled: true, action: 'product_available', productId: data.id, emittedEvent: 'product.available' };
+  }
 
-      {/* Categories Tabs */}
-      <div className="flex gap-2 overflow-x-auto pb-2">
-        {CATEGORIES.map(cat => {
-          const count = getCategoryCount(cat.id)
-          return (
-            <button
-              key={cat.id}
-              onClick={() => setActiveCategory(cat.id)}
-              className={`px-4 py-2 rounded-xl text-sm transition-all flex items-center gap-2 whitespace-nowrap ${
-                activeCategory === cat.id
-                  ? 'bg-violet-500/20 text-violet-400 border border-violet-500/30'
-                  : 'bg-slate-800/50 text-slate-400 border border-slate-700/50 hover:text-white'
-              }`}
-            >
-              <span>{cat.icon}</span>
-              {cat.label}
-              <span className="px-1.5 py-0.5 rounded bg-slate-700 text-xs">{count}</span>
-            </button>
-          )
-        })}
-      </div>
+  private async handleProductQuantityLow(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
+    this.logger.log('⚠️ Processing product.quantity.low', { productId: data.id, quantity: data.quantity });
+    this.eventEmitter.emit('product.quantity.low', { tenantId: context.tenantId, storeId: context.storeId, productId: data.id, productName: data.name, currentQuantity: data.quantity, raw: data });
+    return { handled: true, action: 'product_quantity_low', productId: data.id, quantity: data.quantity, emittedEvent: 'product.quantity.low' };
+  }
 
-      {/* القوالب الجاهزة */}
-      {filteredPresets.length > 0 && (
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-base font-bold text-white flex items-center gap-2">
-              🎁 قوالب جاهزة للتفعيل
-              <span className="text-xs font-normal text-slate-400">({filteredPresets.length} قالب)</span>
-            </h2>
-            {activeCategory !== 'all' && filteredPresets.length > 1 && (
-              <button
-                onClick={() => handleActivateCategory(activeCategory)}
-                disabled={activatingPreset !== null}
-                className="px-4 py-1.5 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs hover:bg-emerald-500/30"
-              >
-                ⚡ تفعيل كل التصنيف ({filteredPresets.length})
-              </button>
-            )}
-          </div>
+  private async handleReviewAdded(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
+    this.logger.log('Processing review.added', { reviewId: data.id });
+    this.eventEmitter.emit('review.added', { tenantId: context.tenantId, storeId: context.storeId, reviewId: data.id, productId: data.product_id, rating: data.rating, content: data.content, customerName: data.customer_name, raw: data });
+    return { handled: true, action: 'review_added', reviewId: data.id, rating: data.rating, emittedEvent: 'review.added' };
+  }
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-            {filteredPresets.map(preset => (
-              <PresetCard
-                key={preset.id}
-                preset={preset}
-                onActivate={() => handleActivatePreset(preset)}
-                onCustomActivate={() => setEditingPreset(preset)}
-                activating={activatingPreset === preset.id}
-              />
-            ))}
-          </div>
-        </div>
-      )}
+  private async handleAppInstalled(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
+    this.logger.log('🎉 Processing app.installed', { merchant: data.merchant });
+    this.eventEmitter.emit('app.installed', { tenantId: context.tenantId, storeId: context.storeId, merchant: data.merchant, raw: data });
+    return { handled: true, action: 'app_installed', merchant: data.merchant, emittedEvent: 'app.installed' };
+  }
 
-      {/* القوالب المفعّلة */}
-      {filteredTemplates.length > 0 && (
-        <div className="space-y-3">
-          <h2 className="text-base font-bold text-white flex items-center gap-2">
-            ✅ القوالب المفعّلة
-            <span className="text-xs font-normal text-slate-400">({filteredTemplates.length} قالب)</span>
-          </h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-            {filteredTemplates.map(template => (
-              <TemplateCard
-                key={template.id}
-                template={template}
-                onToggle={() => handleToggle(template.id)}
-                onEdit={() => setEditingTemplate(template)}
-                onDelete={() => handleDelete(template.id)}
-                toggling={toggling === template.id}
-              />
-            ))}
-          </div>
-        </div>
-      )}
+  private async handleAppUninstalled(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
+    this.logger.log('⚠️ Processing app.uninstalled', { merchant: data.merchant });
+    this.eventEmitter.emit('app.uninstalled', { tenantId: context.tenantId, storeId: context.storeId, merchant: data.merchant, raw: data });
+    return { handled: true, action: 'app_uninstalled', merchant: data.merchant, emittedEvent: 'app.uninstalled' };
+  }
 
-      {/* حالة فارغة */}
-      {filteredTemplates.length === 0 && filteredPresets.length === 0 && (
-        <div className="text-center py-12">
-          <div className="text-5xl mb-4">📝</div>
-          <h3 className="text-lg font-medium text-white mb-2">لا توجد قوالب في هذا التصنيف</h3>
-          <p className="text-slate-400 text-sm">اختر تصنيفاً آخر أو عُد إلى &quot;الكل&quot;</p>
-        </div>
-      )}
-    </div>
-  )
+  private async handleOrderRefunded(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
+    this.logger.log('Processing order.refunded', { orderId: data.id });
+    await this.updateOrderStatusInDatabase(data, context, OrderStatus.REFUNDED);
+    this.eventEmitter.emit('order.refunded', { tenantId: context.tenantId, storeId: context.storeId, orderId: data.id, status: data.status, raw: data });
+    return { handled: true, action: 'order_refunded', orderId: data.id, emittedEvent: 'order.refunded' };
+  }
+
+  private async handleProductCreated(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
+    this.logger.log('Processing product.created', { productId: data.id });
+    this.eventEmitter.emit('product.created', { tenantId: context.tenantId, storeId: context.storeId, productId: data.id, raw: data });
+    return { handled: true, action: 'product_created', productId: data.id, emittedEvent: 'product.created' };
+  }
+
+  private async handleCustomerOtpRequest(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
+    this.logger.log('Processing customer.otp.request', { customerId: data.id });
+    this.eventEmitter.emit('customer.otp.request', { tenantId: context.tenantId, storeId: context.storeId, customerId: data.id, raw: data });
+    return { handled: true, action: 'customer_otp_request', customerId: data.id, emittedEvent: 'customer.otp.request' };
+  }
+
+  private async handleInvoiceCreated(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
+    this.logger.log('Processing invoice.created', { invoiceId: data.id });
+    this.eventEmitter.emit('invoice.created', { tenantId: context.tenantId, storeId: context.storeId, invoiceId: data.id, raw: data });
+    return { handled: true, action: 'invoice_created', invoiceId: data.id, emittedEvent: 'invoice.created' };
+  }
+
+  @OnWorkerEvent('completed') onCompleted(job: Job) { this.logger.debug(`Job completed: ${job.id}`); }
+  @OnWorkerEvent('failed') onFailed(job: Job, error: Error) { this.logger.error(`Job failed: ${job.id}`, { error: error.message, attempts: job.attemptsMade }); }
+  @OnWorkerEvent('stalled') onStalled(jobId: string) { this.logger.warn(`Job stalled: ${jobId}`); }
 }
