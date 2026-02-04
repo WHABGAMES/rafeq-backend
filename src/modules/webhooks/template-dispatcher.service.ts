@@ -4,6 +4,8 @@
  * ║                                                                                ║
  * ║  📌 يستمع لأحداث الـ webhooks ويرسل رسائل واتساب تلقائية                      ║
  * ║                                                                                ║
+ * ║  ✅ v3: تسجيل مفصّل + جلب رقم العميل من قاعدة البيانات                        ║
+ * ║                                                                                ║
  * ║  المسار:                                                                       ║
  * ║  Webhook → Processor → EventEmitter → هذا الـ Service                          ║
  * ║  → يبحث عن قالب مفعّل بنفس triggerEvent                                       ║
@@ -15,7 +17,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { MessageTemplate } from '@database/entities';
+import { MessageTemplate, Order, Customer } from '@database/entities';
 import { Channel, ChannelType, ChannelStatus } from '../channels/entities/channel.entity';
 import { ChannelsService } from '../channels/channels.service';
 
@@ -29,6 +31,12 @@ export class TemplateDispatcherService {
 
     @InjectRepository(Channel)
     private readonly channelRepository: Repository<Channel>,
+
+    @InjectRepository(Order)
+    private readonly orderRepository: Repository<Order>,
+
+    @InjectRepository(Customer)
+    private readonly customerRepository: Repository<Customer>,
 
     private readonly channelsService: ChannelsService,
   ) {}
@@ -97,6 +105,32 @@ export class TemplateDispatcherService {
     await this.dispatch('product.available', payload);
   }
 
+  // ✅ v3: أحداث إضافية
+  @OnEvent('product.quantity.low')
+  async onProductQuantityLow(payload: Record<string, unknown>) {
+    await this.dispatch('product.quantity.low', payload);
+  }
+
+  @OnEvent('order.refunded')
+  async onOrderRefunded(payload: Record<string, unknown>) {
+    await this.dispatch('order.refunded', payload);
+  }
+
+  @OnEvent('product.created')
+  async onProductCreated(payload: Record<string, unknown>) {
+    await this.dispatch('product.created', payload);
+  }
+
+  @OnEvent('customer.otp.request')
+  async onCustomerOtpRequest(payload: Record<string, unknown>) {
+    await this.dispatch('customer.otp.request', payload);
+  }
+
+  @OnEvent('invoice.created')
+  async onInvoiceCreated(payload: Record<string, unknown>) {
+    await this.dispatch('invoice.created', payload);
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════════
   // Main Dispatch Logic
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -122,12 +156,17 @@ export class TemplateDispatcherService {
         ],
       });
 
+      // ✅ LOG level بدل DEBUG - لازم يظهر في الـ production logs
+      this.logger.log(`📋 Templates found: ${templates.length} for trigger: ${triggerEvent}`, {
+        tenantId,
+        triggerEvent,
+        templateNames: templates.map(t => t.name),
+      });
+
       if (templates.length === 0) {
-        this.logger.debug(`No active templates for trigger: ${triggerEvent}`);
+        this.logger.warn(`⚠️ No active templates found for trigger: ${triggerEvent} (tenantId: ${tenantId})`);
         return;
       }
-
-      this.logger.log(`Found ${templates.length} template(s) for ${triggerEvent}`);
 
       // 2️⃣ البحث عن قناة واتساب متصلة
       const channel = await this.findActiveWhatsAppChannel(storeId);
@@ -135,13 +174,27 @@ export class TemplateDispatcherService {
         this.logger.warn(`⚠️ No active WhatsApp channel for store ${storeId}`);
         return;
       }
+      this.logger.log(`📱 WhatsApp channel found: ${channel.id} (type: ${channel.type})`);
 
       // 3️⃣ استخراج رقم هاتف العميل
-      const customerPhone = this.extractCustomerPhone(raw);
+      let customerPhone = this.extractCustomerPhone(raw);
+
+      // ✅ v3: إذا ما لقينا الرقم من بيانات الـ webhook → نبحث في قاعدة البيانات
       if (!customerPhone) {
-        this.logger.warn(`⚠️ No customer phone for event ${triggerEvent}`);
+        this.logger.log(`🔍 Phone not in webhook data, looking up from database...`);
+        customerPhone = await this.lookupCustomerPhone(raw, storeId);
+      }
+
+      if (!customerPhone) {
+        this.logger.warn(`⚠️ No customer phone found for event ${triggerEvent}`, {
+          rawKeys: Object.keys(raw),
+          hasCustomer: !!raw.customer,
+          orderId: raw.id || raw.orderId,
+        });
         return;
       }
+
+      this.logger.log(`📞 Customer phone: ${customerPhone}`);
 
       // 4️⃣ إرسال الرسائل
       for (const template of templates) {
@@ -150,7 +203,9 @@ export class TemplateDispatcherService {
 
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : 'Unknown';
-      this.logger.error(`❌ Template dispatch failed for ${triggerEvent}: ${msg}`);
+      this.logger.error(`❌ Template dispatch failed for ${triggerEvent}: ${msg}`, {
+        stack: error instanceof Error ? error.stack : undefined,
+      });
     }
   }
 
@@ -169,6 +224,7 @@ export class TemplateDispatcherService {
       this.logger.log(`📤 Sending "${template.name}" to ${customerPhone}`, {
         channelId: channel.id,
         templateId: template.id,
+        messagePreview: message.substring(0, 80) + '...',
       });
 
       const result = await this.channelsService.sendWhatsAppMessage(
@@ -177,8 +233,8 @@ export class TemplateDispatcherService {
         message,
       );
 
-      this.logger.log(`✅ Sent: ${template.name} → ${customerPhone}`, {
-        messageId: result.messageId,
+      this.logger.log(`✅ Message sent: "${template.name}" → ${customerPhone}`, {
+        messageId: result?.messageId || 'N/A',
       });
 
       // تحديث إحصائيات الاستخدام
@@ -186,12 +242,131 @@ export class TemplateDispatcherService {
 
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : 'Unknown';
-      this.logger.error(`❌ Failed "${template.name}" → ${customerPhone}: ${msg}`);
+      this.logger.error(`❌ Failed to send "${template.name}" → ${customerPhone}: ${msg}`, {
+        stack: error instanceof Error ? error.stack : undefined,
+      });
     }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // Helpers
+  // Phone Lookup Helpers
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * استخراج رقم هاتف العميل من بيانات الـ webhook
+   */
+  private extractCustomerPhone(data: Record<string, unknown>): string | null {
+    // 1. من كائن customer
+    const customer = data.customer as Record<string, unknown> | undefined;
+    if (customer) {
+      const mobile = customer.mobile || customer.phone || customer.mobile_code;
+      if (mobile) {
+        this.logger.log(`📞 Phone found in webhook customer object: ${mobile}`);
+        return this.normalizePhone(String(mobile));
+      }
+    }
+
+    // 2. من الحقول المباشرة
+    const directPhone = data.customerPhone || data.mobile || data.phone;
+    if (directPhone) {
+      this.logger.log(`📞 Phone found in direct field: ${directPhone}`);
+      return this.normalizePhone(String(directPhone));
+    }
+
+    // 3. من عنوان الشحن
+    const shipping = data.shipping_address as Record<string, unknown> | undefined;
+    if (shipping?.phone) {
+      this.logger.log(`📞 Phone found in shipping_address: ${shipping.phone}`);
+      return this.normalizePhone(String(shipping.phone));
+    }
+
+    // 4. من receiver
+    const receiver = data.receiver as Record<string, unknown> | undefined;
+    if (receiver?.phone || receiver?.mobile) {
+      const p = receiver.phone || receiver.mobile;
+      this.logger.log(`📞 Phone found in receiver: ${p}`);
+      return this.normalizePhone(String(p));
+    }
+
+    this.logger.log(`📞 No phone in webhook data (keys: ${Object.keys(data).join(', ')})`);
+    return null;
+  }
+
+  /**
+   * ✅ v3: جلب رقم العميل من قاعدة البيانات
+   * يبحث عن الطلب بـ sallaOrderId ثم يجلب رقم العميل من جدول customers
+   */
+  private async lookupCustomerPhone(
+    data: Record<string, unknown>,
+    storeId?: string,
+  ): Promise<string | null> {
+    if (!storeId) return null;
+
+    try {
+      const orderId = data.id || data.orderId || data.order_id;
+      if (!orderId) {
+        this.logger.log(`🔍 No order ID in data to lookup phone`);
+        return null;
+      }
+
+      const sallaOrderId = String(orderId);
+      this.logger.log(`🔍 Looking up order with sallaOrderId: ${sallaOrderId}, storeId: ${storeId}`);
+
+      // البحث عن الطلب بـ sallaOrderId
+      const order = await this.orderRepository.findOne({
+        where: { storeId, sallaOrderId },
+        relations: ['customer'],
+      });
+
+      if (!order) {
+        this.logger.log(`🔍 Order not found in DB for sallaOrderId: ${sallaOrderId}`);
+
+        // محاولة بديلة: البحث بالـ reference_id
+        const refId = data.reference_id || data.referenceId;
+        if (refId) {
+          const orderByRef = await this.orderRepository.findOne({
+            where: { storeId, referenceId: String(refId) } as any,
+            relations: ['customer'],
+          });
+          if (orderByRef?.customer?.phone) {
+            this.logger.log(`📞 Phone found via reference_id: ${orderByRef.customer.phone}`);
+            return this.normalizePhone(orderByRef.customer.phone);
+          }
+        }
+
+        return null;
+      }
+
+      // جلب الرقم من العميل
+      if (order.customer?.phone) {
+        this.logger.log(`📞 Phone found from DB customer: ${order.customer.phone}`);
+        return this.normalizePhone(order.customer.phone);
+      }
+
+      // إذا ما لقينا العميل بالعلاقة → نبحث مباشرة
+      if (order.customerId) {
+        const customer = await this.customerRepository.findOne({
+          where: { id: order.customerId },
+          select: ['id', 'phone'],
+        });
+        if (customer?.phone) {
+          this.logger.log(`📞 Phone found from customer lookup: ${customer.phone}`);
+          return this.normalizePhone(customer.phone);
+        }
+      }
+
+      this.logger.warn(`⚠️ Order found but no customer phone (orderId: ${order.id})`);
+      return null;
+
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : 'Unknown';
+      this.logger.error(`❌ Error looking up customer phone: ${msg}`);
+      return null;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // Channel & Phone Helpers
   // ═══════════════════════════════════════════════════════════════════════════════
 
   /**
@@ -200,7 +375,6 @@ export class TemplateDispatcherService {
   private async findActiveWhatsAppChannel(storeId?: string): Promise<Channel | null> {
     if (!storeId) return null;
 
-    // محاولة QR أولاً ثم Official
     const channel = await this.channelRepository.findOne({
       where: [
         { storeId, type: ChannelType.WHATSAPP_QR, status: ChannelStatus.CONNECTED },
@@ -209,28 +383,6 @@ export class TemplateDispatcherService {
     });
 
     return channel || null;
-  }
-
-  /**
-   * استخراج رقم هاتف العميل
-   */
-  private extractCustomerPhone(data: Record<string, unknown>): string | null {
-    // من كائن customer
-    const customer = data.customer as Record<string, unknown> | undefined;
-    if (customer) {
-      const mobile = customer.mobile || customer.phone;
-      if (mobile) return this.normalizePhone(String(mobile));
-    }
-
-    // من الحقول المباشرة
-    const directPhone = data.customerPhone || data.mobile || data.phone;
-    if (directPhone) return this.normalizePhone(String(directPhone));
-
-    // من عنوان الشحن
-    const shipping = data.shipping_address as Record<string, unknown> | undefined;
-    if (shipping?.phone) return this.normalizePhone(String(shipping.phone));
-
-    return null;
   }
 
   /**
@@ -250,6 +402,10 @@ export class TemplateDispatcherService {
 
     return cleaned;
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // Template Processing
+  // ═══════════════════════════════════════════════════════════════════════════════
 
   /**
    * استبدال المتغيرات في نص القالب
