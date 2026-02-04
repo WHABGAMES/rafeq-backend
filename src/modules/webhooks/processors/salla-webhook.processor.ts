@@ -331,8 +331,76 @@ export class SallaWebhookProcessor extends WorkerHost {
       await this.syncCustomerToDatabase(customerData, context);
     }
 
-    this.eventEmitter.emit('order.status.updated', { tenantId: context.tenantId, storeId: context.storeId, orderId: data.id, newStatus: data.status, previousStatus: data.previous_status, raw: data });
-    return { handled: true, action: 'order_status_updated', orderId: data.id, newStatus: data.status, dbStatus: newStatus, emittedEvent: 'order.status.updated' };
+    const eventPayload = { tenantId: context.tenantId, storeId: context.storeId, orderId: data.id, newStatus: data.status, previousStatus: data.previous_status, raw: data };
+
+    // ✅ v7: إرسال event عام + event خاص بالحالة
+    // Event عام (للتوافق مع القوالب القديمة)
+    this.eventEmitter.emit('order.status.updated', eventPayload);
+
+    // ✅ v7: Event خاص بالحالة الدقيقة - كل حالة تشغّل قالبها الخاص
+    const statusSlug = this.extractStatusString(data.status)?.toLowerCase() || '';
+    const specificEvent = this.mapStatusToSpecificEvent(statusSlug, newStatus);
+    if (specificEvent && specificEvent !== 'order.status.updated') {
+      this.logger.log(`📌 Emitting specific status event: ${specificEvent} (slug: ${statusSlug})`);
+      this.eventEmitter.emit(specificEvent, eventPayload);
+    }
+
+    return { handled: true, action: 'order_status_updated', orderId: data.id, newStatus: data.status, dbStatus: newStatus, specificEvent: specificEvent || 'none', emittedEvent: 'order.status.updated' };
+  }
+
+  /**
+   * ✅ v7: ربط حالة سلة → event خاص للقالب
+   * هذا يخلي كل حالة طلب ترسل القالب الصحيح
+   */
+  private mapStatusToSpecificEvent(statusSlug: string, dbStatus: OrderStatus): string | null {
+    // أولاً: بالـ slug الإنجليزي من سلة
+    const slugMap: Record<string, string> = {
+      'processing': 'order.status.processing',
+      'in_progress': 'order.status.processing',
+      'under_review': 'order.status.under_review',
+      'awaiting_review': 'order.status.under_review',
+      'completed': 'order.status.completed',
+      'in_transit': 'order.status.in_transit',
+      'out_for_delivery': 'order.status.in_transit',
+      'delivering': 'order.status.in_transit',
+      'shipped': 'order.status.shipped',
+      'ready_to_ship': 'order.status.ready_to_ship',
+      'ready': 'order.status.ready_to_ship',
+      'pending_payment': 'order.status.pending_payment',
+      'restoring': 'order.status.restoring',
+      'restored': 'order.status.restoring',
+      'on_hold': 'order.status.on_hold',
+    };
+    if (slugMap[statusSlug]) return slugMap[statusSlug];
+
+    // ثانياً: بالـ slug العربي
+    const arMap: Record<string, string> = {
+      'قيد التنفيذ': 'order.status.processing',
+      'قيد المعالجة': 'order.status.processing',
+      'بانتظار المراجعة': 'order.status.under_review',
+      'تم التنفيذ': 'order.status.completed',
+      'جاري التوصيل': 'order.status.in_transit',
+      'قيد التوصيل': 'order.status.in_transit',
+      'تم الشحن': 'order.status.shipped',
+      'جاهز للشحن': 'order.status.ready_to_ship',
+      'بانتظار الدفع': 'order.status.pending_payment',
+      'قيد الاسترجاع': 'order.status.restoring',
+      'مستعاد': 'order.status.restoring',
+      'معلّق': 'order.status.on_hold',
+    };
+    if (arMap[statusSlug]) return arMap[statusSlug];
+
+    // ثالثاً: من OrderStatus المحوّل
+    const dbMap: Record<string, string> = {
+      [OrderStatus.PROCESSING]: 'order.status.processing',
+      [OrderStatus.SHIPPED]: 'order.status.shipped',
+      [OrderStatus.DELIVERED]: 'order.status.delivered',
+      [OrderStatus.COMPLETED]: 'order.status.completed',
+      [OrderStatus.READY_TO_SHIP]: 'order.status.ready_to_ship',
+      [OrderStatus.PENDING_PAYMENT]: 'order.status.pending_payment',
+      [OrderStatus.ON_HOLD]: 'order.status.on_hold',
+    };
+    return dbMap[dbStatus] || null;
   }
 
   private async handleOrderPaymentUpdated(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
