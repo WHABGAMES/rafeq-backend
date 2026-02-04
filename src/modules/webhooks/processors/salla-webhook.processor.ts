@@ -158,7 +158,7 @@ export class SallaWebhookProcessor extends WorkerHost {
     const sallaOrderId = String(orderData.id);
     try {
       let order = await this.orderRepository.findOne({ where: { storeId: context.storeId, sallaOrderId } });
-      const status = this.mapSallaOrderStatus(orderData.status as string);
+      const status = this.mapSallaOrderStatus(orderData.status);
       const items = Array.isArray(orderData.items)
         ? (orderData.items as Array<Record<string, unknown>>).map(item => ({
             productId: String(item.product_id || item.id || ''), name: String(item.name || ''),
@@ -215,9 +215,23 @@ export class SallaWebhookProcessor extends WorkerHost {
     }
   }
 
-  private mapSallaOrderStatus(sallaStatus?: string): OrderStatus {
+  private mapSallaOrderStatus(sallaStatus?: unknown): OrderStatus {
     if (!sallaStatus) return OrderStatus.CREATED;
-    const s = sallaStatus.toLowerCase();
+
+    // ✅ سلة ممكن ترسل status كـ object مثل {id: 1, name: "جديد", customized: {...}}
+    let statusStr: string;
+    if (typeof sallaStatus === 'string') {
+      statusStr = sallaStatus;
+    } else if (typeof sallaStatus === 'object' && sallaStatus !== null) {
+      const statusObj = sallaStatus as Record<string, unknown>;
+      statusStr = String(statusObj.name || statusObj.slug || statusObj.id || '');
+      this.logger.debug(`📌 Salla status is object, extracted: "${statusStr}"`, { original: sallaStatus });
+    } else {
+      statusStr = String(sallaStatus);
+    }
+
+    if (!statusStr) return OrderStatus.CREATED;
+    const s = statusStr.toLowerCase();
     const map: Record<string, OrderStatus> = {
       'created': OrderStatus.CREATED, 'new': OrderStatus.CREATED, 'pending': OrderStatus.CREATED,
       'processing': OrderStatus.PROCESSING, 'in_progress': OrderStatus.PROCESSING,
@@ -263,7 +277,7 @@ export class SallaWebhookProcessor extends WorkerHost {
 
   private async handleOrderStatusUpdated(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
     this.logger.log('Processing order.status.updated', { orderId: data.id, status: data.status });
-    const newStatus = this.mapSallaOrderStatus(data.status as string);
+    const newStatus = this.mapSallaOrderStatus(data.status);
     await this.updateOrderStatusInDatabase(data, context, newStatus);
 
     // v4: sync customer from nested order data if available
