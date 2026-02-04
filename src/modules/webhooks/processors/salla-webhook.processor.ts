@@ -2,11 +2,9 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║              RAFIQ PLATFORM - Salla Webhook Processor                          ║
  * ║                                                                                ║
- * ║  ✅ v4: حفظ الطلبات والعملاء في قاعدة البيانات                                 ║
- * ║  - handleOrderCreated: يحفظ الطلب + العميل في DB ثم يطلق event                 ║
- * ║  - handleCustomerCreated: يحفظ العميل في DB ثم يطلق event                      ║
- * ║  - handleOrderStatusUpdated: يحدّث حالة الطلب في DB ثم يطلق event              ║
- * ║  - Upsert pattern لتجنب التكرار                                                ║
+ * ║  ✅ v5: Security & Stability Fixes                                             ║
+ * ║  🔧 FIX #18: TS2538 Build Error - mapSallaOrderStatus type-safe               ║
+ * ║  🔧 FIX H5: Salla status object crash - handles object/string/undefined       ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -30,6 +28,21 @@ interface SallaWebhookJobData {
   tenantId?: string;
   storeId?: string;
   isRetry?: boolean;
+}
+
+/**
+ * 🔧 FIX H5: Interface لتعريف بنية status القادمة من سلة
+ * سلة قد ترسل الحالة كـ string أو كـ object {id, name, slug, customized}
+ */
+interface SallaStatusObject {
+  id?: number;
+  name?: string;
+  slug?: string;
+  customized?: {
+    id?: number;
+    name?: string;
+    slug?: string;
+  };
 }
 
 @Processor('salla-webhooks', {
@@ -114,7 +127,7 @@ export class SallaWebhookProcessor extends WorkerHost {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 🗄️ v4: Database Sync
+  // 🗄️ Database Sync
   // ═══════════════════════════════════════════════════════════════════════════════
 
   private async syncCustomerToDatabase(customerData: Record<string, unknown>, context: { tenantId?: string; storeId?: string }): Promise<Customer | null> {
@@ -215,23 +228,51 @@ export class SallaWebhookProcessor extends WorkerHost {
     }
   }
 
-  private mapSallaOrderStatus(sallaStatus?: unknown): OrderStatus {
-    if (!sallaStatus) return OrderStatus.CREATED;
+  /**
+   * 🔧 FIX #18 (TS2538) + H5: استخراج نص الحالة بأمان من أي نوع بيانات
+   * سلة ترسل status بأشكال مختلفة:
+   *   - string: "processing"
+   *   - object: { id: 1, name: "قيد التنفيذ", slug: "processing", customized: {...} }
+   *   - undefined/null
+   */
+  private extractStatusString(sallaStatus: unknown): string | undefined {
+    if (!sallaStatus) return undefined;
 
-    // ✅ سلة ممكن ترسل status كـ object مثل {id: 1, name: "جديد", customized: {...}}
-    let statusStr: string;
+    // إذا كانت string → نستخدمها مباشرة
     if (typeof sallaStatus === 'string') {
-      statusStr = sallaStatus;
-    } else if (typeof sallaStatus === 'object' && sallaStatus !== null) {
-      const statusObj = sallaStatus as Record<string, unknown>;
-      statusStr = String(statusObj.name || statusObj.slug || statusObj.id || '');
-      this.logger.debug(`📌 Salla status is object, extracted: "${statusStr}"`, { original: sallaStatus });
-    } else {
-      statusStr = String(sallaStatus);
+      return sallaStatus;
     }
 
+    // إذا كانت object → نستخرج slug أو name
+    if (typeof sallaStatus === 'object' && sallaStatus !== null) {
+      const statusObj = sallaStatus as SallaStatusObject;
+
+      // الأولوية: slug (إنجليزي) → customized.slug → name → customized.name
+      if (statusObj.slug && typeof statusObj.slug === 'string') return statusObj.slug;
+      if (statusObj.customized?.slug && typeof statusObj.customized.slug === 'string') return statusObj.customized.slug;
+      if (statusObj.name && typeof statusObj.name === 'string') return statusObj.name;
+      if (statusObj.customized?.name && typeof statusObj.customized.name === 'string') return statusObj.customized.name;
+    }
+
+    // إذا كانت number → نحولها لـ string
+    if (typeof sallaStatus === 'number') {
+      return String(sallaStatus);
+    }
+
+    this.logger.warn(`⚠️ Unexpected status type: ${typeof sallaStatus}`, { status: JSON.stringify(sallaStatus) });
+    return undefined;
+  }
+
+  /**
+   * 🔧 FIX #18 + H5: تحويل حالة سلة → OrderStatus بشكل آمن
+   * يقبل any type ويستخرج string قبل البحث في الخريطة
+   */
+  private mapSallaOrderStatus(sallaStatus: unknown): OrderStatus {
+    const statusStr = this.extractStatusString(sallaStatus);
     if (!statusStr) return OrderStatus.CREATED;
+
     const s = statusStr.toLowerCase();
+
     const map: Record<string, OrderStatus> = {
       'created': OrderStatus.CREATED, 'new': OrderStatus.CREATED, 'pending': OrderStatus.CREATED,
       'processing': OrderStatus.PROCESSING, 'in_progress': OrderStatus.PROCESSING,
@@ -243,6 +284,7 @@ export class SallaWebhookProcessor extends WorkerHost {
       'refunded': OrderStatus.REFUNDED, 'failed': OrderStatus.FAILED, 'on_hold': OrderStatus.ON_HOLD,
       'restored': OrderStatus.PROCESSING,
     };
+
     const arMap: Record<string, OrderStatus> = {
       'جديد': OrderStatus.CREATED, 'قيد التنفيذ': OrderStatus.PROCESSING, 'قيد المعالجة': OrderStatus.PROCESSING,
       'بانتظار الدفع': OrderStatus.PENDING_PAYMENT, 'مدفوع': OrderStatus.PAID,
@@ -251,7 +293,9 @@ export class SallaWebhookProcessor extends WorkerHost {
       'مكتمل': OrderStatus.COMPLETED, 'ملغي': OrderStatus.CANCELLED, 'مسترجع': OrderStatus.REFUNDED,
       'فشل': OrderStatus.FAILED, 'معلّق': OrderStatus.ON_HOLD, 'مستعاد': OrderStatus.PROCESSING,
     };
-    return map[s] || arMap[sallaStatus] || OrderStatus.PROCESSING;
+
+    // 🔧 FIX: البحث باستخدام string مضمون (لا object)
+    return map[s] || arMap[statusStr] || OrderStatus.PROCESSING;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -277,10 +321,10 @@ export class SallaWebhookProcessor extends WorkerHost {
 
   private async handleOrderStatusUpdated(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
     this.logger.log('Processing order.status.updated', { orderId: data.id, status: data.status });
+    // 🔧 FIX: نمرر data.status كـ unknown وnot as string
     const newStatus = this.mapSallaOrderStatus(data.status);
     await this.updateOrderStatusInDatabase(data, context, newStatus);
 
-    // v4: sync customer from nested order data if available
     const orderObj = data.order as Record<string, unknown> | undefined;
     const customerData = (data.customer || orderObj?.customer) as Record<string, unknown> | undefined;
     if (customerData?.id) {
