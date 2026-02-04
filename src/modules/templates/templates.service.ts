@@ -166,7 +166,7 @@ export class TemplatesService {
     }
     if (dto.description) template.description = dto.description;
     if (dto.category) template.category = dto.category;
-    if (dto.status) template.status = dto.status as TemplateStatus;
+    if (dto.status) template.status = dto.status;
     if (dto.triggerEvent !== undefined) template.triggerEvent = dto.triggerEvent;
 
     const saved = await this.templateRepository.save(template);
