@@ -4,11 +4,6 @@
  * ║                                                                                ║
  * ║  📌 هذا الـ Entity يمثل قوالب الرسائل                                         ║
  * ║  القوالب هي رسائل معدّة مسبقاً يمكن إعادة استخدامها                           ║
- * ║                                                                                ║
- * ║  الفائدة من القوالب:                                                          ║
- * ║  - توفير الوقت (لا تكتب نفس الرسالة كل مرة)                                  ║
- * ║  - اتساق الرسائل (نفس الأسلوب والتنسيق)                                       ║
- * ║  - ضرورة لـ WhatsApp Business API (Template Messages)                        ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -30,6 +25,7 @@ import { Tenant } from './tenant.entity';
 
 /**
  * 📌 TemplateCategory - تصنيف القالب
+ * ✅ تم تغييرها من enum إلى string constants للمرونة
  */
 export enum TemplateCategory {
   /** ترحيب */
@@ -52,6 +48,13 @@ export enum TemplateCategory {
   SUPPORT = 'support',
   /** عام */
   GENERAL = 'general',
+  // ✅ إضافة التصنيفات الجديدة للقوالب الجاهزة
+  ORDER_NOTIFICATIONS = 'order_notifications',
+  SHIPPING_NOTIFICATIONS = 'shipping_notifications',
+  SALES_RECOVERY = 'sales_recovery',
+  MARKETING = 'marketing',
+  ENGAGEMENT = 'engagement',
+  SERVICE = 'service',
 }
 
 /**
@@ -123,11 +126,8 @@ export enum ButtonType {
  */
 export interface TemplateHeader {
   type: HeaderType;
-  /** النص (إذا كان نصي) */
   text?: string;
-  /** رابط الميديا */
   mediaUrl?: string;
-  /** مثال للميديا (للمراجعة) */
   example?: string;
 }
 
@@ -137,33 +137,21 @@ export interface TemplateHeader {
 export interface TemplateButton {
   type: ButtonType;
   text: string;
-  /** الرابط (للـ URL) */
   url?: string;
-  /** رقم الهاتف */
   phoneNumber?: string;
-  /** الكود (للنسخ) */
   code?: string;
-  /** مثال (للمتغيرات) */
   example?: string;
 }
 
 /**
  * 📌 TemplateVariable - متغير في القالب
- * 
- * مثال: {{customer_name}}, {{order_id}}, {{total}}
  */
 export interface TemplateVariable {
-  /** اسم المتغير */
   name: string;
-  /** الموقع (header, body, button) */
   location: 'header' | 'body' | 'button';
-  /** رقم الموقع */
   position: number;
-  /** نوع البيانات المتوقع */
   type: 'text' | 'number' | 'date' | 'currency' | 'url';
-  /** مثال */
   example: string;
-  /** القيمة الافتراضية */
   defaultValue?: string;
 }
 
@@ -171,17 +159,11 @@ export interface TemplateVariable {
  * 📌 WhatsAppApproval - معلومات موافقة واتساب
  */
 export interface WhatsAppApproval {
-  /** معرف القالب في واتساب */
   whatsappTemplateId?: string;
-  /** اسم القالب في واتساب */
   whatsappTemplateName?: string;
-  /** حالة الموافقة */
   status: 'pending' | 'approved' | 'rejected';
-  /** تاريخ الإرسال للمراجعة */
   submittedAt?: string;
-  /** تاريخ الرد */
   respondedAt?: string;
-  /** سبب الرفض */
   rejectionReason?: string;
 }
 
@@ -189,15 +171,10 @@ export interface WhatsAppApproval {
  * 📌 TemplateStats - إحصائيات القالب
  */
 export interface TemplateStats {
-  /** عدد مرات الاستخدام */
   usageCount: number;
-  /** آخر استخدام */
   lastUsedAt?: string;
-  /** معدل التوصيل */
   deliveryRate?: number;
-  /** معدل القراءة */
   readRate?: number;
-  /** معدل الرد */
   replyRate?: number;
 }
 
@@ -211,35 +188,12 @@ export interface TemplateStats {
 @Index(['tenantId', 'category'])
 @Index(['tenantId', 'name'], { unique: true })
 export class MessageTemplate extends BaseEntity {
-  /**
-   * ═══════════════════════════════════════════════════════════════════════════════
-   *                              🔑 IDENTIFIERS
-   * ═══════════════════════════════════════════════════════════════════════════════
-   */
-
-  /**
-   * 🏢 Tenant ID
-   */
   @Column({ name: 'tenant_id', type: 'uuid' })
   tenantId: string;
 
-  /**
-   * 👤 Created By
-   */
   @Column({ name: 'created_by', type: 'uuid', nullable: true })
   createdBy?: string;
 
-  /**
-   * ═══════════════════════════════════════════════════════════════════════════════
-   *                              📝 BASIC INFO
-   * ═══════════════════════════════════════════════════════════════════════════════
-   */
-
-  /**
-   * 📛 Name - اسم القالب (فريد لكل tenant)
-   * 
-   * مثال: "order_confirmation_ar", "welcome_message"
-   */
   @Column({
     type: 'varchar',
     length: 100,
@@ -247,11 +201,6 @@ export class MessageTemplate extends BaseEntity {
   })
   name: string;
 
-  /**
-   * 🏷️ Display Name - الاسم المعروض
-   * 
-   * مثال: "تأكيد الطلب", "رسالة ترحيب"
-   */
   @Column({
     name: 'display_name',
     type: 'varchar',
@@ -260,9 +209,6 @@ export class MessageTemplate extends BaseEntity {
   })
   displayName: string;
 
-  /**
-   * 📝 Description - وصف القالب
-   */
   @Column({
     type: 'text',
     nullable: true,
@@ -271,29 +217,25 @@ export class MessageTemplate extends BaseEntity {
   description?: string;
 
   /**
-   * 🗂️ Category - التصنيف
+   * ✅ تم تغيير category من enum إلى varchar
+   * لدعم كل التصنيفات بدون migration
    */
   @Column({
-    type: 'enum',
-    enum: TemplateCategory,
-    default: TemplateCategory.GENERAL,
+    type: 'varchar',
+    length: 100,
+    default: 'general',
     comment: 'تصنيف القالب',
   })
-  category: TemplateCategory;
+  category: string;
 
-  /**
-   * 📱 Channel - القناة
-   */
   @Column({
     type: 'enum',
     enum: TemplateChannel,
+    default: TemplateChannel.WHATSAPP,
     comment: 'القناة المستهدفة',
   })
   channel: TemplateChannel;
 
-  /**
-   * 🌐 Language - اللغة
-   */
   @Column({
     type: 'enum',
     enum: TemplateLanguage,
@@ -302,9 +244,6 @@ export class MessageTemplate extends BaseEntity {
   })
   language: TemplateLanguage;
 
-  /**
-   * 🚦 Status - الحالة
-   */
   @Column({
     type: 'enum',
     enum: TemplateStatus,
@@ -313,17 +252,6 @@ export class MessageTemplate extends BaseEntity {
   })
   status: TemplateStatus;
 
-  /**
-   * ═══════════════════════════════════════════════════════════════════════════════
-   *                              💬 CONTENT
-   * ═══════════════════════════════════════════════════════════════════════════════
-   */
-
-  /**
-   * 🎨 Header - هيدر الرسالة
-   * 
-   * اختياري - يمكن أن يكون نص أو صورة أو فيديو أو مستند
-   */
   @Column({
     type: 'jsonb',
     nullable: true,
@@ -331,27 +259,12 @@ export class MessageTemplate extends BaseEntity {
   })
   header?: TemplateHeader;
 
-  /**
-   * 📝 Body - نص الرسالة الرئيسي
-   * 
-   * يدعم المتغيرات بصيغة {{variable_name}}
-   * 
-   * مثال:
-   * "مرحباً {{customer_name}}! 👋
-   * شكراً على طلبك رقم {{order_id}}.
-   * المجموع: {{total}} ريال"
-   */
   @Column({
     type: 'text',
     comment: 'نص الرسالة الرئيسي',
   })
   body: string;
 
-  /**
-   * 📎 Footer - ذيل الرسالة
-   * 
-   * نص صغير في الأسفل (اختياري)
-   */
   @Column({
     type: 'varchar',
     length: 60,
@@ -360,11 +273,6 @@ export class MessageTemplate extends BaseEntity {
   })
   footer?: string;
 
-  /**
-   * 🔘 Buttons - الأزرار
-   * 
-   * حد أقصى 3 أزرار لـ WhatsApp
-   */
   @Column({
     type: 'jsonb',
     nullable: true,
@@ -373,11 +281,6 @@ export class MessageTemplate extends BaseEntity {
   })
   buttons: TemplateButton[];
 
-  /**
-   * 🔤 Variables - المتغيرات المستخدمة
-   * 
-   * قائمة بكل المتغيرات في القالب
-   */
   @Column({
     type: 'jsonb',
     default: [],
@@ -385,17 +288,6 @@ export class MessageTemplate extends BaseEntity {
   })
   variables: TemplateVariable[];
 
-  /**
-   * ═══════════════════════════════════════════════════════════════════════════════
-   *                              📱 WHATSAPP SPECIFIC
-   * ═══════════════════════════════════════════════════════════════════════════════
-   */
-
-  /**
-   * 📱 WhatsApp Approval - معلومات موافقة واتساب
-   * 
-   * WhatsApp Business API يتطلب موافقة على القوالب قبل استخدامها
-   */
   @Column({
     name: 'whatsapp_approval',
     type: 'jsonb',
@@ -404,15 +296,6 @@ export class MessageTemplate extends BaseEntity {
   })
   whatsAppApproval?: WhatsAppApproval;
 
-  /**
-   * ═══════════════════════════════════════════════════════════════════════════════
-   *                              📊 STATS
-   * ═══════════════════════════════════════════════════════════════════════════════
-   */
-
-  /**
-   * 📊 Stats - إحصائيات الاستخدام
-   */
   @Column({
     type: 'jsonb',
     default: { usageCount: 0 },
@@ -420,61 +303,7 @@ export class MessageTemplate extends BaseEntity {
   })
   stats: TemplateStats;
 
-  /**
-   * ═══════════════════════════════════════════════════════════════════════════════
-   *                              🔗 RELATIONS
-   * ═══════════════════════════════════════════════════════════════════════════════
-   */
-
   @ManyToOne(() => Tenant, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'tenant_id' })
   tenant: Tenant;
 }
-
-/**
- * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║                         📚 TEMPLATE VARIABLES GUIDE                            ║
- * ╠═══════════════════════════════════════════════════════════════════════════════╣
- * ║                                                                                ║
- * ║  🔤 المتغيرات المتاحة:                                                         ║
- * ║  ═════════════════════                                                         ║
- * ║                                                                                ║
- * ║  👤 بيانات العميل:                                                             ║
- * ║  - {{customer_name}} - اسم العميل                                             ║
- * ║  - {{customer_first_name}} - الاسم الأول                                      ║
- * ║  - {{customer_phone}} - رقم الهاتف                                            ║
- * ║  - {{customer_email}} - الإيميل                                               ║
- * ║                                                                                ║
- * ║  📦 بيانات الطلب:                                                              ║
- * ║  - {{order_id}} - رقم الطلب                                                   ║
- * ║  - {{order_total}} - المجموع                                                  ║
- * ║  - {{order_status}} - حالة الطلب                                              ║
- * ║  - {{order_date}} - تاريخ الطلب                                               ║
- * ║  - {{shipping_address}} - عنوان الشحن                                         ║
- * ║  - {{tracking_number}} - رقم التتبع                                           ║
- * ║  - {{tracking_url}} - رابط التتبع                                             ║
- * ║                                                                                ║
- * ║  🏪 بيانات المتجر:                                                             ║
- * ║  - {{store_name}} - اسم المتجر                                                ║
- * ║  - {{store_url}} - رابط المتجر                                                ║
- * ║  - {{store_phone}} - هاتف المتجر                                              ║
- * ║                                                                                ║
- * ║  🛒 السلة المتروكة:                                                            ║
- * ║  - {{cart_total}} - مجموع السلة                                               ║
- * ║  - {{cart_items_count}} - عدد المنتجات                                        ║
- * ║  - {{cart_url}} - رابط السلة                                                  ║
- * ║                                                                                ║
- * ║  ═══════════════════════════════════════════════════════════════════════════  ║
- * ║                                                                                ║
- * ║  📱 متطلبات WhatsApp Business API:                                            ║
- * ║  ═══════════════════════════════════                                           ║
- * ║                                                                                ║
- * ║  1. يجب إرسال القالب للمراجعة قبل الاستخدام                                   ║
- * ║  2. المراجعة تأخذ 24-48 ساعة                                                  ║
- * ║  3. القوالب الترويجية لها شروط صارمة                                          ║
- * ║  4. يجب توفير أمثلة لكل متغير                                                 ║
- * ║  5. الحد الأقصى للنص: 1024 حرف                                                ║
- * ║  6. الحد الأقصى للأزرار: 3                                                    ║
- * ║                                                                                ║
- * ╚═══════════════════════════════════════════════════════════════════════════════╝
- */
