@@ -150,7 +150,7 @@ export class TemplatesService {
       };
     } catch (error) {
       // ✅ معالجة خطأ الاسم المكرر
-      if (error?.code === '23505' || error?.detail?.includes('already exists')) {
+      if ((error as any)?.code === '23505' || (error as any)?.detail?.includes('already exists')) {
         this.logger.warn(`Template name already exists: ${dto.name}`, { tenantId });
         throw new BadRequestException(`قالب بنفس الاسم "${dto.name}" موجود بالفعل`);
       }
