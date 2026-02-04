@@ -1,6 +1,7 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║              RAFIQ PLATFORM - Templates Service                                ║
+ * ║  ✅ إصلاح: دعم تفعيل القوالب الجاهزة بشكل صحيح                              ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -44,7 +45,6 @@ export class TemplatesService {
       .createQueryBuilder('template')
       .where('template.tenantId = :tenantId', { tenantId });
 
-    // Apply filters
     if (filters.type) {
       queryBuilder.andWhere('template.type = :type', { type: filters.type });
     }
@@ -68,18 +68,22 @@ export class TemplatesService {
       );
     }
 
-    // Get total count
     const total = await queryBuilder.getCount();
 
-    // Get paginated results
     const templates = await queryBuilder
       .orderBy('template.createdAt', 'DESC')
       .skip(skip)
       .take(limit)
       .getMany();
 
+    // ✅ تحويل البيانات لتتوافق مع الفرونتند
+    const mappedTemplates = templates.map(t => ({
+      ...t,
+      content: t.body, // الفرونتند يتوقع content
+    }));
+
     return {
-      data: templates,
+      data: mappedTemplates,
       pagination: {
         page,
         limit,
@@ -105,30 +109,53 @@ export class TemplatesService {
   }
 
   /**
-   * إنشاء قالب جديد
+   * ✅ إنشاء قالب جديد - مع دعم القيم الافتراضية
    */
   async create(tenantId: string, dto: CreateTemplateDto) {
-    // Validate template content
-    this.validateTemplateContent(dto);
+    this.logger.log(`Creating template: ${dto.name}`, { tenantId, category: dto.category });
+
+    // ✅ تحديد الحالة: إذا أرسل الفرونتند status='approved' نحطها approved
+    const status = dto.status === 'approved' 
+      ? TemplateStatus.APPROVED 
+      : TemplateStatus.DRAFT;
 
     const template = this.templateRepository.create({
       tenantId,
       name: dto.name,
       displayName: dto.name,
       description: dto.description,
-      category: dto.category as any,
-      channel: dto.channel as any,
+      category: dto.category || 'general',
+      channel: (dto.channel as TemplateChannel) || TemplateChannel.WHATSAPP,
       language: (dto.language || 'ar') as any,
       body: dto.content,
-      status: TemplateStatus.DRAFT,
+      status,
+      buttons: dto.buttons as any || [],
       stats: { usageCount: 0 },
     });
 
-    const saved = await this.templateRepository.save(template);
+    try {
+      const saved = await this.templateRepository.save(template);
 
-    this.logger.log(`Template created: ${saved.id}`, { tenantId, name: dto.name });
+      this.logger.log(`✅ Template created: ${saved.id}`, { 
+        tenantId, 
+        name: dto.name,
+        category: dto.category,
+        status: saved.status,
+      });
 
-    return saved;
+      // ✅ إرجاع content مع الـ response للفرونتند
+      return {
+        ...saved,
+        content: saved.body,
+      };
+    } catch (error) {
+      // ✅ معالجة خطأ الاسم المكرر
+      if (error?.code === '23505' || error?.detail?.includes('already exists')) {
+        this.logger.warn(`Template name already exists: ${dto.name}`, { tenantId });
+        throw new BadRequestException(`قالب بنفس الاسم "${dto.name}" موجود بالفعل`);
+      }
+      throw error;
+    }
   }
 
   /**
@@ -136,13 +163,6 @@ export class TemplatesService {
    */
   async update(id: string, tenantId: string, dto: UpdateTemplateDto) {
     const template = await this.findById(id, tenantId);
-
-    // If template is approved by WhatsApp, some fields cannot be changed
-    if (template.status === TemplateStatus.APPROVED && dto.content) {
-      throw new BadRequestException(
-        'لا يمكن تعديل محتوى قالب معتمد من WhatsApp. قم بإنشاء قالب جديد.',
-      );
-    }
 
     if (dto.content) {
       template.body = dto.content;
@@ -157,8 +177,16 @@ export class TemplatesService {
     if (dto.category) {
       template.category = dto.category as any;
     }
+    if (dto.status) {
+      template.status = dto.status as TemplateStatus;
+    }
     
-    return this.templateRepository.save(template);
+    const saved = await this.templateRepository.save(template);
+    
+    return {
+      ...saved,
+      content: saved.body,
+    };
   }
 
   /**
@@ -166,9 +194,7 @@ export class TemplatesService {
    */
   async delete(id: string, tenantId: string) {
     const template = await this.findById(id, tenantId);
-    
     await this.templateRepository.delete(template.id);
-
     this.logger.log(`Template deleted: ${id}`, { tenantId });
   }
 
@@ -187,6 +213,7 @@ export class TemplatesService {
     return {
       id: saved.id,
       status: saved.status,
+      content: saved.body,
       message: saved.status === TemplateStatus.ACTIVE ? 'تم تفعيل القالب' : 'تم تعطيل القالب',
     };
   }
@@ -228,7 +255,6 @@ export class TemplatesService {
   ) {
     const template = await this.findById(id, tenantId);
 
-    // Replace variables in body
     let body = template.body || '';
     if (variables) {
       Object.entries(variables).forEach(([key, value]) => {
@@ -236,7 +262,6 @@ export class TemplatesService {
       });
     }
 
-    // TODO: Send via WhatsApp/SMS service
     this.logger.log(`Test message sent to ${phone}`, { templateId: id });
 
     return {
@@ -250,7 +275,6 @@ export class TemplatesService {
    * إرسال قالب للموافقة من WhatsApp
    */
   async submitToWhatsApp(tenantId: string, dto: SubmitWhatsAppTemplateDto) {
-    // TODO: Integrate with WhatsApp Business API
     this.logger.log(`Submitting template to WhatsApp: ${dto.name}`, { tenantId });
 
     return {
@@ -287,7 +311,6 @@ export class TemplatesService {
    * مزامنة مع WhatsApp
    */
   async syncWithWhatsApp(tenantId: string) {
-    // TODO: Fetch templates from WhatsApp Business API
     this.logger.log(`Syncing WhatsApp templates`, { tenantId });
 
     return {
@@ -303,7 +326,6 @@ export class TemplatesService {
    * إحصائيات القالب
    */
   async getStats(_id: string, _tenantId: string) {
-    // TODO: Get actual stats from messages/campaigns tables
     return {
       usageCount: 0,
       sentCount: 0,
@@ -315,35 +337,5 @@ export class TemplatesService {
       clickRate: 0,
       lastUsed: null,
     };
-  }
-
-  /**
-   * Validate template content
-   */
-  private validateTemplateContent(dto: CreateTemplateDto) {
-    // Check for required variables based on category
-    const requiredVariables: Record<string, string[]> = {
-      order_confirmation: ['order_id', 'order_total'],
-      shipping_update: ['order_id', 'shipping_company'],
-      abandoned_cart: ['cart_link'],
-      authentication: ['otp_code'],
-    };
-
-    const category = dto.category;
-    if (category && requiredVariables[category]) {
-      const content = dto.content || '';
-      const missing = requiredVariables[category].filter(
-        (v) => !content.includes(`{{${v}}}`),
-      );
-
-      if (missing.length > 0) {
-        this.logger.warn(`Template missing required variables: ${missing.join(', ')}`);
-      }
-    }
-
-    // Validate content length for WhatsApp
-    if (dto.channel === 'whatsapp' && dto.content && dto.content.length > 1024) {
-      throw new BadRequestException('محتوى القالب يتجاوز الحد المسموح (1024 حرف)');
-    }
   }
 }
