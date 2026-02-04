@@ -2,12 +2,12 @@
  * RAFIQ PLATFORM - TypeORM Configuration
  * src/config/typeorm.config.ts
  *
- * ✅ Fixed: multiple export names for compatibility
- * ✅ Fixed: Store entity path (relative import)
+ * ✅ Fixed: exports TypeOrmModuleAsyncOptions for forRootAsync()
+ * ✅ Fixed: Store entity relative import
  */
 
-import { ConfigService } from '@nestjs/config';
-import { TypeOrmModuleOptions } from '@nestjs/typeorm';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { TypeOrmModuleAsyncOptions, TypeOrmModuleOptions } from '@nestjs/typeorm';
 
 // Entities from database
 import { User } from '@database/entities/user.entity';
@@ -53,7 +53,7 @@ const entities = [
 ];
 
 // =============================================================================
-// TypeORM Configuration Builder
+// TypeORM Configuration Factory
 // =============================================================================
 const buildConfig = (
   configService: ConfigService,
@@ -121,8 +121,17 @@ const buildConfig = (
   };
 };
 
-// ✅ Export with ALL possible names for compatibility
-export const typeOrmConfig = buildConfig;
-export const buildTypeOrmConfig = buildConfig;
-export const databaseConfig = buildConfig;
-export default buildConfig;
+// =============================================================================
+// ✅ Export as TypeOrmModuleAsyncOptions (for forRootAsync)
+// This is what app.module.ts passes to TypeOrmModule.forRootAsync()
+// =============================================================================
+export const typeOrmConfig: TypeOrmModuleAsyncOptions = {
+  imports: [ConfigModule],
+  useFactory: buildConfig,
+  inject: [ConfigService],
+};
+
+// Aliases for backward compatibility
+export const buildTypeOrmConfig = typeOrmConfig;
+export const databaseConfig = typeOrmConfig;
+export default typeOrmConfig;
