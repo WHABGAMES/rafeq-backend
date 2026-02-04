@@ -1,7 +1,7 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║              RAFIQ PLATFORM - Templates Service                                ║
- * ║  ✅ إصلاح: دعم تفعيل القوالب الجاهزة بشكل صحيح                              ║
+ * ║  ✅ v2: حفظ triggerEvent + status + إرجاع content                            ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -48,19 +48,15 @@ export class TemplatesService {
     if (filters.type) {
       queryBuilder.andWhere('template.type = :type', { type: filters.type });
     }
-
     if (filters.category) {
       queryBuilder.andWhere('template.category = :category', { category: filters.category });
     }
-
     if (filters.status) {
       queryBuilder.andWhere('template.status = :status', { status: filters.status });
     }
-
     if (filters.channel) {
       queryBuilder.andWhere('template.channel = :channel', { channel: filters.channel });
     }
-
     if (filters.search) {
       queryBuilder.andWhere(
         '(template.name ILIKE :search OR template.body ILIKE :search)',
@@ -69,27 +65,21 @@ export class TemplatesService {
     }
 
     const total = await queryBuilder.getCount();
-
     const templates = await queryBuilder
       .orderBy('template.createdAt', 'DESC')
       .skip(skip)
       .take(limit)
       .getMany();
 
-    // ✅ تحويل البيانات لتتوافق مع الفرونتند
-    const mappedTemplates = templates.map(t => ({
+    // ✅ إرجاع content مع كل قالب
+    const mappedTemplates = templates.map((t) => ({
       ...t,
-      content: t.body, // الفرونتند يتوقع content
+      content: t.body,
     }));
 
     return {
       data: mappedTemplates,
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-      },
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
     };
   }
 
@@ -100,24 +90,29 @@ export class TemplatesService {
     const template = await this.templateRepository.findOne({
       where: { id, tenantId },
     });
-
     if (!template) {
       throw new NotFoundException('القالب غير موجود');
     }
-
     return template;
   }
 
   /**
-   * ✅ إنشاء قالب جديد - مع دعم القيم الافتراضية
+   * ✅ إنشاء قالب جديد
    */
   async create(tenantId: string, dto: CreateTemplateDto) {
-    this.logger.log(`Creating template: ${dto.name}`, { tenantId, category: dto.category });
+    this.logger.log(`Creating template: ${dto.name}`, {
+      tenantId,
+      category: dto.category,
+      triggerEvent: dto.triggerEvent,
+    });
 
-    // ✅ تحديد الحالة: إذا أرسل الفرونتند status='approved' نحطها approved
-    const status = dto.status === 'approved' 
-      ? TemplateStatus.APPROVED 
-      : TemplateStatus.DRAFT;
+    // ✅ قبول status من الفرونتند
+    const status =
+      dto.status === 'approved'
+        ? TemplateStatus.APPROVED
+        : dto.status === 'active'
+          ? TemplateStatus.ACTIVE
+          : TemplateStatus.DRAFT;
 
     const template = this.templateRepository.create({
       tenantId,
@@ -129,28 +124,28 @@ export class TemplatesService {
       language: (dto.language || 'ar') as any,
       body: dto.content,
       status,
-      buttons: dto.buttons as any || [],
+      triggerEvent: dto.triggerEvent || undefined, // ✅ حفظ الحدث المرتبط
+      buttons: (dto.buttons as any) || [],
       stats: { usageCount: 0 },
     });
 
     try {
       const saved = await this.templateRepository.save(template);
 
-      this.logger.log(`✅ Template created: ${saved.id}`, { 
-        tenantId, 
+      this.logger.log(`✅ Template created: ${saved.id}`, {
+        tenantId,
         name: dto.name,
-        category: dto.category,
         status: saved.status,
+        triggerEvent: saved.triggerEvent,
       });
 
-      // ✅ إرجاع content مع الـ response للفرونتند
-      return {
-        ...saved,
-        content: saved.body,
-      };
-    } catch (error) {
-      // ✅ معالجة خطأ الاسم المكرر
-      if ((error as any)?.code === '23505' || (error as any)?.detail?.includes('already exists')) {
+      return { ...saved, content: saved.body };
+    } catch (error: unknown) {
+      const err = error as Record<string, unknown>;
+      if (
+        err.code === '23505' ||
+        (typeof err.detail === 'string' && err.detail.includes('already exists'))
+      ) {
         this.logger.warn(`Template name already exists: ${dto.name}`, { tenantId });
         throw new BadRequestException(`قالب بنفس الاسم "${dto.name}" موجود بالفعل`);
       }
@@ -164,29 +159,18 @@ export class TemplatesService {
   async update(id: string, tenantId: string, dto: UpdateTemplateDto) {
     const template = await this.findById(id, tenantId);
 
-    if (dto.content) {
-      template.body = dto.content;
-    }
+    if (dto.content) template.body = dto.content;
     if (dto.name) {
       template.name = dto.name;
       template.displayName = dto.name;
     }
-    if (dto.description) {
-      template.description = dto.description;
-    }
-    if (dto.category) {
-      template.category = dto.category as any;
-    }
-    if (dto.status) {
-      template.status = dto.status as TemplateStatus;
-    }
-    
+    if (dto.description) template.description = dto.description;
+    if (dto.category) template.category = dto.category;
+    if (dto.status) template.status = dto.status as TemplateStatus;
+    if (dto.triggerEvent !== undefined) template.triggerEvent = dto.triggerEvent;
+
     const saved = await this.templateRepository.save(template);
-    
-    return {
-      ...saved,
-      content: saved.body,
-    };
+    return { ...saved, content: saved.body };
   }
 
   /**
@@ -203,18 +187,18 @@ export class TemplatesService {
    */
   async toggle(id: string, tenantId: string) {
     const template = await this.findById(id, tenantId);
-
-    template.status = template.status === TemplateStatus.ACTIVE 
-      ? TemplateStatus.DISABLED 
-      : TemplateStatus.ACTIVE;
+    template.status =
+      template.status === TemplateStatus.ACTIVE
+        ? TemplateStatus.DISABLED
+        : TemplateStatus.ACTIVE;
 
     const saved = await this.templateRepository.save(template);
-
     return {
       id: saved.id,
       status: saved.status,
       content: saved.body,
-      message: saved.status === TemplateStatus.ACTIVE ? 'تم تفعيل القالب' : 'تم تعطيل القالب',
+      message:
+        saved.status === TemplateStatus.ACTIVE ? 'تم تفعيل القالب' : 'تم تعطيل القالب',
     };
   }
 
@@ -223,7 +207,6 @@ export class TemplatesService {
    */
   async duplicate(id: string, tenantId: string, newName?: string) {
     const original = await this.findById(id, tenantId);
-
     const duplicate = this.templateRepository.create({
       tenantId: original.tenantId,
       name: newName || `${original.name}_copy`,
@@ -237,10 +220,10 @@ export class TemplatesService {
       footer: original.footer,
       buttons: original.buttons,
       variables: original.variables,
+      triggerEvent: original.triggerEvent,
       status: TemplateStatus.DRAFT,
       stats: { usageCount: 0 },
     });
-
     return this.templateRepository.save(duplicate);
   }
 
@@ -254,21 +237,14 @@ export class TemplatesService {
     variables?: Record<string, string>,
   ) {
     const template = await this.findById(id, tenantId);
-
     let body = template.body || '';
     if (variables) {
       Object.entries(variables).forEach(([key, value]) => {
         body = body.replace(new RegExp(`{{${key}}}`, 'g'), value);
       });
     }
-
     this.logger.log(`Test message sent to ${phone}`, { templateId: id });
-
-    return {
-      success: true,
-      message: 'تم إرسال رسالة الاختبار',
-      preview: body,
-    };
+    return { success: true, message: 'تم إرسال رسالة الاختبار', preview: body };
   }
 
   /**
@@ -276,7 +252,6 @@ export class TemplatesService {
    */
   async submitToWhatsApp(tenantId: string, dto: SubmitWhatsAppTemplateDto) {
     this.logger.log(`Submitting template to WhatsApp: ${dto.name}`, { tenantId });
-
     return {
       success: true,
       message: 'تم إرسال القالب للمراجعة. سيتم إشعارك عند الموافقة.',
@@ -289,13 +264,9 @@ export class TemplatesService {
    */
   async getWhatsAppTemplatesStatus(tenantId: string) {
     const templates = await this.templateRepository.find({
-      where: {
-        tenantId,
-        channel: TemplateChannel.WHATSAPP,
-      },
+      where: { tenantId, channel: TemplateChannel.WHATSAPP },
       select: ['id', 'name', 'status', 'updatedAt'],
     });
-
     return {
       templates,
       summary: {
@@ -312,14 +283,7 @@ export class TemplatesService {
    */
   async syncWithWhatsApp(tenantId: string) {
     this.logger.log(`Syncing WhatsApp templates`, { tenantId });
-
-    return {
-      success: true,
-      message: 'تمت المزامنة بنجاح',
-      synced: 0,
-      added: 0,
-      updated: 0,
-    };
+    return { success: true, message: 'تمت المزامنة بنجاح', synced: 0, added: 0, updated: 0 };
   }
 
   /**
