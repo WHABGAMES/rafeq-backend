@@ -239,14 +239,11 @@ export class TemplateDispatcherService {
 
       this.logger.log(`📞 Customer phone: ${customerPhone}`);
 
-      // 4️⃣ إرسال قالب واحد فقط لكل trigger event
-      // ✅ v7: لو فيه أكثر من قالب مفعّل لنفس الـ trigger → نرسل الأول فقط
-      if (templates.length > 1) {
-        this.logger.warn(`⚠️ Multiple templates (${templates.length}) active for trigger: ${triggerEvent}. Sending only the first one: "${templates[0].name}"`);
+      // 4️⃣ ✅ v9: إرسال جميع القوالب المفعّلة - كل قالب يرسل رسالته الخاصة
+      for (const template of templates) {
+        this.logger.log(`📤 Sending template: "${template.name}" for trigger: ${triggerEvent}`);
+        await this.sendTemplate(template, channel, customerPhone, raw);
       }
-      
-      const template = templates[0];
-      await this.sendTemplate(template, channel, customerPhone, raw);
 
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : 'Unknown';
