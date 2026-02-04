@@ -26,6 +26,7 @@ import {
   RawBodyRequest,
   BadRequestException,
   NotFoundException,
+  UseGuards,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
@@ -83,6 +84,8 @@ class SendButtonMessageDto {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 @ApiTags('WhatsApp')
+import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
+
 @Controller('channels/whatsapp')
 export class WhatsAppController {
   private readonly logger = new Logger(WhatsAppController.name);
@@ -145,6 +148,7 @@ export class WhatsAppController {
   // 📤 SENDING MESSAGES
   // ═══════════════════════════════════════════════════════════════════════════════
 
+  @UseGuards(JwtAuthGuard)
   @Post('send/text')
   @ApiOperation({ summary: 'إرسال رسالة نصية عبر WhatsApp' })
   @ApiResponse({ status: 200, description: 'تم إرسال الرسالة بنجاح' })
@@ -174,6 +178,7 @@ export class WhatsAppController {
     };
   }
 
+  @UseGuards(JwtAuthGuard)
   @Post('send/image')
   @ApiOperation({ summary: 'إرسال صورة عبر WhatsApp' })
   async sendImageMessage(
@@ -198,6 +203,7 @@ export class WhatsAppController {
     };
   }
 
+  @UseGuards(JwtAuthGuard)
   @Post('send/template')
   @ApiOperation({ summary: 'إرسال رسالة Template' })
   async sendTemplateMessage(
@@ -223,6 +229,7 @@ export class WhatsAppController {
     };
   }
 
+  @UseGuards(JwtAuthGuard)
   @Post('send/buttons')
   @ApiOperation({ summary: 'إرسال رسالة بأزرار تفاعلية' })
   async sendButtonMessage(
