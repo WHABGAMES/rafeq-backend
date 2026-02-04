@@ -80,7 +80,7 @@ export class SallaWebhookProcessor extends WorkerHost {
       const attempts = await this.sallaWebhooksService.incrementAttempts(webhookEventId);
       await this.sallaWebhooksService.updateStatus(webhookEventId, WebhookStatus.FAILED, { errorMessage, processingDurationMs: dur });
       await this.sallaWebhooksService.createLog(webhookEventId, tenantId, {
-        action: WebhookLogAction.FAILED, previousStatus: WebhookStatus.PROCESSING, newStatus: WebhookStatus.FAILED,
+        action: WebhookLogAction.PROCESSING_FAILED, previousStatus: WebhookStatus.PROCESSING, newStatus: WebhookStatus.FAILED,
         message: errorMessage, errorDetails: { stack: errorStack }, durationMs: dur, attemptNumber: attempts,
       });
       throw error;
@@ -134,14 +134,14 @@ export class SallaWebhookProcessor extends WorkerHost {
         if (fullName) customer.fullName = fullName;
         if (phone) customer.phone = phone;
         if (email) customer.email = email;
-        customer.sallaData = customerData as Record<string, any>;
+        customer.metadata = { ...(customer.metadata || {}), sallaData: customerData } as any;
         customer = await this.customerRepository.save(customer);
         this.logger.log(`🔄 Customer updated: ${sallaCustomerId} (${fullName || 'N/A'})`);
       } else {
         customer = this.customerRepository.create({
           tenantId: context.tenantId, storeId: context.storeId, sallaCustomerId,
           firstName, lastName, fullName, phone, email,
-          status: CustomerStatus.ACTIVE, sallaData: customerData as Record<string, any>,
+          status: CustomerStatus.ACTIVE, metadata: { sallaData: customerData } as any,
         });
         customer = await this.customerRepository.save(customer);
         this.logger.log(`✅ Customer saved: ${sallaCustomerId} (${fullName || 'N/A'}, phone: ${phone || 'N/A'})`);
@@ -173,7 +173,7 @@ export class SallaWebhookProcessor extends WorkerHost {
         order.referenceId = (orderData.reference_id as string) || (orderData.order_number as string) || order.referenceId;
         if (orderData.total) order.totalAmount = Number(orderData.total);
         if (items.length > 0) order.items = items as any;
-        order.sallaData = orderData as Record<string, any>;
+        order.metadata = { ...(order.metadata || {}), sallaData: orderData } as any;
         order = await this.orderRepository.save(order);
         this.logger.log(`🔄 Order updated: ${sallaOrderId} → ${status}`);
       } else {
@@ -182,7 +182,7 @@ export class SallaWebhookProcessor extends WorkerHost {
           sallaOrderId, referenceId: (orderData.reference_id as string) || (orderData.order_number as string) || undefined,
           status, currency: (orderData.currency as string) || 'SAR',
           totalAmount: Number(orderData.total || 0), subtotal: Number(orderData.sub_total || orderData.total || 0),
-          items: items as any, sallaData: orderData as Record<string, any>,
+          items: items as any, metadata: { sallaData: orderData } as any,
         });
         order = await this.orderRepository.save(order);
         this.logger.log(`✅ Order saved: ${sallaOrderId} (${order.totalAmount} ${order.currency})`);
@@ -205,7 +205,7 @@ export class SallaWebhookProcessor extends WorkerHost {
       }
       order.status = newStatus;
       if (extraUpdates) Object.assign(order, extraUpdates);
-      order.sallaData = { ...(order.sallaData || {}), lastWebhookData: orderData } as Record<string, any>;
+      order.metadata = { ...(order.metadata || {}), sallaData: { ...(order.metadata?.sallaData || {}), lastWebhookData: orderData } } as any;
       const saved = await this.orderRepository.save(order);
       this.logger.log(`🔄 Order ${sallaOrderId} → ${newStatus}`);
       return saved;
@@ -277,7 +277,7 @@ export class SallaWebhookProcessor extends WorkerHost {
         if (order) {
           const pd = data.payment as Record<string, unknown>;
           if (pd?.status === 'paid') order.paymentStatus = 'paid' as any;
-          order.sallaData = { ...(order.sallaData || {}), lastPaymentWebhook: data } as Record<string, any>;
+          order.metadata = { ...(order.metadata || {}), sallaData: { ...(order.metadata?.sallaData || {}), lastPaymentWebhook: data } } as any;
           await this.orderRepository.save(order);
           this.logger.log(`🔄 Order ${data.id} payment updated`);
         }
