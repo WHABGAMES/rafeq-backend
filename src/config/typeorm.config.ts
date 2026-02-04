@@ -1,22 +1,15 @@
 /**
- * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║                    RAFIQ PLATFORM - TypeORM Configuration                      ║
- * ║                                                                                ║
- * ║  ✅ تم تصحيح مسار Store Entity                                                 ║
- * ╚═══════════════════════════════════════════════════════════════════════════════╝
+ * RAFIQ PLATFORM - TypeORM Configuration
+ * src/config/typeorm.config.ts
  */
 
 import { ConfigService } from '@nestjs/config';
-import { TypeOrmModuleAsyncOptions, TypeOrmModuleOptions } from '@nestjs/typeorm';
-import { DataSource, DataSourceOptions } from 'typeorm';
+import { TypeOrmModuleOptions } from '@nestjs/typeorm';
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// استيراد جميع الـ Entities
-// ═══════════════════════════════════════════════════════════════════════════════
+// Existing Entities (from @database/entities)
 import { User } from '@database/entities/user.entity';
 import { Tenant } from '@database/entities/tenant.entity';
-// ✅ تم تصحيح المسار - يشير مباشرة للـ Store entity الجديد
-import { Store } from '@modules/stores/entities/store.entity';
+import { Store } from '@database/entities/store.entity';
 import { Channel } from '@database/entities/channel.entity';
 import { Message } from '@database/entities/message.entity';
 import { Conversation } from '@database/entities/conversation.entity';
@@ -24,14 +17,17 @@ import { Campaign } from '@database/entities/campaign.entity';
 import { Customer } from '@database/entities/customer.entity';
 import { Order } from '@database/entities/order.entity';
 import { WebhookEvent } from '@database/entities/webhook-event.entity';
-import { WebhookLog } from '@modules/webhooks/entities/webhook-log.entity';
 import { MessageTemplate } from '@database/entities/message-template.entity';
 import { Subscription } from '@database/entities/subscription.entity';
 import { SubscriptionPlan } from '@database/entities/subscription-plan.entity';
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// قائمة جميع الـ Entities
-// ═══════════════════════════════════════════════════════════════════════════════
+// NEW: Entities from modules
+import { Automation } from '@modules/automations/entities/automation.entity';
+import { StoreSettings } from '@modules/settings/entities/store-settings.entity';
+
+// =============================================================================
+// All Entities
+// =============================================================================
 const entities = [
   User,
   Tenant,
@@ -43,15 +39,17 @@ const entities = [
   Customer,
   Order,
   WebhookEvent,
-  WebhookLog,  // ✅ مضاف
   MessageTemplate,
   Subscription,
   SubscriptionPlan,
+  // NEW
+  Automation,
+  StoreSettings,
 ];
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// دالة بناء إعدادات TypeORM
-// ═══════════════════════════════════════════════════════════════════════════════
+// =============================================================================
+// TypeORM Configuration Builder
+// =============================================================================
 export const buildTypeOrmConfig = (
   configService: ConfigService,
 ): TypeOrmModuleOptions => {
@@ -67,7 +65,7 @@ export const buildTypeOrmConfig = (
     username: configService.get<string>('database.username', 'rafiq_user'),
     password: configService.get<string>('database.password', ''),
     
-    // ✅ SSL مُفعّل تلقائياً في Production لـ DigitalOcean
+    // SSL enabled automatically in Production for DigitalOcean
     ssl: isProduction || configService.get<boolean>('database.ssl', false)
       ? {
           rejectUnauthorized: false,
@@ -76,74 +74,44 @@ export const buildTypeOrmConfig = (
 
     entities: entities,
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // 🔄 المزامنة التلقائية
-    // ═══════════════════════════════════════════════════════════════════════════
+    // =======================================================================
+    // Auto Synchronize
+    // =======================================================================
     synchronize: configService.get<boolean>('database.synchronize', false),
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // 📝 التسجيل (Logging)
-    // ═══════════════════════════════════════════════════════════════════════════
+    // =======================================================================
+    // Logging
+    // =======================================================================
     logging: isDevelopment
       ? ['error', 'warn', 'migration']
       : configService.get<boolean>('database.logging', false)
         ? ['error', 'warn', 'migration']
         : ['error'],
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // 🏊 Connection Pool
-    // ═══════════════════════════════════════════════════════════════════════════
+    // =======================================================================
+    // Connection Pool
+    // =======================================================================
     extra: {
       max: isProduction ? 20 : 5,
       min: isProduction ? 5 : 1,
       idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 10000,
+      connectionTimeoutMillis: isProduction ? 5000 : 10000,
     },
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // 🔄 Retry Configuration
-    // ═══════════════════════════════════════════════════════════════════════════
-    retryAttempts: isDevelopment ? 10 : 3,
+    // =======================================================================
+    // Retry Strategy
+    // =======================================================================
+    retryAttempts: isProduction ? 10 : 3,
     retryDelay: 3000,
-    keepConnectionAlive: isDevelopment,
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // 📁 Migrations
-    // ═══════════════════════════════════════════════════════════════════════════
-    migrations: ['dist/database/migrations/*.js'],
-    migrationsTableName: 'migrations_history',
-    schema: 'public',
+    // =======================================================================
+    // Auto Load Entities (disabled - using explicit list)
+    // =======================================================================
+    autoLoadEntities: false,
+
+    // =======================================================================
+    // Keep Alive
+    // =======================================================================
+    keepConnectionAlive: false,
   };
 };
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// TypeORM Async Configuration for NestJS
-// ═══════════════════════════════════════════════════════════════════════════════
-export const typeOrmConfig: TypeOrmModuleAsyncOptions = {
-  inject: [ConfigService],
-  useFactory: (configService: ConfigService): TypeOrmModuleOptions => {
-    return buildTypeOrmConfig(configService);
-  },
-};
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// DataSource Configuration for CLI
-// ═══════════════════════════════════════════════════════════════════════════════
-import * as dotenv from 'dotenv';
-dotenv.config();
-
-export const dataSourceOptions: DataSourceOptions = {
-  type: 'postgres',
-  host: process.env.DB_HOST || 'localhost',
-  port: parseInt(process.env.DB_PORT || '5432', 10),
-  database: process.env.DB_NAME || 'rafiq_db',
-  username: process.env.DB_USERNAME || 'rafiq_user',
-  password: process.env.DB_PASSWORD || '',
-  ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
-  entities: entities,
-  migrations: ['src/database/migrations/*.ts'],
-  synchronize: false,
-  logging: process.env.DB_LOGGING === 'true',
-};
-
-export const AppDataSource = new DataSource(dataSourceOptions);
