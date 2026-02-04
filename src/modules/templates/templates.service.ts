@@ -114,8 +114,8 @@ export class TemplatesService {
           ? TemplateStatus.ACTIVE
           : TemplateStatus.DRAFT;
 
-    const template = this.templateRepository.create({
-      tenantId,
+    const templateData: Partial<MessageTemplate> = {
+      tenantId: tenantId as any,
       name: dto.name,
       displayName: dto.name,
       description: dto.description,
@@ -124,13 +124,17 @@ export class TemplatesService {
       language: (dto.language || 'ar') as any,
       body: dto.content,
       status,
-      triggerEvent: dto.triggerEvent ?? undefined, // v3: undefined matches entity type
+      triggerEvent: dto.triggerEvent ?? undefined,
       buttons: (dto.buttons as any) || [],
-      stats: { usageCount: 0 },
-    } as any) as MessageTemplate;
+      stats: { usageCount: 0 } as any,
+    };
+
+    const template = this.templateRepository.create(templateData as any);
 
     try {
-      const saved = await this.templateRepository.save(template) as MessageTemplate;
+      const result = await this.templateRepository.save(template);
+      // save() can return entity or array - normalize to single entity
+      const saved = Array.isArray(result) ? result[0] : result;
 
       this.logger.log(`✅ Template created: ${saved.id}`, {
         tenantId,
