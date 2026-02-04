@@ -2,19 +2,8 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║              RAFIQ PLATFORM - Settings Controller                              ║
  * ║                                                                                ║
- * ║  📌 إدارة الإعدادات العامة للحساب                                               ║
- * ║                                                                                ║
- * ║  الـ Endpoints:                                                                ║
- * ║  GET    /settings/general          → الإعدادات العامة                          ║
- * ║  PUT    /settings/general          → تحديث الإعدادات العامة                    ║
- * ║  GET    /settings/notifications    → إعدادات الإشعارات                        ║
- * ║  PUT    /settings/notifications    → تحديث إعدادات الإشعارات                  ║
- * ║  GET    /settings/working-hours    → ساعات العمل                              ║
- * ║  PUT    /settings/working-hours    → تحديث ساعات العمل                        ║
- * ║  GET    /settings/auto-replies     → الردود التلقائية                         ║
- * ║  PUT    /settings/auto-replies     → تحديث الردود التلقائية                   ║
- * ║  GET    /settings/team             → إعدادات الفريق                           ║
- * ║  PUT    /settings/team             → تحديث إعدادات الفريق                     ║
+ * ║  ✅ v2: يمرر storeId من header أو query parameter للـ service                ║
+ * ║  ✅ كل متجر له إعداداته المنفصلة                                               ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -24,235 +13,177 @@ import {
   Put,
   Body,
   UseGuards,
+  Req,
+  Query,
+  Headers,
 } from '@nestjs/common';
-import {
-  ApiTags,
-  ApiOperation,
-  ApiBearerAuth,
-} from '@nestjs/swagger';
-
-import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
-import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { SettingsService } from './settings.service';
 
-@ApiTags('Settings - الإعدادات')
-@ApiBearerAuth('JWT-auth')
+@Controller('settings')
 @UseGuards(JwtAuthGuard)
-@Controller({
-  path: 'settings',
-  version: '1',
-})
 export class SettingsController {
   constructor(private readonly settingsService: SettingsService) {}
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // General Settings
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  @Get('general')
-  @ApiOperation({
-    summary: 'الإعدادات العامة',
-    description: 'جلب الإعدادات العامة للحساب',
-  })
-  async getGeneralSettings(@CurrentUser() user: any) {
-    const tenantId = user.tenantId;
-    return this.settingsService.getGeneralSettings(tenantId);
-  }
-
-  @Put('general')
-  @ApiOperation({
-    summary: 'تحديث الإعدادات العامة',
-    description: 'تحديث الإعدادات العامة للحساب',
-  })
-  async updateGeneralSettings(
-    @CurrentUser() user: any,
-    @Body() body: {
-      storeName?: string;
-      storeUrl?: string;
-      timezone?: string;
-      language?: string;
-      currency?: string;
-      logo?: string;
-    },
-  ) {
-    const tenantId = user.tenantId;
-    return this.settingsService.updateGeneralSettings(tenantId, body);
+  /**
+   * استخراج storeId من:
+   * 1. Header: x-store-id (الأولوية)
+   * 2. Query parameter: storeId
+   */
+  private getStoreId(
+    storeIdHeader?: string,
+    storeIdQuery?: string,
+  ): string | undefined {
+    return storeIdHeader || storeIdQuery || undefined;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // Notifications Settings
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  @Get('notifications')
-  @ApiOperation({
-    summary: 'إعدادات الإشعارات',
-    description: 'جلب إعدادات الإشعارات',
-  })
-  async getNotificationSettings(@CurrentUser() user: any) {
-    const tenantId = user.tenantId;
-    return this.settingsService.getNotificationSettings(tenantId);
-  }
-
-  @Put('notifications')
-  @ApiOperation({
-    summary: 'تحديث إعدادات الإشعارات',
-    description: 'تحديث إعدادات الإشعارات',
-  })
-  async updateNotificationSettings(
-    @CurrentUser() user: any,
-    @Body() body: {
-      email?: {
-        newConversation?: boolean;
-        newMessage?: boolean;
-        dailyReport?: boolean;
-        weeklyReport?: boolean;
-      };
-      push?: {
-        newConversation?: boolean;
-        newMessage?: boolean;
-        mentions?: boolean;
-      };
-      sound?: {
-        enabled?: boolean;
-        volume?: number;
-      };
-    },
-  ) {
-    const tenantId = user.tenantId;
-    return this.settingsService.updateNotificationSettings(tenantId, body);
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // Working Hours
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  @Get('working-hours')
-  @ApiOperation({
-    summary: 'ساعات العمل',
-    description: 'جلب ساعات العمل',
-  })
-  async getWorkingHours(@CurrentUser() user: any) {
-    const tenantId = user.tenantId;
-    return this.settingsService.getWorkingHours(tenantId);
-  }
-
-  @Put('working-hours')
-  @ApiOperation({
-    summary: 'تحديث ساعات العمل',
-    description: 'تحديث ساعات العمل',
-  })
-  async updateWorkingHours(
-    @CurrentUser() user: any,
-    @Body() body: {
-      enabled?: boolean;
-      timezone?: string;
-      schedule?: Array<{
-        day: string;
-        enabled: boolean;
-        start: string;
-        end: string;
-      }>;
-      holidays?: Array<{
-        date: string;
-        name: string;
-      }>;
-    },
-  ) {
-    const tenantId = user.tenantId;
-    return this.settingsService.updateWorkingHours(tenantId, body);
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // Auto-Replies
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  @Get('auto-replies')
-  @ApiOperation({
-    summary: 'الردود التلقائية',
-    description: 'جلب إعدادات الردود التلقائية',
-  })
-  async getAutoReplies(@CurrentUser() user: any) {
-    const tenantId = user.tenantId;
-    return this.settingsService.getAutoReplies(tenantId);
-  }
-
-  @Put('auto-replies')
-  @ApiOperation({
-    summary: 'تحديث الردود التلقائية',
-    description: 'تحديث الردود التلقائية',
-  })
-  async updateAutoReplies(
-    @CurrentUser() user: any,
-    @Body() body: {
-      welcomeMessage?: {
-        enabled: boolean;
-        message: string;
-      };
-      awayMessage?: {
-        enabled: boolean;
-        message: string;
-      };
-      closedMessage?: {
-        enabled: boolean;
-        message: string;
-      };
-      delayedResponse?: {
-        enabled: boolean;
-        delayMinutes: number;
-        message: string;
-      };
-    },
-  ) {
-    const tenantId = user.tenantId;
-    return this.settingsService.updateAutoReplies(tenantId, body);
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // Team Settings
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  @Get('team')
-  @ApiOperation({
-    summary: 'إعدادات الفريق',
-    description: 'جلب إعدادات الفريق وتوزيع المحادثات',
-  })
-  async getTeamSettings(@CurrentUser() user: any) {
-    const tenantId = user.tenantId;
-    return this.settingsService.getTeamSettings(tenantId);
-  }
-
-  @Put('team')
-  @ApiOperation({
-    summary: 'تحديث إعدادات الفريق',
-    description: 'تحديث إعدادات الفريق وتوزيع المحادثات',
-  })
-  async updateTeamSettings(
-    @CurrentUser() user: any,
-    @Body() body: {
-      autoAssignment?: {
-        enabled: boolean;
-        method: 'round_robin' | 'load_balanced' | 'manual';
-        maxConversationsPerAgent?: number;
-      };
-      idleTimeout?: number;
-      allowAgentTakeOver?: boolean;
-    },
-  ) {
-    const tenantId = user.tenantId;
-    return this.settingsService.updateTeamSettings(tenantId, body);
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // All Settings
+  // جميع الإعدادات
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get()
-  @ApiOperation({
-    summary: 'جميع الإعدادات',
-    description: 'جلب جميع إعدادات الحساب',
-  })
-  async getAllSettings(@CurrentUser() user: any) {
-    const tenantId = user.tenantId;
-    return this.settingsService.getAllSettings(tenantId);
+  async getAllSettings(
+    @Req() req: any,
+    @Headers('x-store-id') storeIdHeader?: string,
+    @Query('storeId') storeIdQuery?: string,
+  ) {
+    const tenantId = req.user.tenantId;
+    const storeId = this.getStoreId(storeIdHeader, storeIdQuery);
+    return this.settingsService.getAllSettings(tenantId, storeId);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // الإعدادات العامة
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Get('general')
+  async getGeneralSettings(
+    @Req() req: any,
+    @Headers('x-store-id') storeIdHeader?: string,
+    @Query('storeId') storeIdQuery?: string,
+  ) {
+    const tenantId = req.user.tenantId;
+    const storeId = this.getStoreId(storeIdHeader, storeIdQuery);
+    return this.settingsService.getGeneralSettings(tenantId, storeId);
+  }
+
+  @Put('general')
+  async updateGeneralSettings(
+    @Req() req: any,
+    @Body() data: any,
+    @Headers('x-store-id') storeIdHeader?: string,
+    @Query('storeId') storeIdQuery?: string,
+  ) {
+    const tenantId = req.user.tenantId;
+    const storeId = this.getStoreId(storeIdHeader, storeIdQuery);
+    return this.settingsService.updateGeneralSettings(tenantId, data, storeId);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // إعدادات الإشعارات
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Get('notifications')
+  async getNotificationSettings(
+    @Req() req: any,
+    @Headers('x-store-id') storeIdHeader?: string,
+    @Query('storeId') storeIdQuery?: string,
+  ) {
+    const tenantId = req.user.tenantId;
+    const storeId = this.getStoreId(storeIdHeader, storeIdQuery);
+    return this.settingsService.getNotificationSettings(tenantId, storeId);
+  }
+
+  @Put('notifications')
+  async updateNotificationSettings(
+    @Req() req: any,
+    @Body() data: any,
+    @Headers('x-store-id') storeIdHeader?: string,
+    @Query('storeId') storeIdQuery?: string,
+  ) {
+    const tenantId = req.user.tenantId;
+    const storeId = this.getStoreId(storeIdHeader, storeIdQuery);
+    return this.settingsService.updateNotificationSettings(tenantId, data, storeId);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ساعات العمل
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Get('working-hours')
+  async getWorkingHours(
+    @Req() req: any,
+    @Headers('x-store-id') storeIdHeader?: string,
+    @Query('storeId') storeIdQuery?: string,
+  ) {
+    const tenantId = req.user.tenantId;
+    const storeId = this.getStoreId(storeIdHeader, storeIdQuery);
+    return this.settingsService.getWorkingHours(tenantId, storeId);
+  }
+
+  @Put('working-hours')
+  async updateWorkingHours(
+    @Req() req: any,
+    @Body() data: any,
+    @Headers('x-store-id') storeIdHeader?: string,
+    @Query('storeId') storeIdQuery?: string,
+  ) {
+    const tenantId = req.user.tenantId;
+    const storeId = this.getStoreId(storeIdHeader, storeIdQuery);
+    return this.settingsService.updateWorkingHours(tenantId, data, storeId);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // الردود التلقائية
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Get('auto-replies')
+  async getAutoReplies(
+    @Req() req: any,
+    @Headers('x-store-id') storeIdHeader?: string,
+    @Query('storeId') storeIdQuery?: string,
+  ) {
+    const tenantId = req.user.tenantId;
+    const storeId = this.getStoreId(storeIdHeader, storeIdQuery);
+    return this.settingsService.getAutoReplies(tenantId, storeId);
+  }
+
+  @Put('auto-replies')
+  async updateAutoReplies(
+    @Req() req: any,
+    @Body() data: any,
+    @Headers('x-store-id') storeIdHeader?: string,
+    @Query('storeId') storeIdQuery?: string,
+  ) {
+    const tenantId = req.user.tenantId;
+    const storeId = this.getStoreId(storeIdHeader, storeIdQuery);
+    return this.settingsService.updateAutoReplies(tenantId, data, storeId);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // إعدادات الفريق
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Get('team')
+  async getTeamSettings(
+    @Req() req: any,
+    @Headers('x-store-id') storeIdHeader?: string,
+    @Query('storeId') storeIdQuery?: string,
+  ) {
+    const tenantId = req.user.tenantId;
+    const storeId = this.getStoreId(storeIdHeader, storeIdQuery);
+    return this.settingsService.getTeamSettings(tenantId, storeId);
+  }
+
+  @Put('team')
+  async updateTeamSettings(
+    @Req() req: any,
+    @Body() data: any,
+    @Headers('x-store-id') storeIdHeader?: string,
+    @Query('storeId') storeIdQuery?: string,
+  ) {
+    const tenantId = req.user.tenantId;
+    const storeId = this.getStoreId(storeIdHeader, storeIdQuery);
+    return this.settingsService.updateTeamSettings(tenantId, data, storeId);
   }
 }
