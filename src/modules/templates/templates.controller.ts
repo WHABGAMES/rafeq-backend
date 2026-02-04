@@ -1,927 +1,962 @@
-/**
- * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║              RAFIQ PLATFORM - Templates Controller                             ║
- * ║                                                                                ║
- * ║  📌 إدارة قوالب الرسائل (WhatsApp Templates, Quick Replies, etc.)              ║
- * ║                                                                                ║
- * ║  الـ Endpoints:                                                                ║
- * ║  GET    /templates              → قائمة القوالب                                ║
- * ║  POST   /templates              → إنشاء قالب جديد                              ║
- * ║  GET    /templates/:id          → تفاصيل قالب                                  ║
- * ║  PUT    /templates/:id          → تحديث قالب                                   ║
- * ║  DELETE /templates/:id          → حذف قالب                                     ║
- * ║  PATCH  /templates/:id/toggle   → تفعيل/تعطيل قالب                             ║
- * ║  GET    /templates/categories   → الفئات المتاحة                               ║
- * ║  POST   /templates/:id/duplicate → نسخ قالب                                    ║
- * ║  POST   /templates/whatsapp/submit → إرسال للموافقة من واتساب                  ║
- * ║  GET    /templates/whatsapp/status → حالة الموافقة                             ║
- * ╚═══════════════════════════════════════════════════════════════════════════════╝
- */
+'use client'
 
-import {
-  Controller,
-  Get,
-  Post,
-  Put,
-  Patch,
-  Delete,
-  Body,
-  Param,
-  Query,
-  ParseUUIDPipe,
-  HttpCode,
-  HttpStatus,
-  UseGuards,
-} from '@nestjs/common';
-import {
-  ApiTags,
-  ApiOperation,
-  ApiResponse,
-  ApiBearerAuth,
-  ApiQuery,
-  ApiParam,
-} from '@nestjs/swagger';
+import React, { useState, useEffect, useRef } from 'react'
+import { templatesService, Template } from '@/lib/api'
 
-import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
-import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { TemplatesService } from './templates.service';
-import {
-  CreateTemplateDto,
-  UpdateTemplateDto,
-  TemplateFiltersDto,
-  SubmitWhatsAppTemplateDto,
-} from './dto';
-
-/**
- * Template Types
- */
-export enum TemplateType {
-  TEXT = 'text',
-  IMAGE = 'image',
-  VIDEO = 'video',
-  DOCUMENT = 'document',
-  INTERACTIVE = 'interactive',
-  CAROUSEL = 'carousel',
+interface UITemplate extends Template {
+  triggerEvent?: string
 }
 
-export enum TemplateCategory {
-  // WhatsApp Categories
-  MARKETING = 'marketing',
-  UTILITY = 'utility',
-  AUTHENTICATION = 'authentication',
-  // Custom Categories
-  ORDER_CONFIRMATION = 'order_confirmation',
-  SHIPPING_UPDATE = 'shipping_update',
-  ABANDONED_CART = 'abandoned_cart',
-  REVIEW_REQUEST = 'review_request',
-  WELCOME = 'welcome',
-  SUPPORT = 'support',
-  PROMOTION = 'promotion',
-  COD_CONFIRMATION = 'cod_confirmation',
-  PAYMENT_REMINDER = 'payment_reminder',
-  PRODUCT_RESTOCK = 'product_restock',
+interface Preset {
+  id: string
+  name: string
+  language: string
+  category: string
+  triggerEvent?: string | null
+  content: string
+  buttons?: { type: string; text: string; url?: string }[]
 }
 
-export enum TemplateStatus {
-  DRAFT = 'draft',
-  PENDING = 'pending',     // Pending WhatsApp approval
-  APPROVED = 'approved',
-  REJECTED = 'rejected',
-  ACTIVE = 'active',
-  DISABLED = 'disabled',
+interface Variable {
+  key: string
+  label: string
+  example: string
+  category: string
 }
 
-@ApiTags('Templates - قوالب الرسائل')
-@ApiBearerAuth('JWT-auth')
-@UseGuards(JwtAuthGuard)
-@Controller({
-  path: 'templates',
-  version: '1',
-})
-export class TemplatesController {
-  constructor(private readonly templatesService: TemplatesService) {}
+// ═══════════════════════════════════════════════════════════════════════════════
+// التصنيفات الرئيسية
+// ═══════════════════════════════════════════════════════════════════════════════
+const CATEGORIES = [
+  { id: 'all', label: 'الكل', icon: '📋' },
+  { id: 'order_notifications', label: 'إشعارات الطلبات', icon: '📦' },
+  { id: 'shipping_notifications', label: 'الشحن والتوصيل', icon: '🚚' },
+  { id: 'sales_recovery', label: 'استرداد المبيعات', icon: '🛒' },
+  { id: 'marketing', label: 'التسويق والحملات', icon: '📢' },
+  { id: 'engagement', label: 'التفاعل والولاء', icon: '⭐' },
+  { id: 'service', label: 'رسائل الخدمة', icon: '🔧' },
+]
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // GET /templates - قائمة القوالب
-  // ═══════════════════════════════════════════════════════════════════════════════
+const CATEGORY_COLORS: Record<string, { border: string; bg: string; text: string }> = {
+  order_notifications: { border: 'border-blue-500/30', bg: 'bg-blue-500/10', text: 'text-blue-400' },
+  shipping_notifications: { border: 'border-violet-500/30', bg: 'bg-violet-500/10', text: 'text-violet-400' },
+  sales_recovery: { border: 'border-emerald-500/30', bg: 'bg-emerald-500/10', text: 'text-emerald-400' },
+  marketing: { border: 'border-amber-500/30', bg: 'bg-amber-500/10', text: 'text-amber-400' },
+  engagement: { border: 'border-pink-500/30', bg: 'bg-pink-500/10', text: 'text-pink-400' },
+  service: { border: 'border-cyan-500/30', bg: 'bg-cyan-500/10', text: 'text-cyan-400' },
+}
 
-  @Get()
-  @ApiOperation({
-    summary: 'قائمة القوالب',
-    description: 'جلب جميع قوالب الرسائل مع الفلترة والتصفح',
-  })
-  @ApiQuery({ name: 'type', required: false, enum: TemplateType })
-  @ApiQuery({ name: 'category', required: false, enum: TemplateCategory })
-  @ApiQuery({ name: 'status', required: false, enum: TemplateStatus })
-  @ApiQuery({ name: 'channel', required: false, description: 'whatsapp, sms, email' })
-  @ApiQuery({ name: 'search', required: false })
-  @ApiQuery({ name: 'page', required: false, type: Number })
-  @ApiQuery({ name: 'limit', required: false, type: Number })
-  @ApiResponse({ status: 200, description: 'قائمة القوالب' })
-  async findAll(
-    @CurrentUser() user: any,
-    @Query('type') type?: TemplateType,
-    @Query('category') category?: TemplateCategory,
-    @Query('status') status?: TemplateStatus,
-    @Query('channel') channel?: string,
-    @Query('search') search?: string,
-    @Query('page') page = 1,
-    @Query('limit') limit = 20,
-  ) {
-    const tenantId = user.tenantId; // TODO: من JWT
+const CATEGORY_ICONS: Record<string, string> = {
+  order_notifications: '📦',
+  shipping_notifications: '🚚',
+  sales_recovery: '🛒',
+  marketing: '📢',
+  engagement: '⭐',
+  service: '🔧',
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// المتغيرات المتاحة - دليل مرجعي
+// ═══════════════════════════════════════════════════════════════════════════════
+const VARIABLES: Variable[] = [
+  { key: '{{customer_name}}', label: 'اسم العميل', example: 'محمد', category: 'عميل' },
+  { key: '{{customer_first_name}}', label: 'الاسم الأول', example: 'محمد', category: 'عميل' },
+  { key: '{{order_id}}', label: 'رقم الطلب', example: '1234', category: 'طلب' },
+  { key: '{{order_total}}', label: 'مبلغ الطلب', example: '299', category: 'طلب' },
+  { key: '{{order_status}}', label: 'حالة الطلب', example: 'قيد التنفيذ', category: 'طلب' },
+  { key: '{{order_tracking}}', label: 'رابط التتبع', example: 'https://...', category: 'طلب' },
+  { key: '{{tracking_number}}', label: 'رقم التتبع', example: 'SA123456', category: 'شحن' },
+  { key: '{{shipping_company}}', label: 'شركة الشحن', example: 'أرامكس', category: 'شحن' },
+  { key: '{{store_name}}', label: 'اسم المتجر', example: 'متجري', category: 'متجر' },
+  { key: '{{store_url}}', label: 'رابط المتجر', example: 'https://...', category: 'متجر' },
+  { key: '{{cart_total}}', label: 'مبلغ السلة', example: '450', category: 'سلة' },
+  { key: '{{cart_link}}', label: 'رابط السلة', example: 'https://...', category: 'سلة' },
+  { key: '{{product_name}}', label: 'اسم المنتج', example: 'عطر فاخر', category: 'منتج' },
+  { key: '{{product_price}}', label: 'سعر المنتج', example: '199', category: 'منتج' },
+  { key: '{{payment_link}}', label: 'رابط الدفع', example: 'https://...', category: 'دفع' },
+]
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Edit Modal - نافذة تعديل نص القالب
+// ═══════════════════════════════════════════════════════════════════════════════
+const EditModal = ({
+  template,
+  defaultContent,
+  onSave,
+  onClose,
+  saving,
+}: {
+  template: UITemplate
+  defaultContent?: string
+  onSave: (content: string) => void
+  onClose: () => void
+  saving: boolean
+}) => {
+  const [content, setContent] = useState(template.content || '')
+  const [showVars, setShowVars] = useState(false)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  const insertVariable = (varKey: string) => {
+    const textarea = textareaRef.current
+    if (!textarea) return
+    const start = textarea.selectionStart
+    const end = textarea.selectionEnd
+    const newContent = content.substring(0, start) + varKey + content.substring(end)
+    setContent(newContent)
+    setTimeout(() => {
+      textarea.focus()
+      textarea.setSelectionRange(start + varKey.length, start + varKey.length)
+    }, 0)
+  }
+
+  const handleReset = () => {
+    if (defaultContent) {
+      setContent(defaultContent)
+    }
+  }
+
+  // عدد الأحرف
+  const charCount = content.length
+
+  return (
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div
+        className="bg-slate-900 rounded-2xl border border-slate-700/50 w-full max-w-2xl max-h-[90vh] overflow-hidden"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="p-5 border-b border-slate-700/50">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-violet-500/20 flex items-center justify-center text-xl">
+                ✏️
+              </div>
+              <div>
+                <h2 className="font-bold text-white">تعديل القالب</h2>
+                <p className="text-xs text-slate-400">{template.name}</p>
+              </div>
+            </div>
+            <button onClick={onClose} className="w-8 h-8 rounded-lg bg-slate-800 flex items-center justify-center text-slate-400 hover:text-white transition-colors">
+              ✕
+            </button>
+          </div>
+        </div>
+
+        {/* Content */}
+        <div className="p-5 space-y-4 overflow-y-auto max-h-[60vh]">
+          {/* Toolbar */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowVars(!showVars)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                  showVars
+                    ? 'bg-violet-500/20 text-violet-400 border border-violet-500/30'
+                    : 'bg-slate-800 text-slate-400 border border-slate-700 hover:text-white'
+                }`}
+              >
+                🏷️ المتغيرات
+              </button>
+              {defaultContent && content !== defaultContent && (
+                <button
+                  onClick={handleReset}
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-amber-400 border border-amber-500/30 hover:bg-amber-500/10 transition-all"
+                >
+                  🔄 رجّع الأصلي
+                </button>
+              )}
+            </div>
+            <span className={`text-xs ${charCount > 1000 ? 'text-red-400' : 'text-slate-500'}`}>
+              {charCount} حرف
+            </span>
+          </div>
+
+          {/* Variables Panel */}
+          {showVars && (
+            <div className="p-3 rounded-xl bg-slate-800/50 border border-slate-700/50 space-y-3">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-sm font-medium text-white">📝 اضغط على المتغير لإضافته</span>
+              </div>
+              {['عميل', 'طلب', 'شحن', 'متجر', 'سلة', 'منتج', 'دفع'].map(cat => {
+                const vars = VARIABLES.filter(v => v.category === cat)
+                if (vars.length === 0) return null
+                return (
+                  <div key={cat}>
+                    <span className="text-xs text-slate-500 mb-1 block">{cat}</span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {vars.map(v => (
+                        <button
+                          key={v.key}
+                          onClick={() => insertVariable(v.key)}
+                          className="group px-2 py-1 rounded-lg bg-slate-700/50 hover:bg-violet-500/20 border border-slate-600/50 hover:border-violet-500/30 transition-all"
+                          title={`${v.label} — مثال: ${v.example}`}
+                        >
+                          <span className="text-xs text-violet-400 font-mono">{v.key.replace(/\{\{|\}\}/g, '')}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })}
+              <div className="pt-2 border-t border-slate-700/50">
+                <p className="text-xs text-slate-400">
+                  💡 <strong>نصيحة:</strong> المتغيرات تتبدل تلقائي بمعلومات العميل والطلب وقت الإرسال.
+                  مثلاً <code className="text-violet-400">{'{{customer_name}}'}</code> بتصير &quot;محمد&quot;
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Textarea */}
+          <textarea
+            ref={textareaRef}
+            value={content}
+            onChange={e => setContent(e.target.value)}
+            dir="rtl"
+            rows={10}
+            className="w-full bg-slate-800/50 border border-slate-700/50 rounded-xl p-4 text-sm text-white resize-none focus:outline-none focus:border-violet-500/50 focus:ring-1 focus:ring-violet-500/20 transition-all leading-relaxed"
+            placeholder="اكتب نص الرسالة هنا..."
+          />
+
+          {/* Preview */}
+          <div className="p-3 rounded-xl bg-emerald-500/5 border border-emerald-500/20">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-xs font-medium text-emerald-400">👁️ معاينة الرسالة</span>
+            </div>
+            <div className="text-xs text-slate-300 whitespace-pre-line leading-relaxed" dir="rtl">
+              {content
+                .replace(/\{\{customer_name\}\}/g, 'محمد')
+                .replace(/\{\{customer_first_name\}\}/g, 'محمد')
+                .replace(/\{\{order_id\}\}/g, '1234')
+                .replace(/\{\{order_total\}\}/g, '299')
+                .replace(/\{\{order_status\}\}/g, 'قيد التنفيذ')
+                .replace(/\{\{store_name\}\}/g, 'متجري')
+                .replace(/\{\{cart_total\}\}/g, '450')
+                .replace(/\{\{product_name\}\}/g, 'عطر فاخر')
+                .replace(/\{\{product_price\}\}/g, '199')
+                .replace(/\{\{shipping_company\}\}/g, 'أرامكس')
+                .replace(/\{\{tracking_number\}\}/g, 'SA123456')
+                .replace(/\{\{[^}]+\}\}/g, '...')
+              || 'اكتب النص وشوف المعاينة هنا...'}
+            </div>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="p-5 border-t border-slate-700/50 flex items-center justify-between">
+          <button
+            onClick={onClose}
+            className="px-5 py-2.5 rounded-xl bg-slate-800 text-slate-300 text-sm hover:bg-slate-700 transition-all"
+          >
+            إلغاء
+          </button>
+          <button
+            onClick={() => onSave(content)}
+            disabled={saving || !content.trim()}
+            className={`px-6 py-2.5 rounded-xl font-medium text-sm transition-all ${
+              saving || !content.trim()
+                ? 'bg-slate-700 text-slate-400 cursor-wait'
+                : 'bg-gradient-to-r from-emerald-500 to-violet-500 text-white hover:opacity-90'
+            }`}
+          >
+            {saving ? '⏳ جاري الحفظ...' : '💾 حفظ التعديلات'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Template Card - بطاقة القالب المفعّل (مع زر التعديل)
+// ═══════════════════════════════════════════════════════════════════════════════
+const TemplateCard = ({
+  template,
+  onToggle,
+  onEdit,
+  onDelete,
+  toggling,
+}: {
+  template: UITemplate
+  onToggle: () => void
+  onEdit: () => void
+  onDelete: () => void
+  toggling: boolean
+}) => {
+  const [showMenu, setShowMenu] = useState(false)
+  const status = template.status ?? 'draft'
+  const isEnabled = status === 'approved' || status === 'active'
+  const cat = template.category ?? 'order_notifications'
+  const colors = CATEGORY_COLORS[cat] || CATEGORY_COLORS.service
+  const catLabel = CATEGORIES.find(c => c.id === cat)?.label || cat
+
+  return (
+    <div className={`p-5 rounded-2xl bg-slate-900/50 border ${colors.border} hover:brightness-110 transition-all relative group`}>
+      <div className="flex items-start justify-between mb-3">
+        <div className="flex items-center gap-3 flex-1 min-w-0">
+          <div className="w-10 h-10 rounded-xl bg-slate-800 flex items-center justify-center text-xl shrink-0">
+            {CATEGORY_ICONS[cat] || '📝'}
+          </div>
+          <div className="min-w-0">
+            <h3 className="font-semibold text-white text-sm truncate">{template.name}</h3>
+            <span className={`px-2 py-0.5 text-xs rounded-full ${colors.bg} ${colors.text}`}>
+              {catLabel}
+            </span>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {/* Menu Button */}
+          <div className="relative">
+            <button
+              onClick={() => setShowMenu(!showMenu)}
+              className="w-8 h-8 rounded-lg bg-slate-800/50 flex items-center justify-center text-slate-400 hover:text-white opacity-0 group-hover:opacity-100 transition-all"
+            >
+              ⋮
+            </button>
+            {showMenu && (
+              <>
+                <div className="fixed inset-0 z-10" onClick={() => setShowMenu(false)} />
+                <div className="absolute left-0 top-9 bg-slate-800 border border-slate-700 rounded-xl shadow-xl z-20 py-1 min-w-[140px]">
+                  <button onClick={() => { onEdit(); setShowMenu(false) }} className="w-full px-3 py-2 text-right text-xs text-slate-300 hover:bg-slate-700 flex items-center gap-2">
+                    <span>✏️</span> تعديل النص
+                  </button>
+                  <button onClick={() => { onDelete(); setShowMenu(false) }} className="w-full px-3 py-2 text-right text-xs text-red-400 hover:bg-red-500/10 flex items-center gap-2">
+                    <span>🗑️</span> حذف القالب
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+          {/* Toggle */}
+          <button
+            onClick={onToggle}
+            disabled={toggling}
+            className={`relative w-11 h-6 rounded-full transition-all ${toggling ? 'opacity-50' : ''} ${isEnabled ? 'bg-emerald-500' : 'bg-slate-700'}`}
+          >
+            <span className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all ${isEnabled ? 'right-1' : 'left-1'}`} />
+          </button>
+        </div>
+      </div>
+
+      {/* Content Preview */}
+      <p className="text-xs text-slate-400 line-clamp-2 whitespace-pre-line mb-3">{template.content}</p>
+
+      {/* Footer */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2 text-xs text-slate-500">
+          <span>📊 {template.usageCount ?? 0} استخدام</span>
+        </div>
+        <button
+          onClick={onEdit}
+          className="px-2.5 py-1 rounded-lg text-xs bg-slate-800/50 text-slate-400 hover:text-violet-400 hover:bg-violet-500/10 border border-transparent hover:border-violet-500/30 transition-all"
+        >
+          ✏️ تعديل
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Preset Card - بطاقة القالب الجاهز (مع زر تعديل قبل التفعيل)
+// ═══════════════════════════════════════════════════════════════════════════════
+const PresetCard = ({
+  preset,
+  onActivate,
+  onCustomActivate,
+  activating,
+}: {
+  preset: Preset
+  onActivate: () => void
+  onCustomActivate: () => void
+  activating: boolean
+}) => {
+  const colors = CATEGORY_COLORS[preset.category] || CATEGORY_COLORS.service
+
+  return (
+    <div className={`p-4 rounded-2xl bg-slate-900/50 border ${colors.border} transition-all hover:brightness-110`}>
+      <div className="flex items-center gap-3 mb-3">
+        <div className="w-10 h-10 rounded-xl bg-slate-800 flex items-center justify-center text-xl">
+          {CATEGORY_ICONS[preset.category] || '📝'}
+        </div>
+        <div className="flex-1 min-w-0">
+          <h3 className="font-semibold text-white text-sm truncate">{preset.name}</h3>
+          {preset.triggerEvent && (
+            <span className="text-xs text-slate-500">🔗 {preset.triggerEvent}</span>
+          )}
+        </div>
+      </div>
+
+      <p className="text-xs text-slate-400 line-clamp-3 whitespace-pre-line mb-3">{preset.content}</p>
+
+      {preset.buttons && preset.buttons.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mb-3">
+          {preset.buttons.map((btn, i) => (
+            <span key={i} className="px-2 py-0.5 rounded bg-slate-800 text-xs text-slate-300">
+              {btn.type === 'url' ? '🔗' : '⚡'} {btn.text}
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div className="flex gap-2">
+        <button
+          onClick={onActivate}
+          disabled={activating}
+          className={`flex-1 py-2 rounded-xl font-medium text-xs transition-all ${
+            activating
+              ? 'bg-slate-700 text-slate-400 cursor-wait'
+              : 'bg-gradient-to-r from-emerald-500 to-violet-500 text-white hover:opacity-90'
+          }`}
+        >
+          {activating ? '⏳ جاري التفعيل...' : '➕ تفعيل'}
+        </button>
+        <button
+          onClick={onCustomActivate}
+          disabled={activating}
+          className="px-3 py-2 rounded-xl text-xs bg-slate-800 text-violet-400 border border-violet-500/30 hover:bg-violet-500/10 transition-all"
+          title="عدّل النص قبل التفعيل"
+        >
+          ✏️
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// Loading
+const LoadingSkeleton = () => (
+  <div className="space-y-8 animate-pulse p-8">
+    <div className="h-8 w-48 bg-slate-800 rounded" />
+    <div className="grid grid-cols-4 gap-4">
+      {[1,2,3,4].map(i => <div key={i} className="h-24 bg-slate-800/50 rounded-2xl" />)}
+    </div>
+    <div className="grid grid-cols-3 gap-4">
+      {[1,2,3,4,5,6].map(i => <div key={i} className="h-48 bg-slate-800/50 rounded-2xl" />)}
+    </div>
+  </div>
+)
+
+// Toast notification
+const Toast = ({ message, type, onClose }: { message: string; type: 'success' | 'error'; onClose: () => void }) => {
+  useEffect(() => {
+    const t = setTimeout(onClose, 3000)
+    return () => clearTimeout(t)
+  }, [onClose])
+  return (
+    <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-5 py-3 rounded-xl text-sm font-medium shadow-xl transition-all ${
+      type === 'success' ? 'bg-emerald-500 text-white' : 'bg-red-500 text-white'
+    }`}>
+      {type === 'success' ? '✅' : '❌'} {message}
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Main Page
+// ═══════════════════════════════════════════════════════════════════════════════
+export default function TemplatesPage() {
+  const [templates, setTemplates] = useState<UITemplate[]>([])
+  const [presets, setPresets] = useState<Preset[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [activeCategory, setActiveCategory] = useState('all')
+  const [toggling, setToggling] = useState<string | null>(null)
+  const [activatingPreset, setActivatingPreset] = useState<string | null>(null)
+  const [editingTemplate, setEditingTemplate] = useState<UITemplate | null>(null)
+  const [editingPreset, setEditingPreset] = useState<Preset | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
+
+  useEffect(() => { fetchData() }, [])
+
+  const showToast = (message: string, type: 'success' | 'error' = 'success') => {
+    setToast({ message, type })
+  }
+
+  const fetchData = async () => {
+    try {
+      setLoading(true)
+      setError(null)
+      const [templatesData, presetsData] = await Promise.all([
+        templatesService.getAll(),
+        templatesService.getPresets(),
+      ])
+      setTemplates(templatesData || [])
+      const activeNames = new Set((templatesData || []).map(t => t.name))
+      const filtered = (presetsData || []).filter(p => !activeNames.has(p.name))
+      setPresets(filtered)
+    } catch (err: any) {
+      console.error('Error:', err)
+      setError('فشل في جلب القوالب')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // تفعيل قالب جاهز
+  // ═══════════════════════════════════════════════════════════════════════════
+  const handleActivatePreset = async (preset: Preset, customContent?: string) => {
+    try {
+      // ✅ v7: تحقق إذا فيه قالب مفعّل بنفس الـ trigger event
+      if (preset.triggerEvent) {
+        const conflicting = templates.find(
+          t => (t as UITemplate).triggerEvent === preset.triggerEvent 
+            && ['approved', 'active'].includes(t.status ?? '')
+        )
+        if (conflicting) {
+          const confirmed = confirm(
+            `⚠️ يوجد قالب مفعّل بنفس الحدث:\n\n` +
+            `"${conflicting.name}" مربوط بـ ${preset.triggerEvent}\n\n` +
+            `تفعيل "${preset.name}" سيعطّل "${conflicting.name}" تلقائياً.\n\n` +
+            `هل تريد المتابعة؟`
+          )
+          if (!confirmed) return
+          
+          // تعطيل القالب القديم
+          try {
+            await templatesService.update(conflicting.id, { status: 'disabled' })
+            setTemplates(prev => prev.map(t => 
+              t.id === conflicting.id ? { ...t, status: 'disabled' } : t
+            ))
+          } catch (err) {
+            console.error('Error disabling conflicting template:', err)
+          }
+        }
+      }
+
+      setActivatingPreset(preset.id)
+      const newTemplate = await templatesService.create({
+        name: preset.name,
+        content: customContent || preset.content,
+        category: preset.category,
+        status: 'approved',
+        triggerEvent: preset.triggerEvent || undefined,
+      })
+      setTemplates(prev => [...prev, newTemplate])
+      setPresets(prev => prev.filter(p => p.id !== preset.id))
+      showToast(`تم تفعيل "${preset.name}" بنجاح`)
+    } catch (err) {
+      console.error('Error activating:', err)
+      showToast('فشل في تفعيل القالب', 'error')
+    } finally {
+      setActivatingPreset(null)
+    }
+  }
+
+  const handleActivateCategory = async (categoryId: string) => {
+    const categoryPresets = presets.filter(p => p.category === categoryId)
     
-    const filters: TemplateFiltersDto = {
-      type,
-      category,
-      status,
-      channel,
-      search,
-    };
-
-    return this.templatesService.findAll(tenantId, filters, { page, limit });
+    // ✅ v7: تتبع القوالب المفعّلة لكل trigger لتجنب التعارض
+    const activatedTriggers = new Set(
+      templates
+        .filter(t => ['approved', 'active'].includes(t.status ?? ''))
+        .map(t => (t as UITemplate).triggerEvent)
+        .filter(Boolean)
+    )
+    
+    let activated = 0
+    let skipped = 0
+    
+    for (const preset of categoryPresets) {
+      // تخطي إذا فيه قالب مفعّل بنفس الـ trigger
+      if (preset.triggerEvent && activatedTriggers.has(preset.triggerEvent)) {
+        skipped++
+        continue
+      }
+      
+      try {
+        setActivatingPreset(preset.id)
+        const newTemplate = await templatesService.create({
+          name: preset.name,
+          content: preset.content,
+          category: preset.category,
+          status: 'approved',
+          triggerEvent: preset.triggerEvent || undefined,
+        })
+        setTemplates(prev => [...prev, newTemplate])
+        setPresets(prev => prev.filter(p => p.id !== preset.id))
+        if (preset.triggerEvent) activatedTriggers.add(preset.triggerEvent)
+        activated++
+      } catch (err) {
+        console.error(`Error activating ${preset.id}:`, err)
+      }
+    }
+    setActivatingPreset(null)
+    const msg = skipped > 0 
+      ? `تم تفعيل ${activated} قالب (تم تخطي ${skipped} لتجنب التعارض)`
+      : `تم تفعيل ${activated} قالب`
+    showToast(msg)
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // GET /templates/categories - الفئات المتاحة
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  @Get('categories')
-  @ApiOperation({
-    summary: 'الفئات المتاحة',
-    description: 'جلب جميع فئات القوالب مع الوصف',
-  })
-  getCategories() {
-    return {
-      categories: [
-        {
-          id: 'marketing',
-          name: 'تسويقية',
-          nameEn: 'Marketing',
-          description: 'حملات ترويجية وعروض',
-          icon: '📢',
-          whatsappCategory: 'MARKETING',
-        },
-        {
-          id: 'utility',
-          name: 'خدمية',
-          nameEn: 'Utility',
-          description: 'إشعارات الطلبات والتحديثات',
-          icon: '🔔',
-          whatsappCategory: 'UTILITY',
-        },
-        {
-          id: 'authentication',
-          name: 'مصادقة',
-          nameEn: 'Authentication',
-          description: 'رموز OTP والتحقق',
-          icon: '🔐',
-          whatsappCategory: 'AUTHENTICATION',
-        },
-        {
-          id: 'order_confirmation',
-          name: 'تأكيد الطلب',
-          nameEn: 'Order Confirmation',
-          description: 'رسائل تأكيد الطلبات الجديدة',
-          icon: '✅',
-          whatsappCategory: 'UTILITY',
-        },
-        {
-          id: 'shipping_update',
-          name: 'تحديث الشحن',
-          nameEn: 'Shipping Update',
-          description: 'إشعارات حالة الشحن والتتبع',
-          icon: '🚚',
-          whatsappCategory: 'UTILITY',
-        },
-        {
-          id: 'abandoned_cart',
-          name: 'سلة متروكة',
-          nameEn: 'Abandoned Cart',
-          description: 'استرداد السلات المتروكة',
-          icon: '🛒',
-          whatsappCategory: 'MARKETING',
-        },
-        {
-          id: 'review_request',
-          name: 'طلب تقييم',
-          nameEn: 'Review Request',
-          description: 'طلب تقييم المنتج أو الخدمة',
-          icon: '⭐',
-          whatsappCategory: 'MARKETING',
-        },
-        {
-          id: 'welcome',
-          name: 'ترحيب',
-          nameEn: 'Welcome',
-          description: 'رسائل الترحيب بالعملاء الجدد',
-          icon: '👋',
-          whatsappCategory: 'MARKETING',
-        },
-        {
-          id: 'support',
-          name: 'دعم فني',
-          nameEn: 'Support',
-          description: 'رسائل الدعم الفني',
-          icon: '💬',
-          whatsappCategory: 'UTILITY',
-        },
-        {
-          id: 'cod_confirmation',
-          name: 'تأكيد الدفع عند الاستلام',
-          nameEn: 'COD Confirmation',
-          description: 'تأكيد طلبات الدفع عند الاستلام',
-          icon: '💵',
-          whatsappCategory: 'UTILITY',
-        },
-        {
-          id: 'payment_reminder',
-          name: 'تذكير بالدفع',
-          nameEn: 'Payment Reminder',
-          description: 'تذكير بالمدفوعات المستحقة',
-          icon: '💳',
-          whatsappCategory: 'UTILITY',
-        },
-        {
-          id: 'product_restock',
-          name: 'توفر المنتج',
-          nameEn: 'Product Restock',
-          description: 'إشعار بتوفر منتج',
-          icon: '📦',
-          whatsappCategory: 'MARKETING',
-        },
-      ],
-    };
+  const handleActivateAll = async () => {
+    // ✅ v7: تتبع القوالب المفعّلة لكل trigger لتجنب التعارض
+    const activatedTriggers = new Set(
+      templates
+        .filter(t => ['approved', 'active'].includes(t.status ?? ''))
+        .map(t => (t as UITemplate).triggerEvent)
+        .filter(Boolean)
+    )
+    
+    let activated = 0
+    let skipped = 0
+    
+    for (const preset of [...presets]) {
+      // تخطي إذا فيه قالب مفعّل بنفس الـ trigger
+      if (preset.triggerEvent && activatedTriggers.has(preset.triggerEvent)) {
+        skipped++
+        continue
+      }
+      
+      try {
+        setActivatingPreset(preset.id)
+        const newTemplate = await templatesService.create({
+          name: preset.name,
+          content: preset.content,
+          category: preset.category,
+          status: 'approved',
+          triggerEvent: preset.triggerEvent || undefined,
+        })
+        setTemplates(prev => [...prev, newTemplate])
+        setPresets(prev => prev.filter(p => p.id !== preset.id))
+        if (preset.triggerEvent) activatedTriggers.add(preset.triggerEvent)
+        activated++
+      } catch (err) {
+        console.error(`Error:`, err)
+      }
+    }
+    setActivatingPreset(null)
+    const msg = skipped > 0
+      ? `تم تفعيل ${activated} قالب بنجاح (تم تخطي ${skipped} لتجنب التعارض) 🎉`
+      : `تم تفعيل ${activated} قالب بنجاح 🎉`
+    showToast(msg)
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // GET /templates/variables - المتغيرات المتاحة
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  @Get('variables')
-  @ApiOperation({
-    summary: 'المتغيرات المتاحة',
-    description: 'قائمة المتغيرات التي يمكن استخدامها في القوالب',
-  })
-  getVariables() {
-    return {
-      variables: [
-        // Customer Variables
-        { key: '{{customer_name}}', label: 'اسم العميل', category: 'customer' },
-        { key: '{{customer_first_name}}', label: 'الاسم الأول', category: 'customer' },
-        { key: '{{customer_phone}}', label: 'رقم الجوال', category: 'customer' },
-        { key: '{{customer_email}}', label: 'البريد الإلكتروني', category: 'customer' },
-        
-        // Order Variables
-        { key: '{{order_id}}', label: 'رقم الطلب', category: 'order' },
-        { key: '{{order_total}}', label: 'إجمالي الطلب', category: 'order' },
-        { key: '{{order_status}}', label: 'حالة الطلب', category: 'order' },
-        { key: '{{order_date}}', label: 'تاريخ الطلب', category: 'order' },
-        { key: '{{order_items}}', label: 'منتجات الطلب', category: 'order' },
-        { key: '{{order_tracking}}', label: 'رابط التتبع', category: 'order' },
-        { key: '{{shipping_company}}', label: 'شركة الشحن', category: 'order' },
-        { key: '{{delivery_date}}', label: 'تاريخ التوصيل المتوقع', category: 'order' },
-        
-        // Cart Variables
-        { key: '{{cart_items}}', label: 'منتجات السلة', category: 'cart' },
-        { key: '{{cart_total}}', label: 'إجمالي السلة', category: 'cart' },
-        { key: '{{cart_link}}', label: 'رابط السلة', category: 'cart' },
-        { key: '{{cart_item_count}}', label: 'عدد المنتجات', category: 'cart' },
-        
-        // Store Variables
-        { key: '{{store_name}}', label: 'اسم المتجر', category: 'store' },
-        { key: '{{store_phone}}', label: 'رقم المتجر', category: 'store' },
-        { key: '{{store_url}}', label: 'رابط المتجر', category: 'store' },
-        
-        // Promotion Variables
-        { key: '{{coupon_code}}', label: 'كود الخصم', category: 'promotion' },
-        { key: '{{discount_percent}}', label: 'نسبة الخصم', category: 'promotion' },
-        { key: '{{offer_expiry}}', label: 'تاريخ انتهاء العرض', category: 'promotion' },
-        
-        // Product Variables
-        { key: '{{product_name}}', label: 'اسم المنتج', category: 'product' },
-        { key: '{{product_price}}', label: 'سعر المنتج', category: 'product' },
-        { key: '{{product_link}}', label: 'رابط المنتج', category: 'product' },
-        { key: '{{product_image}}', label: 'صورة المنتج', category: 'product' },
-        
-        // OTP Variables
-        { key: '{{otp_code}}', label: 'رمز التحقق', category: 'auth' },
-        { key: '{{otp_expiry}}', label: 'صلاحية الرمز', category: 'auth' },
-
-        // Shipping Variables
-        { key: '{{tracking_number}}', label: 'رقم التتبع', category: 'order' },
-
-        // Payment Variables
-        { key: '{{payment_link}}', label: 'رابط الدفع', category: 'order' },
-
-        // Product Extended Variables
-        { key: '{{product_url}}', label: 'رابط المنتج', category: 'product' },
-        { key: '{{product_quantity}}', label: 'الكمية المتبقية', category: 'product' },
-
-        // Digital Product Variables
-        { key: '{{download_link}}', label: 'رابط التحميل', category: 'product' },
-
-        // Invoice Variables
-        { key: '{{invoice_link}}', label: 'رابط الفاتورة', category: 'order' },
-
-        // Promotion Extended Variables
-        { key: '{{offer_end_date}}', label: 'تاريخ انتهاء العرض', category: 'promotion' },
-
-        // Loyalty & Referral Variables
-        { key: '{{loyalty_points}}', label: 'نقاط الولاء', category: 'customer' },
-        { key: '{{referral_link}}', label: 'رابط الإحالة', category: 'customer' },
-        { key: '{{referral_reward}}', label: 'مكافأة الإحالة', category: 'promotion' },
-
-        // Store Extended Variables
-        { key: '{{working_hours}}', label: 'ساعات العمل', category: 'store' },
-      ],
-    };
+  // ═══════════════════════════════════════════════════════════════════════════
+  // تعديل نص القالب
+  // ═══════════════════════════════════════════════════════════════════════════
+  const handleSaveEdit = async (content: string) => {
+    if (!editingTemplate) return
+    try {
+      setSaving(true)
+      const updated = await templatesService.update(editingTemplate.id, { content })
+      setTemplates(templates.map(t => t.id === editingTemplate.id ? { ...t, ...updated, content } : t))
+      setEditingTemplate(null)
+      showToast('تم حفظ التعديلات ✏️')
+    } catch (err) {
+      console.error('Error saving:', err)
+      showToast('فشل في حفظ التعديلات', 'error')
+    } finally {
+      setSaving(false)
+    }
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // GET /templates/presets - القوالب الجاهزة
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  @Get('presets')
-  @ApiOperation({
-    summary: 'القوالب الجاهزة',
-    description: 'قوالب معدة مسبقاً يمكن استخدامها مباشرة',
-  })
-  getPresets() {
-    return {
-      presets: [
-        // ═══════════════════════════════════════════════════════════════
-        // 📦 إشعارات الطلبات (Order Notifications)
-        // ═══════════════════════════════════════════════════════════════
-        {
-          id: 'order_new',
-          name: 'طلب جديد',
-          language: 'ar',
-          category: 'order_notifications',
-          triggerEvent: 'order.created',
-          content: 'مرحباً {{customer_name}} 👋\n\nتم استلام طلبك رقم #{{order_id}} بنجاح ✅\n\nإجمالي الطلب: {{order_total}} ريال\n\nشكراً لتسوقك من {{store_name}} 🛍️',
-          buttons: [
-            { type: 'url', text: 'تتبع الطلب', url: '{{order_tracking}}' },
-          ],
-        },
-        {
-          id: 'order_cod_confirmation',
-          name: 'تأكيد الدفع عند الاستلام',
-          language: 'ar',
-          category: 'order_notifications',
-          triggerEvent: 'order.created',
-          content: 'مرحباً {{customer_name}} 👋\n\nلديك طلب جديد رقم #{{order_id}} بقيمة {{order_total}} ريال\n\nطريقة الدفع: الدفع عند الاستلام 💵\n\nهل تؤكد طلبك؟',
-          buttons: [
-            { type: 'quick_reply', text: 'نعم، أؤكد ✅' },
-            { type: 'quick_reply', text: 'إلغاء الطلب ❌' },
-          ],
-        },
-        {
-          id: 'order_payment_confirmed',
-          name: 'تأكيد الدفع',
-          language: 'ar',
-          category: 'order_notifications',
-          triggerEvent: 'order.payment.updated',
-          content: 'مرحباً {{customer_name}} 💳\n\nتم تأكيد الدفع لطلبك رقم #{{order_id}} بنجاح ✅\n\nالمبلغ المدفوع: {{order_total}} ريال\n\nجاري تجهيز طلبك الآن 📦',
-          buttons: [
-            { type: 'url', text: 'تفاصيل الطلب', url: '{{order_tracking}}' },
-          ],
-        },
-        {
-          id: 'order_processing',
-          name: 'طلب قيد التنفيذ',
-          language: 'ar',
-          category: 'order_notifications',
-          triggerEvent: 'order.status.processing',
-          content: 'مرحباً {{customer_name}} ⚙️\n\nطلبك رقم #{{order_id}} قيد التجهيز الآن\n\nفريقنا يعمل على تجهيز طلبك بأسرع وقت ممكن ⏳\n\nسنُبلغك فور شحن الطلب 📦',
-          buttons: [],
-        },
-        {
-          id: 'order_completed',
-          name: 'طلب تم التنفيذ',
-          language: 'ar',
-          category: 'order_notifications',
-          triggerEvent: 'order.status.completed',
-          content: 'مرحباً {{customer_name}} ✅\n\nتم تنفيذ طلبك رقم #{{order_id}} بنجاح!\n\nسيتم تسليمه لشركة الشحن قريباً 🚚\n\nشكراً لثقتك في {{store_name}} 💙',
-          buttons: [
-            { type: 'url', text: 'تتبع الطلب', url: '{{order_tracking}}' },
-          ],
-        },
-        {
-          id: 'order_awaiting_payment',
-          name: 'طلب بانتظار الدفع',
-          language: 'ar',
-          category: 'order_notifications',
-          triggerEvent: 'order.created',
-          content: 'مرحباً {{customer_name}} ⏰\n\nطلبك رقم #{{order_id}} بانتظار إتمام الدفع\n\nالمبلغ المطلوب: {{order_total}} ريال\n\nأكمل الدفع الآن لتأكيد طلبك 💳',
-          buttons: [
-            { type: 'url', text: 'أكمل الدفع', url: '{{payment_link}}' },
-          ],
-        },
-        {
-          id: 'order_awaiting_review',
-          name: 'طلب بانتظار المراجعة',
-          language: 'ar',
-          category: 'order_notifications',
-          triggerEvent: 'order.status.under_review',
-          content: 'مرحباً {{customer_name}} 📋\n\nطلبك رقم #{{order_id}} قيد المراجعة من فريقنا\n\nسيتم تأكيد الطلب وإشعارك في أقرب وقت ⏳\n\nشكراً لصبرك 🙏',
-          buttons: [],
-        },
-        {
-          id: 'order_cancelled',
-          name: 'طلب ملغي',
-          language: 'ar',
-          category: 'order_notifications',
-          triggerEvent: 'order.cancelled',
-          content: 'مرحباً {{customer_name}} ❌\n\nتم إلغاء طلبك رقم #{{order_id}}\n\nإذا كان الإلغاء بالخطأ أو تحتاج مساعدة، لا تتردد بالتواصل معنا 📞\n\nفريق {{store_name}} في خدمتك دائماً 💙',
-          buttons: [
-            { type: 'url', text: 'تواصل معنا', url: '{{store_url}}/contact' },
-          ],
-        },
-        {
-          id: 'order_refunded',
-          name: 'طلب مسترجع',
-          language: 'ar',
-          category: 'order_notifications',
-          triggerEvent: 'order.refunded',
-          content: 'مرحباً {{customer_name}} 💰\n\nتم قبول طلب استرجاع الطلب رقم #{{order_id}}\n\nسيتم إعادة المبلغ {{order_total}} ريال خلال 5-14 يوم عمل\n\nنأسف لأي إزعاج ونتمنى رؤيتك مجدداً 🙏',
-          buttons: [
-            { type: 'url', text: 'تسوق مجدداً', url: '{{store_url}}' },
-          ],
-        },
-        {
-          id: 'order_return_processing',
-          name: 'طلب قيد الاسترجاع',
-          language: 'ar',
-          category: 'order_notifications',
-          triggerEvent: 'order.status.restoring',
-          content: 'مرحباً {{customer_name}} 🔄\n\nطلب الاسترجاع للطلب رقم #{{order_id}} قيد المعالجة\n\nسنقوم بمراجعته وإشعارك بالنتيجة خلال 2-3 أيام عمل ⏳',
-          buttons: [],
-        },
-
-        // ═══════════════════════════════════════════════════════════════
-        // 🚚 إشعارات الشحن (Shipping Notifications)
-        // ═══════════════════════════════════════════════════════════════
-        {
-          id: 'shipping_created',
-          name: 'إنشاء بوليصة الشحن',
-          language: 'ar',
-          category: 'shipping_notifications',
-          triggerEvent: 'shipment.created',
-          content: 'مرحباً {{customer_name}} 📋\n\nتم إصدار بوليصة شحن لطلبك رقم #{{order_id}}\n\nرقم التتبع: {{tracking_number}}\nشركة الشحن: {{shipping_company}}\n\nسنُبلغك فور تحرك الشحنة 🚚',
-          buttons: [
-            { type: 'url', text: 'تتبع الشحنة', url: '{{order_tracking}}' },
-          ],
-        },
-        {
-          id: 'shipping_shipped',
-          name: 'تم الشحن',
-          language: 'ar',
-          category: 'shipping_notifications',
-          triggerEvent: 'order.shipped',
-          content: 'مرحباً {{customer_name}} 📦\n\nتم شحن طلبك رقم #{{order_id}} 🎉\n\nشركة الشحن: {{shipping_company}}\nرقم التتبع: {{tracking_number}}\nالتوصيل المتوقع: {{delivery_date}}\n\nتتبع شحنتك من الرابط أدناه 👇',
-          buttons: [
-            { type: 'url', text: 'تتبع الشحنة', url: '{{order_tracking}}' },
-          ],
-        },
-        {
-          id: 'shipping_out_for_delivery',
-          name: 'جاري التوصيل',
-          language: 'ar',
-          category: 'shipping_notifications',
-          triggerEvent: 'order.status.in_transit',
-          content: 'مرحباً {{customer_name}} 🚚💨\n\nطلبك رقم #{{order_id}} في الطريق إليك الآن!\n\nالمندوب سيصلك اليوم، يرجى التأكد من توفرك لاستلام الطلب 📱\n\nفي حال عدم التواجد، يرجى التواصل مع شركة الشحن',
-          buttons: [
-            { type: 'url', text: 'تتبع المندوب', url: '{{order_tracking}}' },
-          ],
-        },
-        {
-          id: 'shipping_delivered',
-          name: 'تم التوصيل',
-          language: 'ar',
-          category: 'shipping_notifications',
-          triggerEvent: 'order.delivered',
-          content: 'مرحباً {{customer_name}} 🎉\n\nتم توصيل طلبك رقم #{{order_id}} بنجاح ✅\n\nنتمنى أن تنال المنتجات إعجابك!\n\nشاركنا رأيك وقيّم تجربتك ⭐',
-          buttons: [
-            { type: 'url', text: 'قيّم تجربتك', url: '{{store_url}}/reviews' },
-          ],
-        },
-
-        // ═══════════════════════════════════════════════════════════════
-        // 🛒 استرداد المبيعات (Sales Recovery)
-        // ═══════════════════════════════════════════════════════════════
-        {
-          id: 'cart_abandoned_1',
-          name: 'سلة متروكة - التذكير الأول',
-          language: 'ar',
-          category: 'sales_recovery',
-          triggerEvent: 'abandoned.cart',
-          content: 'مرحباً {{customer_name}} 👋\n\nلاحظنا أنك تركت بعض المنتجات في سلتك 🛒\n\nلا تفوت الفرصة! أكمل طلبك الآن واستمتع بمنتجاتك المفضلة\n\nإجمالي السلة: {{cart_total}} ريال',
-          buttons: [
-            { type: 'url', text: 'أكمل الطلب', url: '{{cart_link}}' },
-          ],
-        },
-        {
-          id: 'cart_abandoned_2',
-          name: 'سلة متروكة - مع كوبون خصم',
-          language: 'ar',
-          category: 'sales_recovery',
-          triggerEvent: 'abandoned.cart',
-          content: 'مرحباً {{customer_name}} 🎁\n\nسلتك لا زالت بانتظارك! لأنك مميز، جهزنا لك خصم حصري 🎉\n\nاستخدم كود: {{coupon_code}}\nواحصل على خصم {{discount_percent}}% على سلتك\n\nالعرض لفترة محدودة ⏰',
-          buttons: [
-            { type: 'url', text: 'استفد من الخصم', url: '{{cart_link}}' },
-          ],
-        },
-        {
-          id: 'cart_abandoned_3',
-          name: 'سلة متروكة - التذكير الأخير',
-          language: 'ar',
-          category: 'sales_recovery',
-          triggerEvent: 'abandoned.cart',
-          content: 'مرحباً {{customer_name}} ⏰\n\nآخر فرصة! منتجاتك في السلة قد تنفد قريباً\n\nإجمالي السلة: {{cart_total}} ريال\n\nلا تفوّت العرض، الكمية محدودة! 🔥',
-          buttons: [
-            { type: 'url', text: 'اطلب الآن', url: '{{cart_link}}' },
-          ],
-        },
-        {
-          id: 'payment_reminder',
-          name: 'تذكير بالدفع',
-          language: 'ar',
-          category: 'sales_recovery',
-          triggerEvent: 'order.created',
-          content: 'مرحباً {{customer_name}} 💳\n\nتذكير: طلبك رقم #{{order_id}} بانتظار إتمام الدفع\n\nالمبلغ: {{order_total}} ريال\n\nسيتم إلغاء الطلب تلقائياً إذا لم يتم الدفع خلال 24 ساعة ⏰',
-          buttons: [
-            { type: 'url', text: 'ادفع الآن', url: '{{payment_link}}' },
-          ],
-        },
-        {
-          id: 'product_restock',
-          name: 'إعادة توفر منتج',
-          language: 'ar',
-          category: 'sales_recovery',
-          triggerEvent: 'product.available',
-          content: 'مرحباً {{customer_name}} 🔔\n\nخبر سار! المنتج الذي كنت تنتظره عاد للمخزون ✅\n\n{{product_name}}\nالسعر: {{product_price}} ريال\n\nاطلبه الآن قبل نفاد الكمية! 🏃',
-          buttons: [
-            { type: 'url', text: 'اطلب الآن', url: '{{product_url}}' },
-          ],
-        },
-
-        // ═══════════════════════════════════════════════════════════════
-        // 📢 التسويق والحملات (Marketing & Campaigns)
-        // ═══════════════════════════════════════════════════════════════
-        {
-          id: 'welcome_new_customer',
-          name: 'ترحيب بعميل جديد',
-          language: 'ar',
-          category: 'marketing',
-          triggerEvent: 'customer.created',
-          content: 'أهلاً وسهلاً {{customer_name}} 🎉\n\nمرحباً بك في {{store_name}}!\n\nنحن سعداء بانضمامك إلينا. استمتع بتجربة تسوق مميزة واكتشف أحدث المنتجات\n\nاستخدم كود {{coupon_code}} واحصل على خصم {{discount_percent}}% على أول طلب 🎁',
-          buttons: [
-            { type: 'url', text: 'تسوق الآن', url: '{{store_url}}' },
-          ],
-        },
-        {
-          id: 'welcome_series_2',
-          name: 'سلسلة الترحيب - تعرف علينا',
-          language: 'ar',
-          category: 'marketing',
-          triggerEvent: 'customer.created',
-          content: 'مرحباً {{customer_name}} 💙\n\nهل تعلم أن {{store_name}} يوفر لك:\n\n✨ منتجات أصلية 100%\n🚚 توصيل سريع\n🔄 إرجاع مجاني خلال 14 يوم\n💬 دعم فوري على واتساب\n\nاكتشف الأكثر مبيعاً لدينا 🔥',
-          buttons: [
-            { type: 'url', text: 'الأكثر مبيعاً', url: '{{store_url}}/best-sellers' },
-          ],
-        },
-        {
-          id: 'promotion_offer',
-          name: 'عرض وتخفيض',
-          language: 'ar',
-          category: 'marketing',
-          triggerEvent: null,
-          content: 'مرحباً {{customer_name}} 🔥\n\nعرض حصري من {{store_name}}!\n\nخصم يصل إلى {{discount_percent}}% على منتجات مختارة 🎉\n\nالعرض ساري حتى {{offer_end_date}}\n\nلا تفوّت الفرصة! ⏰',
-          buttons: [
-            { type: 'url', text: 'تسوق العروض', url: '{{store_url}}/offers' },
-          ],
-        },
-        {
-          id: 'coupon_exclusive',
-          name: 'كوبون خصم حصري',
-          language: 'ar',
-          category: 'marketing',
-          triggerEvent: null,
-          content: 'مرحباً {{customer_name}} 🎁\n\nلأنك من عملائنا المميزين، جهزنا لك كوبون خصم حصري!\n\nالكود: {{coupon_code}}\nالخصم: {{discount_percent}}%\nصالح حتى: {{offer_end_date}}\n\nاستخدمه الآن! 🛍️',
-          buttons: [
-            { type: 'url', text: 'استخدم الكوبون', url: '{{store_url}}' },
-          ],
-        },
-        {
-          id: 'new_product_launch',
-          name: 'منتج جديد',
-          language: 'ar',
-          category: 'marketing',
-          triggerEvent: 'product.created',
-          content: 'مرحباً {{customer_name}} ✨\n\nوصل جديد لمتجر {{store_name}}!\n\n{{product_name}}\nالسعر: {{product_price}} ريال\n\nكن من أوائل المقتنين 🏆',
-          buttons: [
-            { type: 'url', text: 'اطلع على المنتج', url: '{{product_url}}' },
-          ],
-        },
-        {
-          id: 'winback_inactive',
-          name: 'استرداد عميل غير نشط',
-          language: 'ar',
-          category: 'marketing',
-          triggerEvent: null,
-          content: 'مرحباً {{customer_name}} 💙\n\nاشتقنا لك في {{store_name}}! 🥺\n\nمر وقت من آخر زيارة لك، ووددنا نطمن عليك\n\nجهزنا لك خصم خاص: {{coupon_code}} بقيمة {{discount_percent}}%\n\nعود لنا! 🙏',
-          buttons: [
-            { type: 'url', text: 'تسوق الآن', url: '{{store_url}}' },
-          ],
-        },
-        {
-          id: 'post_purchase_upsell',
-          name: 'توصيات بعد الشراء',
-          language: 'ar',
-          category: 'marketing',
-          triggerEvent: 'order.delivered',
-          content: 'مرحباً {{customer_name}} 🌟\n\nنأمل أنك استمتعت بمشترياتك من {{store_name}}!\n\nبناءً على طلبك السابق، نعتقد أنك ستحب هذه المنتجات أيضاً 👇\n\nاكتشف المزيد واستمتع بتجربة تسوق مميزة ✨',
-          buttons: [
-            { type: 'url', text: 'منتجات مقترحة', url: '{{store_url}}/recommended' },
-          ],
-        },
-
-        // ═══════════════════════════════════════════════════════════════
-        // ⭐ التفاعل والولاء (Engagement & Loyalty)
-        // ═══════════════════════════════════════════════════════════════
-        {
-          id: 'review_request',
-          name: 'طلب تقييم',
-          language: 'ar',
-          category: 'engagement',
-          triggerEvent: 'order.delivered',
-          content: 'مرحباً {{customer_name}} ⭐\n\nنأمل أنك استمتعت بتجربتك مع {{store_name}}!\n\nرأيك يهمنا كثيراً، شاركنا تقييمك للمنتجات\n\nتقييمك يساعدنا نقدم لك الأفضل دائماً 💙',
-          buttons: [
-            { type: 'url', text: 'قيّم الآن', url: '{{store_url}}/reviews' },
-          ],
-        },
-        {
-          id: 'review_reward',
-          name: 'مكافأة التقييم',
-          language: 'ar',
-          category: 'engagement',
-          triggerEvent: 'review.added',
-          content: 'شكراً {{customer_name}} على تقييمك! ⭐\n\nنقدّر وقتك ورأيك القيّم 🙏\n\nكمكافأة لك، استخدم كود: {{coupon_code}}\nواحصل على خصم {{discount_percent}}% على طلبك القادم 🎁\n\nشكراً لثقتك في {{store_name}} 💙',
-          buttons: [
-            { type: 'url', text: 'تسوق بالخصم', url: '{{store_url}}' },
-          ],
-        },
-        {
-          id: 'loyalty_points',
-          name: 'نقاط الولاء',
-          language: 'ar',
-          category: 'engagement',
-          triggerEvent: null,
-          content: 'مرحباً {{customer_name}} 🏆\n\nرصيد نقاطك في {{store_name}}: {{loyalty_points}} نقطة\n\nاستبدل نقاطك بخصومات حصرية على مشترياتك القادمة!\n\nاستمر بالتسوق واجمع المزيد من النقاط ✨',
-          buttons: [
-            { type: 'url', text: 'استبدل نقاطك', url: '{{store_url}}/loyalty' },
-          ],
-        },
-        {
-          id: 'referral_invite',
-          name: 'دعوة إحالة صديق',
-          language: 'ar',
-          category: 'engagement',
-          triggerEvent: null,
-          content: 'مرحباً {{customer_name}} 🤝\n\nشارك تجربتك مع أصدقائك واحصل على مكافأة!\n\nرابط الإحالة الخاص بك:\n{{referral_link}}\n\nعن كل صديق يسجل ويشتري، تحصل على {{referral_reward}} ريال رصيد 🎉',
-          buttons: [
-            { type: 'url', text: 'شارك الرابط', url: '{{referral_link}}' },
-          ],
-        },
-
-        // ═══════════════════════════════════════════════════════════════
-        // 🔧 رسائل الخدمة (Service & Utility)
-        // ═══════════════════════════════════════════════════════════════
-        {
-          id: 'otp_verification',
-          name: 'رمز التحقق OTP',
-          language: 'ar',
-          category: 'service',
-          triggerEvent: 'customer.otp.request',
-          content: 'رمز التحقق الخاص بك: {{otp_code}} 🔐\n\nصالح لمدة 5 دقائق\n\nإذا لم تطلب هذا الرمز، يرجى تجاهل هذه الرسالة',
-          buttons: [],
-        },
-        {
-          id: 'digital_product_delivery',
-          name: 'تسليم منتج رقمي',
-          language: 'ar',
-          category: 'service',
-          triggerEvent: 'order.payment.updated',
-          content: 'مرحباً {{customer_name}} 📱\n\nتم تأكيد دفعك بنجاح! إليك منتجك الرقمي:\n\nطلب رقم: #{{order_id}}\n\nيمكنك تحميل المنتج من الرابط أدناه 👇\n\nشكراً لتسوقك من {{store_name}} 💙',
-          buttons: [
-            { type: 'url', text: 'تحميل المنتج', url: '{{download_link}}' },
-          ],
-        },
-        {
-          id: 'after_hours_reply',
-          name: 'رد خارج أوقات العمل',
-          language: 'ar',
-          category: 'service',
-          triggerEvent: null,
-          content: 'مرحباً {{customer_name}} 🌙\n\nشكراً لتواصلك مع {{store_name}}\n\nنحن خارج أوقات العمل حالياً\nساعات العمل: {{working_hours}}\n\nسنرد على رسالتك في أقرب وقت ممكن ⏰\n\nشكراً لصبرك 🙏',
-          buttons: [],
-        },
-        {
-          id: 'low_stock_alert',
-          name: 'تنبيه نفاد المخزون',
-          language: 'ar',
-          category: 'service',
-          triggerEvent: 'product.quantity.low',
-          content: '⚠️ تنبيه مخزون - {{store_name}}\n\nالمنتج: {{product_name}}\nالكمية المتبقية: {{product_quantity}} قطعة\n\nيرجى إعادة تعبئة المخزون لتجنب نفاد المنتج 📦',
-          buttons: [],
-        },
-        {
-          id: 'invoice_created',
-          name: 'فاتورة جديدة',
-          language: 'ar',
-          category: 'service',
-          triggerEvent: 'invoice.created',
-          content: 'مرحباً {{customer_name}} 🧾\n\nتم إصدار فاتورة جديدة لطلبك رقم #{{order_id}}\n\nالمبلغ: {{order_total}} ريال\n\nيمكنك تحميل الفاتورة من الرابط أدناه 👇',
-          buttons: [
-            { type: 'url', text: 'تحميل الفاتورة', url: '{{invoice_link}}' },
-          ],
-        },
-      ],
-    };
+  // ═══════════════════════════════════════════════════════════════════════════
+  // تعديل نص قالب جاهز قبل التفعيل
+  // ═══════════════════════════════════════════════════════════════════════════
+  const handleSavePresetEdit = async (content: string) => {
+    if (!editingPreset) return
+    await handleActivatePreset(editingPreset, content)
+    setEditingPreset(null)
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // POST /templates - إنشاء قالب جديد
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  @Post()
-  @ApiOperation({
-    summary: 'إنشاء قالب جديد',
-    description: 'إنشاء قالب رسالة جديد (نصي، صورة، فيديو، تفاعلي)',
-  })
-  @ApiResponse({ status: 201, description: 'تم إنشاء القالب' })
-  async create(@CurrentUser() user: any,
-    @Body() dto: CreateTemplateDto) {
-    const tenantId = user.tenantId;
-    return this.templatesService.create(tenantId, dto);
+  // ═══════════════════════════════════════════════════════════════════════════
+  // تبديل حالة القالب
+  // ═══════════════════════════════════════════════════════════════════════════
+  const handleToggle = async (templateId: string) => {
+    const template = templates.find(t => t.id === templateId)
+    if (!template) return
+    try {
+      setToggling(templateId)
+      const currentStatus = template.status ?? 'draft'
+      const isActive = currentStatus === 'approved' || currentStatus === 'active'
+      const newStatus = isActive ? 'disabled' : 'approved'
+      
+      // ✅ v7: لو يفعّل قالب → تحقق من تعارض مع قالب آخر بنفس الـ trigger
+      if (!isActive && (template as UITemplate).triggerEvent) {
+        const triggerEvent = (template as UITemplate).triggerEvent
+        const conflicting = templates.find(
+          t => t.id !== templateId 
+            && (t as UITemplate).triggerEvent === triggerEvent 
+            && ['approved', 'active'].includes(t.status ?? '')
+        )
+        if (conflicting) {
+          const confirmed = confirm(
+            `⚠️ يوجد قالب مفعّل بنفس الحدث:\n\n` +
+            `"${conflicting.name}" مربوط بـ ${triggerEvent}\n\n` +
+            `تفعيل "${template.name}" سيعطّل "${conflicting.name}" تلقائياً.\n\n` +
+            `هل تريد المتابعة؟`
+          )
+          if (!confirmed) {
+            setToggling(null)
+            return
+          }
+          
+          // تعطيل القالب القديم
+          try {
+            await templatesService.update(conflicting.id, { status: 'disabled' })
+            setTemplates(prev => prev.map(t => 
+              t.id === conflicting.id ? { ...t, status: 'disabled' } : t
+            ))
+          } catch (err) {
+            console.error('Error disabling conflicting template:', err)
+          }
+        }
+      }
+      
+      const updated = await templatesService.update(templateId, { status: newStatus })
+      setTemplates(templates.map(t => t.id === templateId ? { ...t, ...updated } : t))
+      showToast(isActive ? 'تم تعطيل القالب' : 'تم تفعيل القالب')
+    } catch (err) {
+      console.error('Error toggling:', err)
+      showToast('فشل في تحديث حالة القالب', 'error')
+    } finally {
+      setToggling(null)
+    }
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // GET /templates/:id - تفاصيل قالب
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  @Get(':id')
-  @ApiOperation({
-    summary: 'تفاصيل قالب',
-    description: 'جلب تفاصيل قالب معين مع إحصائيات الاستخدام',
-  })
-  @ApiParam({ name: 'id', description: 'معرف القالب' })
-  @ApiResponse({ status: 200, description: 'تفاصيل القالب' })
-  @ApiResponse({ status: 404, description: 'القالب غير موجود' })
-  async findOne(@CurrentUser() user: any,
-    @Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = user.tenantId;
-    return this.templatesService.findById(id, tenantId);
+  // ═══════════════════════════════════════════════════════════════════════════
+  // حذف قالب
+  // ═══════════════════════════════════════════════════════════════════════════
+  const handleDelete = async (templateId: string) => {
+    const template = templates.find(t => t.id === templateId)
+    if (!template) return
+    if (!confirm(`هل تريد حذف قالب "${template.name}"؟`)) return
+    try {
+      await templatesService.delete(templateId)
+      setTemplates(templates.filter(t => t.id !== templateId))
+      showToast('تم حذف القالب')
+      // إعادة جلب الـ presets عشان القالب المحذوف يرجع كـ preset
+      const presetsData = await templatesService.getPresets()
+      const activeNames = new Set(templates.filter(t => t.id !== templateId).map(t => t.name))
+      setPresets((presetsData || []).filter((p: Preset) => !activeNames.has(p.name)))
+    } catch (err) {
+      console.error('Error deleting:', err)
+      showToast('فشل في حذف القالب', 'error')
+    }
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // PUT /templates/:id - تحديث قالب
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // إحصائيات
+  const enabledCount = templates.filter(t => ['approved', 'active'].includes(t.status ?? '')).length
+  const totalUsage = templates.reduce((sum, t) => sum + (t.usageCount ?? 0), 0)
 
-  @Put(':id')
-  @ApiOperation({
-    summary: 'تحديث قالب',
-    description: 'تحديث محتوى أو إعدادات قالب',
-  })
-  @ApiResponse({ status: 200, description: 'تم التحديث' })
-  async update(
-    @CurrentUser() user: any,
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body() dto: UpdateTemplateDto,
-  ) {
-    const tenantId = user.tenantId;
-    return this.templatesService.update(id, tenantId, dto);
+  // فلترة حسب التصنيف
+  const filteredTemplates = activeCategory === 'all'
+    ? templates
+    : templates.filter(t => (t.category ?? '') === activeCategory)
+
+  const filteredPresets = activeCategory === 'all'
+    ? presets
+    : presets.filter(p => p.category === activeCategory)
+
+  const getCategoryCount = (catId: string) => {
+    if (catId === 'all') return templates.length + presets.length
+    return templates.filter(t => t.category === catId).length +
+           presets.filter(p => p.category === catId).length
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // DELETE /templates/:id - حذف قالب
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  @Delete(':id')
-  @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({
-    summary: 'حذف قالب',
-    description: 'حذف قالب نهائياً (لا يمكن التراجع)',
-  })
-  @ApiResponse({ status: 204, description: 'تم الحذف' })
-  async remove(@CurrentUser() user: any,
-    @Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = user.tenantId;
-    await this.templatesService.delete(id, tenantId);
+  // الحصول على النص الأصلي للقالب من الـ presets
+  const getDefaultContent = (templateName: string): string | undefined => {
+    // هذا بيرجع undefined لو ما لقى — وهذا مقصود
+    return undefined
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // PATCH /templates/:id/toggle - تفعيل/تعطيل قالب
-  // ═══════════════════════════════════════════════════════════════════════════════
+  if (loading) return <LoadingSkeleton />
 
-  @Patch(':id/toggle')
-  @ApiOperation({
-    summary: 'تفعيل/تعطيل قالب',
-    description: 'تبديل حالة القالب بين نشط ومعطل',
-  })
-  @ApiResponse({ status: 200, description: 'تم تغيير الحالة' })
-  async toggle(@CurrentUser() user: any,
-    @Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = user.tenantId;
-    return this.templatesService.toggle(id, tenantId);
+  if (error) {
+    return (
+      <div className="text-center py-12">
+        <div className="text-6xl mb-4">⚠️</div>
+        <h3 className="text-xl font-medium text-white mb-2">{error}</h3>
+        <button onClick={fetchData} className="px-6 py-3 rounded-xl bg-gradient-to-r from-emerald-500 to-violet-500 text-white">
+          إعادة المحاولة
+        </button>
+      </div>
+    )
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // POST /templates/:id/duplicate - نسخ قالب
-  // ═══════════════════════════════════════════════════════════════════════════════
+  return (
+    <div className="p-8 space-y-6">
+      {/* Toast */}
+      {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
 
-  @Post(':id/duplicate')
-  @ApiOperation({
-    summary: 'نسخ قالب',
-    description: 'إنشاء نسخة من قالب موجود',
-  })
-  @ApiResponse({ status: 201, description: 'تم نسخ القالب' })
-  async duplicate(
-    @CurrentUser() user: any,
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body() body: { name?: string },
-  ) {
-    const tenantId = user.tenantId;
-    return this.templatesService.duplicate(id, tenantId, body.name);
-  }
+      {/* Edit Modal */}
+      {editingTemplate && (
+        <EditModal
+          template={editingTemplate}
+          defaultContent={getDefaultContent(editingTemplate.name)}
+          onSave={handleSaveEdit}
+          onClose={() => setEditingTemplate(null)}
+          saving={saving}
+        />
+      )}
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // POST /templates/:id/test - اختبار قالب
-  // ═══════════════════════════════════════════════════════════════════════════════
+      {/* Edit Preset Modal (تعديل قبل التفعيل) */}
+      {editingPreset && (
+        <EditModal
+          template={{
+            id: editingPreset.id,
+            name: editingPreset.name,
+            content: editingPreset.content,
+            category: editingPreset.category,
+          }}
+          defaultContent={editingPreset.content}
+          onSave={handleSavePresetEdit}
+          onClose={() => setEditingPreset(null)}
+          saving={saving}
+        />
+      )}
 
-  @Post(':id/test')
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({
-    summary: 'اختبار قالب',
-    description: 'إرسال رسالة اختبارية للتأكد من القالب',
-  })
-  async test(
-    @CurrentUser() user: any,
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body() body: { phone: string; variables?: Record<string, string> },
-  ) {
-    const tenantId = user.tenantId;
-    return this.templatesService.sendTest(id, tenantId, body.phone, body.variables);
-  }
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold flex items-center gap-3">
+            <span className="text-3xl">📨</span>
+            قوالب الرسائل التلقائية
+          </h1>
+          <p className="text-slate-400 text-sm">إعداد رسائل واتساب تلقائية لكل حدث في متجرك • تقدر تعدّل النص على كيفك ✏️</p>
+        </div>
+        <div className="flex items-center gap-3">
+          {presets.length > 0 && (
+            <button
+              onClick={handleActivateAll}
+              disabled={activatingPreset !== null}
+              className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-violet-500 text-white text-sm hover:opacity-90 transition-all"
+            >
+              ⚡ تفعيل الكل ({presets.length})
+            </button>
+          )}
+          <div className="px-4 py-2 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-sm">
+            {enabledCount} قالب مفعّل
+          </div>
+        </div>
+      </div>
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // WhatsApp Template Management
-  // ═══════════════════════════════════════════════════════════════════════════════
+      {/* Stats */}
+      <div className="grid grid-cols-4 gap-4">
+        <div className="p-4 rounded-2xl border bg-emerald-500/10 border-emerald-500/30">
+          <div className="text-xl mb-1">📤</div>
+          <div className="text-2xl font-bold text-white">{totalUsage.toLocaleString()}</div>
+          <div className="text-xs text-slate-400">رسائل مُرسلة</div>
+        </div>
+        <div className="p-4 rounded-2xl border bg-violet-500/10 border-violet-500/30">
+          <div className="text-xl mb-1">📝</div>
+          <div className="text-2xl font-bold text-white">{templates.length}</div>
+          <div className="text-xs text-slate-400">قوالب مفعّلة</div>
+        </div>
+        <div className="p-4 rounded-2xl border bg-blue-500/10 border-blue-500/30">
+          <div className="text-xl mb-1">🎁</div>
+          <div className="text-2xl font-bold text-white">{presets.length}</div>
+          <div className="text-xs text-slate-400">قوالب جاهزة</div>
+        </div>
+        <div className="p-4 rounded-2xl border bg-amber-500/10 border-amber-500/30">
+          <div className="text-xl mb-1">📊</div>
+          <div className="text-2xl font-bold text-white">{CATEGORIES.length - 1}</div>
+          <div className="text-xs text-slate-400">تصنيفات</div>
+        </div>
+      </div>
 
-  @Post('whatsapp/submit')
-  @ApiOperation({
-    summary: 'إرسال قالب للموافقة',
-    description: 'إرسال قالب WhatsApp لمراجعة Meta',
-  })
-  async submitWhatsAppTemplate(@CurrentUser() user: any,
-    @Body() dto: SubmitWhatsAppTemplateDto) {
-    const tenantId = user.tenantId;
-    return this.templatesService.submitToWhatsApp(tenantId, dto);
-  }
+      {/* Info Banner */}
+      <div className="p-4 rounded-2xl bg-gradient-to-r from-violet-500/20 to-emerald-500/20 border border-violet-500/30">
+        <div className="flex items-start gap-3">
+          <div className="text-2xl">💡</div>
+          <div>
+            <h3 className="font-semibold text-white text-sm mb-1">تقدر تعدّل أي قالب!</h3>
+            <p className="text-xs text-slate-300">
+              اضغط على <strong className="text-violet-400">✏️ تعديل</strong> في أي قالب عشان تكتب النص بأسلوبك الخاص.
+              استخدم المتغيرات مثل <code className="text-emerald-400 bg-slate-800 px-1 rounded">{'{{customer_name}}'}</code> وبتتبدل تلقائي بمعلومات العميل.
+              رسائل واتساب تحقق معدل فتح <strong className="text-emerald-400">98%</strong> 🚀
+            </p>
+          </div>
+        </div>
+      </div>
 
-  @Get('whatsapp/status')
-  @ApiOperation({
-    summary: 'حالة قوالب WhatsApp',
-    description: 'جلب حالة الموافقة على قوالب WhatsApp',
-  })
-  async getWhatsAppTemplatesStatus(@CurrentUser() user: any) {
-    const tenantId = user.tenantId;
-    return this.templatesService.getWhatsAppTemplatesStatus(tenantId);
-  }
+      {/* Categories Tabs */}
+      <div className="flex gap-2 overflow-x-auto pb-2">
+        {CATEGORIES.map(cat => {
+          const count = getCategoryCount(cat.id)
+          return (
+            <button
+              key={cat.id}
+              onClick={() => setActiveCategory(cat.id)}
+              className={`px-4 py-2 rounded-xl text-sm transition-all flex items-center gap-2 whitespace-nowrap ${
+                activeCategory === cat.id
+                  ? 'bg-violet-500/20 text-violet-400 border border-violet-500/30'
+                  : 'bg-slate-800/50 text-slate-400 border border-slate-700/50 hover:text-white'
+              }`}
+            >
+              <span>{cat.icon}</span>
+              {cat.label}
+              <span className="px-1.5 py-0.5 rounded bg-slate-700 text-xs">{count}</span>
+            </button>
+          )
+        })}
+      </div>
 
-  @Post('whatsapp/sync')
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({
-    summary: 'مزامنة قوالب WhatsApp',
-    description: 'مزامنة القوالب مع WhatsApp Business API',
-  })
-  async syncWhatsAppTemplates(@CurrentUser() user: any) {
-    const tenantId = user.tenantId;
-    return this.templatesService.syncWithWhatsApp(tenantId);
-  }
+      {/* القوالب الجاهزة */}
+      {filteredPresets.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-base font-bold text-white flex items-center gap-2">
+              🎁 قوالب جاهزة للتفعيل
+              <span className="text-xs font-normal text-slate-400">({filteredPresets.length} قالب)</span>
+            </h2>
+            {activeCategory !== 'all' && filteredPresets.length > 1 && (
+              <button
+                onClick={() => handleActivateCategory(activeCategory)}
+                disabled={activatingPreset !== null}
+                className="px-4 py-1.5 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs hover:bg-emerald-500/30"
+              >
+                ⚡ تفعيل كل التصنيف ({filteredPresets.length})
+              </button>
+            )}
+          </div>
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // Statistics
-  // ═══════════════════════════════════════════════════════════════════════════════
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {filteredPresets.map(preset => (
+              <PresetCard
+                key={preset.id}
+                preset={preset}
+                onActivate={() => handleActivatePreset(preset)}
+                onCustomActivate={() => setEditingPreset(preset)}
+                activating={activatingPreset === preset.id}
+              />
+            ))}
+          </div>
+        </div>
+      )}
 
-  @Get(':id/stats')
-  @ApiOperation({
-    summary: 'إحصائيات القالب',
-    description: 'عدد مرات الاستخدام، معدل القراءة، معدل النقر',
-  })
-  async getStats(@CurrentUser() user: any,
-    @Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = user.tenantId;
-    return this.templatesService.getStats(id, tenantId);
-  }
+      {/* القوالب المفعّلة */}
+      {filteredTemplates.length > 0 && (
+        <div className="space-y-3">
+          <h2 className="text-base font-bold text-white flex items-center gap-2">
+            ✅ القوالب المفعّلة
+            <span className="text-xs font-normal text-slate-400">({filteredTemplates.length} قالب)</span>
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {filteredTemplates.map(template => (
+              <TemplateCard
+                key={template.id}
+                template={template}
+                onToggle={() => handleToggle(template.id)}
+                onEdit={() => setEditingTemplate(template)}
+                onDelete={() => handleDelete(template.id)}
+                toggling={toggling === template.id}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* حالة فارغة */}
+      {filteredTemplates.length === 0 && filteredPresets.length === 0 && (
+        <div className="text-center py-12">
+          <div className="text-5xl mb-4">📝</div>
+          <h3 className="text-lg font-medium text-white mb-2">لا توجد قوالب في هذا التصنيف</h3>
+          <p className="text-slate-400 text-sm">اختر تصنيفاً آخر أو عُد إلى &quot;الكل&quot;</p>
+        </div>
+      )}
+    </div>
+  )
 }
