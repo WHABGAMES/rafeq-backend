@@ -9,9 +9,11 @@
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -27,6 +29,7 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import * as QRCode from 'qrcode';
+import { Channel, ChannelType, ChannelStatus } from '../entities/channel.entity';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ✅ Silent Logger - بديل pino بدون dependency خارجي
@@ -84,7 +87,7 @@ const INIT_TIMEOUT_MS = 90000;
 const RECONNECT_BASE_DELAY_MS = 5000;
 
 @Injectable()
-export class WhatsAppBaileysService implements OnModuleDestroy {
+export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
   private readonly logger = new Logger(WhatsAppBaileysService.name);
   private readonly sessions = new Map<string, WhatsAppSession>();
   private sessionsPath: string;
@@ -92,8 +95,124 @@ export class WhatsAppBaileysService implements OnModuleDestroy {
   constructor(
     private readonly configService: ConfigService,
     private readonly eventEmitter: EventEmitter2,
+    @InjectRepository(Channel)
+    private readonly channelRepository: Repository<Channel>,
   ) {
     this.sessionsPath = this.initializeSessionsPath();
+  }
+
+  /**
+   * ✅ عند بدء التشغيل: استعادة جلسات واتساب المتصلة
+   * يبحث عن القنوات المسجلة كـ "متصل" في DB ويحاول إعادة الاتصال
+   */
+  async onModuleInit(): Promise<void> {
+    this.logger.log('🔄 WhatsApp Baileys Service starting - checking for sessions to restore...');
+
+    try {
+      const connectedChannels = await this.channelRepository.find({
+        where: {
+          type: ChannelType.WHATSAPP_QR,
+          status: ChannelStatus.CONNECTED,
+        },
+      });
+
+      if (connectedChannels.length === 0) {
+        this.logger.log('📱 No connected WhatsApp QR channels found');
+        return;
+      }
+
+      this.logger.log(`📱 Found ${connectedChannels.length} connected channel(s) to restore`);
+
+      for (const channel of connectedChannels) {
+        const sessionPath = path.join(this.sessionsPath, `wa_${channel.id}`);
+        const hasAuthState = fs.existsSync(sessionPath) &&
+          fs.readdirSync(sessionPath).length > 0;
+
+        if (hasAuthState) {
+          this.logger.log(`🔄 Restoring session for channel ${channel.id} (${channel.whatsappPhoneNumber || channel.name})`);
+          try {
+            await this.restoreSession(channel.id);
+            this.logger.log(`✅ Session restored for channel ${channel.id}`);
+          } catch (error) {
+            const msg = error instanceof Error ? error.message : 'Unknown';
+            this.logger.error(`❌ Failed to restore session ${channel.id}: ${msg}`);
+            // حدّث الحالة في DB لتعكس الواقع
+            await this.markChannelDisconnected(channel.id);
+          }
+        } else {
+          this.logger.warn(`⚠️ No auth state files for channel ${channel.id} - marking as disconnected`);
+          await this.markChannelDisconnected(channel.id);
+        }
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Unknown';
+      this.logger.error(`❌ Error during session restoration: ${msg}`);
+    }
+  }
+
+  /**
+   * استعادة جلسة واتساب بدون انتظار QR
+   * يستخدم auth state المحفوظ على الملفات
+   */
+  private async restoreSession(channelId: string): Promise<void> {
+    const sessionPath = path.join(this.sessionsPath, `wa_${channelId}`);
+
+    const { version } = await fetchLatestBaileysVersion();
+    const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
+
+    const sock = makeWASocket({
+      auth: {
+        creds: state.creds,
+        keys: makeCacheableSignalKeyStore(state.keys, silentLogger),
+      },
+      version,
+      printQRInTerminal: false,
+      browser: ['Rafiq Platform', 'Chrome', '126.0.0'],
+      connectTimeoutMs: 60000,
+      defaultQueryTimeoutMs: 60000,
+      keepAliveIntervalMs: 25000,
+      markOnlineOnConnect: false,
+      generateHighQualityLinkPreview: false,
+      logger: silentLogger,
+      syncFullHistory: false,
+    });
+
+    const session: WhatsAppSession = {
+      socket: sock,
+      channelId,
+      status: 'connecting',
+      retryCount: 0,
+      connectionMethod: 'qr',
+    };
+
+    this.sessions.set(channelId, session);
+
+    sock.ev.on('creds.update', saveCreds);
+
+    sock.ev.on('connection.update', async (update: Partial<ConnectionState>) => {
+      await this.handleConnectionUpdate(channelId, update);
+    });
+
+    sock.ev.on('messages.upsert', async (messageUpdate: MessageUpsert) => {
+      await this.handleIncomingMessages(channelId, messageUpdate);
+    });
+  }
+
+  /**
+   * تحديث حالة القناة في DB إلى disconnected
+   */
+  private async markChannelDisconnected(channelId: string): Promise<void> {
+    try {
+      await this.channelRepository.update(channelId, {
+        status: ChannelStatus.DISCONNECTED,
+        disconnectedAt: new Date(),
+        lastError: 'جلسة واتساب انتهت - يرجى إعادة مسح QR Code',
+        lastErrorAt: new Date(),
+      });
+      this.logger.log(`📌 Channel ${channelId} marked as disconnected in DB`);
+    } catch (error) {
+      this.logger.error(`Failed to update channel status: ${error instanceof Error ? error.message : 'Unknown'}`);
+    }
   }
 
   private initializeSessionsPath(): string {
@@ -405,6 +524,19 @@ export class WhatsAppBaileysService implements OnModuleDestroy {
       if (user?.id) session.phoneNumber = user.id.split(':')[0].split('@')[0];
       this.logger.log(`✅ Connected: ${channelId}, phone: ${session.phoneNumber}`);
       this.eventEmitter.emit('whatsapp.connected', { channelId, phoneNumber: session.phoneNumber });
+
+      // ✅ مزامنة الحالة مع DB
+      try {
+        await this.channelRepository.update(channelId, {
+          status: ChannelStatus.CONNECTED,
+          whatsappPhoneNumber: session.phoneNumber || undefined,
+          connectedAt: new Date(),
+          lastError: undefined as any,
+          errorCount: 0,
+        });
+      } catch (e) {
+        this.logger.warn(`Failed to update channel DB status on connect: ${e instanceof Error ? e.message : 'Unknown'}`);
+      }
     }
 
     if (connection === 'close') {
@@ -417,6 +549,7 @@ export class WhatsAppBaileysService implements OnModuleDestroy {
       if (statusCode === DisconnectReason.loggedOut) {
         session.status = 'disconnected';
         await this.deleteSession(channelId);
+        await this.markChannelDisconnected(channelId);
         this.eventEmitter.emit('whatsapp.logged_out', { channelId });
         return;
       }
@@ -435,6 +568,7 @@ export class WhatsAppBaileysService implements OnModuleDestroy {
         }, delay);
       } else {
         session.status = 'disconnected';
+        await this.markChannelDisconnected(channelId);
         this.eventEmitter.emit('whatsapp.max_retries', { channelId });
       }
     }
