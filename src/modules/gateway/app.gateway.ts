@@ -80,9 +80,14 @@ interface ConnectedUser {
   connectedAt: Date;
 }
 
+/**
+ * ✅ إصلاح H3: استبدال origin: '*' بقائمة بيضاء من CORS_ORIGINS
+ */
 @WebSocketGateway({
   cors: {
-    origin: '*',
+    origin: process.env.CORS_ORIGINS
+      ? process.env.CORS_ORIGINS.split(',').map((o) => o.trim())
+      : [],
     credentials: true,
   },
   namespace: '/ws',
