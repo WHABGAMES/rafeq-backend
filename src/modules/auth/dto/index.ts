@@ -1,12 +1,13 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║                    RAFIQ PLATFORM - Auth DTOs (Simplified)                    ║
+ * ║                    RAFIQ PLATFORM - Auth DTOs                                  ║
  * ║                                                                                ║
- * ║  📌 DTOs للمصادقة المبسطة - Email + Password فقط                               ║
+ * ║  ✅ v5: Security Fixes                                                         ║
+ * ║  🔧 FIX H4: إضافة RegisterDto مع تحقق كامل                                   ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
-import { IsEmail, IsString, IsNotEmpty, MinLength } from 'class-validator';
+import { IsEmail, IsString, IsNotEmpty, MinLength, MaxLength, Matches, IsOptional } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -50,6 +51,53 @@ export class LoginResponseDto {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// 📝 REGISTER
+// 🔧 FIX H4: DTO كامل مع تحقق من المدخلات
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export class RegisterDto {
+  @ApiProperty({
+    description: 'البريد الإلكتروني',
+    example: 'merchant@example.com',
+  })
+  @IsEmail({}, { message: 'البريد الإلكتروني غير صالح' })
+  @IsNotEmpty({ message: 'البريد الإلكتروني مطلوب' })
+  @MaxLength(255, { message: 'البريد الإلكتروني طويل جداً' })
+  email: string;
+
+  @ApiProperty({
+    description: 'رمز الدخول - 8 أحرف على الأقل، يحتوي حرف كبير وصغير ورقم',
+    example: 'MyPassword123',
+  })
+  @IsString({ message: 'رمز الدخول يجب أن يكون نصاً' })
+  @MinLength(8, { message: 'رمز الدخول يجب أن يكون 8 أحرف على الأقل' })
+  @MaxLength(128, { message: 'رمز الدخول طويل جداً' })
+  @Matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).+$/, {
+    message: 'رمز الدخول يجب أن يحتوي على حرف كبير وحرف صغير ورقم على الأقل',
+  })
+  password: string;
+
+  @ApiProperty({
+    description: 'الاسم الكامل',
+    example: 'محمد أحمد',
+  })
+  @IsString({ message: 'الاسم يجب أن يكون نصاً' })
+  @IsNotEmpty({ message: 'الاسم مطلوب' })
+  @MinLength(2, { message: 'الاسم يجب أن يكون حرفين على الأقل' })
+  @MaxLength(100, { message: 'الاسم طويل جداً' })
+  name: string;
+
+  @ApiPropertyOptional({
+    description: 'اسم المتجر',
+    example: 'متجر محمد',
+  })
+  @IsString({ message: 'اسم المتجر يجب أن يكون نصاً' })
+  @IsOptional()
+  @MaxLength(200, { message: 'اسم المتجر طويل جداً' })
+  storeName?: string;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // 🔄 REFRESH TOKEN
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -90,6 +138,9 @@ export class ChangePasswordDto {
   })
   @IsString({ message: 'رمز الدخول الجديد يجب أن يكون نصاً' })
   @MinLength(8, { message: 'رمز الدخول الجديد يجب أن يكون 8 أحرف على الأقل' })
+  @Matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).+$/, {
+    message: 'رمز الدخول يجب أن يحتوي على حرف كبير وحرف صغير ورقم على الأقل',
+  })
   newPassword: string;
 }
 
