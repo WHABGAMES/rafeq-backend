@@ -2,8 +2,8 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                RAFIQ PLATFORM - Salla Webhooks Controller                      ║
  * ║                                                                                ║
- * ║  ✅ يستقبل webhooks من سلة                                                     ║
- * ║  ✅ يدعم app.store.authorize للنمط السهل                                       ║
+ * ║  ✅ v5: Security Fixes                                                         ║
+ * ║  🔧 FIX C1: رفض الطلبات بتوقيع غير صالح في الإنتاج                            ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -17,6 +17,7 @@ import {
   Logger,
   RawBodyRequest,
   Req,
+  ForbiddenException,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiHeader } from '@nestjs/swagger';
 import { Request } from 'express';
@@ -32,23 +33,25 @@ import { SallaWebhookDto, SallaWebhookJobDto } from './dto/salla-webhook.dto';
 export class SallaWebhooksController {
   private readonly logger = new Logger(SallaWebhooksController.name);
   private readonly webhookSecret: string;
+  private readonly isProduction: boolean;
 
   constructor(
     private readonly webhooksService: SallaWebhooksService,
     private readonly sallaOAuthService: SallaOAuthService,
     private readonly configService: ConfigService,
   ) {
-    // ✅ جلب الـ secret من متغيرات البيئة مباشرة أو من الـ config المتداخل
-    this.webhookSecret = 
+    this.webhookSecret =
       this.configService.get<string>('SALLA_WEBHOOK_SECRET') ||
       this.configService.get<string>('salla.webhookSecret') ||
       '';
-    
-    // ✅ تسجيل للتصحيح
+
+    this.isProduction = this.configService.get<string>('NODE_ENV') === 'production';
+
     if (this.webhookSecret) {
-      console.log(`✅ Salla webhook secret loaded (length: ${this.webhookSecret.length})`);
+      this.logger.log(`✅ Salla webhook secret loaded (length: ${this.webhookSecret.length})`);
     } else {
-      console.warn('⚠️ SALLA_WEBHOOK_SECRET is not configured!');
+      // 🔧 FIX C1: تحذير شديد إذا لم يكن هناك secret
+      this.logger.error('🚨 SALLA_WEBHOOK_SECRET is not configured! Webhooks cannot be verified.');
     }
   }
 
@@ -66,21 +69,29 @@ export class SallaWebhooksController {
     @Headers('x-salla-delivery') deliveryId?: string,
   ): Promise<{ success: boolean; message: string; jobId?: string }> {
     const startTime = Date.now();
-    
+
     this.logger.log(`📥 Webhook received: ${payload.event}`, {
       merchant: payload.merchant,
       deliveryId,
     });
 
-    // التحقق من التوقيع
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 🔧 FIX C1: رفض الطلبات بتوقيع غير صالح في الإنتاج
+    // في بيئة التطوير: تحذير فقط مع الاستمرار
+    // في بيئة الإنتاج: رفض فوري مع 403
+    // ═══════════════════════════════════════════════════════════════════════════
     const signatureValid = this.verifySignature(req.rawBody, signature);
-    
+
     if (!signatureValid) {
-      this.logger.warn(`⚠️ Invalid signature for webhook ${payload.event}`);
-      // نستمر بالمعالجة حتى لو كان التوقيع غير صحيح (للتطوير)
+      if (this.isProduction) {
+        this.logger.error(`🚨 REJECTED: Invalid signature for ${payload.event} from merchant ${payload.merchant}`);
+        throw new ForbiddenException('Invalid webhook signature');
+      } else {
+        this.logger.warn(`⚠️ [DEV ONLY] Invalid signature for ${payload.event} - continuing in development mode`);
+      }
     }
 
-    // معالجة خاصة لـ app.store.authorize (النمط السهل)
+    // معالجة خاصة لـ app.store.authorize
     if (payload.event === 'app.store.authorize') {
       return this.handleAppStoreAuthorize(payload);
     }
@@ -93,7 +104,7 @@ export class SallaWebhooksController {
     // التحقق من التكرار
     const idempotencyKey = this.generateIdempotencyKey(payload);
     const isDuplicate = await this.webhooksService.checkDuplicate(idempotencyKey);
-    
+
     if (isDuplicate) {
       this.logger.log(`⏭️ Duplicate webhook skipped: ${payload.event}`);
       return { success: true, message: 'Duplicate webhook - already processed' };
@@ -123,7 +134,7 @@ export class SallaWebhooksController {
   }
 
   /**
-   * ⚡ معالجة app.store.authorize (النمط السهل)
+   * ⚡ معالجة app.store.authorize
    */
   private async handleAppStoreAuthorize(
     payload: SallaWebhookDto,
@@ -140,7 +151,7 @@ export class SallaWebhooksController {
       );
 
       this.logger.log(`✅ app.store.authorize processed for merchant ${payload.merchant}`);
-      
+
       return { success: true, message: 'Store authorized successfully' };
     } catch (error: any) {
       this.logger.error(`❌ Failed to process app.store.authorize`, error.message);
@@ -158,9 +169,9 @@ export class SallaWebhooksController {
 
     try {
       await this.sallaOAuthService.handleAppUninstalled(payload.merchant);
-      
+
       this.logger.log(`✅ app.uninstalled processed for merchant ${payload.merchant}`);
-      
+
       return { success: true, message: 'App uninstalled processed' };
     } catch (error: any) {
       this.logger.error(`❌ Failed to process app.uninstalled`, error.message);
@@ -172,15 +183,6 @@ export class SallaWebhooksController {
    * 🔐 التحقق من التوقيع
    */
   private verifySignature(rawBody: Buffer | undefined, signature: string | undefined): boolean {
-    // ✅ تسجيل تفاصيل للتصحيح
-    this.logger.debug('Signature verification:', {
-      hasSecret: !!this.webhookSecret,
-      secretLength: this.webhookSecret?.length || 0,
-      hasSignature: !!signature,
-      hasRawBody: !!rawBody,
-      rawBodyLength: rawBody?.length || 0,
-    });
-
     if (!this.webhookSecret) {
       this.logger.warn('❌ Webhook secret not configured');
       return false;
@@ -192,7 +194,7 @@ export class SallaWebhooksController {
     }
 
     if (!rawBody) {
-      this.logger.warn('❌ No raw body available - make sure rawBody: true in NestFactory.create');
+      this.logger.warn('❌ No raw body available');
       return false;
     }
 
@@ -202,19 +204,9 @@ export class SallaWebhooksController {
         .update(rawBody)
         .digest('hex');
 
-      // ✅ إزالة prefix إذا موجود (sha256= أو sha1=)
       const cleanSignature = signature.replace(/^sha256=|^sha1=/, '');
 
-      this.logger.debug('Comparing signatures:', {
-        received: cleanSignature.substring(0, 16) + '...',
-        expected: expectedSignature.substring(0, 16) + '...',
-        receivedLength: cleanSignature.length,
-        expectedLength: expectedSignature.length,
-      });
-
-      // ✅ التحقق من تطابق الطول أولاً
       if (cleanSignature.length !== expectedSignature.length) {
-        this.logger.warn('Signature length mismatch');
         return false;
       }
 
@@ -228,34 +220,25 @@ export class SallaWebhooksController {
     }
   }
 
-  /**
-   * 🔑 توليد مفتاح التكرار
-   */
   private generateIdempotencyKey(payload: SallaWebhookDto): string {
     const data = `${payload.event}_${payload.merchant}_${payload.created_at}_${JSON.stringify(payload.data).slice(0, 100)}`;
     return crypto.createHash('sha256').update(data).digest('hex');
   }
 
-  /**
-   * 📋 استخراج الـ Headers
-   */
   private extractHeaders(req: Request): Record<string, string> {
     const headers: Record<string, string> = {};
     const allowedHeaders = ['x-salla-signature', 'x-salla-delivery', 'content-type', 'user-agent'];
-    
+
     for (const key of allowedHeaders) {
       const value = req.headers[key];
       if (typeof value === 'string') {
         headers[key] = value;
       }
     }
-    
+
     return headers;
   }
 
-  /**
-   * 🌐 الحصول على IP العميل
-   */
   private getClientIp(req: Request): string {
     const forwarded = req.headers['x-forwarded-for'];
     if (typeof forwarded === 'string') {
