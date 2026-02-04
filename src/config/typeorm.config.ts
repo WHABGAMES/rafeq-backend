@@ -19,6 +19,7 @@ import { Campaign } from '@database/entities/campaign.entity';
 import { Customer } from '@database/entities/customer.entity';
 import { Order } from '@database/entities/order.entity';
 import { WebhookEvent } from '@database/entities/webhook-event.entity';
+import { WebhookLog } from '../modules/webhooks/entities/webhook-log.entity';
 import { MessageTemplate } from '@database/entities/message-template.entity';
 import { Subscription } from '@database/entities/subscription.entity';
 import { SubscriptionPlan } from '@database/entities/subscription-plan.entity';
@@ -44,6 +45,7 @@ const entities = [
   Customer,
   Order,
   WebhookEvent,
+  WebhookLog,
   MessageTemplate,
   Subscription,
   SubscriptionPlan,
