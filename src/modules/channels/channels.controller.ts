@@ -5,6 +5,9 @@
  * ║  ✅ QR Code + Phone Pairing Code endpoints                                    ║
  * ║  ✅ Route ordering fix (specific routes before :id)                            ║
  * ║  ✅ Diagnostics endpoint                                                       ║
+ * ║  ✅ New: ربط القناة بمتاجر / تنظيف القنوات المكررة                              ║
+ * ║                                                                                ║
+ * ║  📌 Audit: v2 - Added missing softDisconnect route                            ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -12,6 +15,7 @@ import {
   Controller,
   Get,
   Post,
+  Put,
   Delete,
   Body,
   Param,
@@ -117,6 +121,95 @@ export class ChannelsController {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
+  // 🏪 Store Assignment - ربط القناة بمتاجر
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * ✅ نقل القناة من متجر لمتجر آخر
+   * POST /channels/assign-store
+   */
+  @Post('assign-store')
+  @ApiOperation({ summary: 'نقل قناة لمتجر آخر' })
+  async assignToStore(
+    @Body() body: { channelId: string; currentStoreId: string; newStoreId: string },
+  ) {
+    const channel = await this.channelsService.assignToStore(
+      body.channelId,
+      body.currentStoreId,
+      body.newStoreId,
+    );
+    return { success: true, data: channel };
+  }
+
+  /**
+   * ✅ مشاركة القناة مع عدة متاجر
+   * POST /channels/share
+   */
+  @Post('share')
+  @ApiOperation({ summary: 'مشاركة القناة مع عدة متاجر' })
+  async shareWithStores(
+    @Body() body: { channelId: string; storeId: string; targetStoreIds: string[] },
+  ) {
+    const channels = await this.channelsService.shareWithStores(
+      body.channelId,
+      body.storeId,
+      body.targetStoreIds,
+    );
+    return {
+      success: true,
+      data: channels,
+      message: `تم مشاركة القناة مع ${channels.length} متجر(متاجر)`,
+    };
+  }
+
+  /**
+   * ✅ إزالة مشاركة القناة من متجر
+   * DELETE /channels/unshare/:channelId
+   */
+  @Delete('unshare/:channelId')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'إزالة مشاركة القناة من متجر' })
+  @ApiQuery({ name: 'storeId', required: true })
+  async unshareFromStore(
+    @Param('channelId') channelId: string,
+    @Query('storeId') storeId: string,
+  ) {
+    await this.channelsService.unshareFromStore(channelId, storeId);
+    return { success: true, message: 'تم إزالة المشاركة' };
+  }
+
+  /**
+   * ✅ جلب المتاجر المرتبطة برقم معيّن
+   * GET /channels/linked-stores?phone=971524395552
+   */
+  @Get('linked-stores')
+  @ApiOperation({ summary: 'جلب المتاجر المرتبطة برقم واتساب' })
+  @ApiQuery({ name: 'phone', required: true })
+  async getLinkedStores(@Query('phone') phone: string) {
+    const stores = await this.channelsService.getLinkedStores(phone);
+    return { success: true, data: stores };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🧹 تنظيف القنوات المكررة
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * ✅ تنظيف القنوات المكررة/الميتة لمتجر معين
+   * POST /channels/cleanup
+   */
+  @Post('cleanup')
+  @ApiOperation({ summary: 'تنظيف القنوات المكررة والميتة' })
+  async cleanupDeadChannels(@Body() body: { storeId: string }) {
+    const result = await this.channelsService.cleanupDeadChannels(body.storeId);
+    return {
+      success: true,
+      data: result,
+      message: `تم حذف ${result.removed} قناة مكررة، والإبقاء على ${result.kept}`,
+    };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
   // 📋 Generic CRUD - ⚠️ MUST be LAST (because of :id param)
   // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -134,12 +227,31 @@ export class ChannelsController {
     return { success: true, data: await this.channelsService.findById(id, storeId) };
   }
 
+  /**
+   * ✅ فصل بدون حذف (السلوك القديم)
+   * يبقي السجل في قاعدة البيانات لكن يغير الحالة لـ DISCONNECTED
+   * PUT /channels/:id/soft-disconnect
+   */
+  @Put(':id/soft-disconnect')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Disconnect channel without deleting (keeps record)' })
+  @ApiQuery({ name: 'storeId', required: true })
+  async softDisconnect(@Param('id') id: string, @Query('storeId') storeId: string) {
+    await this.channelsService.softDisconnect(id, storeId);
+    return { success: true, message: 'Channel disconnected (record preserved)' };
+  }
+
+  /**
+   * ✅ فصل مع حذف كامل (السلوك الجديد الافتراضي)
+   * يحذف السجل نهائياً من قاعدة البيانات + يحذف جلسة Baileys
+   * DELETE /channels/:id
+   */
   @Delete(':id')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Disconnect a channel' })
+  @ApiOperation({ summary: 'Disconnect and permanently remove a channel' })
   @ApiQuery({ name: 'storeId', required: true })
   async disconnect(@Param('id') id: string, @Query('storeId') storeId: string) {
     await this.channelsService.disconnect(id, storeId);
-    return { success: true, message: 'Channel disconnected' };
+    return { success: true, message: 'Channel disconnected and removed' };
   }
 }
