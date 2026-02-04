@@ -124,13 +124,13 @@ export class TemplatesService {
       language: (dto.language || 'ar') as any,
       body: dto.content,
       status,
-      triggerEvent: dto.triggerEvent ?? null, // ✅ v3: حفظ آمن - null بدل undefined لمنع فقدان القيم
+      triggerEvent: dto.triggerEvent ?? undefined, // v3: undefined matches entity type
       buttons: (dto.buttons as any) || [],
       stats: { usageCount: 0 },
-    });
+    } as any) as MessageTemplate;
 
     try {
-      const saved = await this.templateRepository.save(template);
+      const saved = await this.templateRepository.save(template) as MessageTemplate;
 
       this.logger.log(`✅ Template created: ${saved.id}`, {
         tenantId,
