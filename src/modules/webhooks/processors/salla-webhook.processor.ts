@@ -320,33 +320,85 @@ export class SallaWebhookProcessor extends WorkerHost {
   }
 
   private async handleOrderStatusUpdated(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
-    this.logger.log('Processing order.status.updated', { orderId: data.id, status: data.status });
-    // 🔧 FIX: نمرر data.status كـ unknown وnot as string
+    // ✅ v9: LOG كامل لبيانات الحالة
+    this.logger.log('📦 order.status.updated RAW:', {
+      orderId: data.id,
+      status_type: typeof data.status,
+      status_raw: JSON.stringify(data.status),
+    });
+
+    // 1. حفظ الحالة في DB (يستخدم system slug)
     const newStatus = this.mapSallaOrderStatus(data.status);
     await this.updateOrderStatusInDatabase(data, context, newStatus);
 
+    // 2. مزامنة العميل
     const orderObj = data.order as Record<string, unknown> | undefined;
     const customerData = (data.customer || orderObj?.customer) as Record<string, unknown> | undefined;
     if (customerData?.id) {
       await this.syncCustomerToDatabase(customerData, context);
     }
 
+    // 3. ✅ v9 CRITICAL FIX: استخراج الحالة الفعلية (customized أولاً) لاختيار القالب
+    //    سلة ترسل: { slug: "in_progress", customized: { slug: "under_review" } }
+    //    extractStatusString يرجع "in_progress" → قالب غلط ❌
+    //    extractCustomizedStatus يرجع "under_review" → القالب الصحيح ✅
+    const templateSlug = this.extractCustomizedStatus(data.status);
+    const specificEvent = this.mapStatusToSpecificEvent(templateSlug, newStatus);
+
+    this.logger.log('🔄 Status mapping:', {
+      templateSlug,
+      dbStatus: newStatus,
+      specificEvent: specificEvent || 'NONE',
+    });
+
     const eventPayload = { tenantId: context.tenantId, storeId: context.storeId, orderId: data.id, newStatus: data.status, previousStatus: data.previous_status, raw: data };
 
-    // ✅ v8 CRITICAL FIX: نرسل فقط event خاص بالحالة - بدون event عام
-    // order.status.updated العام كان يسبب إرسال القالب الغلط
-    const statusSlug = this.extractStatusString(data.status)?.toLowerCase() || '';
-    const specificEvent = this.mapStatusToSpecificEvent(statusSlug, newStatus);
-    
     if (specificEvent) {
-      this.logger.log(`📌 Emitting ONLY specific event: ${specificEvent} (slug: "${statusSlug}", dbStatus: ${newStatus})`);
+      this.logger.log(`📌 Emitting ONLY: ${specificEvent}`);
       this.eventEmitter.emit(specificEvent, eventPayload);
     } else {
-      this.logger.warn(`⚠️ Unknown status slug: "${statusSlug}" (dbStatus: ${newStatus}) - no template will be sent`);
-      // لا نرسل order.status.updated العام - لأنه يسبب إرسال قالب غلط
+      this.logger.warn(`⚠️ No event for slug "${templateSlug}" (db: ${newStatus}) - no template sent`);
     }
 
-    return { handled: true, action: 'order_status_updated', orderId: data.id, newStatus: data.status, dbStatus: newStatus, specificEvent: specificEvent || 'NONE_MATCHED' };
+    return { handled: true, action: 'order_status_updated', orderId: data.id, dbStatus: newStatus, templateSlug, specificEvent: specificEvent || 'NONE' };
+  }
+
+  /**
+   * ✅ v9: استخراج الحالة المخصصة (customized) لاختيار القالب الصحيح
+   *
+   * الفرق عن extractStatusString:
+   * - extractStatusString → slug أولاً (للـ DB)
+   * - extractCustomizedStatus → customized.slug أولاً (للقوالب)
+   *
+   * مثال: التاجر اختار "بانتظار المراجعة":
+   *   سلة ترسل: { slug: "in_progress", customized: { slug: "under_review" } }
+   *   extractStatusString      → "in_progress"   → order.status.processing ❌
+   *   extractCustomizedStatus  → "under_review"   → order.status.under_review ✅
+   */
+  private extractCustomizedStatus(sallaStatus: unknown): string {
+    if (!sallaStatus) return '';
+    if (typeof sallaStatus === 'string') return sallaStatus.toLowerCase();
+
+    if (typeof sallaStatus === 'object' && sallaStatus !== null) {
+      const obj = sallaStatus as SallaStatusObject;
+
+      // 🔍 LOG: طباعة كل القيم
+      this.logger.log('🔍 Salla status object:', {
+        slug: obj.slug,
+        name: obj.name,
+        customized_slug: obj.customized?.slug,
+        customized_name: obj.customized?.name,
+      });
+
+      // ✅ الأولوية: customized.slug → slug → customized.name → name
+      if (obj.customized?.slug && typeof obj.customized.slug === 'string') return obj.customized.slug.toLowerCase();
+      if (obj.slug && typeof obj.slug === 'string') return obj.slug.toLowerCase();
+      if (obj.customized?.name && typeof obj.customized.name === 'string') return obj.customized.name;
+      if (obj.name && typeof obj.name === 'string') return obj.name;
+    }
+
+    if (typeof sallaStatus === 'number') return String(sallaStatus);
+    return '';
   }
 
   /**
