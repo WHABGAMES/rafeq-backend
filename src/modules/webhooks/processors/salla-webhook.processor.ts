@@ -125,7 +125,7 @@ export class SallaWebhookProcessor extends WorkerHost {
       const firstName = (customerData.first_name as string) || (customerData.name as string) || undefined;
       const lastName = (customerData.last_name as string) || undefined;
       const fullName = firstName && lastName ? `${firstName} ${lastName}` : firstName || undefined;
-      const phone = (customerData.mobile as string) || (customerData.phone as string) || undefined;
+      const phone = (customerData.mobile as string) || (customerData.phone as string) || (customerData.mobile_code as string) || undefined;
       const email = (customerData.email as string) || undefined;
 
       if (customer) {
@@ -265,6 +265,14 @@ export class SallaWebhookProcessor extends WorkerHost {
     this.logger.log('Processing order.status.updated', { orderId: data.id, status: data.status });
     const newStatus = this.mapSallaOrderStatus(data.status as string);
     await this.updateOrderStatusInDatabase(data, context, newStatus);
+
+    // v4: sync customer from nested order data if available
+    const orderObj = data.order as Record<string, unknown> | undefined;
+    const customerData = (data.customer || orderObj?.customer) as Record<string, unknown> | undefined;
+    if (customerData?.id) {
+      await this.syncCustomerToDatabase(customerData, context);
+    }
+
     this.eventEmitter.emit('order.status.updated', { tenantId: context.tenantId, storeId: context.storeId, orderId: data.id, newStatus: data.status, previousStatus: data.previous_status, raw: data });
     return { handled: true, action: 'order_status_updated', orderId: data.id, newStatus: data.status, dbStatus: newStatus, emittedEvent: 'order.status.updated' };
   }
