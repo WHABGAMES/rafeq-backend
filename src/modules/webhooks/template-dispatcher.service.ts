@@ -50,10 +50,7 @@ export class TemplateDispatcherService {
     await this.dispatch('order.created', payload);
   }
 
-  @OnEvent('order.status.updated')
-  async onOrderStatusUpdated(payload: Record<string, unknown>) {
-    await this.dispatch('order.status.updated', payload);
-  }
+  // ✅ v8: حُذف @OnEvent('order.status.updated') العام نهائياً - كل حالة لها listener خاص
 
   // ✅ v7: Events خاصة بكل حالة طلب - كل حالة ترسل القالب الصحيح
   @OnEvent('order.status.processing')
