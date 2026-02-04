@@ -1,7 +1,7 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║              RAFIQ PLATFORM - Templates Service                                ║
- * ║  ✅ v2: حفظ triggerEvent + status + إرجاع content                            ║
+ * ║  ✅ v3: حفظ triggerEvent بـ ?? null + status + إرجاع content               ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -124,7 +124,7 @@ export class TemplatesService {
       language: (dto.language || 'ar') as any,
       body: dto.content,
       status,
-      triggerEvent: dto.triggerEvent || undefined, // ✅ حفظ الحدث المرتبط
+      triggerEvent: dto.triggerEvent ?? null, // ✅ v3: حفظ آمن - null بدل undefined لمنع فقدان القيم
       buttons: (dto.buttons as any) || [],
       stats: { usageCount: 0 },
     });
