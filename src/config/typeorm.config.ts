@@ -1,15 +1,17 @@
 /**
  * RAFIQ PLATFORM - TypeORM Configuration
  * src/config/typeorm.config.ts
+ *
+ * ✅ Fixed: multiple export names for compatibility
+ * ✅ Fixed: Store entity path (relative import)
  */
 
 import { ConfigService } from '@nestjs/config';
 import { TypeOrmModuleOptions } from '@nestjs/typeorm';
 
-// Existing Entities (from @database/entities)
+// Entities from database
 import { User } from '@database/entities/user.entity';
 import { Tenant } from '@database/entities/tenant.entity';
-import { Store } from '@database/entities/store.entity';
 import { Channel } from '@database/entities/channel.entity';
 import { Message } from '@database/entities/message.entity';
 import { Conversation } from '@database/entities/conversation.entity';
@@ -21,9 +23,12 @@ import { MessageTemplate } from '@database/entities/message-template.entity';
 import { Subscription } from '@database/entities/subscription.entity';
 import { SubscriptionPlan } from '@database/entities/subscription-plan.entity';
 
+// ✅ Store entity - relative import (not in @database/entities)
+import { Store } from '../modules/stores/entities/store.entity';
+
 // NEW: Entities from modules
-import { Automation } from '@modules/automations/entities/automation.entity';
-import { StoreSettings } from '@modules/settings/entities/store-settings.entity';
+import { Automation } from '../modules/automations/entities/automation.entity';
+import { StoreSettings } from '../modules/settings/entities/store-settings.entity';
 
 // =============================================================================
 // All Entities
@@ -50,7 +55,7 @@ const entities = [
 // =============================================================================
 // TypeORM Configuration Builder
 // =============================================================================
-export const buildTypeOrmConfig = (
+const buildConfig = (
   configService: ConfigService,
 ): TypeOrmModuleOptions => {
   const nodeEnv = configService.get<string>('app.env', 'development');
@@ -64,7 +69,7 @@ export const buildTypeOrmConfig = (
     database: configService.get<string>('database.name', 'rafiq_db'),
     username: configService.get<string>('database.username', 'rafiq_user'),
     password: configService.get<string>('database.password', ''),
-    
+
     // SSL enabled automatically in Production for DigitalOcean
     ssl: isProduction || configService.get<boolean>('database.ssl', false)
       ? {
@@ -115,3 +120,9 @@ export const buildTypeOrmConfig = (
     keepConnectionAlive: false,
   };
 };
+
+// ✅ Export with ALL possible names for compatibility
+export const typeOrmConfig = buildConfig;
+export const buildTypeOrmConfig = buildConfig;
+export const databaseConfig = buildConfig;
+export default buildConfig;
