@@ -2,10 +2,9 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Auth Controller                             ║
  * ║                                                                                ║
- * ║  ✅ v4: إضافة POST /auth/register للتسجيل اليدوي                               ║
- * ║  - تسجيل دخول بالإيميل + الباسورد                                              ║
- * ║  - تسجيل حساب جديد (register)                                                  ║
- * ║  - الحساب يُنشأ تلقائياً أيضاً عند تثبيت التطبيق من سلة                         ║
+ * ║  ✅ v5: Security Fixes                                                         ║
+ * ║  🔧 FIX H4: استخدام RegisterDto بدل raw Body                                  ║
+ * ║  🔧 FIX M3: إخفاء الإيميل في الـ Logs                                         ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -33,6 +32,7 @@ import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import {
   LoginDto,
   LoginResponseDto,
+  RegisterDto, // 🔧 FIX H4
   RefreshTokenDto,
   RefreshTokenResponseDto,
   ChangePasswordDto,
@@ -47,8 +47,19 @@ export class AuthController {
 
   constructor(private readonly authService: AuthService) {}
 
+  // 🔧 FIX M3: إخفاء الإيميل
+  private maskEmail(email: string): string {
+    const [local, domain] = email.split('@');
+    if (!domain) return '***@***';
+    const masked = local.length <= 2
+      ? '*'.repeat(local.length)
+      : local[0] + '*'.repeat(local.length - 2) + local[local.length - 1];
+    return `${masked}@${domain}`;
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 📝 REGISTER - v4: تسجيل حساب جديد
+  // 📝 REGISTER
+  // 🔧 FIX H4: استخدام RegisterDto مع تحقق كامل
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Post('register')
@@ -60,18 +71,18 @@ export class AuthController {
   @ApiResponse({ status: 201, description: 'تم إنشاء الحساب بنجاح' })
   @ApiResponse({ status: 409, description: 'البريد الإلكتروني مسجل مسبقاً' })
   async register(
-    @Body() body: { email: string; password: string; name: string; storeName?: string },
+    @Body() dto: RegisterDto, // 🔧 FIX H4: DTO بدل raw object
   ): Promise<LoginResponseDto> {
-    this.logger.log(`Register attempt: ${body.email}`);
+    this.logger.log(`Register attempt: ${this.maskEmail(dto.email)}`);
 
     const result = await this.authService.register({
-      email: body.email,
-      password: body.password,
-      name: body.name,
-      storeName: body.storeName,
+      email: dto.email,
+      password: dto.password,
+      name: dto.name,
+      storeName: dto.storeName,
     });
 
-    this.logger.log(`✅ Registration successful: ${body.email}`);
+    this.logger.log(`✅ Registration successful: ${this.maskEmail(dto.email)}`);
     return result;
   }
 
@@ -88,9 +99,9 @@ export class AuthController {
   @ApiResponse({ status: 200, description: 'تم تسجيل الدخول بنجاح', type: LoginResponseDto })
   @ApiResponse({ status: 401, description: 'بيانات الدخول غير صحيحة' })
   async login(@Body() loginDto: LoginDto): Promise<LoginResponseDto> {
-    this.logger.log(`Login attempt: ${loginDto.email}`);
+    this.logger.log(`Login attempt: ${this.maskEmail(loginDto.email)}`);
     const result = await this.authService.login(loginDto.email, loginDto.password);
-    this.logger.log(`✅ Login successful: ${loginDto.email}`);
+    this.logger.log(`✅ Login successful: ${this.maskEmail(loginDto.email)}`);
     return result;
   }
 
@@ -108,6 +119,7 @@ export class AuthController {
 
   // ═══════════════════════════════════════════════════════════════════════════════
   // 🚪 LOGOUT
+  // 🔧 FIX C4: تمرير JTI للـ blacklist
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Post('logout')
@@ -116,7 +128,11 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'تسجيل الخروج' })
   async logout(@Request() req: any): Promise<MessageResponseDto> {
-    await this.authService.logout(req.user.sub);
+    await this.authService.logout(
+      req.user.sub,
+      req.user.jti,        // 🔧 FIX C4: access token JTI
+      req.body?.refreshJti, // optional: refresh token JTI
+    );
     return { message: 'تم تسجيل الخروج بنجاح' };
   }
 
