@@ -1,9 +1,7 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Message Template Entity                    ║
- * ║                                                                                ║
- * ║  📌 هذا الـ Entity يمثل قوالب الرسائل                                         ║
- * ║  القوالب هي رسائل معدّة مسبقاً يمكن إعادة استخدامها                           ║
+ * ║  ✅ v2: إضافة triggerEvent + category varchar                                ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -17,38 +15,21 @@ import {
 import { BaseEntity } from './base.entity';
 import { Tenant } from './tenant.entity';
 
-/**
- * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║                         🏷️ TYPES & ENUMS                                       ║
- * ╚═══════════════════════════════════════════════════════════════════════════════╝
- */
+// ═══════════════════════════════════════════════════════════════════════════════
+// Enums
+// ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * 📌 TemplateCategory - تصنيف القالب
- * ✅ تم تغييرها من enum إلى string constants للمرونة
- */
 export enum TemplateCategory {
-  /** ترحيب */
   WELCOME = 'welcome',
-  /** تأكيد الطلب */
   ORDER_CONFIRMATION = 'order_confirmation',
-  /** تحديث الشحن */
   SHIPPING_UPDATE = 'shipping_update',
-  /** تأكيد التوصيل */
   DELIVERY_CONFIRMATION = 'delivery_confirmation',
-  /** تذكير السلة المتروكة */
   ABANDONED_CART = 'abandoned_cart',
-  /** عرض ترويجي */
   PROMOTIONAL = 'promotional',
-  /** تذكير */
   REMINDER = 'reminder',
-  /** استطلاع رأي */
   FEEDBACK = 'feedback',
-  /** دعم فني */
   SUPPORT = 'support',
-  /** عام */
   GENERAL = 'general',
-  // ✅ إضافة التصنيفات الجديدة للقوالب الجاهزة
   ORDER_NOTIFICATIONS = 'order_notifications',
   SHIPPING_NOTIFICATIONS = 'shipping_notifications',
   SALES_RECOVERY = 'sales_recovery',
@@ -57,27 +38,15 @@ export enum TemplateCategory {
   SERVICE = 'service',
 }
 
-/**
- * 📌 TemplateStatus - حالة القالب
- */
 export enum TemplateStatus {
-  /** مسودة */
   DRAFT = 'draft',
-  /** قيد المراجعة (WhatsApp) */
   PENDING_APPROVAL = 'pending_approval',
-  /** معتمد */
   APPROVED = 'approved',
-  /** مرفوض */
   REJECTED = 'rejected',
-  /** نشط */
   ACTIVE = 'active',
-  /** معطل */
   DISABLED = 'disabled',
 }
 
-/**
- * 📌 TemplateChannel - القناة
- */
 export enum TemplateChannel {
   WHATSAPP = 'whatsapp',
   SMS = 'sms',
@@ -86,9 +55,6 @@ export enum TemplateChannel {
   DISCORD = 'discord',
 }
 
-/**
- * 📌 TemplateLanguage - لغة القالب
- */
 export enum TemplateLanguage {
   AR = 'ar',
   EN = 'en',
@@ -96,9 +62,6 @@ export enum TemplateLanguage {
   EN_US = 'en_US',
 }
 
-/**
- * 📌 HeaderType - نوع الهيدر
- */
 export enum HeaderType {
   NONE = 'none',
   TEXT = 'text',
@@ -107,23 +70,17 @@ export enum HeaderType {
   DOCUMENT = 'document',
 }
 
-/**
- * 📌 ButtonType - نوع الزر
- */
 export enum ButtonType {
-  /** رد سريع */
   QUICK_REPLY = 'quick_reply',
-  /** رابط */
   URL = 'url',
-  /** رقم هاتف */
   PHONE = 'phone',
-  /** نسخ كود */
   COPY_CODE = 'copy_code',
 }
 
-/**
- * 📌 TemplateHeader - هيدر القالب
- */
+// ═══════════════════════════════════════════════════════════════════════════════
+// Interfaces
+// ═══════════════════════════════════════════════════════════════════════════════
+
 export interface TemplateHeader {
   type: HeaderType;
   text?: string;
@@ -131,9 +88,6 @@ export interface TemplateHeader {
   example?: string;
 }
 
-/**
- * 📌 TemplateButton - زر في القالب
- */
 export interface TemplateButton {
   type: ButtonType;
   text: string;
@@ -143,9 +97,6 @@ export interface TemplateButton {
   example?: string;
 }
 
-/**
- * 📌 TemplateVariable - متغير في القالب
- */
 export interface TemplateVariable {
   name: string;
   location: 'header' | 'body' | 'button';
@@ -155,9 +106,6 @@ export interface TemplateVariable {
   defaultValue?: string;
 }
 
-/**
- * 📌 WhatsAppApproval - معلومات موافقة واتساب
- */
 export interface WhatsAppApproval {
   whatsappTemplateId?: string;
   whatsappTemplateName?: string;
@@ -167,9 +115,6 @@ export interface WhatsAppApproval {
   rejectionReason?: string;
 }
 
-/**
- * 📌 TemplateStats - إحصائيات القالب
- */
 export interface TemplateStats {
   usageCount: number;
   lastUsedAt?: string;
@@ -178,15 +123,15 @@ export interface TemplateStats {
   replyRate?: number;
 }
 
-/**
- * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║                         🗃️ MESSAGE TEMPLATE ENTITY                             ║
- * ╚═══════════════════════════════════════════════════════════════════════════════╝
- */
+// ═══════════════════════════════════════════════════════════════════════════════
+// Entity
+// ═══════════════════════════════════════════════════════════════════════════════
+
 @Entity('message_templates')
 @Index(['tenantId', 'channel', 'status'])
 @Index(['tenantId', 'category'])
 @Index(['tenantId', 'name'], { unique: true })
+@Index(['tenantId', 'triggerEvent'])
 export class MessageTemplate extends BaseEntity {
   @Column({ name: 'tenant_id', type: 'uuid' })
   tenantId: string;
@@ -194,45 +139,23 @@ export class MessageTemplate extends BaseEntity {
   @Column({ name: 'created_by', type: 'uuid', nullable: true })
   createdBy?: string;
 
-  @Column({
-    type: 'varchar',
-    length: 100,
-    comment: 'اسم القالب الفريد',
-  })
+  @Column({ type: 'varchar', length: 100 })
   name: string;
 
-  @Column({
-    name: 'display_name',
-    type: 'varchar',
-    length: 255,
-    comment: 'الاسم المعروض للمستخدم',
-  })
+  @Column({ name: 'display_name', type: 'varchar', length: 255 })
   displayName: string;
 
-  @Column({
-    type: 'text',
-    nullable: true,
-    comment: 'وصف القالب',
-  })
+  @Column({ type: 'text', nullable: true })
   description?: string;
 
-  /**
-   * ✅ تم تغيير category من enum إلى varchar
-   * لدعم كل التصنيفات بدون migration
-   */
-  @Column({
-    type: 'varchar',
-    length: 100,
-    default: 'general',
-    comment: 'تصنيف القالب',
-  })
+  /** ✅ varchar بدل enum - يقبل أي تصنيف */
+  @Column({ type: 'varchar', length: 100, default: 'general' })
   category: string;
 
   @Column({
     type: 'enum',
     enum: TemplateChannel,
     default: TemplateChannel.WHATSAPP,
-    comment: 'القناة المستهدفة',
   })
   channel: TemplateChannel;
 
@@ -240,7 +163,6 @@ export class MessageTemplate extends BaseEntity {
     type: 'enum',
     enum: TemplateLanguage,
     default: TemplateLanguage.AR,
-    comment: 'لغة القالب',
   })
   language: TemplateLanguage;
 
@@ -248,59 +170,41 @@ export class MessageTemplate extends BaseEntity {
     type: 'enum',
     enum: TemplateStatus,
     default: TemplateStatus.DRAFT,
-    comment: 'حالة القالب',
   })
   status: TemplateStatus;
 
+  /**
+   * ✅ الحدث المرتبط بالقالب
+   * مثل: order.created, order.shipped, abandoned.cart
+   * يُستخدم لمطابقة webhook event → القالب المناسب
+   */
   @Column({
-    type: 'jsonb',
+    name: 'trigger_event',
+    type: 'varchar',
+    length: 100,
     nullable: true,
-    comment: 'هيدر الرسالة',
   })
+  triggerEvent?: string;
+
+  @Column({ type: 'jsonb', nullable: true })
   header?: TemplateHeader;
 
-  @Column({
-    type: 'text',
-    comment: 'نص الرسالة الرئيسي',
-  })
+  @Column({ type: 'text' })
   body: string;
 
-  @Column({
-    type: 'varchar',
-    length: 60,
-    nullable: true,
-    comment: 'ذيل الرسالة',
-  })
+  @Column({ type: 'varchar', length: 60, nullable: true })
   footer?: string;
 
-  @Column({
-    type: 'jsonb',
-    nullable: true,
-    default: [],
-    comment: 'أزرار الرسالة',
-  })
+  @Column({ type: 'jsonb', nullable: true, default: [] })
   buttons: TemplateButton[];
 
-  @Column({
-    type: 'jsonb',
-    default: [],
-    comment: 'المتغيرات المستخدمة',
-  })
+  @Column({ type: 'jsonb', default: [] })
   variables: TemplateVariable[];
 
-  @Column({
-    name: 'whatsapp_approval',
-    type: 'jsonb',
-    nullable: true,
-    comment: 'معلومات موافقة واتساب',
-  })
+  @Column({ name: 'whatsapp_approval', type: 'jsonb', nullable: true })
   whatsAppApproval?: WhatsAppApproval;
 
-  @Column({
-    type: 'jsonb',
-    default: { usageCount: 0 },
-    comment: 'إحصائيات الاستخدام',
-  })
+  @Column({ type: 'jsonb', default: { usageCount: 0 } })
   stats: TemplateStats;
 
   @ManyToOne(() => Tenant, { onDelete: 'CASCADE' })
