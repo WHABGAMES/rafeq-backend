@@ -4,7 +4,7 @@
  * ║                                                                                ║
  * ║  📌 يستمع لأحداث الـ webhooks ويرسل رسائل واتساب تلقائية                      ║
  * ║                                                                                ║
- * ║  ✅ v3: تسجيل مفصّل + جلب رقم العميل من قاعدة البيانات                        ║
+ * ║  ✅ v5: يقرأ data.customer + data.order.customer + lookup من DB              ║
  * ║                                                                                ║
  * ║  المسار:                                                                       ║
  * ║  Webhook → Processor → EventEmitter → هذا الـ Service                          ║
@@ -451,28 +451,30 @@ export class TemplateDispatcherService {
   private replaceVariables(body: string, data: Record<string, unknown>): string {
     let message = body;
 
-    const customer = (data.customer || {}) as Record<string, unknown>;
-    const urls = (data.urls || {}) as Record<string, unknown>;
+    // ✅ v5: استخراج البيانات من كل المستويات (top-level + nested order)
+    const orderObj = (data.order || {}) as Record<string, unknown>;
+    const customer = (data.customer || orderObj.customer || {}) as Record<string, unknown>;
+    const urls = (data.urls || orderObj.urls || {}) as Record<string, unknown>;
 
     const variables: Record<string, string> = {
       customer_name: String(customer.first_name || customer.name || data.customerName || 'عميلنا الكريم'),
       customer_first_name: String(customer.first_name || data.customerName || 'عميلنا'),
       customer_phone: String(customer.mobile || customer.phone || ''),
       customer_email: String(customer.email || ''),
-      order_id: String(data.reference_id || data.order_number || data.id || data.orderId || ''),
-      order_total: this.formatAmount(data.total),
-      order_status: String(data.status || data.newStatus || ''),
+      order_id: String(data.reference_id || orderObj.reference_id || data.order_number || orderObj.order_number || data.id || orderObj.id || data.orderId || ''),
+      order_total: this.formatAmount(data.total || orderObj.total),
+      order_status: String(data.status || data.newStatus || orderObj.status || ''),
       order_date: new Date().toLocaleDateString('ar-SA'),
-      order_tracking: String(urls.tracking || data.tracking_url || ''),
-      tracking_number: String(data.tracking_number || data.trackingNumber || ''),
-      shipping_company: String(data.shipping_company || data.shippingCompany || ''),
-      store_name: String(data.store_name || 'متجرنا'),
+      order_tracking: String(urls.tracking || data.tracking_url || orderObj.tracking_url || ''),
+      tracking_number: String(data.tracking_number || data.trackingNumber || orderObj.tracking_number || ''),
+      shipping_company: String(data.shipping_company || data.shippingCompany || orderObj.shipping_company || ''),
+      store_name: String(data.store_name || orderObj.store_name || 'متجرنا'),
       store_url: String(data.store_url || ''),
-      cart_total: this.formatAmount(data.total || data.cartTotal),
-      cart_link: String(data.cart_url || data.checkout_url || ''),
+      cart_total: this.formatAmount(data.total || data.cartTotal || orderObj.total),
+      cart_link: String(data.cart_url || data.checkout_url || orderObj.checkout_url || ''),
       product_name: String(data.name || data.productName || ''),
-      product_price: this.formatAmount(data.price),
-      payment_link: String(data.payment_url || data.checkout_url || ''),
+      product_price: this.formatAmount(data.price || orderObj.price),
+      payment_link: String(data.payment_url || data.checkout_url || orderObj.payment_url || ''),
     };
 
     for (const [key, value] of Object.entries(variables)) {
