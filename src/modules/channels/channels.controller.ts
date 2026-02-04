@@ -18,13 +18,17 @@ import {
   Query,
   HttpCode,
   HttpStatus,
+  UseGuards,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiQuery } from '@nestjs/swagger';
+
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
 import { ChannelsService, ConnectWhatsAppOfficialDto, ConnectDiscordDto } from './channels.service';
 import { WhatsAppBaileysService } from './whatsapp/whatsapp-baileys.service';
 
 @ApiTags('Channels')
+@UseGuards(JwtAuthGuard)
 @Controller('channels')
 export class ChannelsController {
   constructor(
