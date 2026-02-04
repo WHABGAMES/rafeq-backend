@@ -1,8 +1,7 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Webhooks Module                            ║
- * ║                                                                                ║
- * ║  Module لاستقبال ومعالجة الـ Webhooks من سلة وأي مصادر خارجية                   ║
+ * ║  ✅ v2: إضافة TemplateDispatcherService + ChannelsModule + TemplatesModule    ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -19,79 +18,52 @@ import { SallaWebhooksController } from './salla-webhooks.controller';
 import { WebhooksService } from './webhooks.service';
 import { SallaWebhooksService } from './salla-webhooks.service';
 import { WebhookVerificationService } from './webhook-verification.service';
+import { TemplateDispatcherService } from './template-dispatcher.service';
 
-// Processors (BullMQ)
+// Processors
 import { SallaWebhookProcessor } from './processors/salla-webhook.processor';
 
-// ✅ Entities - Import from database (single source of truth)
+// Entities
 import { WebhookEvent } from '@database/entities/webhook-event.entity';
 import { WebhookLog } from './entities/webhook-log.entity';
 
 // Related Modules
 import { StoresModule } from '../stores/stores.module';
 import { MessagingModule } from '../messaging/messaging.module';
+import { ChannelsModule } from '../channels/channels.module';
+import { TemplatesModule } from '../templates/templates.module';
 
 @Module({
   imports: [
-    // ═══════════════════════════════════════════════════════════════════════════════
-    // 📁 Database Entities
-    // ═══════════════════════════════════════════════════════════════════════════════
-    TypeOrmModule.forFeature([
-      WebhookEvent,  // ✅ من @database/entities
-      WebhookLog,    // من ./entities (محلي - لا يوجد تكرار)
-    ]),
+    TypeOrmModule.forFeature([WebhookEvent, WebhookLog]),
 
-    // ═══════════════════════════════════════════════════════════════════════════════
-    // 📬 Queue للمعالجة غير المتزامنة
-    // ═══════════════════════════════════════════════════════════════════════════════
     BullModule.registerQueue({
       name: 'salla-webhooks',
       defaultJobOptions: {
         attempts: 5,
-        backoff: {
-          type: 'exponential',
-          delay: 2000,
-        },
-        removeOnComplete: {
-          count: 1000,
-          age: 24 * 3600,
-        },
-        removeOnFail: {
-          count: 5000,
-        },
+        backoff: { type: 'exponential', delay: 2000 },
+        removeOnComplete: { count: 1000, age: 24 * 3600 },
+        removeOnFail: { count: 5000 },
       },
     }),
 
-    // ═══════════════════════════════════════════════════════════════════════════════
-    // 📦 Related Modules
-    // ═══════════════════════════════════════════════════════════════════════════════
     ConfigModule,
     StoresModule,
     MessagingModule,
+    ChannelsModule,   // ✅ يوفر ChannelsService + Channel Repository
+    TemplatesModule,  // ✅ يوفر TemplatesService + MessageTemplate Repository
   ],
 
-  controllers: [
-    WebhooksController,
-    SallaWebhooksController,
-  ],
+  controllers: [WebhooksController, SallaWebhooksController],
 
   providers: [
-    // ═══════════════════════════════════════════════════════════════════════════════
-    // 🔧 Services
-    // ═══════════════════════════════════════════════════════════════════════════════
     WebhooksService,
     SallaWebhooksService,
     WebhookVerificationService,
-
-    // ═══════════════════════════════════════════════════════════════════════════════
-    // ⚙️ Queue Processors
-    // ═══════════════════════════════════════════════════════════════════════════════
+    TemplateDispatcherService, // ✅ إرسال رسائل واتساب تلقائية
     SallaWebhookProcessor,
   ],
 
-  exports: [
-    WebhooksService,
-    SallaWebhooksService,
-  ],
+  exports: [WebhooksService, SallaWebhooksService],
 })
 export class WebhooksModule {}
