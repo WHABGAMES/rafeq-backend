@@ -21,7 +21,9 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
 
-import { User, UserStatus } from '@database/entities/user.entity';
+import { User, UserStatus, UserRole } from '@database/entities/user.entity';
+import { Tenant, TenantStatus, SubscriptionPlan } from '@database/entities/tenant.entity';
+import { ConflictException } from '@nestjs/common';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Types
@@ -74,6 +76,9 @@ export class AuthService {
 
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
+
+    @InjectRepository(Tenant)
+    private readonly tenantRepository: Repository<Tenant>,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -241,6 +246,66 @@ export class AuthService {
   // ═══════════════════════════════════════════════════════════════════════════════
   // 🎟️ GENERATE TOKENS (Private)
   // ═══════════════════════════════════════════════════════════════════════════════
+
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 📝 v4: REGISTER - تسجيل حساب جديد
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async register(input: {
+    email: string;
+    password: string;
+    name: string;
+    storeName?: string;
+  }): Promise<LoginResult> {
+    const email = input.email.toLowerCase().trim();
+
+    // التحقق من عدم وجود حساب بنفس الإيميل
+    const existing = await this.userRepository.findOne({ where: { email } });
+    if (existing) {
+      throw new ConflictException('البريد الإلكتروني مسجل مسبقاً');
+    }
+
+    // إنشاء Tenant جديد
+    const tenant = this.tenantRepository.create({
+      name: input.storeName || input.name,
+      email,
+      slug: `user-${Date.now()}`,
+      status: TenantStatus.ACTIVE,
+      subscriptionPlan: SubscriptionPlan.FREE,
+    });
+    const savedTenant = await this.tenantRepository.save(tenant);
+
+    // إنشاء المستخدم
+    const hashedPassword = await bcrypt.hash(input.password, 12);
+    const nameParts = input.name.split(' ');
+
+    const user = this.userRepository.create({
+      tenantId: savedTenant.id,
+      email,
+      password: hashedPassword,
+      firstName: nameParts[0] || 'مستخدم',
+      lastName: nameParts.slice(1).join(' ') || 'رفيق',
+      role: UserRole.OWNER,
+      status: UserStatus.ACTIVE,
+      emailVerified: true,
+    });
+    const savedUser = await this.userRepository.save(user);
+
+    const tokens = await this.generateTokens(savedUser);
+
+    return {
+      ...tokens,
+      user: {
+        id: savedUser.id,
+        email: savedUser.email,
+        firstName: savedUser.firstName,
+        lastName: savedUser.lastName,
+        role: savedUser.role,
+        avatar: savedUser.avatar,
+      },
+    };
+  }
 
   private async generateTokens(user: Pick<User, 'id' | 'email' | 'tenantId' | 'role'>): Promise<{
     accessToken: string;
