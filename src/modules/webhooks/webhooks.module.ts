@@ -1,7 +1,7 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Webhooks Module                            ║
- * ║  ✅ v2: إضافة TemplateDispatcherService + ChannelsModule + TemplatesModule    ║
+ * ║  ✅ v3: إضافة Order + Customer repos لجلب رقم العميل                          ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -26,6 +26,7 @@ import { SallaWebhookProcessor } from './processors/salla-webhook.processor';
 // Entities
 import { WebhookEvent } from '@database/entities/webhook-event.entity';
 import { WebhookLog } from './entities/webhook-log.entity';
+import { Order, Customer } from '@database/entities';
 
 // Related Modules
 import { StoresModule } from '../stores/stores.module';
@@ -35,7 +36,12 @@ import { TemplatesModule } from '../templates/templates.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([WebhookEvent, WebhookLog]),
+    TypeOrmModule.forFeature([
+      WebhookEvent,
+      WebhookLog,
+      Order,     // ✅ v3: للبحث عن الطلب بـ sallaOrderId
+      Customer,  // ✅ v3: لجلب رقم هاتف العميل
+    ]),
 
     BullModule.registerQueue({
       name: 'salla-webhooks',
