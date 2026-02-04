@@ -368,7 +368,7 @@ export class TemplatesController {
           name: 'تأكيد الدفع عند الاستلام',
           language: 'ar',
           category: 'order_notifications',
-          triggerEvent: 'order.created',
+          triggerEvent: null,
           content: 'مرحباً {{customer_name}} 👋\n\nلديك طلب جديد رقم #{{order_id}} بقيمة {{order_total}} ريال\n\nطريقة الدفع: الدفع عند الاستلام 💵\n\nهل تؤكد طلبك؟',
           buttons: [
             { type: 'quick_reply', text: 'نعم، أؤكد ✅' },
@@ -411,7 +411,7 @@ export class TemplatesController {
           name: 'طلب بانتظار الدفع',
           language: 'ar',
           category: 'order_notifications',
-          triggerEvent: 'order.created',
+          triggerEvent: 'order.status.pending_payment',
           content: 'مرحباً {{customer_name}} ⏰\n\nطلبك رقم #{{order_id}} بانتظار إتمام الدفع\n\nالمبلغ المطلوب: {{order_total}} ريال\n\nأكمل الدفع الآن لتأكيد طلبك 💳',
           buttons: [
             { type: 'url', text: 'أكمل الدفع', url: '{{payment_link}}' },
@@ -525,7 +525,7 @@ export class TemplatesController {
           name: 'سلة متروكة - مع كوبون خصم',
           language: 'ar',
           category: 'sales_recovery',
-          triggerEvent: 'abandoned.cart',
+          triggerEvent: null,
           content: 'مرحباً {{customer_name}} 🎁\n\nسلتك لا زالت بانتظارك! لأنك مميز، جهزنا لك خصم حصري 🎉\n\nاستخدم كود: {{coupon_code}}\nواحصل على خصم {{discount_percent}}% على سلتك\n\nالعرض لفترة محدودة ⏰',
           buttons: [
             { type: 'url', text: 'استفد من الخصم', url: '{{cart_link}}' },
@@ -536,7 +536,7 @@ export class TemplatesController {
           name: 'سلة متروكة - التذكير الأخير',
           language: 'ar',
           category: 'sales_recovery',
-          triggerEvent: 'abandoned.cart',
+          triggerEvent: null,
           content: 'مرحباً {{customer_name}} ⏰\n\nآخر فرصة! منتجاتك في السلة قد تنفد قريباً\n\nإجمالي السلة: {{cart_total}} ريال\n\nلا تفوّت العرض، الكمية محدودة! 🔥',
           buttons: [
             { type: 'url', text: 'اطلب الآن', url: '{{cart_link}}' },
@@ -547,7 +547,7 @@ export class TemplatesController {
           name: 'تذكير بالدفع',
           language: 'ar',
           category: 'sales_recovery',
-          triggerEvent: 'order.created',
+          triggerEvent: null,
           content: 'مرحباً {{customer_name}} 💳\n\nتذكير: طلبك رقم #{{order_id}} بانتظار إتمام الدفع\n\nالمبلغ: {{order_total}} ريال\n\nسيتم إلغاء الطلب تلقائياً إذا لم يتم الدفع خلال 24 ساعة ⏰',
           buttons: [
             { type: 'url', text: 'ادفع الآن', url: '{{payment_link}}' },
@@ -584,7 +584,7 @@ export class TemplatesController {
           name: 'سلسلة الترحيب - تعرف علينا',
           language: 'ar',
           category: 'marketing',
-          triggerEvent: 'customer.created',
+          triggerEvent: null,
           content: 'مرحباً {{customer_name}} 💙\n\nهل تعلم أن {{store_name}} يوفر لك:\n\n✨ منتجات أصلية 100%\n🚚 توصيل سريع\n🔄 إرجاع مجاني خلال 14 يوم\n💬 دعم فوري على واتساب\n\nاكتشف الأكثر مبيعاً لدينا 🔥',
           buttons: [
             { type: 'url', text: 'الأكثر مبيعاً', url: '{{store_url}}/best-sellers' },
@@ -639,7 +639,7 @@ export class TemplatesController {
           name: 'توصيات بعد الشراء',
           language: 'ar',
           category: 'marketing',
-          triggerEvent: 'order.delivered',
+          triggerEvent: null,
           content: 'مرحباً {{customer_name}} 🌟\n\nنأمل أنك استمتعت بمشترياتك من {{store_name}}!\n\nبناءً على طلبك السابق، نعتقد أنك ستحب هذه المنتجات أيضاً 👇\n\nاكتشف المزيد واستمتع بتجربة تسوق مميزة ✨',
           buttons: [
             { type: 'url', text: 'منتجات مقترحة', url: '{{store_url}}/recommended' },
@@ -654,7 +654,7 @@ export class TemplatesController {
           name: 'طلب تقييم',
           language: 'ar',
           category: 'engagement',
-          triggerEvent: 'order.delivered',
+          triggerEvent: null,
           content: 'مرحباً {{customer_name}} ⭐\n\nنأمل أنك استمتعت بتجربتك مع {{store_name}}!\n\nرأيك يهمنا كثيراً، شاركنا تقييمك للمنتجات\n\nتقييمك يساعدنا نقدم لك الأفضل دائماً 💙',
           buttons: [
             { type: 'url', text: 'قيّم الآن', url: '{{store_url}}/reviews' },
@@ -711,7 +711,7 @@ export class TemplatesController {
           name: 'تسليم منتج رقمي',
           language: 'ar',
           category: 'service',
-          triggerEvent: 'order.payment.updated',
+          triggerEvent: null,
           content: 'مرحباً {{customer_name}} 📱\n\nتم تأكيد دفعك بنجاح! إليك منتجك الرقمي:\n\nطلب رقم: #{{order_id}}\n\nيمكنك تحميل المنتج من الرابط أدناه 👇\n\nشكراً لتسوقك من {{store_name}} 💙',
           buttons: [
             { type: 'url', text: 'تحميل المنتج', url: '{{download_link}}' },
