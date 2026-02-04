@@ -170,7 +170,7 @@ export class WebhooksService {
       };
     }
 
-    const jobId = await this.sallaWebhooksService.retryWebhook(webhookId);
+    const jobId = await this.sallaWebhooksService.retryWebhook(webhookId, tenantId);
 
     return {
       success: true,
