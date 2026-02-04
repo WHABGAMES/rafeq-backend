@@ -1,6 +1,7 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║              RAFIQ PLATFORM - Templates DTOs                                   ║
+ * ║  ✅ إصلاح: type و channel اختياريين مع قيم افتراضية                          ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -34,6 +35,13 @@ export enum TemplateCategory {
   COD_CONFIRMATION = 'cod_confirmation',
   PAYMENT_REMINDER = 'payment_reminder',
   PRODUCT_RESTOCK = 'product_restock',
+  // ✅ إضافة تصنيفات القوالب الجاهزة
+  ORDER_NOTIFICATIONS = 'order_notifications',
+  SHIPPING_NOTIFICATIONS = 'shipping_notifications',
+  SALES_RECOVERY = 'sales_recovery',
+  ENGAGEMENT = 'engagement',
+  SERVICE = 'service',
+  GENERAL = 'general',
 }
 
 export enum TemplateStatus {
@@ -75,13 +83,13 @@ export class TemplateButton {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Create Template DTO
+// ✅ Create Template DTO - type و channel اختياريين
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export class CreateTemplateDto {
   @ApiProperty({ description: 'اسم القالب' })
   @IsString()
-  @MinLength(3)
+  @MinLength(1)
   @MaxLength(100)
   name: string;
 
@@ -91,17 +99,23 @@ export class CreateTemplateDto {
   @MaxLength(500)
   description?: string;
 
-  @ApiProperty({ enum: TemplateType, description: 'نوع القالب' })
-  @IsEnum(TemplateType)
-  type: TemplateType;
+  /** ✅ اختياري - الافتراضي text */
+  @ApiPropertyOptional({ enum: TemplateType, description: 'نوع القالب', default: 'text' })
+  @IsOptional()
+  @IsString()
+  type?: string;
 
-  @ApiProperty({ enum: TemplateCategory, description: 'فئة القالب' })
-  @IsEnum(TemplateCategory)
-  category: TemplateCategory;
+  /** ✅ category كـ string عادي (بدون enum validation صارم) */
+  @ApiPropertyOptional({ description: 'فئة القالب' })
+  @IsOptional()
+  @IsString()
+  category?: string;
 
-  @ApiProperty({ enum: TemplateChannel, description: 'القناة' })
-  @IsEnum(TemplateChannel)
-  channel: TemplateChannel;
+  /** ✅ اختياري - الافتراضي whatsapp */
+  @ApiPropertyOptional({ enum: TemplateChannel, description: 'القناة', default: 'whatsapp' })
+  @IsOptional()
+  @IsString()
+  channel?: string;
 
   @ApiProperty({ description: 'محتوى القالب' })
   @IsString()
@@ -141,6 +155,16 @@ export class CreateTemplateDto {
   @IsArray()
   variables?: string[];
 
+  @ApiPropertyOptional({ description: 'الحالة' })
+  @IsOptional()
+  @IsString()
+  status?: string;
+
+  @ApiPropertyOptional({ description: 'الحدث المرتبط' })
+  @IsOptional()
+  @IsString()
+  triggerEvent?: string;
+
   @ApiPropertyOptional({ description: 'بيانات إضافية' })
   @IsOptional()
   @IsObject()
@@ -155,7 +179,7 @@ export class UpdateTemplateDto {
   @ApiPropertyOptional({ description: 'اسم القالب' })
   @IsOptional()
   @IsString()
-  @MinLength(3)
+  @MinLength(1)
   @MaxLength(100)
   name?: string;
 
@@ -165,10 +189,10 @@ export class UpdateTemplateDto {
   @MaxLength(500)
   description?: string;
 
-  @ApiPropertyOptional({ enum: TemplateCategory, description: 'فئة القالب' })
+  @ApiPropertyOptional({ description: 'فئة القالب' })
   @IsOptional()
-  @IsEnum(TemplateCategory)
-  category?: TemplateCategory;
+  @IsString()
+  category?: string;
 
   @ApiPropertyOptional({ description: 'محتوى القالب' })
   @IsOptional()
@@ -198,10 +222,10 @@ export class UpdateTemplateDto {
   @IsArray()
   buttons?: TemplateButton[];
 
-  @ApiPropertyOptional({ enum: TemplateStatus, description: 'حالة القالب' })
+  @ApiPropertyOptional({ description: 'حالة القالب' })
   @IsOptional()
-  @IsEnum(TemplateStatus)
-  status?: TemplateStatus;
+  @IsString()
+  status?: string;
 
   @ApiPropertyOptional({ description: 'بيانات إضافية' })
   @IsOptional()
@@ -214,22 +238,22 @@ export class UpdateTemplateDto {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export class TemplateFiltersDto {
-  @ApiPropertyOptional({ enum: TemplateType })
+  @ApiPropertyOptional()
   @IsOptional()
-  @IsEnum(TemplateType)
-  type?: TemplateType;
+  @IsString()
+  type?: string;
 
-  @ApiPropertyOptional({ enum: TemplateCategory })
+  @ApiPropertyOptional()
   @IsOptional()
-  @IsEnum(TemplateCategory)
-  category?: TemplateCategory;
+  @IsString()
+  category?: string;
 
-  @ApiPropertyOptional({ enum: TemplateStatus })
+  @ApiPropertyOptional()
   @IsOptional()
-  @IsEnum(TemplateStatus)
-  status?: TemplateStatus;
+  @IsString()
+  status?: string;
 
-  @ApiPropertyOptional({ enum: TemplateChannel })
+  @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   channel?: string;
@@ -286,15 +310,15 @@ export class TemplateResponseDto {
   id: string;
   name: string;
   description?: string;
-  type: TemplateType;
-  category: TemplateCategory;
-  channel: TemplateChannel;
+  type: string;
+  category: string;
+  channel: string;
   content: string;
   header?: string;
   footer?: string;
   mediaUrl?: string;
   buttons?: TemplateButton[];
-  status: TemplateStatus;
+  status: string;
   language: string;
   usageCount: number;
   whatsappTemplateId?: string;
