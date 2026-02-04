@@ -1,23 +1,90 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║              RAFIQ PLATFORM - Settings Service                                 ║
+ * ║                                                                                ║
+ * ║  ✅ v2: قاعدة بيانات حقيقية بدلاً من Map في الذاكرة                            ║
+ * ║  ✅ الإعدادات مرتبطة بالمتجر (storeId) - كل متجر له إعداداته الخاصة            ║
+ * ║  ✅ تبقى محفوظة بعد إعادة النشر                                                ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
 import { Injectable, Logger } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { StoreSettings } from './entities/store-settings.entity';
 
 @Injectable()
 export class SettingsService {
   private readonly logger = new Logger(SettingsService.name);
 
-  // In-memory storage (replace with database)
-  private settings: Map<string, any> = new Map();
+  constructor(
+    @InjectRepository(StoreSettings)
+    private readonly settingsRepository: Repository<StoreSettings>,
+  ) {}
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // Core: قراءة وكتابة الإعدادات من قاعدة البيانات
+  // ═══════════════════════════════════════════════════════════════════════════════
 
   /**
-   * الإعدادات العامة
+   * ✅ قراءة إعداد من قاعدة البيانات
+   * يُرجع القيمة المحفوظة أو القيمة الافتراضية
    */
-  async getGeneralSettings(tenantId: string) {
-    return this.settings.get(`${tenantId}:general`) || {
+  private async getSetting(
+    tenantId: string,
+    storeId: string,
+    key: string,
+    defaults: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const setting = await this.settingsRepository.findOne({
+      where: { tenantId, storeId, settingsKey: key },
+    });
+
+    if (setting) {
+      // دمج القيم المحفوظة مع الافتراضية (لضمان وجود حقول جديدة)
+      return { ...defaults, ...setting.settingsValue };
+    }
+
+    return defaults;
+  }
+
+  /**
+   * ✅ حفظ إعداد في قاعدة البيانات
+   * upsert: يُنشئ إذا لم يكن موجوداً، يُحدّث إذا كان موجوداً
+   */
+  private async setSetting(
+    tenantId: string,
+    storeId: string,
+    key: string,
+    value: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    let setting = await this.settingsRepository.findOne({
+      where: { tenantId, storeId, settingsKey: key },
+    });
+
+    if (setting) {
+      setting.settingsValue = value;
+    } else {
+      setting = this.settingsRepository.create({
+        tenantId,
+        storeId,
+        settingsKey: key,
+        settingsValue: value,
+      });
+    }
+
+    const saved = await this.settingsRepository.save(setting);
+    this.logger.log(`✅ Settings saved: ${key}`, { tenantId, storeId });
+
+    return saved.settingsValue;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // الإعدادات العامة
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async getGeneralSettings(tenantId: string, storeId?: string) {
+    const defaults = {
       storeName: 'متجر رفيق',
       storeUrl: 'https://store.example.com',
       timezone: 'Asia/Riyadh',
@@ -27,21 +94,28 @@ export class SettingsService {
       dateFormat: 'DD/MM/YYYY',
       timeFormat: '12h',
     };
+
+    if (!storeId) return defaults;
+    return this.getSetting(tenantId, storeId, 'general', defaults);
   }
 
-  async updateGeneralSettings(tenantId: string, data: any) {
-    const current = await this.getGeneralSettings(tenantId);
+  async updateGeneralSettings(tenantId: string, data: any, storeId?: string) {
+    if (!storeId) {
+      this.logger.warn('updateGeneralSettings called without storeId');
+      return data;
+    }
+
+    const current = await this.getGeneralSettings(tenantId, storeId);
     const updated = { ...current, ...data };
-    this.settings.set(`${tenantId}:general`, updated);
-    this.logger.log('General settings updated', { tenantId });
-    return updated;
+    return this.setSetting(tenantId, storeId, 'general', updated);
   }
 
-  /**
-   * إعدادات الإشعارات
-   */
-  async getNotificationSettings(tenantId: string) {
-    return this.settings.get(`${tenantId}:notifications`) || {
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // إعدادات الإشعارات
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async getNotificationSettings(tenantId: string, storeId?: string) {
+    const defaults = {
       email: {
         newConversation: true,
         newMessage: false,
@@ -58,25 +132,29 @@ export class SettingsService {
         volume: 80,
       },
     };
+
+    if (!storeId) return defaults;
+    return this.getSetting(tenantId, storeId, 'notifications', defaults);
   }
 
-  async updateNotificationSettings(tenantId: string, data: any) {
-    const current = await this.getNotificationSettings(tenantId);
+  async updateNotificationSettings(tenantId: string, data: any, storeId?: string) {
+    if (!storeId) return data;
+
+    const current = await this.getNotificationSettings(tenantId, storeId) as any;
     const updated = {
       email: { ...current.email, ...data.email },
       push: { ...current.push, ...data.push },
       sound: { ...current.sound, ...data.sound },
     };
-    this.settings.set(`${tenantId}:notifications`, updated);
-    this.logger.log('Notification settings updated', { tenantId });
-    return updated;
+    return this.setSetting(tenantId, storeId, 'notifications', updated);
   }
 
-  /**
-   * ساعات العمل
-   */
-  async getWorkingHours(tenantId: string) {
-    return this.settings.get(`${tenantId}:working-hours`) || {
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ساعات العمل
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async getWorkingHours(tenantId: string, storeId?: string) {
+    const defaults = {
       enabled: true,
       timezone: 'Asia/Riyadh',
       schedule: [
@@ -90,54 +168,62 @@ export class SettingsService {
       ],
       holidays: [],
     };
+
+    if (!storeId) return defaults;
+    return this.getSetting(tenantId, storeId, 'working_hours', defaults);
   }
 
-  async updateWorkingHours(tenantId: string, data: any) {
-    const current = await this.getWorkingHours(tenantId);
+  async updateWorkingHours(tenantId: string, data: any, storeId?: string) {
+    if (!storeId) return data;
+
+    const current = await this.getWorkingHours(tenantId, storeId);
     const updated = { ...current, ...data };
-    this.settings.set(`${tenantId}:working-hours`, updated);
-    this.logger.log('Working hours updated', { tenantId });
-    return updated;
+    return this.setSetting(tenantId, storeId, 'working_hours', updated);
   }
 
-  /**
-   * الردود التلقائية
-   */
-  async getAutoReplies(tenantId: string) {
-    return this.settings.get(`${tenantId}:auto-replies`) || {
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // الردود التلقائية
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async getAutoReplies(tenantId: string, storeId?: string) {
+    const defaults = {
       welcomeMessage: {
         enabled: true,
-        message: 'مرحباً بك! 👋 كيف يمكنني مساعدتك اليوم؟',
+        message: 'هلا والله! 👋 كيف أقدر أساعدك اليوم؟',
       },
       awayMessage: {
         enabled: true,
-        message: 'شكراً لتواصلك معنا. نحن حالياً غير متواجدين، سنرد عليك في أقرب وقت ممكن.',
+        message: 'شكراً لتواصلك. حالياً مو متواجدين، بنرد عليك بأقرب وقت.',
       },
       closedMessage: {
         enabled: true,
-        message: 'شكراً لتواصلك! نحن مغلقون حالياً. ساعات العمل: الأحد-الخميس 9ص-9م',
+        message: 'شكراً لتواصلك! حالياً مقفلين. ساعات العمل: الأحد-الخميس 9ص-9م',
       },
       delayedResponse: {
         enabled: true,
         delayMinutes: 5,
-        message: 'شكراً لانتظارك، سيتم الرد عليك قريباً...',
+        message: 'شكراً لانتظارك، بيتم الرد عليك قريب...',
       },
     };
+
+    if (!storeId) return defaults;
+    return this.getSetting(tenantId, storeId, 'auto_replies', defaults);
   }
 
-  async updateAutoReplies(tenantId: string, data: any) {
-    const current = await this.getAutoReplies(tenantId);
+  async updateAutoReplies(tenantId: string, data: any, storeId?: string) {
+    if (!storeId) return data;
+
+    const current = await this.getAutoReplies(tenantId, storeId);
     const updated = { ...current, ...data };
-    this.settings.set(`${tenantId}:auto-replies`, updated);
-    this.logger.log('Auto-replies updated', { tenantId });
-    return updated;
+    return this.setSetting(tenantId, storeId, 'auto_replies', updated);
   }
 
-  /**
-   * إعدادات الفريق
-   */
-  async getTeamSettings(tenantId: string) {
-    return this.settings.get(`${tenantId}:team`) || {
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // إعدادات الفريق
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async getTeamSettings(tenantId: string, storeId?: string) {
+    const defaults = {
       autoAssignment: {
         enabled: true,
         method: 'round_robin',
@@ -151,26 +237,30 @@ export class SettingsService {
         { id: 'agent', name: 'وكيل', permissions: ['view', 'respond'] },
       ],
     };
+
+    if (!storeId) return defaults;
+    return this.getSetting(tenantId, storeId, 'team', defaults);
   }
 
-  async updateTeamSettings(tenantId: string, data: any) {
-    const current = await this.getTeamSettings(tenantId);
+  async updateTeamSettings(tenantId: string, data: any, storeId?: string) {
+    if (!storeId) return data;
+
+    const current = await this.getTeamSettings(tenantId, storeId);
     const updated = { ...current, ...data };
-    this.settings.set(`${tenantId}:team`, updated);
-    this.logger.log('Team settings updated', { tenantId });
-    return updated;
+    return this.setSetting(tenantId, storeId, 'team', updated);
   }
 
-  /**
-   * جميع الإعدادات
-   */
-  async getAllSettings(tenantId: string) {
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // جميع الإعدادات
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async getAllSettings(tenantId: string, storeId?: string) {
     return {
-      general: await this.getGeneralSettings(tenantId),
-      notifications: await this.getNotificationSettings(tenantId),
-      workingHours: await this.getWorkingHours(tenantId),
-      autoReplies: await this.getAutoReplies(tenantId),
-      team: await this.getTeamSettings(tenantId),
+      general: await this.getGeneralSettings(tenantId, storeId),
+      notifications: await this.getNotificationSettings(tenantId, storeId),
+      workingHours: await this.getWorkingHours(tenantId, storeId),
+      autoReplies: await this.getAutoReplies(tenantId, storeId),
+      team: await this.getTeamSettings(tenantId, storeId),
     };
   }
 }
