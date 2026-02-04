@@ -470,8 +470,8 @@ export class AutomationsService {
     }
 
     // البحث عن قناة واتساب متصلة للمتجر
-    const channels = await this.channelsService.findAll(storeId);
-    const channelList = Array.isArray(channels) ? channels : channels?.data || [];
+    const channelsResult: any = await this.channelsService.findAll(storeId);
+    const channelList: any[] = Array.isArray(channelsResult) ? channelsResult : channelsResult?.data || [];
     const waChannel = channelList.find(
       (c: any) =>
         c.status === 'connected' &&
@@ -586,7 +586,7 @@ export class AutomationsService {
   // Workflows (placeholder for future expansion)
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  async getWorkflows(tenantId: string, pagination: PaginationOptions) {
+  async getWorkflows(_tenantId: string, pagination: PaginationOptions) {
     // Workflows will be built on top of automations
     return {
       data: [],
