@@ -2,7 +2,7 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Channels Service                           ║
  * ║                                                                                ║
- * ║  ✅ WhatsApp Official + WhatsApp QR + Instagram + Discord                      ║
+ * ║  ✅ WhatsApp Official + QR + Phone Code + Instagram + Discord                 ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -14,7 +14,6 @@ import { firstValueFrom } from 'rxjs';
 import * as crypto from 'crypto';
 
 import { Channel, ChannelType, ChannelStatus } from './entities/channel.entity';
-// ✅ استيراد QRSessionResult واستخدامه بدلاً من تعريف محلي
 import { WhatsAppBaileysService, QRSessionResult } from './whatsapp/whatsapp-baileys.service';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -47,7 +46,7 @@ export class ChannelsService {
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 📋 CRUD Operations
+  // 📋 CRUD
   // ═══════════════════════════════════════════════════════════════════════════════
 
   async findAll(storeId: string): Promise<Channel[]> {
@@ -58,25 +57,16 @@ export class ChannelsService {
   }
 
   async findById(id: string, storeId: string): Promise<Channel> {
-    const channel = await this.channelRepository.findOne({
-      where: { id, storeId },
-    });
-
-    if (!channel) {
-      throw new NotFoundException('Channel not found');
-    }
-
+    const channel = await this.channelRepository.findOne({ where: { id, storeId } });
+    if (!channel) throw new NotFoundException('Channel not found');
     return channel;
   }
 
   async disconnect(id: string, storeId: string): Promise<void> {
     const channel = await this.findById(id, storeId);
-
-    // إغلاق جلسة WhatsApp QR إن وجدت
     if (channel.type === ChannelType.WHATSAPP_QR) {
       await this.whatsappBaileysService.deleteSession(id);
     }
-
     await this.channelRepository.update(id, {
       status: ChannelStatus.DISCONNECTED,
       disconnectedAt: new Date(),
@@ -85,33 +75,20 @@ export class ChannelsService {
       discordBotToken: undefined,
       instagramAccessToken: undefined,
     });
-
-    this.logger.log(`Channel disconnected: ${id}`);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
   // 💬 WhatsApp Official (Meta Business API)
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  async connectWhatsAppOfficial(
-    storeId: string,
-    dto: ConnectWhatsAppOfficialDto,
-  ): Promise<Channel> {
+  async connectWhatsAppOfficial(storeId: string, dto: ConnectWhatsAppOfficialDto): Promise<Channel> {
     this.logger.log(`Connecting WhatsApp Official for store ${storeId}`);
-
     const phoneInfo = await this.verifyWhatsAppCredentials(dto);
 
     const existing = await this.channelRepository.findOne({
-      where: {
-        storeId,
-        type: ChannelType.WHATSAPP_OFFICIAL,
-        whatsappPhoneNumberId: dto.phoneNumberId,
-      },
+      where: { storeId, type: ChannelType.WHATSAPP_OFFICIAL, whatsappPhoneNumberId: dto.phoneNumberId },
     });
-
-    if (existing) {
-      throw new BadRequestException('This WhatsApp number is already connected');
-    }
+    if (existing) throw new BadRequestException('This WhatsApp number is already connected');
 
     const channel = this.channelRepository.create({
       storeId,
@@ -125,29 +102,21 @@ export class ChannelsService {
       whatsappPhoneNumber: phoneInfo.display_phone_number,
       whatsappDisplayName: phoneInfo.verified_name,
       connectedAt: new Date(),
-      settings: {
-        verifyToken: dto.verifyToken || this.generateVerifyToken(),
-      },
+      settings: { verifyToken: dto.verifyToken || this.generateVerifyToken() },
     });
 
-    const saved = await this.channelRepository.save(channel);
-    this.logger.log(`WhatsApp Official connected: ${saved.id}`);
-    return saved;
+    return this.channelRepository.save(channel);
   }
 
   private async verifyWhatsAppCredentials(dto: ConnectWhatsAppOfficialDto): Promise<any> {
     try {
       const response = await firstValueFrom(
-        this.httpService.get(
-          `https://graph.facebook.com/v21.0/${dto.phoneNumberId}`,
-          {
-            headers: { Authorization: `Bearer ${dto.accessToken}` },
-          },
-        ),
+        this.httpService.get(`https://graph.facebook.com/v21.0/${dto.phoneNumberId}`, {
+          headers: { Authorization: `Bearer ${dto.accessToken}` },
+        }),
       );
       return response.data;
     } catch (error: any) {
-      this.logger.error('Failed to verify WhatsApp credentials', error.message);
       throw new BadRequestException('Invalid WhatsApp credentials');
     }
   }
@@ -156,18 +125,35 @@ export class ChannelsService {
   // 📱 WhatsApp QR (Baileys)
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * ✅ بدء جلسة WhatsApp QR جديدة
-   * @returns QRSessionResult من WhatsApp Baileys Service
-   */
   async initWhatsAppSession(storeId: string): Promise<QRSessionResult> {
-    this.logger.log(`Initializing WhatsApp QR session for store ${storeId}`);
+    this.logger.log(`[QR] Init for store ${storeId}`);
+    return this.createWhatsAppQRChannel(storeId, 'qr');
+  }
 
-    // إنشاء قناة جديدة
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 📱 WhatsApp Phone Code (Baileys)
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async initWhatsAppSessionWithPhoneCode(
+    storeId: string,
+    phoneNumber: string,
+  ): Promise<QRSessionResult> {
+    this.logger.log(`[Phone] Init for store ${storeId}, phone: ${phoneNumber}`);
+    return this.createWhatsAppQRChannel(storeId, 'phone_code', phoneNumber);
+  }
+
+  /**
+   * ✅ إنشاء قناة WhatsApp QR/Phone مشتركة
+   */
+  private async createWhatsAppQRChannel(
+    storeId: string,
+    method: 'qr' | 'phone_code',
+    phoneNumber?: string,
+  ): Promise<QRSessionResult> {
     const channel = this.channelRepository.create({
       storeId,
       type: ChannelType.WHATSAPP_QR,
-      name: 'WhatsApp (QR)',
+      name: method === 'phone_code' ? `WhatsApp (${phoneNumber})` : 'WhatsApp (QR)',
       status: ChannelStatus.PENDING,
       isOfficial: false,
     });
@@ -175,100 +161,70 @@ export class ChannelsService {
     const savedChannel = await this.channelRepository.save(channel);
 
     try {
-      // بدء جلسة Baileys
-      const session = await this.whatsappBaileysService.initSession(savedChannel.id);
+      let session: QRSessionResult;
 
-      // تحديث حالة القناة
+      if (method === 'phone_code' && phoneNumber) {
+        session = await this.whatsappBaileysService.initSessionWithPhoneCode(
+          savedChannel.id,
+          phoneNumber,
+        );
+      } else {
+        session = await this.whatsappBaileysService.initSession(savedChannel.id);
+      }
+
       await this.channelRepository.update(savedChannel.id, {
-        status: session.status === 'connected' 
-          ? ChannelStatus.CONNECTED 
-          : ChannelStatus.PENDING,
+        status: session.status === 'connected' ? ChannelStatus.CONNECTED : ChannelStatus.PENDING,
         sessionId: session.sessionId,
+        whatsappPhoneNumber: phoneNumber,
       });
 
       return session;
     } catch (error: any) {
-      // حذف القناة إذا فشل
       await this.channelRepository.delete(savedChannel.id);
-      
       this.logger.error('Failed to init WhatsApp session', error.message);
-      throw new BadRequestException('Failed to initialize WhatsApp session');
+      throw new BadRequestException(error.message || 'Failed to initialize WhatsApp session');
     }
   }
 
-  /**
-   * ✅ الحصول على حالة جلسة WhatsApp QR
-   * @returns QRSessionResult من WhatsApp Baileys Service
-   */
   async getWhatsAppSessionStatus(sessionId: string): Promise<QRSessionResult> {
     const status = await this.whatsappBaileysService.getSessionStatus(sessionId);
+    if (!status) throw new NotFoundException('Session not found');
 
-    if (!status) {
-      throw new NotFoundException('Session not found');
-    }
-
-    // تحديث حالة القناة في Database
     if (status.status === 'connected') {
       await this.channelRepository.update(sessionId, {
         status: ChannelStatus.CONNECTED,
         connectedAt: new Date(),
+        whatsappPhoneNumber: status.phoneNumber,
       });
     }
 
     return status;
   }
 
-  async sendWhatsAppMessage(
-    channelId: string,
-    to: string,
-    message: string,
-  ): Promise<{ messageId: string }> {
-    const channel = await this.channelRepository.findOne({
-      where: { id: channelId },
-    });
-
-    if (!channel) {
-      throw new NotFoundException('Channel not found');
-    }
+  async sendWhatsAppMessage(channelId: string, to: string, message: string): Promise<{ messageId: string }> {
+    const channel = await this.channelRepository.findOne({ where: { id: channelId } });
+    if (!channel) throw new NotFoundException('Channel not found');
 
     if (channel.type === ChannelType.WHATSAPP_QR) {
-      // إرسال عبر Baileys
       return this.whatsappBaileysService.sendTextMessage(channelId, to, message);
     } else if (channel.type === ChannelType.WHATSAPP_OFFICIAL) {
-      // إرسال عبر Meta API
       return this.sendWhatsAppOfficialMessage(channel, to, message);
     }
 
     throw new BadRequestException('Invalid channel type');
   }
 
-  private async sendWhatsAppOfficialMessage(
-    channel: Channel,
-    to: string,
-    message: string,
-  ): Promise<{ messageId: string }> {
+  private async sendWhatsAppOfficialMessage(channel: Channel, to: string, message: string): Promise<{ messageId: string }> {
     try {
       const response = await firstValueFrom(
         this.httpService.post(
           `https://graph.facebook.com/v21.0/${channel.whatsappPhoneNumberId}/messages`,
-          {
-            messaging_product: 'whatsapp',
-            to,
-            type: 'text',
-            text: { body: message },
-          },
-          {
-            headers: {
-              Authorization: `Bearer ${channel.whatsappAccessToken}`,
-              'Content-Type': 'application/json',
-            },
-          },
+          { messaging_product: 'whatsapp', to, type: 'text', text: { body: message } },
+          { headers: { Authorization: `Bearer ${channel.whatsappAccessToken}`, 'Content-Type': 'application/json' } },
         ),
       );
-
       return { messageId: response.data.messages?.[0]?.id || '' };
     } catch (error: any) {
-      this.logger.error('Failed to send WhatsApp Official message', error.message);
       throw new BadRequestException('Failed to send message');
     }
   }
@@ -277,22 +233,10 @@ export class ChannelsService {
   // 📸 Instagram
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  async connectInstagram(
-    storeId: string,
-    accessToken: string,
-    userId: string,
-    pageId: string,
-  ): Promise<Channel> {
-    this.logger.log(`Connecting Instagram for store ${storeId}`);
-
+  async connectInstagram(storeId: string, accessToken: string, userId: string, pageId: string): Promise<Channel> {
     const userInfo = await this.getInstagramUserInfo(accessToken, userId);
-
     const existing = await this.channelRepository.findOne({
-      where: {
-        storeId,
-        type: ChannelType.INSTAGRAM,
-        instagramUserId: userId,
-      },
+      where: { storeId, type: ChannelType.INSTAGRAM, instagramUserId: userId },
     });
 
     if (existing) {
@@ -302,39 +246,25 @@ export class ChannelsService {
     }
 
     const channel = this.channelRepository.create({
-      storeId,
-      type: ChannelType.INSTAGRAM,
+      storeId, type: ChannelType.INSTAGRAM,
       name: userInfo.username || 'Instagram',
-      status: ChannelStatus.CONNECTED,
-      isOfficial: true,
-      instagramUserId: userId,
-      instagramUsername: userInfo.username,
-      instagramAccessToken: accessToken,
-      instagramPageId: pageId,
+      status: ChannelStatus.CONNECTED, isOfficial: true,
+      instagramUserId: userId, instagramUsername: userInfo.username,
+      instagramAccessToken: accessToken, instagramPageId: pageId,
       connectedAt: new Date(),
     });
-
-    const saved = await this.channelRepository.save(channel);
-    this.logger.log(`Instagram connected: ${saved.id}`);
-    return saved;
+    return this.channelRepository.save(channel);
   }
 
   private async getInstagramUserInfo(accessToken: string, userId: string): Promise<any> {
     try {
       const response = await firstValueFrom(
-        this.httpService.get(
-          `https://graph.facebook.com/v21.0/${userId}`,
-          {
-            params: {
-              fields: 'username,name,profile_picture_url',
-              access_token: accessToken,
-            },
-          },
-        ),
+        this.httpService.get(`https://graph.facebook.com/v21.0/${userId}`, {
+          params: { fields: 'username,name,profile_picture_url', access_token: accessToken },
+        }),
       );
       return response.data;
-    } catch (error: any) {
-      this.logger.error('Failed to get Instagram user info', error.message);
+    } catch {
       throw new BadRequestException('Failed to get Instagram account info');
     }
   }
@@ -344,38 +274,21 @@ export class ChannelsService {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   async connectDiscord(storeId: string, dto: ConnectDiscordDto): Promise<Channel> {
-    this.logger.log(`Connecting Discord for store ${storeId}`);
-
     const botInfo = await this.verifyDiscordBot(dto.botToken);
-
     const existing = await this.channelRepository.findOne({
-      where: {
-        storeId,
-        type: ChannelType.DISCORD,
-        discordBotId: botInfo.id,
-      },
+      where: { storeId, type: ChannelType.DISCORD, discordBotId: botInfo.id },
     });
-
-    if (existing) {
-      throw new BadRequestException('This Discord bot is already connected');
-    }
+    if (existing) throw new BadRequestException('This Discord bot is already connected');
 
     const channel = this.channelRepository.create({
-      storeId,
-      type: ChannelType.DISCORD,
+      storeId, type: ChannelType.DISCORD,
       name: botInfo.username || 'Discord Bot',
-      status: ChannelStatus.CONNECTED,
-      isOfficial: true,
-      discordBotToken: dto.botToken,
-      discordGuildId: dto.guildId,
-      discordBotId: botInfo.id,
-      discordBotUsername: botInfo.username,
+      status: ChannelStatus.CONNECTED, isOfficial: true,
+      discordBotToken: dto.botToken, discordGuildId: dto.guildId,
+      discordBotId: botInfo.id, discordBotUsername: botInfo.username,
       connectedAt: new Date(),
     });
-
-    const saved = await this.channelRepository.save(channel);
-    this.logger.log(`Discord connected: ${saved.id}`);
-    return saved;
+    return this.channelRepository.save(channel);
   }
 
   private async verifyDiscordBot(botToken: string): Promise<any> {
@@ -386,8 +299,7 @@ export class ChannelsService {
         }),
       );
       return response.data;
-    } catch (error: any) {
-      this.logger.error('Failed to verify Discord bot', error.message);
+    } catch {
       throw new BadRequestException('Invalid Discord bot token');
     }
   }
@@ -402,23 +314,13 @@ export class ChannelsService {
 
   async updateStatus(id: string, status: ChannelStatus, error?: string): Promise<void> {
     const updateData: any = { status };
-
-    if (error) {
-      updateData.lastError = error;
-      updateData.lastErrorAt = new Date();
-    }
-
-    if (status === ChannelStatus.CONNECTED) {
-      updateData.connectedAt = new Date();
-      updateData.errorCount = 0;
-    }
-
+    if (error) { updateData.lastError = error; updateData.lastErrorAt = new Date(); }
+    if (status === ChannelStatus.CONNECTED) { updateData.connectedAt = new Date(); updateData.errorCount = 0; }
     await this.channelRepository.update(id, updateData);
   }
 
   async incrementMessageCount(id: string, type: 'sent' | 'received'): Promise<void> {
     const field = type === 'sent' ? 'messagesSent' : 'messagesReceived';
-    
     await this.channelRepository.increment({ id }, field, 1);
     await this.channelRepository.update(id, { lastActivityAt: new Date() });
   }
