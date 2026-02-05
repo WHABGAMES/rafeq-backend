@@ -41,6 +41,11 @@ export class TemplatesService {
     const { page, limit } = pagination;
     const skip = (page - 1) * limit;
 
+    this.logger.debug(`📋 Fetching templates for tenant: ${tenantId}`, {
+      filters,
+      pagination: { page, limit },
+    });
+
     const queryBuilder = this.templateRepository
       .createQueryBuilder('template')
       .where('template.tenantId = :tenantId', { tenantId });
@@ -70,6 +75,11 @@ export class TemplatesService {
       .skip(skip)
       .take(limit)
       .getMany();
+
+    this.logger.debug(`✅ Found ${templates.length} templates (total: ${total})`, {
+      tenantId,
+      statuses: templates.map(t => t.status),
+    });
 
     // ✅ إرجاع content مع كل قالب + isEnabled
     const mappedTemplates = templates.map((t) => ({
@@ -215,22 +225,36 @@ export class TemplatesService {
   }
 
   /**
-   * تحديث قالب
+   * ✅ تحديث قالب — إصلاح: استخدام !== undefined بدل truthy check
+   * لضمان قبول جميع القيم بما فيها الفارغة
    */
   async update(id: string, tenantId: string, dto: UpdateTemplateDto) {
     const template = await this.findByIdInternal(id, tenantId);
 
-    if (dto.content) template.body = dto.content;
-    if (dto.name) {
+    if (dto.content !== undefined && dto.content !== null) template.body = dto.content;
+    if (dto.name !== undefined && dto.name !== null) {
       template.name = dto.name;
       template.displayName = dto.name;
     }
-    if (dto.description) template.description = dto.description;
-    if (dto.category) template.category = dto.category;
-    if (dto.status) template.status = dto.status;
+    if (dto.description !== undefined) template.description = dto.description;
+    if (dto.category !== undefined && dto.category !== null) template.category = dto.category;
+    if (dto.status !== undefined && dto.status !== null) template.status = dto.status;
     if (dto.triggerEvent !== undefined) template.triggerEvent = dto.triggerEvent;
 
+    this.logger.log(`📝 Updating template: ${id}`, {
+      tenantId,
+      fieldsUpdated: Object.keys(dto).filter(k => (dto as any)[k] !== undefined),
+      newStatus: dto.status,
+    });
+
     const saved = await this.templateRepository.save(template);
+
+    this.logger.log(`✅ Template updated: ${id}`, {
+      tenantId,
+      status: saved.status,
+      name: saved.name,
+    });
+
     return {
       ...saved,
       content: saved.body,
@@ -239,12 +263,19 @@ export class TemplatesService {
   }
 
   /**
-   * حذف قالب
+   * ✅ حذف قالب — soft delete للتوافق مع create() الذي يبحث withDeleted
    */
   async delete(id: string, tenantId: string) {
     const template = await this.findByIdInternal(id, tenantId);
-    await this.templateRepository.delete(template.id);
-    this.logger.log(`Template deleted: ${id}`, { tenantId });
+    
+    this.logger.log(`🗑️ Soft-deleting template: ${id}`, {
+      tenantId,
+      name: template.name,
+      status: template.status,
+    });
+
+    await this.templateRepository.softDelete(template.id);
+    this.logger.log(`✅ Template soft-deleted: ${id}`, { tenantId });
   }
 
   /**
