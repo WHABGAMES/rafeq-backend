@@ -106,6 +106,7 @@ async function bootstrap() {
         'Pragma',
         'If-Modified-Since',
         'X-CSRF-Token',
+        'x-store-id', // ✅ added
       ],
       exposedHeaders: ['Content-Length', 'Content-Type'],
       credentials: true,
@@ -152,7 +153,7 @@ async function bootstrap() {
 
     // ═══════════════════════════════════════════════════════════════════════════
     // Start Server
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════════════���═════
     await app.listen(port, '0.0.0.0');
 
     logger.log('═══════════════════════════════════════════════════════════════');
