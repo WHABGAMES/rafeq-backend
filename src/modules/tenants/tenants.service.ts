@@ -1,345 +1,285 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║              RAFIQ PLATFORM - Templates Service                                ║
- * ║  ✅ v3: حفظ triggerEvent بـ ?? null + status + إرجاع content               ║
+ * ║              RAFIQ PLATFORM - Tenants Service                                  ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
-import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { MessageTemplate, TemplateStatus, TemplateChannel } from '@database/entities';
-import {
-  CreateTemplateDto,
-  UpdateTemplateDto,
-  TemplateFiltersDto,
-  SubmitWhatsAppTemplateDto,
-} from './dto';
 
-interface PaginationOptions {
-  page: number;
-  limit: number;
+import { Tenant, TenantStatus, SubscriptionPlan } from '@database/entities/tenant.entity';
+
+export interface UpdateTenantDto {
+  name?: string;
+  logo?: string;
+  phone?: string;
+  website?: string;
+  timezone?: string;
+  defaultLanguage?: string;
+  currency?: string;
+  settings?: Record<string, unknown>;
+  aiSettings?: Record<string, unknown>;
 }
 
 @Injectable()
-export class TemplatesService {
-  private readonly logger = new Logger(TemplatesService.name);
-
+export class TenantsService {
   constructor(
-    @InjectRepository(MessageTemplate)
-    private readonly templateRepository: Repository<MessageTemplate>,
+    @InjectRepository(Tenant)
+    private readonly tenantRepository: Repository<Tenant>,
   ) {}
 
-  /**
-   * جلب جميع القوالب مع الفلترة
-   */
-  async findAll(
-    tenantId: string,
-    filters: TemplateFiltersDto,
-    pagination: PaginationOptions,
-  ) {
-    const { page, limit } = pagination;
-    const skip = (page - 1) * limit;
-
-    const queryBuilder = this.templateRepository
-      .createQueryBuilder('template')
-      .where('template.tenantId = :tenantId', { tenantId });
-
-    if (filters.type) {
-      queryBuilder.andWhere('template.type = :type', { type: filters.type });
-    }
-    if (filters.category) {
-      queryBuilder.andWhere('template.category = :category', { category: filters.category });
-    }
-    if (filters.status) {
-      queryBuilder.andWhere('template.status = :status', { status: filters.status });
-    }
-    if (filters.channel) {
-      queryBuilder.andWhere('template.channel = :channel', { channel: filters.channel });
-    }
-    if (filters.search) {
-      queryBuilder.andWhere(
-        '(template.name ILIKE :search OR template.body ILIKE :search)',
-        { search: `%${filters.search}%` },
-      );
-    }
-
-    const total = await queryBuilder.getCount();
-    const templates = await queryBuilder
-      .orderBy('template.createdAt', 'DESC')
-      .skip(skip)
-      .take(limit)
-      .getMany();
-
-    // ✅ إرجاع content مع كل قالب
-    const mappedTemplates = templates.map((t) => ({
-      ...t,
-      content: t.body,
-    }));
-
-    return {
-      data: mappedTemplates,
-      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
-    };
-  }
-
-  /**
-   * جلب قالب بالـ ID
-   */
-  async findById(id: string, tenantId: string) {
-    const template = await this.templateRepository.findOne({
-      where: { id, tenantId },
-    });
-    if (!template) {
-      throw new NotFoundException('القالب غير موجود');
-    }
-    return template;
-  }
-
-  /**
-   * ✅ إنشاء قالب جديد
-   */
-  async create(tenantId: string, dto: CreateTemplateDto) {
-    this.logger.log(`Creating template: ${dto.name}`, {
-      tenantId,
-      category: dto.category,
-      triggerEvent: dto.triggerEvent,
+  async findById(id: string): Promise<Tenant> {
+    const tenant = await this.tenantRepository.findOne({
+      where: { id },
     });
 
-    // ✅ v9: تحقق إذا القالب موجود بنفس الاسم (حتى لو محذوف soft delete)
-    const existingTemplate = await this.templateRepository.findOne({
-      where: { tenantId: tenantId as any, name: dto.name },
-      withDeleted: true, // ✅ يشمل الـ soft deleted
+    if (!tenant) {
+      throw new NotFoundException(`المستأجر غير موجود: ${id}`);
+    }
+
+    return tenant;
+  }
+
+  async findBySlug(slug: string): Promise<Tenant> {
+    const tenant = await this.tenantRepository.findOne({
+      where: { slug },
     });
 
-    if (existingTemplate) {
-      this.logger.log(`📝 Template "${dto.name}" exists - restoring/updating`, {
-        tenantId,
-        existingId: existingTemplate.id,
-        oldStatus: existingTemplate.status,
-        wasDeleted: !!existingTemplate.deletedAt,
-      });
-
-      // إزالة الـ soft delete إذا موجود
-      if (existingTemplate.deletedAt) {
-        existingTemplate.deletedAt = null as any;
-      }
-
-      // تحديث القالب
-      existingTemplate.status = TemplateStatus.APPROVED;
-      existingTemplate.body = dto.content || existingTemplate.body;
-      existingTemplate.triggerEvent = dto.triggerEvent ?? existingTemplate.triggerEvent;
-      existingTemplate.category = dto.category || existingTemplate.category;
-      if (dto.buttons) existingTemplate.buttons = dto.buttons as any;
-
-      const updated = await this.templateRepository.save(existingTemplate);
-      this.logger.log(`✅ Template reactivated: ${updated.id}`, {
-        tenantId,
-        name: dto.name,
-        status: updated.status,
-      });
-
-      return { ...updated, content: updated.body };
+    if (!tenant) {
+      throw new NotFoundException(`المستأجر غير موجود: ${slug}`);
     }
 
-    // ✅ قبول status من الفرونتند
-    const status =
-      dto.status === 'approved'
-        ? TemplateStatus.APPROVED
-        : dto.status === 'active'
-          ? TemplateStatus.ACTIVE
-          : TemplateStatus.DRAFT;
-
-    const templateData: Partial<MessageTemplate> = {
-      tenantId: tenantId as any,
-      name: dto.name,
-      displayName: dto.name,
-      description: dto.description,
-      category: dto.category || 'general',
-      channel: (dto.channel as TemplateChannel) || TemplateChannel.WHATSAPP,
-      language: (dto.language || 'ar') as any,
-      body: dto.content,
-      status,
-      triggerEvent: dto.triggerEvent ?? undefined,
-      buttons: (dto.buttons as any) || [],
-      stats: { usageCount: 0 } as any,
-    };
-
-    const template = this.templateRepository.create(templateData as any);
-
-    try {
-      const result = await this.templateRepository.save(template);
-      // save() can return entity or array - normalize to single entity
-      const saved = Array.isArray(result) ? result[0] : result;
-
-      this.logger.log(`✅ Template created: ${saved.id}`, {
-        tenantId,
-        name: dto.name,
-        status: saved.status,
-        triggerEvent: saved.triggerEvent,
-      });
-
-      return { ...saved, content: saved.body };
-    } catch (error: unknown) {
-      const err = error as Record<string, unknown>;
-      if (
-        err.code === '23505' ||
-        (typeof err.detail === 'string' && err.detail.includes('already exists'))
-      ) {
-        this.logger.warn(`Template name already exists: ${dto.name}`, { tenantId });
-        throw new BadRequestException(`قالب بنفس الاسم "${dto.name}" موجود بالفعل`);
-      }
-      throw error;
-    }
+    return tenant;
   }
 
-  /**
-   * تحديث قالب
-   */
-  async update(id: string, tenantId: string, dto: UpdateTemplateDto) {
-    const template = await this.findById(id, tenantId);
-
-    if (dto.content) template.body = dto.content;
-    if (dto.name) {
-      template.name = dto.name;
-      template.displayName = dto.name;
-    }
-    if (dto.description) template.description = dto.description;
-    if (dto.category) template.category = dto.category;
-    if (dto.status) template.status = dto.status;
-    if (dto.triggerEvent !== undefined) template.triggerEvent = dto.triggerEvent;
-
-    const saved = await this.templateRepository.save(template);
-    return { ...saved, content: saved.body };
-  }
-
-  /**
-   * حذف قالب
-   */
-  async delete(id: string, tenantId: string) {
-    const template = await this.findById(id, tenantId);
-    await this.templateRepository.delete(template.id);
-    this.logger.log(`Template deleted: ${id}`, { tenantId });
-  }
-
-  /**
-   * تفعيل/تعطيل قالب
-   */
-  async toggle(id: string, tenantId: string) {
-    const template = await this.findById(id, tenantId);
-    template.status =
-      template.status === TemplateStatus.ACTIVE
-        ? TemplateStatus.DISABLED
-        : TemplateStatus.ACTIVE;
-
-    const saved = await this.templateRepository.save(template);
-    return {
-      id: saved.id,
-      status: saved.status,
-      content: saved.body,
-      message:
-        saved.status === TemplateStatus.ACTIVE ? 'تم تفعيل القالب' : 'تم تعطيل القالب',
-    };
-  }
-
-  /**
-   * نسخ قالب
-   */
-  async duplicate(id: string, tenantId: string, newName?: string) {
-    const original = await this.findById(id, tenantId);
-    const duplicate = this.templateRepository.create({
-      tenantId: original.tenantId,
-      name: newName || `${original.name}_copy`,
-      displayName: newName || `${original.displayName} (نسخة)`,
-      description: original.description,
-      category: original.category,
-      channel: original.channel,
-      language: original.language,
-      body: original.body,
-      header: original.header,
-      footer: original.footer,
-      buttons: original.buttons,
-      variables: original.variables,
-      triggerEvent: original.triggerEvent,
-      status: TemplateStatus.DRAFT,
-      stats: { usageCount: 0 },
+  async findByEmail(email: string): Promise<Tenant | null> {
+    return this.tenantRepository.findOne({
+      where: { email: email.toLowerCase() },
     });
-    return this.templateRepository.save(duplicate);
   }
 
   /**
-   * إرسال رسالة اختبارية
+   * ✅ إنشاء Tenant تلقائيًا عند تثبيت تطبيق سلة (Easy Mode)
+   * - يضمن uniqueness للـ email والـ slug
+   * - يعيد tenant موجود إذا كان البريد موجود
    */
-  async sendTest(
+  async createTenantFromSalla(input: {
+    merchantId: number;
+    name?: string;
+    email?: string;
+    phone?: string;
+    logo?: string;
+    website?: string;
+  }): Promise<Tenant> {
+    const email = (input.email || `merchant-${input.merchantId}@salla.local`).toLowerCase();
+
+    // إذا موجود بنفس البريد نرجعه (تجنب تكرار unique constraint)
+    const existingByEmail = await this.findByEmail(email);
+    if (existingByEmail) return existingByEmail;
+
+    // slug آمن ومميز
+    const baseSlug = `salla-${input.merchantId}`;
+    let slug = baseSlug;
+    let i = 1;
+
+    // في حال تضارب slug (نادر) نضيف suffix
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const found = await this.tenantRepository.findOne({ where: { slug } });
+      if (!found) break;
+      i += 1;
+      slug = `${baseSlug}-${i}`;
+    }
+
+    const tenant = this.tenantRepository.create({
+      name: input.name?.trim() || `Salla Merchant ${input.merchantId}`,
+      email,
+      slug,
+      phone: input.phone,
+      logo: input.logo,
+      website: input.website,
+      status: TenantStatus.ACTIVE,
+      subscriptionPlan: SubscriptionPlan.FREE,
+    });
+
+    return this.tenantRepository.save(tenant);
+  }
+
+  async update(id: string, dto: UpdateTenantDto): Promise<Tenant> {
+    const tenant = await this.findById(id);
+    Object.assign(tenant, dto);
+    return this.tenantRepository.save(tenant);
+  }
+
+  async updateAiSettings(
     id: string,
-    tenantId: string,
-    phone: string,
-    variables?: Record<string, string>,
-  ) {
-    const template = await this.findById(id, tenantId);
-    let body = template.body || '';
-    if (variables) {
-      Object.entries(variables).forEach(([key, value]) => {
-        body = body.replace(new RegExp(`{{${key}}}`, 'g'), value);
-      });
-    }
-    this.logger.log(`Test message sent to ${phone}`, { templateId: id });
-    return { success: true, message: 'تم إرسال رسالة الاختبار', preview: body };
+    aiSettings: Record<string, unknown>,
+  ): Promise<Tenant> {
+    const tenant = await this.findById(id);
+
+    tenant.aiSettings = {
+      ...tenant.aiSettings,
+      ...aiSettings,
+    };
+
+    return this.tenantRepository.save(tenant);
   }
 
-  /**
-   * إرسال قالب للموافقة من WhatsApp
-   */
-  async submitToWhatsApp(tenantId: string, dto: SubmitWhatsAppTemplateDto) {
-    this.logger.log(`Submitting template to WhatsApp: ${dto.name}`, { tenantId });
+  async updateSettings(
+    id: string,
+    settings: Record<string, unknown>,
+  ): Promise<Tenant> {
+    const tenant = await this.findById(id);
+
+    tenant.settings = {
+      ...tenant.settings,
+      ...settings,
+    };
+
+    return this.tenantRepository.save(tenant);
+  }
+
+  async updateStatus(id: string, status: TenantStatus): Promise<Tenant> {
+    const tenant = await this.findById(id);
+    tenant.status = status;
+    return this.tenantRepository.save(tenant);
+  }
+
+  async upgradePlan(
+    id: string,
+    plan: SubscriptionPlan,
+    endsAt: Date,
+  ): Promise<Tenant> {
+    const tenant = await this.findById(id);
+
+    tenant.subscriptionPlan = plan;
+    tenant.subscriptionEndsAt = endsAt;
+    tenant.status = TenantStatus.ACTIVE;
+    tenant.monthlyMessageLimit = this.getMessageLimitForPlan(plan);
+    tenant.limits = this.getLimitsForPlan(plan);
+
+    return this.tenantRepository.save(tenant);
+  }
+
+  async activateTrial(id: string, days: number = 14): Promise<Tenant> {
+    const tenant = await this.findById(id);
+
+    tenant.status = TenantStatus.TRIAL;
+    tenant.trialEndsAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+    tenant.monthlyMessageLimit = 1000;
+
+    return this.tenantRepository.save(tenant);
+  }
+
+  async incrementUsage(
+    id: string,
+    field: 'messagesCount' | 'conversationsCount' | 'aiCallsCount',
+    amount: number = 1,
+  ): Promise<void> {
+    await this.tenantRepository
+      .createQueryBuilder()
+      .update(Tenant)
+      .set({
+        monthlyUsage: () =>
+          `jsonb_set(monthly_usage, '{${field}}', (COALESCE((monthly_usage->>'${field}')::int, 0) + ${amount})::text::jsonb)`,
+      })
+      .where('id = :id', { id })
+      .execute();
+  }
+
+  async resetMonthlyUsage(id: string): Promise<void> {
+    await this.tenantRepository.update(id, {
+      monthlyUsage: {
+        messagesCount: 0,
+        conversationsCount: 0,
+        aiCallsCount: 0,
+      },
+    });
+  }
+
+  async checkMessageLimit(id: string): Promise<{
+    allowed: boolean;
+    used: number;
+    limit: number;
+    remaining: number;
+  }> {
+    const tenant = await this.findById(id);
+    const used = (tenant.monthlyUsage?.messagesCount as number) || 0;
+    const limit = tenant.monthlyMessageLimit;
+    const remaining = Math.max(0, limit - used);
+
     return {
-      success: true,
-      message: 'تم إرسال القالب للمراجعة. سيتم إشعارك عند الموافقة.',
-      estimatedTime: '24-48 ساعة',
+      allowed: used < limit,
+      used,
+      limit,
+      remaining,
     };
   }
 
-  /**
-   * جلب حالة قوالب WhatsApp
-   */
-  async getWhatsAppTemplatesStatus(tenantId: string) {
-    const templates = await this.templateRepository.find({
-      where: { tenantId, channel: TemplateChannel.WHATSAPP },
-      select: ['id', 'name', 'status', 'updatedAt'],
-    });
-    return {
-      templates,
-      summary: {
-        total: templates.length,
-        approved: templates.filter((t) => t.status === TemplateStatus.APPROVED).length,
-        pending: templates.filter((t) => t.status === TemplateStatus.PENDING_APPROVAL).length,
-        rejected: templates.filter((t) => t.status === TemplateStatus.REJECTED).length,
+  private getMessageLimitForPlan(plan: SubscriptionPlan): number {
+    const limits: Record<SubscriptionPlan, number> = {
+      [SubscriptionPlan.FREE]: 1000,
+      [SubscriptionPlan.BASIC]: 5000,
+      [SubscriptionPlan.PRO]: 25000,
+      [SubscriptionPlan.ENTERPRISE]: 100000,
+    };
+    return limits[plan];
+  }
+
+  private getLimitsForPlan(plan: SubscriptionPlan): Record<string, number> {
+    const limits: Record<SubscriptionPlan, Record<string, number>> = {
+      [SubscriptionPlan.FREE]: {
+        maxUsers: 2,
+        maxStores: 1,
+        maxChannels: 1,
+        maxCampaigns: 5,
+      },
+      [SubscriptionPlan.BASIC]: {
+        maxUsers: 5,
+        maxStores: 2,
+        maxChannels: 2,
+        maxCampaigns: 20,
+      },
+      [SubscriptionPlan.PRO]: {
+        maxUsers: 15,
+        maxStores: 5,
+        maxChannels: 5,
+        maxCampaigns: 100,
+      },
+      [SubscriptionPlan.ENTERPRISE]: {
+        maxUsers: -1,
+        maxStores: -1,
+        maxChannels: -1,
+        maxCampaigns: -1,
       },
     };
+    return limits[plan];
   }
 
-  /**
-   * مزامنة مع WhatsApp
-   */
-  async syncWithWhatsApp(tenantId: string) {
-    this.logger.log(`Syncing WhatsApp templates`, { tenantId });
-    return { success: true, message: 'تمت المزامنة بنجاح', synced: 0, added: 0, updated: 0 };
-  }
+  async isSubscriptionValid(id: string): Promise<boolean> {
+    const tenant = await this.findById(id);
 
-  /**
-   * إحصائيات القالب
-   */
-  async getStats(_id: string, _tenantId: string) {
-    return {
-      usageCount: 0,
-      sentCount: 0,
-      deliveredCount: 0,
-      readCount: 0,
-      clickCount: 0,
-      deliveryRate: 0,
-      readRate: 0,
-      clickRate: 0,
-      lastUsed: null,
-    };
+    if (tenant.status === TenantStatus.SUSPENDED) {
+      return false;
+    }
+
+    if (tenant.status === TenantStatus.TRIAL) {
+      return tenant.trialEndsAt ? tenant.trialEndsAt > new Date() : false;
+    }
+
+    if (tenant.status === TenantStatus.ACTIVE) {
+      if (tenant.subscriptionPlan === SubscriptionPlan.FREE) {
+        return true;
+      }
+      return tenant.subscriptionEndsAt
+        ? tenant.subscriptionEndsAt > new Date()
+        : false;
+    }
+
+    return false;
   }
 }
