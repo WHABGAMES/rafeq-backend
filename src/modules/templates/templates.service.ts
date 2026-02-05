@@ -106,6 +106,42 @@ export class TemplatesService {
       triggerEvent: dto.triggerEvent,
     });
 
+    // ✅ v9: تحقق إذا القالب موجود بنفس الاسم (حتى لو محذوف soft delete)
+    const existingTemplate = await this.templateRepository.findOne({
+      where: { tenantId: tenantId as any, name: dto.name },
+      withDeleted: true, // ✅ يشمل الـ soft deleted
+    });
+
+    if (existingTemplate) {
+      this.logger.log(`📝 Template "${dto.name}" exists - restoring/updating`, {
+        tenantId,
+        existingId: existingTemplate.id,
+        oldStatus: existingTemplate.status,
+        wasDeleted: !!existingTemplate.deletedAt,
+      });
+
+      // إزالة الـ soft delete إذا موجود
+      if (existingTemplate.deletedAt) {
+        existingTemplate.deletedAt = null as any;
+      }
+
+      // تحديث القالب
+      existingTemplate.status = TemplateStatus.APPROVED;
+      existingTemplate.body = dto.content || existingTemplate.body;
+      existingTemplate.triggerEvent = dto.triggerEvent ?? existingTemplate.triggerEvent;
+      existingTemplate.category = dto.category || existingTemplate.category;
+      if (dto.buttons) existingTemplate.buttons = dto.buttons as any;
+
+      const updated = await this.templateRepository.save(existingTemplate);
+      this.logger.log(`✅ Template reactivated: ${updated.id}`, {
+        tenantId,
+        name: dto.name,
+        status: updated.status,
+      });
+
+      return { ...updated, content: updated.body };
+    }
+
     // ✅ قبول status من الفرونتند
     const status =
       dto.status === 'approved'
