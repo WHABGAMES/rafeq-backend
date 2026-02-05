@@ -451,9 +451,9 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
         // ✅ v10: انتظار 5 ثواني بدل 3 — Socket يحتاج وقت أكثر للاتصال الأولي
         await this.delay(5000);
 
-        // ✅ v10: تحقق إن الـ socket لسه متصل
-        if (!sock.ws || sock.ws.readyState !== sock.ws.OPEN) {
-          this.logger.warn('⏳ Socket not ready, waiting additional 3s...');
+        // ✅ v10: تحقق إن الـ socket جاهز — Baileys WebSocket مختلف عن المعتاد
+        if (!sock.user) {
+          this.logger.warn('⏳ Socket not registered yet, waiting additional 3s...');
           await this.delay(3000);
         }
 
