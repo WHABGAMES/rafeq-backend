@@ -837,6 +837,25 @@ export class TemplatesController {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
+  // POST /templates/bulk-toggle - تفعيل/تعطيل عدة قوالب
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Post('bulk-toggle')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'تفعيل/تعطيل عدة قوالب دفعة واحدة',
+    description: 'تفعيل أو تعطيل مجموعة من القوالب في عملية واحدة',
+  })
+  @ApiResponse({ status: 200, description: 'تم تغيير حالة القوالب' })
+  async bulkToggle(
+    @CurrentUser() user: any,
+    @Body() body: { ids: string[]; enable: boolean },
+  ) {
+    const tenantId = user.tenantId;
+    return this.templatesService.bulkToggle(body.ids, tenantId, body.enable);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
   // POST /templates/:id/duplicate - نسخ قالب
   // ═══════════════════════════════════════════════════════════════════════════════
 
