@@ -5,7 +5,8 @@
  * ║  ✅ QR Code + Phone Pairing Code Support                                      ║
  * ║  ✅ إصلاح Connection Failure (code 405)                                        ║
  * ║  ✅ Proper session cleanup + retry limits                                      ║
- * ║  ✅ Writable sessions path for DigitalOcean                                    ║
+ * ║  ✅ v10: حفظ الجلسات في PostgreSQL (لا تضيع عند deploy)                       ║
+ * ║  ✅ v10: إصلاح ربط الهاتف (Phone Pairing Code)                                ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -26,6 +27,7 @@ import makeWASocket, {
   WAMessage,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
+
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import * as QRCode from 'qrcode';
@@ -77,6 +79,14 @@ export interface MessageUpsert {
   type: MessageUpsertType;
 }
 
+/**
+ * ✅ v10: هيكل بيانات الجلسة المحفوظة في DB
+ */
+interface StoredSessionData {
+  creds: string; // JSON serialized creds
+  keys: Record<string, string>; // key type -> JSON serialized data
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Constants
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -101,9 +111,87 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
     this.sessionsPath = this.initializeSessionsPath();
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ✅ v10: حفظ واستعادة Auth State من/إلى PostgreSQL
+  // ═══════════════════════════════════════════════════════════════════════════════
+
   /**
-   * ✅ عند بدء التشغيل: استعادة جلسات واتساب المتصلة
-   * يبحث عن القنوات المسجلة كـ "متصل" في DB ويحاول إعادة الاتصال
+   * ✅ v10: حفظ auth state كامل في عمود session_data في جدول channels
+   */
+  private async saveSessionToDB(channelId: string, sessionPath: string): Promise<void> {
+    try {
+      const credsPath = path.join(sessionPath, 'creds.json');
+      if (!fs.existsSync(credsPath)) return;
+
+      const creds = fs.readFileSync(credsPath, 'utf8');
+      
+      // جمع كل ملفات المفاتيح
+      const keys: Record<string, string> = {};
+      const files = fs.readdirSync(sessionPath);
+      for (const file of files) {
+        if (file !== 'creds.json' && file.endsWith('.json')) {
+          const content = fs.readFileSync(path.join(sessionPath, file), 'utf8');
+          keys[file] = content;
+        }
+      }
+
+      const sessionData: StoredSessionData = { creds, keys };
+
+      await this.channelRepository.update(channelId, {
+        sessionData: JSON.stringify(sessionData),
+      });
+
+      this.logger.debug(`💾 Session saved to DB: ${channelId} (${Object.keys(keys).length} key files)`);
+    } catch (error) {
+      this.logger.warn(`Failed to save session to DB: ${channelId} - ${error instanceof Error ? error.message : 'Unknown'}`);
+    }
+  }
+
+  /**
+   * ✅ v10: استعادة auth state من DB إلى الملفات
+   * يُستخدم عند بدء التشغيل بعد deploy جديد
+   */
+  private async restoreSessionFromDB(channelId: string, sessionPath: string): Promise<boolean> {
+    try {
+      const channel = await this.channelRepository.findOne({
+        where: { id: channelId },
+        select: ['id', 'sessionData'],
+      });
+
+      if (!channel?.sessionData) {
+        this.logger.debug(`No DB session data for: ${channelId}`);
+        return false;
+      }
+
+      const sessionData: StoredSessionData = JSON.parse(channel.sessionData);
+
+      // إنشاء مجلد الجلسة
+      if (!fs.existsSync(sessionPath)) {
+        fs.mkdirSync(sessionPath, { recursive: true });
+      }
+
+      // كتابة creds
+      fs.writeFileSync(path.join(sessionPath, 'creds.json'), sessionData.creds);
+
+      // كتابة المفاتيح
+      for (const [fileName, content] of Object.entries(sessionData.keys)) {
+        fs.writeFileSync(path.join(sessionPath, fileName), content);
+      }
+
+      this.logger.log(`📥 Session restored from DB: ${channelId} (${Object.keys(sessionData.keys).length} key files)`);
+      return true;
+    } catch (error) {
+      this.logger.warn(`Failed to restore session from DB: ${channelId} - ${error instanceof Error ? error.message : 'Unknown'}`);
+      return false;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔄 Lifecycle
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * ✅ v10: عند بدء التشغيل — استعادة الجلسات من DB ثم إعادة الاتصال
    */
   async onModuleInit(): Promise<void> {
     this.logger.log('🔄 WhatsApp Baileys Service starting - checking for sessions to restore...');
@@ -125,8 +213,16 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
 
       for (const channel of connectedChannels) {
         const sessionPath = path.join(this.sessionsPath, `wa_${channel.id}`);
-        const hasAuthState = fs.existsSync(sessionPath) &&
+
+        // ✅ v10: أولاً — تحقق من الملفات المحلية
+        let hasAuthState = fs.existsSync(sessionPath) &&
           fs.readdirSync(sessionPath).length > 0;
+
+        // ✅ v10: ثانياً — إذا ما في ملفات محلية، استعد من DB
+        if (!hasAuthState) {
+          this.logger.log(`📥 No local files for ${channel.id} - restoring from DB...`);
+          hasAuthState = await this.restoreSessionFromDB(channel.id, sessionPath);
+        }
 
         if (hasAuthState) {
           this.logger.log(`🔄 Restoring session for channel ${channel.id} (${channel.whatsappPhoneNumber || channel.name})`);
@@ -136,11 +232,10 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
           } catch (error) {
             const msg = error instanceof Error ? error.message : 'Unknown';
             this.logger.error(`❌ Failed to restore session ${channel.id}: ${msg}`);
-            // حدّث الحالة في DB لتعكس الواقع
             await this.markChannelDisconnected(channel.id);
           }
         } else {
-          this.logger.warn(`⚠️ No auth state files for channel ${channel.id} - marking as disconnected`);
+          this.logger.warn(`⚠️ No auth state (local or DB) for channel ${channel.id} - marking as disconnected`);
           await this.markChannelDisconnected(channel.id);
         }
       }
@@ -151,8 +246,7 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
   }
 
   /**
-   * استعادة جلسة واتساب بدون انتظار QR
-   * يستخدم auth state المحفوظ على الملفات
+   * ✅ v10: استعادة جلسة — مع حفظ تلقائي للـ DB عند كل creds.update
    */
   private async restoreSession(channelId: string): Promise<void> {
     const sessionPath = path.join(this.sessionsPath, `wa_${channelId}`);
@@ -187,7 +281,11 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
 
     this.sessions.set(channelId, session);
 
-    sock.ev.on('creds.update', saveCreds);
+    // ✅ v10: حفظ مزدوج — ملفات + DB
+    sock.ev.on('creds.update', async () => {
+      await saveCreds();
+      await this.saveSessionToDB(channelId, sessionPath);
+    });
 
     sock.ev.on('connection.update', async (update: Partial<ConnectionState>) => {
       await this.handleConnectionUpdate(channelId, update);
@@ -245,6 +343,13 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
 
   async onModuleDestroy(): Promise<void> {
     this.logger.log('Shutting down all WhatsApp sessions...');
+
+    // ✅ v10: حفظ جميع الجلسات في DB قبل الإغلاق
+    for (const [channelId] of this.sessions) {
+      const sessionPath = path.join(this.sessionsPath, `wa_${channelId}`);
+      await this.saveSessionToDB(channelId, sessionPath);
+    }
+
     const promises: Promise<void>[] = [];
     for (const [channelId] of this.sessions) {
       promises.push(this.closeSession(channelId));
@@ -283,10 +388,15 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
     method: 'qr' | 'phone_code',
     phoneNumber?: string,
   ): Promise<QRSessionResult> {
-    // ✅ تنظيف كامل
-    await this.cleanupSession(channelId);
+    // ✅ v10: تنظيف كامل — حذف الملفات + الـ memory
+    await this.fullCleanupSession(channelId);
 
     const sessionPath = path.join(this.sessionsPath, `wa_${channelId}`);
+
+    // ✅ v10: إنشاء مجلد نظيف
+    if (!fs.existsSync(sessionPath)) {
+      fs.mkdirSync(sessionPath, { recursive: true });
+    }
 
     try {
       const { version } = await fetchLatestBaileysVersion();
@@ -322,7 +432,11 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
 
       this.sessions.set(channelId, session);
 
-      sock.ev.on('creds.update', saveCreds);
+      // ✅ v10: حفظ مزدوج — ملفات + DB
+      sock.ev.on('creds.update', async () => {
+        await saveCreds();
+        await this.saveSessionToDB(channelId, sessionPath);
+      });
 
       sock.ev.on('connection.update', async (update: Partial<ConnectionState>) => {
         await this.handleConnectionUpdate(channelId, update);
@@ -332,12 +446,21 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
         await this.handleIncomingMessages(channelId, messageUpdate);
       });
 
-      // ✅ Phone Pairing Code
+      // ✅ v10: Phone Pairing Code — مع إصلاح التأخير والتنظيف
       if (method === 'phone_code' && phoneNumber) {
-        await this.delay(3000); // انتظار لإنشاء اتصال أولي
+        // ✅ v10: انتظار 5 ثواني بدل 3 — Socket يحتاج وقت أكثر للاتصال الأولي
+        await this.delay(5000);
+
+        // ✅ v10: تحقق إن الـ socket لسه متصل
+        if (!sock.ws || sock.ws.readyState !== sock.ws.OPEN) {
+          this.logger.warn('⏳ Socket not ready, waiting additional 3s...');
+          await this.delay(3000);
+        }
 
         try {
           const cleanPhone = phoneNumber.replace(/[^0-9]/g, '');
+          this.logger.log(`📱 Requesting pairing code for: ${cleanPhone}`);
+
           const code = await sock.requestPairingCode(cleanPhone);
           session.pairingCode = code;
           session.status = 'pairing_code';
@@ -358,8 +481,9 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
             phoneNumber,
           };
         } catch (error) {
-          this.logger.error(`❌ Pairing code failed:`, error);
-          throw new Error('فشل في إنشاء رمز الربط. تأكد من صحة رقم الهاتف.');
+          const msg = error instanceof Error ? error.message : String(error);
+          this.logger.error(`❌ Pairing code failed: ${msg}`, error);
+          throw new Error(`فشل في إنشاء رمز الربط: ${msg}`);
         }
       }
 
@@ -436,6 +560,10 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
   // 🧹 Cleanup
   // ═══════════════════════════════════════════════════════════════════════════════
 
+  /**
+   * ✅ v10: تنظيف الذاكرة فقط (بدون حذف الملفات)
+   * يُستخدم عند إعادة الاتصال
+   */
   private async cleanupSession(channelId: string): Promise<void> {
     const existing = this.sessions.get(channelId);
     if (existing) {
@@ -452,19 +580,44 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
     }
   }
 
+  /**
+   * ✅ v10: تنظيف كامل — الذاكرة + الملفات
+   * يُستخدم عند إنشاء جلسة جديدة (QR أو Phone Code)
+   * حذف الملفات القديمة مهم عشان Phone Pairing Code يشتغل
+   */
+  private async fullCleanupSession(channelId: string): Promise<void> {
+    // 1. تنظيف الذاكرة
+    await this.cleanupSession(channelId);
+
+    // 2. حذف ملفات الجلسة القديمة
+    const sessionPath = path.join(this.sessionsPath, `wa_${channelId}`);
+    try {
+      if (fs.existsSync(sessionPath)) {
+        fs.rmSync(sessionPath, { recursive: true, force: true });
+        this.logger.debug(`🗑️ Deleted old session files: ${sessionPath}`);
+      }
+    } catch (error) {
+      this.logger.warn(`Failed to delete session files: ${error instanceof Error ? error.message : 'Unknown'}`);
+    }
+
+    // 3. ✅ v10: مسح session_data من DB أيضاً
+    try {
+      await this.channelRepository.update(channelId, {
+        sessionData: null as any,
+      });
+    } catch {}
+
+    await this.delay(500);
+  }
+
   async closeSession(channelId: string): Promise<void> {
     await this.cleanupSession(channelId);
     this.logger.log(`Session closed: ${channelId}`);
   }
 
   async deleteSession(channelId: string): Promise<void> {
-    await this.closeSession(channelId);
-    const sessionPath = path.join(this.sessionsPath, `wa_${channelId}`);
-    try {
-      if (fs.existsSync(sessionPath)) {
-        fs.rmSync(sessionPath, { recursive: true, force: true });
-      }
-    } catch {}
+    await this.fullCleanupSession(channelId);
+    this.logger.log(`Session fully deleted: ${channelId}`);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -537,6 +690,10 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
       } catch (e) {
         this.logger.warn(`Failed to update channel DB status on connect: ${e instanceof Error ? e.message : 'Unknown'}`);
       }
+
+      // ✅ v10: حفظ الجلسة في DB فوراً عند الاتصال بنجاح
+      const sessionPath = path.join(this.sessionsPath, `wa_${channelId}`);
+      await this.saveSessionToDB(channelId, sessionPath);
     }
 
     if (connection === 'close') {
@@ -554,18 +711,24 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
         return;
       }
 
+      // ✅ v10: حفظ الجلسة في DB قبل المحاولة التالية
+      const sessionPath = path.join(this.sessionsPath, `wa_${channelId}`);
+      await this.saveSessionToDB(channelId, sessionPath);
+
       if (session.retryCount < MAX_RETRIES) {
         session.retryCount++;
-        const delay = Math.min(RECONNECT_BASE_DELAY_MS * session.retryCount, 15000);
-        this.logger.log(`🔄 Retry ${session.retryCount}/${MAX_RETRIES} in ${delay}ms`);
+        const retryDelay = Math.min(RECONNECT_BASE_DELAY_MS * session.retryCount, 15000);
+        this.logger.log(`🔄 Retry ${session.retryCount}/${MAX_RETRIES} in ${retryDelay}ms`);
         setTimeout(async () => {
           try {
-            await this.createBaileysSession(channelId, session.connectionMethod, session.phoneNumber);
+            // ✅ v10: عند الـ retry — تنظيف ذاكرة فقط (بدون حذف ملفات)
+            await this.cleanupSession(channelId);
+            await this.restoreSession(channelId);
           } catch {
             const s = this.sessions.get(channelId);
             if (s) s.status = 'disconnected';
           }
-        }, delay);
+        }, retryDelay);
       } else {
         session.status = 'disconnected';
         await this.markChannelDisconnected(channelId);
