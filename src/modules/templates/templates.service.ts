@@ -71,10 +71,11 @@ export class TemplatesService {
       .take(limit)
       .getMany();
 
-    // ✅ إرجاع content مع كل قالب
+    // ✅ إرجاع content مع كل قالب + isEnabled
     const mappedTemplates = templates.map((t) => ({
       ...t,
       content: t.body,
+      isEnabled: t.status === 'active' || t.status === 'approved',
     }));
 
     return {
@@ -84,9 +85,9 @@ export class TemplatesService {
   }
 
   /**
-   * جلب قالب بالـ ID
+   * جلب قالب بالـ ID (للاستخدام الداخلي)
    */
-  async findById(id: string, tenantId: string) {
+  private async findByIdInternal(id: string, tenantId: string): Promise<MessageTemplate> {
     const template = await this.templateRepository.findOne({
       where: { id, tenantId },
     });
@@ -94,6 +95,18 @@ export class TemplatesService {
       throw new NotFoundException('القالب غير موجود');
     }
     return template;
+  }
+
+  /**
+   * جلب قالب بالـ ID (للعرض)
+   */
+  async findById(id: string, tenantId: string) {
+    const template = await this.findByIdInternal(id, tenantId);
+    return {
+      ...template,
+      content: template.body,
+      isEnabled: template.status === 'active' || template.status === 'approved',
+    };
   }
 
   /**
@@ -139,7 +152,11 @@ export class TemplatesService {
         status: updated.status,
       });
 
-      return { ...updated, content: updated.body };
+      return {
+        ...updated,
+        content: updated.body,
+        isEnabled: updated.status === 'active' || updated.status === 'approved',
+      };
     }
 
     // ✅ قبول status من الفرونتند
@@ -179,7 +196,11 @@ export class TemplatesService {
         triggerEvent: saved.triggerEvent,
       });
 
-      return { ...saved, content: saved.body };
+      return {
+        ...saved,
+        content: saved.body,
+        isEnabled: saved.status === 'active' || saved.status === 'approved',
+      };
     } catch (error: unknown) {
       const err = error as Record<string, unknown>;
       if (
@@ -197,7 +218,7 @@ export class TemplatesService {
    * تحديث قالب
    */
   async update(id: string, tenantId: string, dto: UpdateTemplateDto) {
-    const template = await this.findById(id, tenantId);
+    const template = await this.findByIdInternal(id, tenantId);
 
     if (dto.content) template.body = dto.content;
     if (dto.name) {
@@ -210,33 +231,106 @@ export class TemplatesService {
     if (dto.triggerEvent !== undefined) template.triggerEvent = dto.triggerEvent;
 
     const saved = await this.templateRepository.save(template);
-    return { ...saved, content: saved.body };
+    return {
+      ...saved,
+      content: saved.body,
+      isEnabled: saved.status === 'active' || saved.status === 'approved',
+    };
   }
 
   /**
    * حذف قالب
    */
   async delete(id: string, tenantId: string) {
-    const template = await this.findById(id, tenantId);
+    const template = await this.findByIdInternal(id, tenantId);
     await this.templateRepository.delete(template.id);
     this.logger.log(`Template deleted: ${id}`, { tenantId });
   }
 
   /**
-   * تفعيل/تعطيل قالب
+   * ✅ تفعيل/تعطيل عدة قوالب دفعة واحدة
+   */
+  async bulkToggle(ids: string[], tenantId: string, enable: boolean) {
+    const templates = await this.templateRepository.find({
+      where: {
+        id: { $in: ids } as any,
+        tenantId,
+      },
+    });
+
+    if (templates.length === 0) {
+      throw new NotFoundException('لم يتم العثور على قوالب');
+    }
+
+    const newStatus = enable ? TemplateStatus.ACTIVE : TemplateStatus.DISABLED;
+
+    // تحديث جميع القوالب
+    templates.forEach((t) => {
+      t.status = newStatus;
+    });
+
+    const saved = await this.templateRepository.save(templates);
+
+    this.logger.log(`✅ Bulk toggle: ${saved.length} templates`, {
+      tenantId,
+      newStatus,
+      ids: saved.map((t) => t.id),
+    });
+
+    return {
+      success: true,
+      count: saved.length,
+      templates: saved.map((t) => ({
+        id: t.id,
+        name: t.name,
+        status: t.status,
+        isEnabled: t.status === TemplateStatus.ACTIVE || t.status === 'active',
+      })),
+      message: enable
+        ? `تم تفعيل ${saved.length} قالب بنجاح`
+        : `تم تعطيل ${saved.length} قالب بنجاح`,
+    };
+  }
+
+  /**
+   * ✅ تفعيل/تعطيل قالب - يدعم جميع الحالات
    */
   async toggle(id: string, tenantId: string) {
-    const template = await this.findById(id, tenantId);
-    template.status =
-      template.status === TemplateStatus.ACTIVE
-        ? TemplateStatus.DISABLED
-        : TemplateStatus.ACTIVE;
+    const template = await this.findByIdInternal(id, tenantId);
+    
+    // ✅ قائمة الحالات النشطة
+    const activeStatuses = [
+      TemplateStatus.ACTIVE,
+      TemplateStatus.APPROVED,
+      'active',
+      'approved',
+    ];
+    
+    // ✅ تحقق إذا القالب نشط حالياً
+    const isCurrentlyActive = activeStatuses.includes(template.status as any);
+    
+    // ✅ تبديل الحالة
+    if (isCurrentlyActive) {
+      template.status = TemplateStatus.DISABLED;
+    } else {
+      template.status = TemplateStatus.ACTIVE;
+    }
 
     const saved = await this.templateRepository.save(template);
+    
+    this.logger.log(`✅ Template toggled: ${id}`, {
+      tenantId,
+      oldStatus: isCurrentlyActive ? 'active' : 'disabled',
+      newStatus: saved.status,
+    });
+    
     return {
       id: saved.id,
+      name: saved.name,
       status: saved.status,
+      isEnabled: saved.status === TemplateStatus.ACTIVE || saved.status === 'active',
       content: saved.body,
+      triggerEvent: saved.triggerEvent,
       message:
         saved.status === TemplateStatus.ACTIVE ? 'تم تفعيل القالب' : 'تم تعطيل القالب',
     };
@@ -246,7 +340,7 @@ export class TemplatesService {
    * نسخ قالب
    */
   async duplicate(id: string, tenantId: string, newName?: string) {
-    const original = await this.findById(id, tenantId);
+    const original = await this.findByIdInternal(id, tenantId);
     const duplicate = this.templateRepository.create({
       tenantId: original.tenantId,
       name: newName || `${original.name}_copy`,
@@ -276,7 +370,7 @@ export class TemplatesService {
     phone: string,
     variables?: Record<string, string>,
   ) {
-    const template = await this.findById(id, tenantId);
+    const template = await this.findByIdInternal(id, tenantId);
     let body = template.body || '';
     if (variables) {
       Object.entries(variables).forEach(([key, value]) => {
