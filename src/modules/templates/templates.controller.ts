@@ -362,18 +362,29 @@ export class TemplatesController {
           buttons: [
             { type: 'url', text: 'تتبع الطلب', url: '{{order_tracking}}' },
           ],
+          sendSettings: {
+            sendingMode: 'instant',
+          },
         },
         {
           id: 'order_cod_confirmation',
           name: 'تأكيد الدفع عند الاستلام',
           language: 'ar',
           category: 'order_notifications',
-          triggerEvent: null,
+          triggerEvent: 'order.created',
           content: 'مرحباً {{customer_name}} 👋\n\nلديك طلب جديد رقم #{{order_id}} بقيمة {{order_total}} ريال\n\nطريقة الدفع: الدفع عند الاستلام 💵\n\nهل تؤكد طلبك؟',
           buttons: [
             { type: 'quick_reply', text: 'نعم، أؤكد ✅' },
             { type: 'quick_reply', text: 'إلغاء الطلب ❌' },
           ],
+          sendSettings: {
+            sendingMode: 'conditional',
+            delayMinutes: 5,
+            triggerCondition: {
+              paymentMethod: 'cod',
+            },
+            maxSendsPerCustomer: { count: 1, periodDays: 1 },
+          },
         },
         {
           id: 'order_payment_confirmed',
@@ -385,6 +396,7 @@ export class TemplatesController {
           buttons: [
             { type: 'url', text: 'تفاصيل الطلب', url: '{{order_tracking}}' },
           ],
+          sendSettings: { sendingMode: 'instant' },
         },
         {
           id: 'order_processing',
@@ -394,6 +406,7 @@ export class TemplatesController {
           triggerEvent: 'order.status.processing',
           content: 'مرحباً {{customer_name}} ⚙️\n\nطلبك رقم #{{order_id}} قيد التجهيز الآن\n\nفريقنا يعمل على تجهيز طلبك بأسرع وقت ممكن ⏳\n\nسنُبلغك فور شحن الطلب 📦',
           buttons: [],
+          sendSettings: { sendingMode: 'instant' },
         },
         {
           id: 'order_completed',
@@ -405,6 +418,7 @@ export class TemplatesController {
           buttons: [
             { type: 'url', text: 'تتبع الطلب', url: '{{order_tracking}}' },
           ],
+          sendSettings: { sendingMode: 'instant' },
         },
         {
           id: 'order_awaiting_payment',
@@ -416,6 +430,7 @@ export class TemplatesController {
           buttons: [
             { type: 'url', text: 'أكمل الدفع', url: '{{payment_link}}' },
           ],
+          sendSettings: { sendingMode: 'instant' },
         },
         {
           id: 'order_awaiting_review',
@@ -425,6 +440,7 @@ export class TemplatesController {
           triggerEvent: 'order.status.under_review',
           content: 'مرحباً {{customer_name}} 📋\n\nطلبك رقم #{{order_id}} قيد المراجعة من فريقنا\n\nسيتم تأكيد الطلب وإشعارك في أقرب وقت ⏳\n\nشكراً لصبرك 🙏',
           buttons: [],
+          sendSettings: { sendingMode: 'instant' },
         },
         {
           id: 'order_cancelled',
@@ -436,6 +452,7 @@ export class TemplatesController {
           buttons: [
             { type: 'url', text: 'تواصل معنا', url: '{{store_url}}/contact' },
           ],
+          sendSettings: { sendingMode: 'instant' },
         },
         {
           id: 'order_refunded',
@@ -447,6 +464,7 @@ export class TemplatesController {
           buttons: [
             { type: 'url', text: 'تسوق مجدداً', url: '{{store_url}}' },
           ],
+          sendSettings: { sendingMode: 'instant' },
         },
         {
           id: 'order_return_processing',
@@ -456,6 +474,7 @@ export class TemplatesController {
           triggerEvent: 'order.status.restoring',
           content: 'مرحباً {{customer_name}} 🔄\n\nطلب الاسترجاع للطلب رقم #{{order_id}} قيد المعالجة\n\nسنقوم بمراجعته وإشعارك بالنتيجة خلال 2-3 أيام عمل ⏳',
           buttons: [],
+          sendSettings: { sendingMode: 'instant' },
         },
 
         // ═══════════════════════════════════════════════════════════════
@@ -471,6 +490,7 @@ export class TemplatesController {
           buttons: [
             { type: 'url', text: 'تتبع الشحنة', url: '{{order_tracking}}' },
           ],
+          sendSettings: { sendingMode: 'instant' },
         },
         {
           id: 'shipping_shipped',
@@ -482,6 +502,7 @@ export class TemplatesController {
           buttons: [
             { type: 'url', text: 'تتبع الشحنة', url: '{{order_tracking}}' },
           ],
+          sendSettings: { sendingMode: 'instant' },
         },
         {
           id: 'shipping_out_for_delivery',
@@ -493,6 +514,7 @@ export class TemplatesController {
           buttons: [
             { type: 'url', text: 'تتبع المندوب', url: '{{order_tracking}}' },
           ],
+          sendSettings: { sendingMode: 'instant' },
         },
         {
           id: 'shipping_delivered',
@@ -504,6 +526,7 @@ export class TemplatesController {
           buttons: [
             { type: 'url', text: 'قيّم تجربتك', url: '{{store_url}}/reviews' },
           ],
+          sendSettings: { sendingMode: 'instant' },
         },
 
         // ═══════════════════════════════════════════════════════════════
@@ -519,39 +542,66 @@ export class TemplatesController {
           buttons: [
             { type: 'url', text: 'أكمل الطلب', url: '{{cart_link}}' },
           ],
+          sendSettings: {
+            sendingMode: 'delayed',
+            delayMinutes: 60,
+            sequence: { order: 1, groupKey: 'cart_abandoned' },
+            cancelOnEvents: ['order.created'],
+            maxSendsPerCustomer: { count: 1, periodDays: 7 },
+          },
         },
         {
           id: 'cart_abandoned_2',
           name: 'سلة متروكة - مع كوبون خصم',
           language: 'ar',
           category: 'sales_recovery',
-          triggerEvent: null,
+          triggerEvent: 'abandoned.cart',
           content: 'مرحباً {{customer_name}} 🎁\n\nسلتك لا زالت بانتظارك! لأنك مميز، جهزنا لك خصم حصري 🎉\n\nاستخدم كود: {{coupon_code}}\nواحصل على خصم {{discount_percent}}% على سلتك\n\nالعرض لفترة محدودة ⏰',
           buttons: [
             { type: 'url', text: 'استفد من الخصم', url: '{{cart_link}}' },
           ],
+          sendSettings: {
+            sendingMode: 'delayed',
+            delayMinutes: 240,
+            sequence: { order: 2, groupKey: 'cart_abandoned' },
+            cancelOnEvents: ['order.created'],
+            maxSendsPerCustomer: { count: 1, periodDays: 7 },
+          },
         },
         {
           id: 'cart_abandoned_3',
           name: 'سلة متروكة - التذكير الأخير',
           language: 'ar',
           category: 'sales_recovery',
-          triggerEvent: null,
+          triggerEvent: 'abandoned.cart',
           content: 'مرحباً {{customer_name}} ⏰\n\nآخر فرصة! منتجاتك في السلة قد تنفد قريباً\n\nإجمالي السلة: {{cart_total}} ريال\n\nلا تفوّت العرض، الكمية محدودة! 🔥',
           buttons: [
             { type: 'url', text: 'اطلب الآن', url: '{{cart_link}}' },
           ],
+          sendSettings: {
+            sendingMode: 'delayed',
+            delayMinutes: 1440,
+            sequence: { order: 3, groupKey: 'cart_abandoned' },
+            cancelOnEvents: ['order.created'],
+            maxSendsPerCustomer: { count: 1, periodDays: 7 },
+          },
         },
         {
           id: 'payment_reminder',
           name: 'تذكير بالدفع',
           language: 'ar',
           category: 'sales_recovery',
-          triggerEvent: null,
+          triggerEvent: 'order.status.pending_payment',
           content: 'مرحباً {{customer_name}} 💳\n\nتذكير: طلبك رقم #{{order_id}} بانتظار إتمام الدفع\n\nالمبلغ: {{order_total}} ريال\n\nسيتم إلغاء الطلب تلقائياً إذا لم يتم الدفع خلال 24 ساعة ⏰',
           buttons: [
             { type: 'url', text: 'ادفع الآن', url: '{{payment_link}}' },
           ],
+          sendSettings: {
+            sendingMode: 'delayed',
+            delayMinutes: 60,
+            cancelOnEvents: ['order.payment.updated'],
+            maxSendsPerCustomer: { count: 1, periodDays: 1 },
+          },
         },
         {
           id: 'product_restock',
@@ -563,6 +613,7 @@ export class TemplatesController {
           buttons: [
             { type: 'url', text: 'اطلب الآن', url: '{{product_url}}' },
           ],
+          sendSettings: { sendingMode: 'instant' },
         },
 
         // ═══════════════════════════════════════════════════════════════
@@ -578,17 +629,24 @@ export class TemplatesController {
           buttons: [
             { type: 'url', text: 'تسوق الآن', url: '{{store_url}}' },
           ],
+          sendSettings: { sendingMode: 'instant' },
         },
         {
           id: 'welcome_series_2',
           name: 'سلسلة الترحيب - تعرف علينا',
           language: 'ar',
           category: 'marketing',
-          triggerEvent: null,
+          triggerEvent: 'customer.created',
           content: 'مرحباً {{customer_name}} 💙\n\nهل تعلم أن {{store_name}} يوفر لك:\n\n✨ منتجات أصلية 100%\n🚚 توصيل سريع\n🔄 إرجاع مجاني خلال 14 يوم\n💬 دعم فوري على واتساب\n\nاكتشف الأكثر مبيعاً لدينا 🔥',
           buttons: [
             { type: 'url', text: 'الأكثر مبيعاً', url: '{{store_url}}/best-sellers' },
           ],
+          sendSettings: {
+            sendingMode: 'delayed',
+            delayMinutes: 1440,
+            sequence: { order: 2, groupKey: 'welcome_series' },
+            maxSendsPerCustomer: { count: 1, periodDays: 30 },
+          },
         },
         {
           id: 'promotion_offer',
@@ -600,6 +658,7 @@ export class TemplatesController {
           buttons: [
             { type: 'url', text: 'تسوق العروض', url: '{{store_url}}/offers' },
           ],
+          sendSettings: { sendingMode: 'manual' },
         },
         {
           id: 'coupon_exclusive',
@@ -611,6 +670,7 @@ export class TemplatesController {
           buttons: [
             { type: 'url', text: 'استخدم الكوبون', url: '{{store_url}}' },
           ],
+          sendSettings: { sendingMode: 'manual' },
         },
         {
           id: 'new_product_launch',
@@ -622,6 +682,7 @@ export class TemplatesController {
           buttons: [
             { type: 'url', text: 'اطلع على المنتج', url: '{{product_url}}' },
           ],
+          sendSettings: { sendingMode: 'instant' },
         },
         {
           id: 'winback_inactive',
@@ -633,17 +694,24 @@ export class TemplatesController {
           buttons: [
             { type: 'url', text: 'تسوق الآن', url: '{{store_url}}' },
           ],
+          sendSettings: { sendingMode: 'manual' },
         },
         {
           id: 'post_purchase_upsell',
           name: 'توصيات بعد الشراء',
           language: 'ar',
           category: 'marketing',
-          triggerEvent: null,
+          triggerEvent: 'order.delivered',
           content: 'مرحباً {{customer_name}} 🌟\n\nنأمل أنك استمتعت بمشترياتك من {{store_name}}!\n\nبناءً على طلبك السابق، نعتقد أنك ستحب هذه المنتجات أيضاً 👇\n\nاكتشف المزيد واستمتع بتجربة تسوق مميزة ✨',
           buttons: [
             { type: 'url', text: 'منتجات مقترحة', url: '{{store_url}}/recommended' },
           ],
+          sendSettings: {
+            sendingMode: 'conditional',
+            delayMinutes: 4320,
+            triggerCondition: { orderStatus: 'delivered' },
+            maxSendsPerCustomer: { count: 1, periodDays: 30 },
+          },
         },
 
         // ═══════════════════════════════════════════════════════════════
@@ -654,11 +722,17 @@ export class TemplatesController {
           name: 'طلب تقييم',
           language: 'ar',
           category: 'engagement',
-          triggerEvent: null,
+          triggerEvent: 'order.delivered',
           content: 'مرحباً {{customer_name}} ⭐\n\nنأمل أنك استمتعت بتجربتك مع {{store_name}}!\n\nرأيك يهمنا كثيراً، شاركنا تقييمك للمنتجات\n\nتقييمك يساعدنا نقدم لك الأفضل دائماً 💙',
           buttons: [
             { type: 'url', text: 'قيّم الآن', url: '{{store_url}}/reviews' },
           ],
+          sendSettings: {
+            sendingMode: 'conditional',
+            delayMinutes: 4320,
+            triggerCondition: { orderStatus: 'delivered' },
+            maxSendsPerCustomer: { count: 1, periodDays: 30 },
+          },
         },
         {
           id: 'review_reward',
@@ -670,6 +744,7 @@ export class TemplatesController {
           buttons: [
             { type: 'url', text: 'تسوق بالخصم', url: '{{store_url}}' },
           ],
+          sendSettings: { sendingMode: 'instant' },
         },
         {
           id: 'loyalty_points',
@@ -681,6 +756,7 @@ export class TemplatesController {
           buttons: [
             { type: 'url', text: 'استبدل نقاطك', url: '{{store_url}}/loyalty' },
           ],
+          sendSettings: { sendingMode: 'manual' },
         },
         {
           id: 'referral_invite',
@@ -692,6 +768,7 @@ export class TemplatesController {
           buttons: [
             { type: 'url', text: 'شارك الرابط', url: '{{referral_link}}' },
           ],
+          sendSettings: { sendingMode: 'manual' },
         },
 
         // ═══════════════════════════════════════════════════════════════
@@ -705,17 +782,19 @@ export class TemplatesController {
           triggerEvent: 'customer.otp.request',
           content: 'رمز التحقق الخاص بك: {{otp_code}} 🔐\n\nصالح لمدة 5 دقائق\n\nإذا لم تطلب هذا الرمز، يرجى تجاهل هذه الرسالة',
           buttons: [],
+          sendSettings: { sendingMode: 'instant' },
         },
         {
           id: 'digital_product_delivery',
           name: 'تسليم منتج رقمي',
           language: 'ar',
           category: 'service',
-          triggerEvent: null,
+          triggerEvent: 'order.status.completed',
           content: 'مرحباً {{customer_name}} 📱\n\nتم تأكيد دفعك بنجاح! إليك منتجك الرقمي:\n\nطلب رقم: #{{order_id}}\n\nيمكنك تحميل المنتج من الرابط أدناه 👇\n\nشكراً لتسوقك من {{store_name}} 💙',
           buttons: [
             { type: 'url', text: 'تحميل المنتج', url: '{{download_link}}' },
           ],
+          sendSettings: { sendingMode: 'instant' },
         },
         {
           id: 'after_hours_reply',
@@ -725,6 +804,7 @@ export class TemplatesController {
           triggerEvent: null,
           content: 'مرحباً {{customer_name}} 🌙\n\nشكراً لتواصلك مع {{store_name}}\n\nنحن خارج أوقات العمل حالياً\nساعات العمل: {{working_hours}}\n\nسنرد على رسالتك في أقرب وقت ممكن ⏰\n\nشكراً لصبرك 🙏',
           buttons: [],
+          sendSettings: { sendingMode: 'manual' },
         },
         {
           id: 'low_stock_alert',
@@ -734,6 +814,7 @@ export class TemplatesController {
           triggerEvent: 'product.quantity.low',
           content: '⚠️ تنبيه مخزون - {{store_name}}\n\nالمنتج: {{product_name}}\nالكمية المتبقية: {{product_quantity}} قطعة\n\nيرجى إعادة تعبئة المخزون لتجنب نفاد المنتج 📦',
           buttons: [],
+          sendSettings: { sendingMode: 'instant' },
         },
         {
           id: 'invoice_created',
@@ -745,6 +826,7 @@ export class TemplatesController {
           buttons: [
             { type: 'url', text: 'تحميل الفاتورة', url: '{{invoice_link}}' },
           ],
+          sendSettings: { sendingMode: 'instant' },
         },
       ],
     };
@@ -848,6 +930,25 @@ export class TemplatesController {
     @Param('id', ParseUUIDPipe) id: string) {
     const tenantId = user.tenantId;
     return this.templatesService.toggle(id, tenantId);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ✅ v14: PATCH /templates/:id/send-settings - إعدادات الإرسال
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Patch(':id/send-settings')
+  @ApiOperation({
+    summary: 'تحديث إعدادات الإرسال',
+    description: 'تحديث إعدادات التأخير والشرط والتسلسل لكل قالب',
+  })
+  @ApiResponse({ status: 200, description: 'تم تحديث إعدادات الإرسال' })
+  async updateSendSettings(
+    @CurrentUser() user: any,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    const tenantId = user.tenantId;
+    return this.templatesService.updateSendSettings(id, tenantId, body);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
