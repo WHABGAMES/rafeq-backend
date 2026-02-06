@@ -53,6 +53,8 @@ export class TemplatesService {
       stats: t.stats,
       usageCount: t.stats?.usageCount ?? 0,
       isEnabled: t.status === 'active' || t.status === 'approved',
+      // ✅ v14: إعدادات الإرسال — التأخير، الشرط، التسلسل
+      sendSettings: t.sendSettings ?? null,
       createdAt: t.createdAt,
       updatedAt: t.updatedAt,
     };
@@ -163,6 +165,8 @@ export class TemplatesService {
       existingTemplate.triggerEvent = dto.triggerEvent ?? existingTemplate.triggerEvent;
       existingTemplate.category = dto.category || existingTemplate.category;
       if (dto.buttons) existingTemplate.buttons = dto.buttons as any;
+      // ✅ v15: حفظ sendSettings عند إعادة التفعيل — يحافظ على الإعدادات الافتراضية
+      if (dto.sendSettings) existingTemplate.sendSettings = dto.sendSettings as any;
 
       const updated = await this.templateRepository.save(existingTemplate);
 
@@ -183,7 +187,7 @@ export class TemplatesService {
       : dto.status === 'active' ? TemplateStatus.ACTIVE
       : TemplateStatus.DRAFT;
 
-    this.logger.log(`📝 Creating NEW: name="${dto.name}", mappedStatus=${status}`);
+    this.logger.log(`📝 Creating NEW: name="${dto.name}", mappedStatus=${status}, sendSettings=${JSON.stringify(dto.sendSettings || null)}`);
 
     const templateData: Partial<MessageTemplate> = {
       tenantId: tenantId as any,
@@ -199,6 +203,8 @@ export class TemplatesService {
       buttons: (dto.buttons as any) || [],
       variables: [] as any,
       stats: { usageCount: 0 } as any,
+      // ✅ v15: حفظ sendSettings عند الإنشاء — كان مفقوداً وسبّب ضياع الإعدادات!
+      sendSettings: dto.sendSettings ? (dto.sendSettings as any) : undefined,
     };
 
     const template = this.templateRepository.create(templateData as any);
@@ -248,6 +254,17 @@ export class TemplatesService {
     if (dto.category !== undefined && dto.category !== null) template.category = dto.category;
     if (dto.status !== undefined && dto.status !== null) template.status = dto.status;
     if (dto.triggerEvent !== undefined) template.triggerEvent = dto.triggerEvent;
+    // ✅ v15: حفظ إعدادات الإرسال مع validation
+    if (dto.sendSettings !== undefined) {
+      // التأكد من صحة sendingMode إن وُجد
+      const settings = dto.sendSettings as Record<string, unknown>;
+      const validModes = ['instant', 'delayed', 'conditional', 'manual'];
+      if (settings.sendingMode && !validModes.includes(String(settings.sendingMode))) {
+        throw new BadRequestException(`sendingMode غير صالح`);
+      }
+      template.sendSettings = dto.sendSettings as any;
+      this.logger.log(`📝 SendSettings updated for "${template.name}" (id=${id}): mode=${settings.sendingMode}, delay=${settings.delayMinutes || 'none'}`);
+    }
 
     const saved = await this.templateRepository.save(template);
 
@@ -307,6 +324,56 @@ export class TemplatesService {
       isEnabled: ['active', 'approved'].includes(saved.status),
       content: saved.body, triggerEvent: saved.triggerEvent,
       message: isActive ? 'تم تعطيل القالب' : 'تم تفعيل القالب',
+    };
+  }
+
+  /**
+   * ✅ v15: تحديث إعدادات الإرسال مستقل لكل قالب
+   * التاجر يتحكم: التأخير، الشرط، التسلسل، الإلغاء
+   * مع validation لمنع بيانات خاطئة
+   */
+  async updateSendSettings(id: string, tenantId: string, sendSettings: Record<string, unknown>) {
+    const template = await this.findByIdInternal(id, tenantId);
+
+    // ✅ Validation: التأكد من صحة sendingMode
+    const validModes = ['instant', 'delayed', 'conditional', 'manual'];
+    if (sendSettings.sendingMode && !validModes.includes(String(sendSettings.sendingMode))) {
+      throw new BadRequestException(`sendingMode غير صالح. القيم المسموحة: ${validModes.join(', ')}`);
+    }
+
+    // ✅ Validation: delayMinutes يجب أن يكون رقم موجب
+    if (sendSettings.delayMinutes !== undefined) {
+      const delay = Number(sendSettings.delayMinutes);
+      if (isNaN(delay) || delay < 0) {
+        throw new BadRequestException('delayMinutes يجب أن يكون رقم موجب');
+      }
+      sendSettings.delayMinutes = delay;
+    }
+
+    // ✅ Validation: إذا كان delayed أو conditional يجب أن يكون هناك delayMinutes
+    const mode = String(sendSettings.sendingMode || '');
+    if ((mode === 'delayed' || mode === 'conditional') && !sendSettings.delayMinutes) {
+      this.logger.warn(`⚠️ Template "${template.name}": mode=${mode} but no delayMinutes — setting default 60min`);
+      sendSettings.delayMinutes = 60;
+    }
+
+    // ✅ Validation: maxSendsPerCustomer
+    const maxSends = sendSettings.maxSendsPerCustomer as Record<string, unknown> | undefined;
+    if (maxSends) {
+      if (!maxSends.count || Number(maxSends.count) < 1) maxSends.count = 1;
+      if (!maxSends.periodDays || Number(maxSends.periodDays) < 1) maxSends.periodDays = 7;
+    }
+
+    this.logger.log(`⚙️ updateSendSettings: id=${id}, name="${template.name}", mode=${sendSettings.sendingMode}`, sendSettings);
+
+    template.sendSettings = sendSettings as any;
+    const saved = await this.templateRepository.save(template);
+
+    return {
+      id: saved.id,
+      name: saved.name,
+      sendSettings: saved.sendSettings,
+      message: 'تم تحديث إعدادات الإرسال بنجاح',
     };
   }
 
