@@ -108,8 +108,8 @@ export class AutoRegistrationService {
           });
         }
 
-        // استرجاع الباسورد من preferences (إذا محفوظ)
-        password = (user.preferences as any)?.generatedPassword || this.generatePassword(mobile);
+        // توليد باسورد جديد (لا نخزنه في preferences لأسباب أمنية)
+        password = this.generatePassword(mobile);
       }
 
       // ════════════════════════════════════════════════════════════════
@@ -172,7 +172,7 @@ export class AutoRegistrationService {
         source: 'salla_app_install',
         merchantId: merchantId,
         hasSetPassword: true, // الباسورد تم توليده تلقائياً
-        generatedPassword: password, // محفوظ للتذكير
+        // ⚠️ لا نخزن الباسورد كنص واضح في preferences لأسباب أمنية
         passwordSetAt: new Date().toISOString(),
         autoRegistered: true,
         registeredAt: new Date().toISOString(),
