@@ -1,9 +1,9 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║                    RAFIQ PLATFORM - Auth Module (Simplified)                  ║
+ * ║                    RAFIQ PLATFORM - Auth Module                                ║
  * ║                                                                                ║
- * ║  🎯 وحدة المصادقة المبسطة - Email + Password فقط                              ║
- * ║  🔧 FIX C4+L1: إضافة REDIS_CLIENT للـ Token Blacklist + Account Lockout       ║
+ * ║  ✅ v6: Multi-Auth Support                                                     ║
+ * ║  🔑 Email + Password | 📧 OTP | 🔵 Google | 🟢 Salla | 🟣 Zid               ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -24,6 +24,7 @@ import { AuthController } from './auth.controller';
 // Services
 import { AuthService } from './auth.service';
 import { AutoRegistrationService } from './auto-registration.service';
+import { OtpService } from './otp.service';
 
 // Strategies
 import { JwtStrategy } from './strategies/jwt.strategy';
@@ -54,17 +55,18 @@ import { MailModule } from '../mail/mail.module';
   providers: [
     AuthService,
     AutoRegistrationService,
+    OtpService,
     JwtStrategy,
 
-    // 🔧 FIX C4+L1: Redis client للـ token blacklist وقفل الحساب
+    // Redis client للـ token blacklist وقفل الحساب
     {
       provide: 'REDIS_CLIENT',
       useFactory: (configService: ConfigService) => {
-        const host = configService.get<string>('redis.host', 'localhost');
-        const port = configService.get<number>('redis.port', 6379);
-        const password = configService.get<string>('redis.password');
-        const db = configService.get<number>('redis.db', 0);
-        const useTls = process.env.REDIS_TLS === 'true';
+        const host = configService.get<string>('REDIS_HOST', 'localhost');
+        const port = configService.get<number>('REDIS_PORT', 6379);
+        const password = configService.get<string>('REDIS_PASSWORD');
+        const db = configService.get<number>('REDIS_DB', 0);
+        const useTls = configService.get<string>('REDIS_TLS') === 'true';
 
         const redisOptions: Record<string, unknown> = {
           host,
@@ -77,19 +79,14 @@ import { MailModule } from '../mail/mail.module';
           },
         };
 
-        if (password) {
-          redisOptions.password = password;
-        }
-
-        if (useTls) {
-          redisOptions.tls = {};
-        }
+        if (password) redisOptions.password = password;
+        if (useTls) redisOptions.tls = {};
 
         return new Redis(redisOptions as any);
       },
       inject: [ConfigService],
     },
   ],
-  exports: [AuthService, AutoRegistrationService],
+  exports: [AuthService, AutoRegistrationService, OtpService],
 })
 export class AuthModule {}
