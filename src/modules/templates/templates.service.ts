@@ -325,7 +325,7 @@ export class TemplatesService {
     return this.templateRepository.save(dup);
   }
 
-  async sendTest(id: string, tenantId: string, phone: string, variables?: Record<string, string>) {
+  async sendTest(id: string, tenantId: string, _phone: string, variables?: Record<string, string>) {
     const template = await this.findByIdInternal(id, tenantId);
     let body = template.body || '';
     if (variables) {
@@ -336,7 +336,7 @@ export class TemplatesService {
     return { success: true, message: 'تم إرسال رسالة الاختبار', preview: body };
   }
 
-  async submitToWhatsApp(tenantId: string, dto: SubmitWhatsAppTemplateDto) {
+  async submitToWhatsApp(_tenantId: string, _dto: SubmitWhatsAppTemplateDto) {
     return { success: true, message: 'تم إرسال القالب للمراجعة', estimatedTime: '24-48 ساعة' };
   }
 
@@ -356,7 +356,7 @@ export class TemplatesService {
     };
   }
 
-  async syncWithWhatsApp(tenantId: string) {
+  async syncWithWhatsApp(_tenantId: string) {
     return { success: true, message: 'تمت المزامنة بنجاح', synced: 0, added: 0, updated: 0 };
   }
 
