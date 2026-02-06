@@ -124,6 +124,64 @@ export interface TemplateStats {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// ✅ v3: Template Send Settings — إعدادات إرسال مستقلة لكل قالب
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export enum SendingMode {
+  /** إرسال فوري عند تحقق الحدث */
+  INSTANT = 'instant',
+  /** إرسال بعد تأخير محدد */
+  DELAYED = 'delayed',
+  /** إرسال عند تحقق شرط معين (حالة طلب محددة) + تأخير */
+  CONDITIONAL = 'conditional',
+  /** يدوي — لا يرسل تلقائياً (الحملات) */
+  MANUAL = 'manual',
+}
+
+export interface TemplateSendSettings {
+  /** نوع الإرسال */
+  sendingMode: SendingMode;
+
+  /** التأخير بالدقائق (مثال: 60 = ساعة، 1440 = يوم) */
+  delayMinutes?: number;
+
+  /**
+   * شرط حالة الطلب — القالب يرسل فقط عند تحقق هذه الحالة
+   * مثال: review_request يرسل فقط عند "delivered" أو "completed"
+   */
+  triggerCondition?: {
+    /** حالة الطلب المطلوبة (اختيارية — التاجر يختارها) */
+    orderStatus?: string;
+    /** طريقة الدفع المطلوبة (مثال: cod لتأكيد الدفع عند الاستلام) */
+    paymentMethod?: string;
+  };
+
+  /**
+   * للتسلسلات (سلة متروكة 1→2→3)
+   */
+  sequence?: {
+    /** ترتيب القالب في التسلسل */
+    order: number;
+    /** مفتاح المجموعة — كل قوالب التسلسل لها نفس المفتاح */
+    groupKey: string;
+  };
+
+  /**
+   * إلغاء الإرسال المعلّق إذا حصل أحد هذه الأحداث
+   * مثال: سلة متروكة تُلغى إذا العميل أكمل الطلب
+   */
+  cancelOnEvents?: string[];
+
+  /**
+   * حد أقصى لعدد مرات الإرسال لنفس العميل
+   */
+  maxSendsPerCustomer?: {
+    count: number;
+    periodDays: number;
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Entity
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -207,6 +265,19 @@ export class MessageTemplate extends BaseEntity {
 
   @Column({ type: 'jsonb', default: { usageCount: 0 } })
   stats: TemplateStats;
+
+  /**
+   * ✅ v3: إعدادات إرسال مستقلة لكل قالب
+   * التاجر يتحكم: التأخير، الشرط، التسلسل، الإلغاء
+   */
+  @Column({
+    name: 'send_settings',
+    type: 'jsonb',
+    nullable: true,
+    default: null,
+    comment: 'إعدادات الإرسال الخاصة بالقالب — يخصصها التاجر',
+  })
+  sendSettings?: TemplateSendSettings;
 
   @ManyToOne(() => Tenant, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'tenant_id' })
