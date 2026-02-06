@@ -165,6 +165,11 @@ export class CreateTemplateDto {
   @IsOptional()
   @IsObject()
   metadata?: Record<string, unknown>;
+
+  @ApiPropertyOptional({ description: 'إعدادات الإرسال — التأخير، الشرط، التسلسل' })
+  @IsOptional()
+  @IsObject()
+  sendSettings?: Record<string, unknown>;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -232,6 +237,57 @@ export class UpdateTemplateDto {
   @IsOptional()
   @IsObject()
   metadata?: Record<string, unknown>;
+
+  @ApiPropertyOptional({ description: 'إعدادات الإرسال — التأخير، الشرط، التسلسل' })
+  @IsOptional()
+  @IsObject()
+  sendSettings?: Record<string, unknown>;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ✅ v3: Update Send Settings DTO — إعدادات إرسال مستقلة لكل قالب
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export class UpdateSendSettingsDto {
+  @ApiProperty({
+    description: 'نوع الإرسال',
+    enum: ['instant', 'delayed', 'conditional', 'manual'],
+  })
+  @IsString()
+  sendingMode: string;
+
+  @ApiPropertyOptional({ description: 'التأخير بالدقائق (60 = ساعة، 1440 = يوم)' })
+  @IsOptional()
+  delayMinutes?: number;
+
+  @ApiPropertyOptional({ description: 'شرط الإرسال — حالة الطلب أو طريقة الدفع' })
+  @IsOptional()
+  @IsObject()
+  triggerCondition?: {
+    orderStatus?: string;
+    paymentMethod?: string;
+  };
+
+  @ApiPropertyOptional({ description: 'إعدادات التسلسل' })
+  @IsOptional()
+  @IsObject()
+  sequence?: {
+    order: number;
+    groupKey: string;
+  };
+
+  @ApiPropertyOptional({ description: 'أحداث تُلغي الإرسال المعلّق' })
+  @IsOptional()
+  @IsArray()
+  cancelOnEvents?: string[];
+
+  @ApiPropertyOptional({ description: 'حد أقصى لعدد الإرسال لنفس العميل' })
+  @IsOptional()
+  @IsObject()
+  maxSendsPerCustomer?: {
+    count: number;
+    periodDays: number;
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
