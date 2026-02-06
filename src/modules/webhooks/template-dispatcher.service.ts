@@ -18,12 +18,23 @@ import { OnEvent } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { MessageTemplate, Order, Customer } from '@database/entities';
+import { SendingMode } from '@database/entities/message-template.entity';
 import { Channel, ChannelType, ChannelStatus } from '../channels/entities/channel.entity';
 import { ChannelsService } from '../channels/channels.service';
+import { TemplateSchedulerService } from './template-scheduler.service';
 
 @Injectable()
 export class TemplateDispatcherService {
   private readonly logger = new Logger(TemplateDispatcherService.name);
+
+  /**
+   * ✅ v12: Dedup cache لمنع إرسال القالب مرتين
+   * سلة أحياناً ترسل order.cancelled + order.status.updated(ملغي) معاً
+   * كلاهما يُفعّل نفس القالب — الـ dedup يمنع التكرار
+   * Key: `${orderId}-${triggerEvent}-${tenantId}` → timestamp
+   */
+  private readonly recentDispatches = new Map<string, number>();
+  private readonly DEDUP_WINDOW_MS = 60_000; // 60 ثانية
 
   constructor(
     @InjectRepository(MessageTemplate)
@@ -39,6 +50,9 @@ export class TemplateDispatcherService {
     private readonly customerRepository: Repository<Customer>,
 
     private readonly channelsService: ChannelsService,
+
+    // ✅ v13: خدمة الجدولة للإرسال المؤجل
+    private readonly templateSchedulerService: TemplateSchedulerService,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -78,9 +92,10 @@ export class TemplateDispatcherService {
     await this.dispatch('order.status.restoring', payload);
   }
 
+  // ✅ v12: order.status.shipped → dispatch('order.shipped') لأن القالب triggerEvent = 'order.shipped'
   @OnEvent('order.status.shipped')
   async onOrderStatusShipped(payload: Record<string, unknown>) {
-    await this.dispatch('order.status.shipped', payload);
+    await this.dispatch('order.shipped', payload);
   }
 
   @OnEvent('order.status.ready_to_ship')
@@ -96,6 +111,30 @@ export class TemplateDispatcherService {
   @OnEvent('order.status.on_hold')
   async onOrderOnHold(payload: Record<string, unknown>) {
     await this.dispatch('order.status.on_hold', payload);
+  }
+
+  // ✅ v10: Listeners إضافية لحالات تأتي من order.status.updated بنص عربي
+  @OnEvent('order.status.paid')
+  async onOrderStatusPaid(payload: Record<string, unknown>) {
+    await this.dispatch('order.status.paid', payload);
+  }
+
+  // ✅ v12: order.status.cancelled → dispatch('order.cancelled') لأن القالب triggerEvent = 'order.cancelled'
+  @OnEvent('order.status.cancelled')
+  async onOrderStatusCancelled(payload: Record<string, unknown>) {
+    await this.dispatch('order.cancelled', payload);
+  }
+
+  // ✅ v12: order.status.refunded → dispatch('order.refunded') لأن القالب triggerEvent = 'order.refunded'
+  @OnEvent('order.status.refunded')
+  async onOrderStatusRefunded(payload: Record<string, unknown>) {
+    await this.dispatch('order.refunded', payload);
+  }
+
+  // ✅ v12: order.status.delivered → dispatch('order.delivered') لأن القالب triggerEvent = 'order.delivered'
+  @OnEvent('order.status.delivered')
+  async onOrderStatusDelivered(payload: Record<string, unknown>) {
+    await this.dispatch('order.delivered', payload);
   }
 
   @OnEvent('order.payment.updated')
@@ -191,6 +230,22 @@ export class TemplateDispatcherService {
     try {
       this.logger.log(`📨 Dispatching templates for: ${triggerEvent}`, { tenantId, storeId });
 
+      // ✅ v12: Dedup — منع إرسال نفس القالب مرتين خلال 60 ثانية
+      const orderId = (raw.id || raw.orderId || payload.orderId || '') as string;
+      const dedupKey = `${orderId}-${triggerEvent}-${tenantId}`;
+      const now = Date.now();
+
+      // تنظيف الـ cache من الإدخالات القديمة
+      for (const [key, timestamp] of this.recentDispatches) {
+        if (now - timestamp > this.DEDUP_WINDOW_MS) this.recentDispatches.delete(key);
+      }
+
+      if (this.recentDispatches.has(dedupKey)) {
+        this.logger.warn(`🔁 DEDUP: Skipping duplicate dispatch for '${triggerEvent}' (orderId: ${orderId}) - already sent within ${this.DEDUP_WINDOW_MS / 1000}s`);
+        return;
+      }
+      this.recentDispatches.set(dedupKey, now);
+
       // 1️⃣ البحث عن القوالب المفعّلة بنفس triggerEvent
       const templates = await this.templateRepository.find({
         where: [
@@ -239,8 +294,78 @@ export class TemplateDispatcherService {
 
       this.logger.log(`📞 Customer phone: ${customerPhone}`);
 
-      // 4️⃣ ✅ v9: إرسال جميع القوالب المفعّلة - كل قالب يرسل رسالته الخاصة
+      // 4️⃣ ✅ v13: إرسال أو جدولة كل قالب حسب sendSettings
       for (const template of templates) {
+        const sendSettings = template.sendSettings;
+
+        // ✅ تحديد نوع الإرسال من sendSettings
+        const mode = sendSettings?.sendingMode || SendingMode.INSTANT;
+
+        if (mode === SendingMode.MANUAL) {
+          this.logger.log(`⏭️ Skipping manual template: "${template.name}"`);
+          continue;
+        }
+
+        // ✅ v15: فحص شرط الحالة — يعمل مع CONDITIONAL و DELAYED
+        // القالب يرسل فقط إذا تحققت الشروط (حالة الطلب أو طريقة الدفع)
+        if (sendSettings?.triggerCondition && (mode === SendingMode.CONDITIONAL || mode === SendingMode.DELAYED)) {
+          const condition = sendSettings.triggerCondition;
+
+          if (condition.orderStatus) {
+            const currentStatus = String(raw.status || raw.newStatus || '').toLowerCase();
+            if (currentStatus && currentStatus !== condition.orderStatus.toLowerCase()) {
+              this.logger.log(
+                `⏭️ Condition not met: "${template.name}" requires status "${condition.orderStatus}", got "${currentStatus}"`,
+              );
+              continue;
+            }
+          }
+
+          if (condition.paymentMethod) {
+            const currentMethod = String(
+              raw.payment_method || (raw as any).paymentMethod || '',
+            ).toLowerCase();
+            if (currentMethod && currentMethod !== condition.paymentMethod.toLowerCase()) {
+              this.logger.log(
+                `⏭️ Condition not met: "${template.name}" requires payment "${condition.paymentMethod}", got "${currentMethod}"`,
+              );
+              continue;
+            }
+          }
+        }
+
+        // ✅ Delayed أو Conditional مع تأخير: جدولة بدل إرسال فوري
+        const delayMinutes = sendSettings?.delayMinutes;
+        if (delayMinutes && delayMinutes > 0 && (mode === SendingMode.DELAYED || mode === SendingMode.CONDITIONAL)) {
+          this.logger.log(
+            `⏰ Scheduling: "${template.name}" → ${customerPhone} (delay: ${delayMinutes}min)`,
+          );
+
+          const orderId = String(raw.id || raw.orderId || raw.order_id || '');
+          await this.templateSchedulerService.scheduleDelayedSend({
+            template,
+            tenantId,
+            storeId,
+            customerPhone,
+            customerName: String(
+              (raw.customer as any)?.first_name ||
+              (raw.customer as any)?.name ||
+              raw.customerName ||
+              '',
+            ),
+            referenceId: orderId || undefined,
+            referenceType: triggerEvent.split('.')[0] || undefined,
+            triggerEvent,
+            payload: raw,
+            delayMinutes,
+            sequenceGroupKey: sendSettings?.sequence?.groupKey,
+            sequenceOrder: sendSettings?.sequence?.order,
+          });
+
+          continue; // لا ترسل فورياً
+        }
+
+        // ✅ Instant: إرسال فوري
         this.logger.log(`📤 Sending template: "${template.name}" for trigger: ${triggerEvent}`);
         await this.sendTemplate(template, channel, customerPhone, raw);
       }
