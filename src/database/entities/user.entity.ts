@@ -18,8 +18,6 @@ import {
   Index,
   ManyToOne,
   JoinColumn,
-  BeforeInsert,
-  BeforeUpdate,
 } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
 import { BaseEntity } from './base.entity';
@@ -42,6 +40,18 @@ export enum UserStatus {
   ACTIVE = 'active',
   INACTIVE = 'inactive',
   PENDING = 'pending',       // في انتظار تفعيل البريد
+}
+
+/**
+ * 📌 مزود المصادقة
+ * طريقة تسجيل الدخول المستخدمة
+ */
+export enum AuthProvider {
+  LOCAL = 'local',           // إيميل + باسورد
+  GOOGLE = 'google',         // Google OAuth
+  SALLA = 'salla',           // منصة سلة
+  ZID = 'zid',               // منصة زد
+  OTP = 'otp',               // رمز تحقق عبر الإيميل
 }
 
 @Entity('users')
@@ -73,13 +83,15 @@ export class User extends BaseEntity {
 
   /**
    * 🔒 كلمة المرور (مشفرة)
+   * nullable للمستخدمين عبر OAuth أو OTP
    */
   @Column({
     type: 'varchar',
     length: 255,
-    select: false,  // لا تُرجع مع الـ queries العادية
+    select: false,
+    nullable: true,
   })
-  password: string;
+  password?: string;
 
   /**
    * 👤 الاسم الأول
@@ -176,6 +188,42 @@ export class User extends BaseEntity {
   refreshToken?: string;
 
   /**
+   * 🔐 مزود المصادقة (طريقة التسجيل)
+   */
+  @Column({
+    name: 'auth_provider',
+    type: 'enum',
+    enum: AuthProvider,
+    default: AuthProvider.LOCAL,
+  })
+  @Index('idx_user_auth_provider')
+  authProvider: AuthProvider;
+
+  /**
+   * 🆔 معرّف المستخدم عند المزود الخارجي
+   * مثال: Google sub, Salla merchant_id, Zid merchant_id
+   */
+  @Column({
+    name: 'provider_id',
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+  })
+  @Index('idx_user_provider_id')
+  providerId?: string;
+
+  /**
+   * 🖼️ صورة من المزود الخارجي (Google avatar, etc)
+   */
+  @Column({
+    name: 'provider_avatar',
+    type: 'varchar',
+    length: 500,
+    nullable: true,
+  })
+  providerAvatar?: string;
+
+  /**
    * ⚙️ تفضيلات المستخدم
    */
   @Column({
@@ -190,17 +238,13 @@ export class User extends BaseEntity {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   /**
-   * تشفير كلمة المرور قبل الحفظ
+   * ⚠️ ملاحظة مهمة:
+   * التشفير يتم في AuthService يدوياً قبل الحفظ
+   * لا نستخدم @BeforeInsert/@BeforeUpdate لتجنب التشفير المزدوج
+   * 
+   * السبب: إذا شفّرنا هنا + في Service = الباسورد يتشفّر مرتين
+   * والمستخدم ما يقدر يسجل دخول أبداً
    */
-  @BeforeInsert()
-  @BeforeUpdate()
-  async hashPassword(): Promise<void> {
-    // فقط إذا تم تعديل كلمة المرور
-    if (this.password && !this.password.startsWith('$2')) {
-      const salt = await bcrypt.genSalt(12);
-      this.password = await bcrypt.hash(this.password, salt);
-    }
-  }
 
   // ═══════════════════════════════════════════════════════════════════════════════
   // 🔧 METHODS
@@ -210,6 +254,7 @@ export class User extends BaseEntity {
    * التحقق من كلمة المرور
    */
   async validatePassword(password: string): Promise<boolean> {
+    if (!this.password) return false;
     return bcrypt.compare(password, this.password);
   }
 
