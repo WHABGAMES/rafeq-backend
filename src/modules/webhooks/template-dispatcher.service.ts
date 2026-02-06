@@ -665,13 +665,19 @@ export class TemplateDispatcherService {
     const customer = (data.customer || orderObj.customer || {}) as Record<string, unknown>;
     const urls = (data.urls || orderObj.urls || {}) as Record<string, unknown>;
 
+    // ✅ v16: DEBUG log لقيمة total
+    const rawTotal = data.total || orderObj.total;
+    if (rawTotal && typeof rawTotal === 'object') {
+      this.logger.debug(`💰 total is object: ${JSON.stringify(rawTotal).substring(0, 200)}`);
+    }
+
     const variables: Record<string, string> = {
       customer_name: String(customer.first_name || customer.name || data.customerName || 'عميلنا الكريم'),
       customer_first_name: String(customer.first_name || data.customerName || 'عميلنا'),
       customer_phone: String(customer.mobile || customer.phone || ''),
       customer_email: String(customer.email || ''),
       order_id: String(data.reference_id || orderObj.reference_id || data.order_number || orderObj.order_number || data.id || orderObj.id || data.orderId || ''),
-      order_total: this.formatAmount(data.total || orderObj.total),
+      order_total: this.formatAmount(data.total || orderObj.total || (data.amounts as any)?.total || (orderObj.amounts as any)?.total),
       order_status: String(data.status || data.newStatus || orderObj.status || ''),
       order_date: new Date().toLocaleDateString('ar-SA'),
       order_tracking: String(urls.tracking || data.tracking_url || orderObj.tracking_url || ''),
@@ -698,6 +704,21 @@ export class TemplateDispatcherService {
 
   private formatAmount(amount: unknown): string {
     if (!amount) return '0';
+
+    // ✅ v16: سلة قد ترسل total كـ object: { amount: 299, currency: "SAR" }
+    if (typeof amount === 'object' && amount !== null) {
+      const obj = amount as Record<string, unknown>;
+      // استخراج القيمة من الحقول المحتملة
+      const numVal = obj.amount ?? obj.value ?? obj.total ?? obj.price ?? obj.grand_total;
+      if (numVal !== undefined && numVal !== null) {
+        const num = typeof numVal === 'number' ? numVal : parseFloat(String(numVal));
+        if (!isNaN(num)) return num.toLocaleString('ar-SA');
+      }
+      // آخر محاولة: تحويل الـ object لـ JSON لتجنب [object Object]
+      this.logger.warn(`⚠️ formatAmount received object without amount field:`, { keys: Object.keys(obj), raw: JSON.stringify(obj).substring(0, 200) });
+      return '0';
+    }
+
     const num = typeof amount === 'number' ? amount : parseFloat(String(amount));
     if (isNaN(num)) return String(amount);
     return num.toLocaleString('ar-SA');
