@@ -2,8 +2,12 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Auth DTOs                                  ║
  * ║                                                                                ║
- * ║  ✅ v5: Security Fixes                                                         ║
- * ║  🔧 FIX H4: إضافة RegisterDto مع تحقق كامل                                   ║
+ * ║  ✅ v6: Multi-Auth Support                                                     ║
+ * ║  🔑 Email + Password                                                          ║
+ * ║  📧 Email OTP (رمز تحقق عبر الإيميل)                                          ║
+ * ║  🔵 Google OAuth                                                              ║
+ * ║  🟢 Salla OAuth                                                               ║
+ * ║  🟣 Zid OAuth                                                                 ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -11,90 +15,153 @@ import { IsEmail, IsString, IsNotEmpty, MinLength, MaxLength, Matches, IsOptiona
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 🔑 LOGIN
+// 🔑 LOGIN - Email + Password
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export class LoginDto {
-  @ApiProperty({
-    description: 'البريد الإلكتروني',
-    example: 'merchant@example.com',
-  })
+  @ApiProperty({ description: 'البريد الإلكتروني', example: 'merchant@example.com' })
   @IsEmail({}, { message: 'البريد الإلكتروني غير صالح' })
   @IsNotEmpty({ message: 'البريد الإلكتروني مطلوب' })
   email: string;
 
-  @ApiProperty({
-    description: 'رمز الدخول',
-    example: 'Aa966512345678',
-  })
+  @ApiProperty({ description: 'رمز الدخول', example: 'Aa966512345678' })
   @IsString({ message: 'رمز الدخول يجب أن يكون نصاً' })
   @IsNotEmpty({ message: 'رمز الدخول مطلوب' })
   password: string;
 }
 
 export class LoginResponseDto {
-  @ApiProperty({ description: 'Access Token' })
-  accessToken: string;
-
-  @ApiProperty({ description: 'Refresh Token' })
-  refreshToken: string;
-
-  @ApiProperty({ description: 'بيانات المستخدم' })
-  user: {
+  @ApiProperty() accessToken: string;
+  @ApiProperty() refreshToken: string;
+  @ApiProperty() user: {
     id: string;
     email: string;
     firstName: string;
     lastName: string;
     role: string;
     avatar?: string;
+    authProvider?: string;
+    needsPassword?: boolean;
   };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 📝 REGISTER
-// 🔧 FIX H4: DTO كامل مع تحقق من المدخلات
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export class RegisterDto {
-  @ApiProperty({
-    description: 'البريد الإلكتروني',
-    example: 'merchant@example.com',
-  })
+  @ApiProperty({ description: 'البريد الإلكتروني', example: 'merchant@example.com' })
   @IsEmail({}, { message: 'البريد الإلكتروني غير صالح' })
   @IsNotEmpty({ message: 'البريد الإلكتروني مطلوب' })
   @MaxLength(255, { message: 'البريد الإلكتروني طويل جداً' })
   email: string;
 
-  @ApiProperty({
-    description: 'رمز الدخول - 8 أحرف على الأقل، يحتوي حرف كبير وصغير ورقم',
-    example: 'MyPassword123',
-  })
-  @IsString({ message: 'رمز الدخول يجب أن يكون نصاً' })
+  @ApiProperty({ description: 'رمز الدخول', example: 'MyPassword123' })
+  @IsString()
   @MinLength(8, { message: 'رمز الدخول يجب أن يكون 8 أحرف على الأقل' })
-  @MaxLength(128, { message: 'رمز الدخول طويل جداً' })
+  @MaxLength(128)
   @Matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).+$/, {
-    message: 'رمز الدخول يجب أن يحتوي على حرف كبير وحرف صغير ورقم على الأقل',
+    message: 'رمز الدخول يجب أن يحتوي على حرف كبير وحرف صغير ورقم',
   })
   password: string;
 
-  @ApiProperty({
-    description: 'الاسم الكامل',
-    example: 'محمد أحمد',
-  })
-  @IsString({ message: 'الاسم يجب أن يكون نصاً' })
-  @IsNotEmpty({ message: 'الاسم مطلوب' })
-  @MinLength(2, { message: 'الاسم يجب أن يكون حرفين على الأقل' })
-  @MaxLength(100, { message: 'الاسم طويل جداً' })
+  @ApiProperty({ description: 'الاسم الكامل', example: 'محمد أحمد' })
+  @IsString() @IsNotEmpty() @MinLength(2) @MaxLength(100)
   name: string;
 
-  @ApiPropertyOptional({
-    description: 'اسم المتجر',
-    example: 'متجر محمد',
-  })
-  @IsString({ message: 'اسم المتجر يجب أن يكون نصاً' })
-  @IsOptional()
-  @MaxLength(200, { message: 'اسم المتجر طويل جداً' })
+  @ApiPropertyOptional({ description: 'اسم المتجر' })
+  @IsString() @IsOptional() @MaxLength(200)
   storeName?: string;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 📧 CHECK EMAIL
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export class CheckEmailDto {
+  @ApiProperty({ description: 'البريد الإلكتروني', example: 'merchant@example.com' })
+  @IsEmail({}, { message: 'البريد الإلكتروني غير صالح' })
+  @IsNotEmpty({ message: 'البريد الإلكتروني مطلوب' })
+  email: string;
+}
+
+export class CheckEmailResponseDto {
+  @ApiProperty() exists: boolean;
+  @ApiProperty() hasPassword: boolean;
+  @ApiPropertyOptional() authProvider?: string;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 📧 EMAIL OTP
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export class SendEmailOtpDto {
+  @ApiProperty({ description: 'البريد الإلكتروني', example: 'merchant@example.com' })
+  @IsEmail({}, { message: 'البريد الإلكتروني غير صالح' })
+  @IsNotEmpty({ message: 'البريد الإلكتروني مطلوب' })
+  email: string;
+}
+
+export class VerifyEmailOtpDto {
+  @ApiProperty({ description: 'البريد الإلكتروني', example: 'merchant@example.com' })
+  @IsEmail({}, { message: 'البريد الإلكتروني غير صالح' })
+  @IsNotEmpty()
+  email: string;
+
+  @ApiProperty({ description: 'رمز التحقق', example: '123456' })
+  @IsString() @IsNotEmpty()
+  @Matches(/^\d{6}$/, { message: 'رمز التحقق يجب أن يكون 6 أرقام' })
+  otp: string;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 🔵 GOOGLE OAuth
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export class GoogleAuthDto {
+  @ApiProperty({ description: 'Google ID Token' })
+  @IsString() @IsNotEmpty({ message: 'Google token مطلوب' })
+  idToken: string;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 🟢 SALLA OAuth
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export class SallaAuthDto {
+  @ApiProperty({ description: 'كود التفويض من Salla' })
+  @IsString() @IsNotEmpty({ message: 'Salla auth code مطلوب' })
+  code: string;
+
+  @ApiPropertyOptional() @IsString() @IsOptional()
+  state?: string;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 🟣 ZID OAuth
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export class ZidAuthDto {
+  @ApiProperty({ description: 'كود التفويض من Zid' })
+  @IsString() @IsNotEmpty({ message: 'Zid auth code مطلوب' })
+  code: string;
+
+  @ApiPropertyOptional() @IsString() @IsOptional()
+  state?: string;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 🔐 SET PASSWORD (OAuth/OTP users)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export class SetPasswordDto {
+  @ApiProperty({ description: 'رمز الدخول الجديد', example: 'MyNewPassword123' })
+  @IsString()
+  @MinLength(8, { message: 'رمز الدخول يجب أن يكون 8 أحرف على الأقل' })
+  @Matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).+$/, {
+    message: 'رمز الدخول يجب أن يحتوي على حرف كبير وحرف صغير ورقم',
+  })
+  password: string;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -102,21 +169,14 @@ export class RegisterDto {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export class RefreshTokenDto {
-  @ApiProperty({
-    description: 'Refresh Token',
-    example: 'eyJhbGciOiJIUzI1NiIs...',
-  })
-  @IsString({ message: 'Refresh token يجب أن يكون نصاً' })
-  @IsNotEmpty({ message: 'Refresh token مطلوب' })
+  @ApiProperty({ description: 'Refresh Token' })
+  @IsString() @IsNotEmpty({ message: 'Refresh token مطلوب' })
   refreshToken: string;
 }
 
 export class RefreshTokenResponseDto {
-  @ApiProperty({ description: 'Access Token جديد' })
-  accessToken: string;
-
-  @ApiProperty({ description: 'Refresh Token جديد' })
-  refreshToken: string;
+  @ApiProperty() accessToken: string;
+  @ApiProperty() refreshToken: string;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -124,22 +184,15 @@ export class RefreshTokenResponseDto {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export class ChangePasswordDto {
-  @ApiProperty({
-    description: 'رمز الدخول الحالي',
-    example: 'Aa966512345678',
-  })
-  @IsString({ message: 'رمز الدخول الحالي يجب أن يكون نصاً' })
-  @IsNotEmpty({ message: 'رمز الدخول الحالي مطلوب' })
+  @ApiProperty({ description: 'رمز الدخول الحالي' })
+  @IsString() @IsNotEmpty()
   currentPassword: string;
 
-  @ApiProperty({
-    description: 'رمز الدخول الجديد',
-    example: 'MyNewPassword123',
-  })
-  @IsString({ message: 'رمز الدخول الجديد يجب أن يكون نصاً' })
-  @MinLength(8, { message: 'رمز الدخول الجديد يجب أن يكون 8 أحرف على الأقل' })
+  @ApiProperty({ description: 'رمز الدخول الجديد' })
+  @IsString()
+  @MinLength(8)
   @Matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).+$/, {
-    message: 'رمز الدخول يجب أن يحتوي على حرف كبير وحرف صغير ورقم على الأقل',
+    message: 'رمز الدخول يجب أن يحتوي على حرف كبير وحرف صغير ورقم',
   })
   newPassword: string;
 }
@@ -149,45 +202,20 @@ export class ChangePasswordDto {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export class UserProfileDto {
-  @ApiProperty({ description: 'معرّف المستخدم' })
-  id: string;
-
-  @ApiProperty({ description: 'البريد الإلكتروني' })
-  email: string;
-
-  @ApiProperty({ description: 'الاسم الأول' })
-  firstName: string;
-
-  @ApiProperty({ description: 'اسم العائلة' })
-  lastName: string;
-
-  @ApiPropertyOptional({ description: 'رقم الجوال' })
-  phone?: string;
-
-  @ApiPropertyOptional({ description: 'صورة المستخدم' })
-  avatar?: string;
-
-  @ApiProperty({ description: 'الدور' })
-  role: string;
-
-  @ApiProperty({ description: 'معرّف المتجر' })
-  tenantId: string;
-
-  @ApiPropertyOptional({ description: 'الإعدادات' })
-  preferences?: Record<string, any>;
-
-  @ApiProperty({ description: 'تاريخ الإنشاء' })
-  createdAt: Date;
+  @ApiProperty() id: string;
+  @ApiProperty() email: string;
+  @ApiProperty() firstName: string;
+  @ApiProperty() lastName: string;
+  @ApiPropertyOptional() phone?: string;
+  @ApiPropertyOptional() avatar?: string;
+  @ApiProperty() role: string;
+  @ApiProperty() tenantId: string;
+  @ApiPropertyOptional() authProvider?: string;
+  @ApiPropertyOptional() preferences?: Record<string, any>;
+  @ApiProperty() createdAt: Date;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// 📝 MESSAGE RESPONSE
-// ═══════════════════════════════════════════════════════════════════════════════
-
 export class MessageResponseDto {
-  @ApiProperty({
-    description: 'رسالة النتيجة',
-    example: 'تمت العملية بنجاح',
-  })
+  @ApiProperty({ example: 'تمت العملية بنجاح' })
   message: string;
 }
