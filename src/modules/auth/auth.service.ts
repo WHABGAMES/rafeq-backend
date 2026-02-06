@@ -809,9 +809,15 @@ export class AuthService {
   }): Promise<LoginResult> {
     const email = input.email.toLowerCase().trim();
 
-    const existing = await this.userRepository.findOne({ where: { email } });
+    const existing = await this.userRepository.findOne({
+      where: { email },
+      select: ['id', 'authProvider'],
+    });
     if (existing) {
-      throw new ConflictException('البريد الإلكتروني مسجل مسبقاً');
+      const providerName = this.getProviderName(existing.authProvider);
+      throw new ConflictException(
+        `البريد الإلكتروني مسجل مسبقاً عبر ${providerName}. سجّل دخول بنفس الطريقة أو استخدم طريقة أخرى.`
+      );
     }
 
     const tenant = this.tenantRepository.create({
