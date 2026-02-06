@@ -126,9 +126,9 @@ export class TemplatesController {
     @Query('channel') channel?: string,
     @Query('search') search?: string,
     @Query('page') page = 1,
-    @Query('limit') limit = 20,
+    @Query('limit') limit = 100,
   ) {
-    const tenantId = user.tenantId; // TODO: من JWT
+    const tenantId = user.tenantId;
     
     const filters: TemplateFiltersDto = {
       type,
@@ -748,6 +748,20 @@ export class TemplatesController {
         },
       ],
     };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // GET /templates/debug - تشخيص القوالب (للتطوير)
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Get('debug')
+  @ApiOperation({
+    summary: 'تشخيص القوالب',
+    description: 'عرض جميع القوالب مع حالة الحذف — للتشخيص فقط',
+  })
+  async debug(@CurrentUser() user: any) {
+    const tenantId = user.tenantId;
+    return this.templatesService.debugGetAll(tenantId);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
