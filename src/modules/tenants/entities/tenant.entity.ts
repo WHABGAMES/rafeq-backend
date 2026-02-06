@@ -14,7 +14,6 @@ import {
   Column,
   CreateDateColumn,
   UpdateDateColumn,
-  OneToMany,
   Index,
   BaseEntity,
 } from 'typeorm';
