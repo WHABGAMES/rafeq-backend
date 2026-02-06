@@ -1,557 +1,208 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║        RAFIQ PLATFORM - Template Scheduler Service                             ║
+ * ║        RAFIQ PLATFORM - Template Scheduler Processor                           ║
  * ║                                                                                ║
- * ║  📌 يدير الإرسال المؤجل للقوالب عبر BullMQ                                    ║
- * ║  ✅ جدولة الإرسال بعد تأخير محدد                                               ║
- * ║  ✅ إلغاء الإرسال المعلّق (عند إكمال الطلب مثلاً)                                ║
- * ║  ✅ منع التكرار — لا يرسل نفس القالب لنفس العميل مرتين                          ║
- * ║  ✅ دعم التسلسلات (سلة متروكة 1→2→3)                                           ║
+ * ║  📌 يُنفّذ الإرسال المؤجل عند حلول الموعد                                     ║
+ * ║  ✅ يتحقق من الحالة قبل الإرسال (لم يُلغَ)                                    ║
+ * ║  ✅ يرسل عبر واتساب مع استبدال المتغيرات                                       ║
+ * ║  ✅ يستخدم نص التاجر المخصص إن وُجد                                            ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
+import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, In } from 'typeorm';
-import { InjectQueue } from '@nestjs/bullmq';
-import { Queue } from 'bullmq';
-import { OnEvent } from '@nestjs/event-emitter';
+import { Repository } from 'typeorm';
+import { Job } from 'bullmq';
+import { MessageTemplate } from '@database/entities/message-template.entity';
+import { Channel, ChannelType, ChannelStatus } from '../../channels/entities/channel.entity';
+import { ChannelsService } from '../../channels/channels.service';
 import {
-  ScheduledTemplateSend,
   ScheduledSendStatus,
 } from '@database/entities/scheduled-template-send.entity';
-import { MessageTemplate } from '@database/entities/message-template.entity';
-
-export interface ScheduleTemplateJobData {
-  scheduledSendId: string;
-  templateId: string;
-  tenantId: string;
-  storeId?: string;
-  customerPhone: string;
-  customerName?: string;
-  payload: Record<string, unknown>;
-}
+import { TemplateSchedulerService, ScheduleTemplateJobData } from '../template-scheduler.service';
 
 @Injectable()
-export class TemplateSchedulerService {
-  private readonly logger = new Logger(TemplateSchedulerService.name);
+@Processor('template-scheduler', {
+  concurrency: 5,
+  limiter: {
+    max: 10,
+    duration: 1000,
+  },
+})
+export class TemplateSchedulerProcessor extends WorkerHost {
+  private readonly logger = new Logger(TemplateSchedulerProcessor.name);
 
   constructor(
-    @InjectRepository(ScheduledTemplateSend)
-    private readonly scheduledSendRepo: Repository<ScheduledTemplateSend>,
-
     @InjectRepository(MessageTemplate)
     private readonly templateRepo: Repository<MessageTemplate>,
 
-    @InjectQueue('template-scheduler')
-    private readonly schedulerQueue: Queue,
-  ) {}
+    @InjectRepository(Channel)
+    private readonly channelRepo: Repository<Channel>,
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // جدولة إرسال مؤجل
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  /**
-   * ✅ جدولة إرسال قالب بعد تأخير محدد
-   * يُنشئ سجل في DB + job في BullMQ
-   */
-  async scheduleDelayedSend(params: {
-    template: MessageTemplate;
-    tenantId: string;
-    storeId?: string;
-    customerPhone: string;
-    customerName?: string;
-    referenceId?: string;
-    referenceType?: string;
-    triggerEvent: string;
-    payload: Record<string, unknown>;
-    delayMinutes: number;
-    sequenceGroupKey?: string;
-    sequenceOrder?: number;
-  }): Promise<ScheduledTemplateSend | null> {
-    const {
-      template, tenantId, storeId, customerPhone, customerName,
-      referenceId, referenceType, triggerEvent, payload,
-      delayMinutes, sequenceGroupKey, sequenceOrder,
-    } = params;
-
-    // ✅ فحص التكرار — لا نرسل نفس القالب لنفس العميل لنفس المرجع
-    const isDuplicate = await this.isDuplicateSend(
-      tenantId, template.id, customerPhone, referenceId,
-    );
-
-    if (isDuplicate) {
-      this.logger.warn(
-        `🔁 Duplicate detected: template="${template.name}" phone=${customerPhone} ref=${referenceId}`,
-      );
-      return null;
-    }
-
-    // ✅ فحص حد الإرسال لكل عميل
-    const sendSettings = template.sendSettings;
-    if (sendSettings?.maxSendsPerCustomer) {
-      const isOverLimit = await this.isOverSendLimit(
-        tenantId, template.id, customerPhone,
-        sendSettings.maxSendsPerCustomer.count,
-        sendSettings.maxSendsPerCustomer.periodDays,
-      );
-      if (isOverLimit) {
-        this.logger.warn(
-          `⛔ Send limit reached: template="${template.name}" phone=${customerPhone}`,
-        );
-        return null;
-      }
-    }
-
-    // حساب وقت الإرسال
-    const scheduledAt = new Date(Date.now() + delayMinutes * 60 * 1000);
-
-    // إنشاء سجل في DB
-    const scheduledSend = this.scheduledSendRepo.create({
-      tenantId,
-      storeId,
-      templateId: template.id,
-      templateName: template.name,
-      customerPhone,
-      customerName,
-      referenceId,
-      referenceType,
-      triggerEvent,
-      sequenceGroupKey,
-      sequenceOrder,
-      status: ScheduledSendStatus.PENDING,
-      scheduledAt,
-      payload,
-    });
-
-    const saved = await this.scheduledSendRepo.save(scheduledSend);
-
-    // إنشاء BullMQ job مع delay
-    const delayMs = delayMinutes * 60 * 1000;
-    const jobData: ScheduleTemplateJobData = {
-      scheduledSendId: saved.id,
-      templateId: template.id,
-      tenantId,
-      storeId,
-      customerPhone,
-      customerName,
-      payload,
-    };
-
-    const job = await this.schedulerQueue.add(
-      `send-template-${template.name}`,
-      jobData,
-      {
-        delay: delayMs,
-        jobId: `sched-${saved.id}`,
-        removeOnComplete: { age: 86400, count: 1000 },
-        removeOnFail: { count: 5000 },
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 30000 },
-      },
-    );
-
-    // حفظ bullJobId للإلغاء لاحقاً
-    saved.bullJobId = job.id;
-    await this.scheduledSendRepo.save(saved);
-
-    this.logger.log(
-      `⏰ Scheduled: "${template.name}" → ${customerPhone} at ${scheduledAt.toISOString()} (delay: ${delayMinutes}min)`,
-      { scheduledSendId: saved.id, jobId: job.id },
-    );
-
-    return saved;
+    private readonly channelsService: ChannelsService,
+    private readonly schedulerService: TemplateSchedulerService,
+  ) {
+    super();
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // إلغاء الإرسال المعلّق
-  // ═══════════════════════════════════════════════════════════════════════════════
+  async process(job: Job<ScheduleTemplateJobData>): Promise<void> {
+    const { scheduledSendId, templateId, tenantId, storeId, customerPhone, payload } = job.data;
 
-  /**
-   * ✅ إلغاء كل الإرسال المعلّق لمرجع معين
-   * مثال: عميل أكمل الطلب → ألغِ تذكيرات السلة المتروكة
-   */
-  async cancelPendingSends(params: {
-    tenantId: string;
-    referenceId: string;
-    reason: string;
-    sequenceGroupKey?: string;
-  }): Promise<number> {
-    const { tenantId, referenceId, reason, sequenceGroupKey } = params;
-
-    const whereClause: any = {
-      tenantId,
-      status: ScheduledSendStatus.PENDING,
-    };
-
-    if (sequenceGroupKey) {
-      whereClause.sequenceGroupKey = sequenceGroupKey;
-      whereClause.referenceId = referenceId;
-    } else {
-      whereClause.referenceId = referenceId;
-    }
-
-    const pendingSends = await this.scheduledSendRepo.find({ where: whereClause });
-
-    if (pendingSends.length === 0) return 0;
-
-    let cancelledCount = 0;
-
-    for (const send of pendingSends) {
-      // إلغاء BullMQ job
-      if (send.bullJobId) {
-        try {
-          const job = await this.schedulerQueue.getJob(send.bullJobId);
-          if (job) {
-            await job.remove();
-            this.logger.log(`🗑️ Removed BullMQ job: ${send.bullJobId}`);
-          }
-        } catch (err) {
-          this.logger.warn(`⚠️ Failed to remove job ${send.bullJobId}: ${err}`);
-        }
-      }
-
-      // تحديث الحالة
-      send.status = ScheduledSendStatus.CANCELLED;
-      send.cancelledAt = new Date();
-      send.cancelReason = reason;
-      cancelledCount++;
-    }
-
-    await this.scheduledSendRepo.save(pendingSends);
-
-    this.logger.log(
-      `❌ Cancelled ${cancelledCount} pending sends for ref=${referenceId} (reason: ${reason})`,
-    );
-
-    return cancelledCount;
-  }
-
-  /**
-   * ✅ إلغاء كل الإرسال المعلّق لرقم هاتف عميل + تسلسل محدد
-   */
-  async cancelSequenceSends(params: {
-    tenantId: string;
-    customerPhone: string;
-    sequenceGroupKey: string;
-    reason: string;
-  }): Promise<number> {
-    const { tenantId, customerPhone, sequenceGroupKey, reason } = params;
-
-    const pendingSends = await this.scheduledSendRepo.find({
-      where: {
-        tenantId,
-        customerPhone,
-        sequenceGroupKey,
-        status: ScheduledSendStatus.PENDING,
-      },
-    });
-
-    if (pendingSends.length === 0) return 0;
-
-    for (const send of pendingSends) {
-      if (send.bullJobId) {
-        try {
-          const job = await this.schedulerQueue.getJob(send.bullJobId);
-          if (job) await job.remove();
-        } catch (err) {
-          this.logger.warn(`⚠️ Failed to remove job: ${err}`);
-        }
-      }
-
-      send.status = ScheduledSendStatus.CANCELLED;
-      send.cancelledAt = new Date();
-      send.cancelReason = reason;
-    }
-
-    await this.scheduledSendRepo.save(pendingSends);
-    return pendingSends.length;
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // Event Listeners — إلغاء تلقائي عند أحداث معينة
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  /**
-   * ✅ عند إنشاء طلب → ألغِ تذكيرات السلة المتروكة
-   */
-  @OnEvent('order.created')
-  async onOrderCreatedCancelCart(payload: Record<string, unknown>) {
-    const tenantId = payload.tenantId as string;
-    const raw = (payload.raw || payload) as Record<string, unknown>;
-    const customer = (raw.customer || {}) as Record<string, unknown>;
-    const phone = String(customer.mobile || customer.phone || raw.customerPhone || '');
-
-    if (!tenantId || !phone) return;
-
-    const cancelled = await this.cancelSequenceSends({
-      tenantId,
-      customerPhone: phone.replace(/[\s\-\(\)\+]/g, ''),
-      sequenceGroupKey: 'cart_abandoned',
-      reason: 'العميل أكمل الطلب',
-    });
-
-    if (cancelled > 0) {
-      this.logger.log(`🛒→✅ Cancelled ${cancelled} abandoned cart reminders (customer completed order)`);
-    }
-
-    // ✅ إلغاء ديناميكي — أي قالب فيه cancelOnEvents يتضمن 'order.created'
-    await this.dynamicCancelByEvent('order.created', tenantId, raw);
-  }
-
-  /**
-   * ✅ عند الدفع → ألغِ تذكيرات الدفع
-   */
-  @OnEvent('order.payment.updated')
-  async onPaymentCancelReminders(payload: Record<string, unknown>) {
-    const tenantId = payload.tenantId as string;
-    const raw = (payload.raw || payload) as Record<string, unknown>;
-    const orderId = String(raw.id || raw.orderId || '');
-
-    if (!tenantId || !orderId) return;
-
-    const cancelled = await this.cancelPendingSends({
-      tenantId,
-      referenceId: orderId,
-      reason: 'تم الدفع',
-    });
-
-    if (cancelled > 0) {
-      this.logger.log(`💳 Cancelled ${cancelled} payment reminders (payment received)`);
-    }
-
-    await this.dynamicCancelByEvent('order.payment.updated', tenantId, raw);
-  }
-
-  /**
-   * ✅ v2: عند تسليم الطلب → ألغِ أي إرسال معلّق مرتبط بهذا الطلب
-   */
-  @OnEvent('order.delivered')
-  async onOrderDeliveredCancel(payload: Record<string, unknown>) {
-    const tenantId = payload.tenantId as string;
-    const raw = (payload.raw || payload) as Record<string, unknown>;
-    await this.dynamicCancelByEvent('order.delivered', tenantId, raw);
-  }
-
-  /**
-   * ✅ v2: عند إلغاء الطلب → ألغِ أي إرسال معلّق مرتبط بهذا الطلب
-   */
-  @OnEvent('order.cancelled')
-  async onOrderCancelledCancel(payload: Record<string, unknown>) {
-    const tenantId = payload.tenantId as string;
-    const raw = (payload.raw || payload) as Record<string, unknown>;
-    const orderId = String(raw.id || raw.orderId || '');
-
-    if (!tenantId || !orderId) return;
-
-    // إلغاء كل الإرسال المعلّق لهذا الطلب
-    const cancelled = await this.cancelPendingSends({
-      tenantId,
-      referenceId: orderId,
-      reason: 'تم إلغاء الطلب',
-    });
-
-    if (cancelled > 0) {
-      this.logger.log(`❌ Cancelled ${cancelled} pending sends (order cancelled)`);
-    }
-
-    await this.dynamicCancelByEvent('order.cancelled', tenantId, raw);
-  }
-
-  /**
-   * ✅ v2: عند استرجاع الطلب → ألغِ أي إرسال معلّق
-   */
-  @OnEvent('order.refunded')
-  async onOrderRefundedCancel(payload: Record<string, unknown>) {
-    const tenantId = payload.tenantId as string;
-    const raw = (payload.raw || payload) as Record<string, unknown>;
-    await this.dynamicCancelByEvent('order.refunded', tenantId, raw);
-  }
-
-  /**
-   * ✅ v2: إلغاء ديناميكي بناءً على cancelOnEvents في sendSettings
-   * يبحث عن كل الإرسال المعلّق الذي قالبه يتضمن هذا الحدث في cancelOnEvents
-   */
-  private async dynamicCancelByEvent(
-    eventName: string,
-    tenantId: string,
-    rawData: Record<string, unknown>,
-  ): Promise<void> {
-    if (!tenantId) return;
-
-    try {
-      // البحث عن القوالب التي فيها cancelOnEvents تتضمن هذا الحدث
-      const templates = await this.templateRepo
-        .createQueryBuilder('t')
-        .where('t.tenant_id = :tenantId', { tenantId })
-        .andWhere(`t.send_settings->'cancelOnEvents' ? :event`, { event: eventName })
-        .andWhere('t.deleted_at IS NULL')
-        .select(['t.id', 't.name'])
-        .getMany();
-
-      if (templates.length === 0) return;
-
-      const templateIds = templates.map(t => t.id);
-      const orderId = String(rawData.id || rawData.orderId || rawData.order_id || '');
-      const customer = (rawData.customer || {}) as Record<string, unknown>;
-      const phone = String(customer.mobile || customer.phone || rawData.customerPhone || '').replace(/[\s\-\(\)\+]/g, '');
-
-      // البحث عن الإرسال المعلّق لهذه القوالب
-      const qb = this.scheduledSendRepo
-        .createQueryBuilder('s')
-        .where('s.tenant_id = :tenantId', { tenantId })
-        .andWhere('s.template_id IN (:...templateIds)', { templateIds })
-        .andWhere('s.status = :status', { status: ScheduledSendStatus.PENDING });
-
-      // تضييق البحث حسب المرجع أو رقم الهاتف
-      if (orderId) {
-        qb.andWhere('(s.reference_id = :orderId OR s.customer_phone = :phone)', { orderId, phone });
-      } else if (phone) {
-        qb.andWhere('s.customer_phone = :phone', { phone });
-      }
-
-      const pendingSends = await qb.getMany();
-      if (pendingSends.length === 0) return;
-
-      let cancelledCount = 0;
-      for (const send of pendingSends) {
-        if (send.bullJobId) {
-          try {
-            const job = await this.schedulerQueue.getJob(send.bullJobId);
-            if (job) await job.remove();
-          } catch (err) {
-            this.logger.warn(`⚠️ Failed to remove job: ${err}`);
-          }
-        }
-        send.status = ScheduledSendStatus.CANCELLED;
-        send.cancelledAt = new Date();
-        send.cancelReason = `حدث إلغاء: ${eventName}`;
-        cancelledCount++;
-      }
-
-      await this.scheduledSendRepo.save(pendingSends);
-
-      if (cancelledCount > 0) {
-        this.logger.log(
-          `🔄 Dynamic cancel: ${cancelledCount} sends cancelled by event "${eventName}" (templates: ${templates.map(t => t.name).join(', ')})`,
-        );
-      }
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : 'Unknown';
-      this.logger.error(`❌ Dynamic cancel failed for event "${eventName}": ${msg}`);
-    }
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // فحص التكرار
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  /**
-   * ✅ هل يوجد إرسال معلّق أو مُرسل لنفس القالب + العميل + المرجع؟
-   */
-  private async isDuplicateSend(
-    tenantId: string,
-    templateId: string,
-    customerPhone: string,
-    referenceId?: string,
-  ): Promise<boolean> {
-    const where: any = {
-      tenantId,
+    this.logger.log(`⏰ Processing scheduled send: ${scheduledSendId}`, {
       templateId,
       customerPhone,
-      status: In([ScheduledSendStatus.PENDING, ScheduledSendStatus.SENT]),
-    };
-
-    if (referenceId) {
-      where.referenceId = referenceId;
-    }
-
-    const existing = await this.scheduledSendRepo.findOne({
-      where,
-      select: ['id'],
     });
 
-    return !!existing;
-  }
+    try {
+      // 1️⃣ تحقق أن الإرسال لم يُلغَ
+      const scheduledSend = await this.schedulerService.findById(scheduledSendId);
 
-  /**
-   * ✅ هل تجاوز العميل حد الإرسال الأقصى؟
-   */
-  private async isOverSendLimit(
-    tenantId: string,
-    templateId: string,
-    customerPhone: string,
-    maxCount: number,
-    periodDays: number,
-  ): Promise<boolean> {
-    const since = new Date();
-    since.setDate(since.getDate() - periodDays);
+      if (!scheduledSend) {
+        this.logger.warn(`⚠️ Scheduled send not found: ${scheduledSendId}`);
+        return;
+      }
 
-    const count = await this.scheduledSendRepo
-      .createQueryBuilder('s')
-      .where('s.tenant_id = :tenantId', { tenantId })
-      .andWhere('s.template_id = :templateId', { templateId })
-      .andWhere('s.customer_phone = :customerPhone', { customerPhone })
-      .andWhere('s.status = :status', { status: ScheduledSendStatus.SENT })
-      .andWhere('s.sent_at >= :since', { since })
-      .getCount();
+      if (scheduledSend.status !== ScheduledSendStatus.PENDING) {
+        this.logger.log(
+          `⏭️ Skipping: status is ${scheduledSend.status} (not pending)`,
+        );
+        return;
+      }
 
-    return count >= maxCount;
-  }
+      // 2️⃣ جلب القالب (آخر نسخة — يحترم تعديلات التاجر)
+      const template = await this.templateRepo.findOne({
+        where: { id: templateId, tenantId },
+      });
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // إحصائيات
-  // ═══════════════════════════════════════════════════════════════════════════════
+      if (!template) {
+        await this.schedulerService.markAsFailed(scheduledSendId, 'القالب غير موجود');
+        return;
+      }
 
-  async getStats(tenantId: string): Promise<{
-    pending: number;
-    sent: number;
-    cancelled: number;
-    failed: number;
-  }> {
-    const results = await this.scheduledSendRepo
-      .createQueryBuilder('s')
-      .select('s.status', 'status')
-      .addSelect('COUNT(*)', 'count')
-      .where('s.tenant_id = :tenantId', { tenantId })
-      .groupBy('s.status')
-      .getRawMany();
+      // ✅ تحقق أن القالب لا يزال مفعّل
+      if (!['active', 'approved'].includes(template.status)) {
+        this.logger.warn(`⚠️ Template "${template.name}" is disabled (${template.status}) - skipping`);
+        await this.schedulerService.markAsFailed(scheduledSendId, `القالب معطّل (${template.status})`);
+        return;
+      }
 
-    const stats = { pending: 0, sent: 0, cancelled: 0, failed: 0 };
-    for (const row of results) {
-      const key = row.status as keyof typeof stats;
-      if (key in stats) stats[key] = parseInt(row.count, 10);
+      // 3️⃣ البحث عن قناة واتساب
+      const channel = await this.findActiveWhatsAppChannel(storeId);
+
+      if (!channel) {
+        await this.schedulerService.markAsFailed(scheduledSendId, 'لا توجد قناة واتساب متصلة');
+        return;
+      }
+
+      // 4️⃣ ✅ استبدال المتغيرات — يستخدم body القالب (نص التاجر المخصص إن وُجد)
+      const message = this.replaceVariables(template.body, payload);
+
+      // 5️⃣ إرسال عبر واتساب
+      this.logger.log(`📤 Sending scheduled template: "${template.name}" → ${customerPhone}`);
+
+      await this.channelsService.sendWhatsAppMessage(
+        channel.id,
+        customerPhone,
+        message,
+      );
+
+      // 6️⃣ تحديث الحالة
+      await this.schedulerService.markAsSent(scheduledSendId, message);
+
+      // 7️⃣ تحديث إحصائيات القالب
+      await this.incrementUsage(templateId);
+
+      this.logger.log(
+        `✅ Scheduled send completed: "${template.name}" → ${customerPhone}`,
+      );
+
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : 'Unknown';
+      this.logger.error(
+        `❌ Scheduled send failed: ${scheduledSendId} - ${msg}`,
+        { stack: error instanceof Error ? error.stack : undefined },
+      );
+
+      await this.schedulerService.markAsFailed(scheduledSendId, msg);
+      throw error; // BullMQ will retry based on attempts config
     }
-    return stats;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // Helpers
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  private async findActiveWhatsAppChannel(storeId?: string): Promise<Channel | null> {
+    if (!storeId) return null;
+    return this.channelRepo.findOne({
+      where: [
+        { storeId, type: ChannelType.WHATSAPP_QR, status: ChannelStatus.CONNECTED },
+        { storeId, type: ChannelType.WHATSAPP_OFFICIAL, status: ChannelStatus.CONNECTED },
+      ],
+    });
   }
 
   /**
-   * ✅ تحديث حالة الإرسال بعد النجاح
+   * ✅ استبدال المتغيرات — نفس منطق template-dispatcher
+   * يستخدم body القالب كما هو (نص التاجر أو الافتراضي)
    */
-  async markAsSent(scheduledSendId: string, finalMessage?: string): Promise<void> {
-    await this.scheduledSendRepo.update(scheduledSendId, {
-      status: ScheduledSendStatus.SENT,
-      sentAt: new Date(),
-      finalMessage,
-      attempts: () => 'attempts + 1',
-    } as any);
+  private replaceVariables(body: string, data: Record<string, unknown>): string {
+    let message = body;
+
+    const orderObj = (data.order || {}) as Record<string, unknown>;
+    const customer = (data.customer || orderObj.customer || {}) as Record<string, unknown>;
+    const urls = (data.urls || orderObj.urls || {}) as Record<string, unknown>;
+
+    const variables: Record<string, string> = {
+      customer_name: String(customer.first_name || customer.name || data.customerName || 'عميلنا الكريم'),
+      customer_first_name: String(customer.first_name || data.customerName || 'عميلنا'),
+      customer_phone: String(customer.mobile || customer.phone || ''),
+      customer_email: String(customer.email || ''),
+      order_id: String(data.reference_id || orderObj.reference_id || data.order_number || orderObj.order_number || data.id || orderObj.id || data.orderId || ''),
+      order_total: this.formatAmount(data.total || orderObj.total),
+      order_status: String(data.status || data.newStatus || orderObj.status || ''),
+      order_date: new Date().toLocaleDateString('ar-SA'),
+      order_tracking: String(urls.tracking || data.tracking_url || orderObj.tracking_url || ''),
+      tracking_number: String(data.tracking_number || data.trackingNumber || orderObj.tracking_number || ''),
+      shipping_company: String(data.shipping_company || data.shippingCompany || orderObj.shipping_company || ''),
+      store_name: String(data.store_name || orderObj.store_name || 'متجرنا'),
+      store_url: String(data.store_url || ''),
+      cart_total: this.formatAmount(data.total || data.cartTotal || orderObj.total),
+      cart_link: String(data.cart_url || data.checkout_url || orderObj.checkout_url || ''),
+      product_name: String(data.name || data.productName || ''),
+      product_price: this.formatAmount(data.price || orderObj.price),
+      payment_link: String(data.payment_url || data.checkout_url || orderObj.payment_url || ''),
+    };
+
+    for (const [key, value] of Object.entries(variables)) {
+      message = message.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), value || '');
+    }
+
+    message = message.replace(/\{\{[^}]+\}\}/g, '');
+    return message.trim();
   }
 
-  /**
-   * ✅ تحديث حالة الإرسال بعد الفشل
-   */
-  async markAsFailed(scheduledSendId: string, errorMessage: string): Promise<void> {
-    await this.scheduledSendRepo.update(scheduledSendId, {
-      status: ScheduledSendStatus.FAILED,
-      errorMessage,
-      attempts: () => 'attempts + 1',
-    } as any);
+  private formatAmount(amount: unknown): string {
+    if (!amount) return '0';
+    const num = typeof amount === 'number' ? amount : parseFloat(String(amount));
+    if (isNaN(num)) return String(amount);
+    return num.toLocaleString('ar-SA');
   }
 
-  /**
-   * ✅ جلب سجل الإرسال المجدول
-   */
-  async findById(id: string): Promise<ScheduledTemplateSend | null> {
-    return this.scheduledSendRepo.findOne({ where: { id } });
+  private async incrementUsage(templateId: string): Promise<void> {
+    try {
+      await this.templateRepo
+        .createQueryBuilder()
+        .update(MessageTemplate)
+        .set({
+          stats: () =>
+            `jsonb_set(COALESCE(stats, '{"usageCount":0}'::jsonb), '{usageCount}', (COALESCE((stats->>'usageCount')::int, 0) + 1)::text::jsonb)`,
+        })
+        .where('id = :id', { id: templateId })
+        .execute();
+    } catch {
+      this.logger.warn(`Failed to increment usage for template ${templateId}`);
+    }
   }
 }
