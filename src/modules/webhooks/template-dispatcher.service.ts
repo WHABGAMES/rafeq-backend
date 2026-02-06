@@ -266,6 +266,20 @@ export class TemplateDispatcherService {
         return;
       }
 
+      // ✅ v16: Template Isolation — قالب واحد فقط لكل حدث
+      // إذا وُجد أكثر من قالب مفعّل لنفس الحدث → نرسل الأحدث فقط ونُحذّر
+      if (templates.length > 1) {
+        this.logger.warn(`⚠️ ISOLATION: ${templates.length} templates found for trigger "${triggerEvent}" — sending only the most recent one`, {
+          templateNames: templates.map(t => t.name),
+          templateIds: templates.map(t => t.id),
+        });
+      }
+      // ترتيب حسب الأحدث واختيار الأول فقط
+      const sortedTemplates = templates.sort((a, b) =>
+        (b.updatedAt?.getTime() || 0) - (a.updatedAt?.getTime() || 0)
+      );
+      const activeTemplate = sortedTemplates[0];
+
       // 2️⃣ البحث عن قناة واتساب متصلة
       const channel = await this.findActiveWhatsAppChannel(storeId);
       if (!channel) {
@@ -294,81 +308,79 @@ export class TemplateDispatcherService {
 
       this.logger.log(`📞 Customer phone: ${customerPhone}`);
 
-      // 4️⃣ ✅ v13: إرسال أو جدولة كل قالب حسب sendSettings
-      for (const template of templates) {
-        const sendSettings = template.sendSettings;
+      // 4️⃣ ✅ v16: إرسال قالب واحد فقط (Template Isolation)
+      const template = activeTemplate;
+      const sendSettings = template.sendSettings;
 
-        // ✅ تحديد نوع الإرسال من sendSettings
-        const mode = sendSettings?.sendingMode || SendingMode.INSTANT;
+      // ✅ تحديد نوع الإرسال من sendSettings
+      const mode = sendSettings?.sendingMode || SendingMode.INSTANT;
 
-        if (mode === SendingMode.MANUAL) {
-          this.logger.log(`⏭️ Skipping manual template: "${template.name}"`);
-          continue;
-        }
-
-        // ✅ v15: فحص شرط الحالة — يعمل مع CONDITIONAL و DELAYED
-        // القالب يرسل فقط إذا تحققت الشروط (حالة الطلب أو طريقة الدفع)
-        if (sendSettings?.triggerCondition && (mode === SendingMode.CONDITIONAL || mode === SendingMode.DELAYED)) {
-          const condition = sendSettings.triggerCondition;
-
-          if (condition.orderStatus) {
-            const currentStatus = String(raw.status || raw.newStatus || '').toLowerCase();
-            if (currentStatus && currentStatus !== condition.orderStatus.toLowerCase()) {
-              this.logger.log(
-                `⏭️ Condition not met: "${template.name}" requires status "${condition.orderStatus}", got "${currentStatus}"`,
-              );
-              continue;
-            }
-          }
-
-          if (condition.paymentMethod) {
-            const currentMethod = String(
-              raw.payment_method || (raw as any).paymentMethod || '',
-            ).toLowerCase();
-            if (currentMethod && currentMethod !== condition.paymentMethod.toLowerCase()) {
-              this.logger.log(
-                `⏭️ Condition not met: "${template.name}" requires payment "${condition.paymentMethod}", got "${currentMethod}"`,
-              );
-              continue;
-            }
-          }
-        }
-
-        // ✅ Delayed أو Conditional مع تأخير: جدولة بدل إرسال فوري
-        const delayMinutes = sendSettings?.delayMinutes;
-        if (delayMinutes && delayMinutes > 0 && (mode === SendingMode.DELAYED || mode === SendingMode.CONDITIONAL)) {
-          this.logger.log(
-            `⏰ Scheduling: "${template.name}" → ${customerPhone} (delay: ${delayMinutes}min)`,
-          );
-
-          const orderId = String(raw.id || raw.orderId || raw.order_id || '');
-          await this.templateSchedulerService.scheduleDelayedSend({
-            template,
-            tenantId,
-            storeId,
-            customerPhone,
-            customerName: String(
-              (raw.customer as any)?.first_name ||
-              (raw.customer as any)?.name ||
-              raw.customerName ||
-              '',
-            ),
-            referenceId: orderId || undefined,
-            referenceType: triggerEvent.split('.')[0] || undefined,
-            triggerEvent,
-            payload: raw,
-            delayMinutes,
-            sequenceGroupKey: sendSettings?.sequence?.groupKey,
-            sequenceOrder: sendSettings?.sequence?.order,
-          });
-
-          continue; // لا ترسل فورياً
-        }
-
-        // ✅ Instant: إرسال فوري
-        this.logger.log(`📤 Sending template: "${template.name}" for trigger: ${triggerEvent}`);
-        await this.sendTemplate(template, channel, customerPhone, raw);
+      if (mode === SendingMode.MANUAL) {
+        this.logger.log(`⏭️ Skipping manual template: "${template.name}"`);
+        return;
       }
+
+      // ✅ v15: فحص شرط الحالة — يعمل مع CONDITIONAL و DELAYED
+      if (sendSettings?.triggerCondition && (mode === SendingMode.CONDITIONAL || mode === SendingMode.DELAYED)) {
+        const condition = sendSettings.triggerCondition;
+
+        if (condition.orderStatus) {
+          const currentStatus = String(raw.status || raw.newStatus || '').toLowerCase();
+          if (currentStatus && currentStatus !== condition.orderStatus.toLowerCase()) {
+            this.logger.log(
+              `⏭️ Condition not met: "${template.name}" requires status "${condition.orderStatus}", got "${currentStatus}"`,
+            );
+            return;
+          }
+        }
+
+        if (condition.paymentMethod) {
+          const currentMethod = String(
+            raw.payment_method || (raw as any).paymentMethod || '',
+          ).toLowerCase();
+          if (currentMethod && currentMethod !== condition.paymentMethod.toLowerCase()) {
+            this.logger.log(
+              `⏭️ Condition not met: "${template.name}" requires payment "${condition.paymentMethod}", got "${currentMethod}"`,
+            );
+            return;
+          }
+        }
+      }
+
+      // ✅ Delayed أو Conditional مع تأخير: جدولة بدل إرسال فوري
+      const delayMinutes = sendSettings?.delayMinutes;
+      if (delayMinutes && delayMinutes > 0 && (mode === SendingMode.DELAYED || mode === SendingMode.CONDITIONAL)) {
+        this.logger.log(
+          `⏰ Scheduling: "${template.name}" → ${customerPhone} (delay: ${delayMinutes}min)`,
+        );
+
+        const orderId = String(raw.id || raw.orderId || raw.order_id || '');
+        await this.templateSchedulerService.scheduleDelayedSend({
+          template,
+          tenantId,
+          storeId,
+          customerPhone,
+          customerName: String(
+            (raw.customer as any)?.first_name ||
+            (raw.customer as any)?.name ||
+            raw.customerName ||
+            '',
+          ),
+          referenceId: orderId || undefined,
+          referenceType: triggerEvent.split('.')[0] || undefined,
+          triggerEvent,
+          payload: raw,
+          delayMinutes,
+          sequenceGroupKey: sendSettings?.sequence?.groupKey,
+          sequenceOrder: sendSettings?.sequence?.order,
+        });
+
+        return; // لا ترسل فورياً
+      }
+
+      // ✅ Instant: إرسال فوري
+      this.logger.log(`📤 Sending template: "${template.name}" for trigger: ${triggerEvent}`);
+      await this.sendTemplate(template, channel, customerPhone, raw);
 
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : 'Unknown';
