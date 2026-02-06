@@ -2,9 +2,22 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Auth Controller                             ║
  * ║                                                                                ║
- * ║  ✅ v5: Security Fixes                                                         ║
- * ║  🔧 FIX H4: استخدام RegisterDto بدل raw Body                                  ║
- * ║  🔧 FIX M3: إخفاء الإيميل في الـ Logs                                         ║
+ * ║  ✅ v6: Multi-Auth Support                                                     ║
+ * ║  POST /auth/check-email     → التحقق من وجود الإيميل                          ║
+ * ║  POST /auth/login           → Email + Password                                ║
+ * ║  POST /auth/register        → تسجيل حساب جديد                                ║
+ * ║  POST /auth/otp/send        → إرسال OTP عبر الإيميل                           ║
+ * ║  POST /auth/otp/verify      → التحقق من OTP                                   ║
+ * ║  POST /auth/google          → Google OAuth                                    ║
+ * ║  GET  /auth/salla/url       → Salla OAuth URL                                ║
+ * ║  POST /auth/salla/callback  → Salla OAuth Callback                            ║
+ * ║  GET  /auth/zid/url         → Zid OAuth URL                                  ║
+ * ║  POST /auth/zid/callback    → Zid OAuth Callback                              ║
+ * ║  POST /auth/set-password    → تعيين كلمة مرور (OAuth/OTP users)               ║
+ * ║  POST /auth/refresh         → تجديد التوكن                                    ║
+ * ║  POST /auth/logout          → تسجيل الخروج                                   ║
+ * ║  GET  /auth/me              → بيانات المستخدم الحالي                           ║
+ * ║  POST /auth/change-password → تغيير كلمة المرور                               ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -32,7 +45,15 @@ import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import {
   LoginDto,
   LoginResponseDto,
-  RegisterDto, // 🔧 FIX H4
+  RegisterDto,
+  CheckEmailDto,
+  CheckEmailResponseDto,
+  SendEmailOtpDto,
+  VerifyEmailOtpDto,
+  GoogleAuthDto,
+  SallaAuthDto,
+  ZidAuthDto,
+  SetPasswordDto,
   RefreshTokenDto,
   RefreshTokenResponseDto,
   ChangePasswordDto,
@@ -47,7 +68,6 @@ export class AuthController {
 
   constructor(private readonly authService: AuthService) {}
 
-  // 🔧 FIX M3: إخفاء الإيميل
   private maskEmail(email: string): string {
     const [local, domain] = email.split('@');
     if (!domain) return '***@***';
@@ -58,51 +78,130 @@ export class AuthController {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
+  // 📧 CHECK EMAIL - هل الإيميل مسجل؟
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Post('check-email')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'التحقق من وجود الإيميل' })
+  @ApiResponse({ status: 200, type: CheckEmailResponseDto })
+  async checkEmail(@Body() dto: CheckEmailDto): Promise<CheckEmailResponseDto> {
+    return this.authService.checkEmail(dto.email);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔑 LOGIN - Email + Password
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Post('login')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'تسجيل الدخول بالإيميل وكلمة المرور' })
+  @ApiResponse({ status: 200, type: LoginResponseDto })
+  async login(@Body() dto: LoginDto): Promise<LoginResponseDto> {
+    this.logger.log(`Login attempt: ${this.maskEmail(dto.email)}`);
+    return this.authService.login(dto.email, dto.password);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
   // 📝 REGISTER
-  // 🔧 FIX H4: استخدام RegisterDto مع تحقق كامل
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({
-    summary: 'تسجيل حساب جديد',
-    description: 'إنشاء حساب جديد بالبريد الإلكتروني وكلمة المرور',
-  })
-  @ApiResponse({ status: 201, description: 'تم إنشاء الحساب بنجاح' })
-  @ApiResponse({ status: 409, description: 'البريد الإلكتروني مسجل مسبقاً' })
-  async register(
-    @Body() dto: RegisterDto, // 🔧 FIX H4: DTO بدل raw object
-  ): Promise<LoginResponseDto> {
+  @ApiOperation({ summary: 'تسجيل حساب جديد' })
+  @ApiResponse({ status: 201 })
+  async register(@Body() dto: RegisterDto): Promise<LoginResponseDto> {
     this.logger.log(`Register attempt: ${this.maskEmail(dto.email)}`);
-
-    const result = await this.authService.register({
+    return this.authService.register({
       email: dto.email,
       password: dto.password,
       name: dto.name,
       storeName: dto.storeName,
     });
-
-    this.logger.log(`✅ Registration successful: ${this.maskEmail(dto.email)}`);
-    return result;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 🔑 LOGIN
+  // 📧 EMAIL OTP
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  @Post('login')
+  @Post('otp/send-email')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({
-    summary: 'تسجيل الدخول',
-    description: 'تسجيل الدخول بالبريد الإلكتروني ورمز الدخول',
-  })
-  @ApiResponse({ status: 200, description: 'تم تسجيل الدخول بنجاح', type: LoginResponseDto })
-  @ApiResponse({ status: 401, description: 'بيانات الدخول غير صحيحة' })
-  async login(@Body() loginDto: LoginDto): Promise<LoginResponseDto> {
-    this.logger.log(`Login attempt: ${this.maskEmail(loginDto.email)}`);
-    const result = await this.authService.login(loginDto.email, loginDto.password);
-    this.logger.log(`✅ Login successful: ${this.maskEmail(loginDto.email)}`);
-    return result;
+  @ApiOperation({ summary: 'إرسال رمز تحقق عبر الإيميل' })
+  async sendEmailOtp(@Body() dto: SendEmailOtpDto): Promise<{ message: string; expiresAt: Date }> {
+    return this.authService.sendEmailOtp(dto.email);
+  }
+
+  @Post('otp/verify-email')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'التحقق من رمز الإيميل وتسجيل الدخول' })
+  @ApiResponse({ status: 200, type: LoginResponseDto })
+  async verifyEmailOtp(@Body() dto: VerifyEmailOtpDto): Promise<LoginResponseDto> {
+    return this.authService.verifyEmailOtp(dto.email, dto.otp);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔵 GOOGLE OAuth
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Post('google')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'تسجيل الدخول عبر Google' })
+  @ApiResponse({ status: 200, type: LoginResponseDto })
+  async googleAuth(@Body() dto: GoogleAuthDto): Promise<LoginResponseDto> {
+    return this.authService.googleAuth(dto.idToken);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🟢 SALLA OAuth
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Get('salla/url')
+  @ApiOperation({ summary: 'الحصول على رابط تسجيل الدخول عبر سلة' })
+  getSallaAuthUrl(): { url: string } {
+    return { url: this.authService.getSallaAuthUrl() };
+  }
+
+  @Post('salla/callback')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'معالجة callback من سلة' })
+  @ApiResponse({ status: 200, type: LoginResponseDto })
+  async sallaCallback(@Body() dto: SallaAuthDto): Promise<LoginResponseDto> {
+    return this.authService.sallaAuth(dto.code, dto.state);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🟣 ZID OAuth
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Get('zid/url')
+  @ApiOperation({ summary: 'الحصول على رابط تسجيل الدخول عبر زد' })
+  getZidAuthUrl(): { url: string } {
+    return { url: this.authService.getZidAuthUrl() };
+  }
+
+  @Post('zid/callback')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'معالجة callback من زد' })
+  @ApiResponse({ status: 200, type: LoginResponseDto })
+  async zidCallback(@Body() dto: ZidAuthDto): Promise<LoginResponseDto> {
+    return this.authService.zidAuth(dto.code, dto.state);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔐 SET PASSWORD (OAuth/OTP users)
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Post('set-password')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('JWT-auth')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'تعيين كلمة مرور جديدة (للمستخدمين بدون كلمة مرور)' })
+  async setPassword(
+    @Request() req: any,
+    @Body() dto: SetPasswordDto,
+  ): Promise<MessageResponseDto> {
+    await this.authService.setPassword(req.user.sub || req.user.id, dto.password);
+    return { message: 'تم تعيين كلمة المرور بنجاح' };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -112,14 +211,13 @@ export class AuthController {
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'تجديد التوكن' })
-  @ApiResponse({ status: 200, description: 'تم تجديد التوكن بنجاح', type: RefreshTokenResponseDto })
+  @ApiResponse({ status: 200, type: RefreshTokenResponseDto })
   async refreshToken(@Body() dto: RefreshTokenDto): Promise<RefreshTokenResponseDto> {
     return this.authService.refreshTokens(dto.refreshToken);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
   // 🚪 LOGOUT
-  // 🔧 FIX C4: تمرير JTI للـ blacklist
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Post('logout')
@@ -129,9 +227,9 @@ export class AuthController {
   @ApiOperation({ summary: 'تسجيل الخروج' })
   async logout(@Request() req: any): Promise<MessageResponseDto> {
     await this.authService.logout(
-      req.user.sub,
-      req.user.jti,        // 🔧 FIX C4: access token JTI
-      req.body?.refreshJti, // optional: refresh token JTI
+      req.user.sub || req.user.id,
+      req.user.jti,
+      req.body?.refreshJti,
     );
     return { message: 'تم تسجيل الخروج بنجاح' };
   }
@@ -144,9 +242,9 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'معلومات المستخدم الحالي' })
-  @ApiResponse({ status: 200, description: 'بيانات المستخدم', type: UserProfileDto })
+  @ApiResponse({ status: 200, type: UserProfileDto })
   async getMe(@Request() req: any): Promise<UserProfileDto> {
-    return this.authService.getUserProfile(req.user.sub);
+    return this.authService.getUserProfile(req.user.sub || req.user.id);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -158,12 +256,11 @@ export class AuthController {
   @ApiBearerAuth('JWT-auth')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'تغيير كلمة المرور' })
-  @ApiResponse({ status: 200, description: 'تم تغيير كلمة المرور بنجاح' })
   async changePassword(
     @Request() req: any,
     @Body() dto: ChangePasswordDto,
   ): Promise<MessageResponseDto> {
-    await this.authService.changePassword(req.user.sub, dto.currentPassword, dto.newPassword);
+    await this.authService.changePassword(req.user.sub || req.user.id, dto.currentPassword, dto.newPassword);
     return { message: 'تم تغيير كلمة المرور بنجاح' };
   }
 }
