@@ -20,7 +20,7 @@ import {
   ScheduledTemplateSend,
   ScheduledSendStatus,
 } from '@database/entities/scheduled-template-send.entity';
-import { MessageTemplate, SendingMode } from '@database/entities/message-template.entity';
+import { MessageTemplate } from '@database/entities/message-template.entity';
 
 export interface ScheduleTemplateJobData {
   scheduledSendId: string;
