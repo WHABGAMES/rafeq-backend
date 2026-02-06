@@ -44,7 +44,10 @@ export {
   TemplateCategory,
   TemplateChannel,
   TemplateLanguage,
+  SendingMode,
 } from './message-template.entity';
+export type { TemplateSendSettings } from './message-template.entity';
+export { ScheduledTemplateSend, ScheduledSendStatus } from './scheduled-template-send.entity';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // WEBHOOK ENTITY
@@ -76,6 +79,7 @@ import { WebhookEvent } from './webhook-event.entity';
 import { WebhookLog } from '../../modules/webhooks/entities/webhook-log.entity';
 import { SubscriptionPlan } from './subscription-plan.entity';
 import { Subscription } from './subscription.entity';
+import { ScheduledTemplateSend } from './scheduled-template-send.entity';
 
 export const allEntities = [
   Tenant,
@@ -92,4 +96,5 @@ export const allEntities = [
   WebhookLog,
   SubscriptionPlan,
   Subscription,
+  ScheduledTemplateSend,
 ];
