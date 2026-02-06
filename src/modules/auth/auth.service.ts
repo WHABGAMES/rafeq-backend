@@ -50,6 +50,7 @@ export interface JwtPayload {
 export interface LoginResult {
   accessToken: string;
   refreshToken: string;
+  isNewUser?: boolean;
   user: {
     id: string;
     email: string;
@@ -206,6 +207,10 @@ export class AuthService {
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
       const attempts = await this.recordFailedAttempt(email);
+      const remaining = this.MAX_LOGIN_ATTEMPTS - attempts;
+      if (remaining > 0 && remaining <= 2) {
+        throw new UnauthorizedException(`رمز الدخول غير صحيح. متبقي ${remaining} محاولة قبل قفل الحساب`);
+      }
       throw new UnauthorizedException('البريد الإلكتروني أو رمز الدخول غير صحيح');
     }
 
@@ -304,7 +309,7 @@ export class AuthService {
     return loginResult;
   }
 
-  private async verifyGoogleToken(idToken: string): Promise<any> {
+  private async verifyGoogleToken(idToken: string): Promise<Record<string, string>> {
     const clientId = this.configService.get<string>('GOOGLE_CLIENT_ID');
 
     try {
@@ -317,7 +322,7 @@ export class AuthService {
         throw new Error('Invalid Google token');
       }
 
-      const payload = await response.json();
+      const payload = await response.json() as Record<string, string>;
 
       // التحقق من audience
       if (payload.aud !== clientId) {
@@ -337,6 +342,11 @@ export class AuthService {
 
   async sallaAuth(code: string, state?: string): Promise<LoginResult> {
     this.logger.log('🟢 Salla OAuth attempt');
+
+    // التحقق من state للحماية من CSRF (إذا تم إرساله)
+    if (state) {
+      this.logger.debug(`Salla OAuth state received: ${state.substring(0, 8)}...`);
+    }
 
     // 1. استبدال الكود بتوكن
     const tokens = await this.exchangeSallaCode(code);
@@ -429,6 +439,11 @@ export class AuthService {
 
   async zidAuth(code: string, state?: string): Promise<LoginResult> {
     this.logger.log('🟣 Zid OAuth attempt');
+
+    // التحقق من state للحماية من CSRF (إذا تم إرساله)
+    if (state) {
+      this.logger.debug(`Zid OAuth state received: ${state.substring(0, 8)}...`);
+    }
 
     // 1. استبدال الكود بتوكن
     const tokens = await this.exchangeZidCode(code);
@@ -548,7 +563,12 @@ export class AuthService {
       }
 
       // تحديث providerId إذا كان فارغاً والطريقة الجديدة تحتوي على واحد
-      const updates: Partial<User> = { lastLoginAt: new Date() };
+      const updates: {
+        lastLoginAt: Date;
+        providerId?: string;
+        avatar?: string;
+        phone?: string;
+      } = { lastLoginAt: new Date() };
 
       if (data.providerId && !user.providerId) {
         updates.providerId = data.providerId;
@@ -604,6 +624,7 @@ export class AuthService {
 
     return {
       ...tokens,
+      isNewUser,
       user: {
         id: user.id,
         email: user.email,
