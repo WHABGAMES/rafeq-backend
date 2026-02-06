@@ -1,7 +1,7 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║              RAFIQ PLATFORM - Templates Service                                ║
- * ║  ✅ v3: حفظ triggerEvent بـ ?? null + status + إرجاع content               ║
+ * ║  ✅ v4: إصلاح جذري — soft delete + QueryBuilder filter + verify after save   ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -30,8 +30,40 @@ export class TemplatesService {
     private readonly templateRepository: Repository<MessageTemplate>,
   ) {}
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ✅ Helper: تحويل Entity → Response DTO
+  // ═══════════════════════════════════════════════════════════════════════════
+  private mapToResponse(t: MessageTemplate) {
+    return {
+      id: t.id,
+      name: t.name,
+      displayName: t.displayName,
+      description: t.description,
+      category: t.category,
+      channel: t.channel,
+      language: t.language,
+      status: t.status,
+      triggerEvent: t.triggerEvent,
+      content: t.body,
+      body: t.body,
+      header: t.header,
+      footer: t.footer,
+      buttons: t.buttons,
+      variables: t.variables,
+      stats: t.stats,
+      usageCount: t.stats?.usageCount ?? 0,
+      isEnabled: t.status === 'active' || t.status === 'approved',
+      createdAt: t.createdAt,
+      updatedAt: t.updatedAt,
+    };
+  }
+
   /**
-   * جلب جميع القوالب مع الفلترة
+   * ✅ جلب جميع القوالب
+   * إصلاحات:
+   *  1. فلترة deleted_at IS NULL صريحة (QueryBuilder ما يفلتر تلقائي دايم)
+   *  2. استخدام أسماء أعمدة قاعدة البيانات الفعلية (snake_case)
+   *  3. limit=100 بدل 20 حتى يشمل كل القوالب
    */
   async findAll(
     tenantId: string,
@@ -41,14 +73,13 @@ export class TemplatesService {
     const { page, limit } = pagination;
     const skip = (page - 1) * limit;
 
-    this.logger.debug(`📋 Fetching templates for tenant: ${tenantId}`, {
-      filters,
-      pagination: { page, limit },
-    });
+    this.logger.log(`📋 findAll: tenant=${tenantId}, page=${page}, limit=${limit}`);
 
     const queryBuilder = this.templateRepository
       .createQueryBuilder('template')
-      .where('template.tenantId = :tenantId', { tenantId });
+      .where('template.tenant_id = :tenantId', { tenantId })
+      // ✅ فلترة صريحة — TypeORM QueryBuilder لا يضمن فلترة soft delete تلقائياً
+      .andWhere('template.deleted_at IS NULL');
 
     if (filters.type) {
       queryBuilder.andWhere('template.type = :type', { type: filters.type });
@@ -71,31 +102,21 @@ export class TemplatesService {
 
     const total = await queryBuilder.getCount();
     const templates = await queryBuilder
-      .orderBy('template.createdAt', 'DESC')
+      .orderBy('template.created_at', 'DESC')
       .skip(skip)
       .take(limit)
       .getMany();
 
-    this.logger.debug(`✅ Found ${templates.length} templates (total: ${total})`, {
-      tenantId,
-      statuses: templates.map(t => t.status),
-    });
-
-    // ✅ إرجاع content مع كل قالب + isEnabled
-    const mappedTemplates = templates.map((t) => ({
-      ...t,
-      content: t.body,
-      isEnabled: t.status === 'active' || t.status === 'approved',
-    }));
+    this.logger.log(`✅ findAll: found ${templates.length}/${total} | statuses=[${templates.map(t => t.status).join(',')}] | names=[${templates.map(t => t.name).join(',')}]`);
 
     return {
-      data: mappedTemplates,
+      data: templates.map(t => this.mapToResponse(t)),
       pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
     };
   }
 
   /**
-   * جلب قالب بالـ ID (للاستخدام الداخلي)
+   * جلب قالب بالـ ID (داخلي)
    */
   private async findByIdInternal(id: string, tenantId: string): Promise<MessageTemplate> {
     const template = await this.templateRepository.findOne({
@@ -112,40 +133,28 @@ export class TemplatesService {
    */
   async findById(id: string, tenantId: string) {
     const template = await this.findByIdInternal(id, tenantId);
-    return {
-      ...template,
-      content: template.body,
-      isEnabled: template.status === 'active' || template.status === 'approved',
-    };
+    return this.mapToResponse(template);
   }
 
   /**
-   * ✅ إنشاء قالب جديد
+   * ✅ إنشاء قالب جديد — مع تحقق بعد الحفظ
    */
   async create(tenantId: string, dto: CreateTemplateDto) {
-    this.logger.log(`Creating template: ${dto.name}`, {
-      tenantId,
-      category: dto.category,
-      triggerEvent: dto.triggerEvent,
-    });
+    this.logger.log(`🆕 create: name="${dto.name}", tenant=${tenantId}, status=${dto.status}, trigger=${dto.triggerEvent}`);
 
-    // ✅ v9: تحقق إذا القالب موجود بنفس الاسم (حتى لو محذوف soft delete)
+    // ✅ تحقق إذا القالب موجود بنفس الاسم (حتى لو محذوف soft delete)
     const existingTemplate = await this.templateRepository.findOne({
       where: { tenantId: tenantId as any, name: dto.name },
-      withDeleted: true, // ✅ يشمل الـ soft deleted
+      withDeleted: true,
     });
 
     if (existingTemplate) {
-      this.logger.log(`📝 Template "${dto.name}" exists - restoring/updating`, {
-        tenantId,
-        existingId: existingTemplate.id,
-        oldStatus: existingTemplate.status,
-        wasDeleted: !!existingTemplate.deletedAt,
-      });
+      this.logger.log(`📝 Found existing: id=${existingTemplate.id}, status=${existingTemplate.status}, deleted=${!!existingTemplate.deletedAt}`);
 
-      // إزالة الـ soft delete إذا موجود
+      // ✅ إزالة الـ soft delete بالطريقة الصحيحة
       if (existingTemplate.deletedAt) {
-        existingTemplate.deletedAt = null as any;
+        await this.templateRepository.restore(existingTemplate.id);
+        this.logger.log(`♻️ Restored soft-deleted template: ${existingTemplate.id}`);
       }
 
       // تحديث القالب
@@ -156,26 +165,25 @@ export class TemplatesService {
       if (dto.buttons) existingTemplate.buttons = dto.buttons as any;
 
       const updated = await this.templateRepository.save(existingTemplate);
-      this.logger.log(`✅ Template reactivated: ${updated.id}`, {
-        tenantId,
-        name: dto.name,
-        status: updated.status,
-      });
 
-      return {
-        ...updated,
-        content: updated.body,
-        isEnabled: updated.status === 'active' || updated.status === 'approved',
-      };
+      // ✅ تحقق بعد الحفظ
+      const verified = await this.templateRepository.findOne({ where: { id: updated.id, tenantId } });
+      this.logger.log(`✅ Reactivated: id=${updated.id}, status=${updated.status}, verified=${!!verified}`);
+
+      if (!verified) {
+        this.logger.error(`❌ CRITICAL: Reactivated template NOT found! id=${updated.id}`);
+      }
+
+      return this.mapToResponse(updated);
     }
 
-    // ✅ قبول status من الفرونتند
+    // ✅ قالب جديد تماماً
     const status =
-      dto.status === 'approved'
-        ? TemplateStatus.APPROVED
-        : dto.status === 'active'
-          ? TemplateStatus.ACTIVE
-          : TemplateStatus.DRAFT;
+      dto.status === 'approved' ? TemplateStatus.APPROVED
+      : dto.status === 'active' ? TemplateStatus.ACTIVE
+      : TemplateStatus.DRAFT;
+
+    this.logger.log(`📝 Creating NEW: name="${dto.name}", mappedStatus=${status}`);
 
     const templateData: Partial<MessageTemplate> = {
       tenantId: tenantId as any,
@@ -189,6 +197,7 @@ export class TemplatesService {
       status,
       triggerEvent: dto.triggerEvent ?? undefined,
       buttons: (dto.buttons as any) || [],
+      variables: [] as any,
       stats: { usageCount: 0 } as any,
     };
 
@@ -196,28 +205,26 @@ export class TemplatesService {
 
     try {
       const result = await this.templateRepository.save(template);
-      // save() can return entity or array - normalize to single entity
       const saved = Array.isArray(result) ? result[0] : result;
 
-      this.logger.log(`✅ Template created: ${saved.id}`, {
-        tenantId,
-        name: dto.name,
-        status: saved.status,
-        triggerEvent: saved.triggerEvent,
+      // ✅ تحقق بعد الحفظ
+      const verified = await this.templateRepository.findOne({
+        where: { id: saved.id, tenantId },
       });
 
-      return {
-        ...saved,
-        content: saved.body,
-        isEnabled: saved.status === 'active' || saved.status === 'approved',
-      };
+      if (!verified) {
+        this.logger.error(`❌ CRITICAL: Created template NOT found after save! id=${saved.id}, tenant=${tenantId}`);
+        throw new Error('فشل في التحقق من حفظ القالب — يرجى المحاولة مرة أخرى');
+      }
+
+      this.logger.log(`✅ Created & verified: id=${saved.id}, name="${saved.name}", status=${saved.status}`);
+      return this.mapToResponse(saved);
+
     } catch (error: unknown) {
       const err = error as Record<string, unknown>;
-      if (
-        err.code === '23505' ||
-        (typeof err.detail === 'string' && err.detail.includes('already exists'))
-      ) {
-        this.logger.warn(`Template name already exists: ${dto.name}`, { tenantId });
+      this.logger.error(`❌ create failed: ${err.message || err}`, { code: err.code, detail: err.detail });
+
+      if (err.code === '23505' || (typeof err.detail === 'string' && err.detail.includes('already exists'))) {
         throw new BadRequestException(`قالب بنفس الاسم "${dto.name}" موجود بالفعل`);
       }
       throw error;
@@ -225,11 +232,12 @@ export class TemplatesService {
   }
 
   /**
-   * ✅ تحديث قالب — إصلاح: استخدام !== undefined بدل truthy check
-   * لضمان قبول جميع القيم بما فيها الفارغة
+   * ✅ تحديث قالب
    */
   async update(id: string, tenantId: string, dto: UpdateTemplateDto) {
     const template = await this.findByIdInternal(id, tenantId);
+
+    this.logger.log(`📝 update: id=${id}, currentStatus=${template.status}, newStatus=${dto.status}`);
 
     if (dto.content !== undefined && dto.content !== null) template.body = dto.content;
     if (dto.name !== undefined && dto.name !== null) {
@@ -241,166 +249,83 @@ export class TemplatesService {
     if (dto.status !== undefined && dto.status !== null) template.status = dto.status;
     if (dto.triggerEvent !== undefined) template.triggerEvent = dto.triggerEvent;
 
-    this.logger.log(`📝 Updating template: ${id}`, {
-      tenantId,
-      fieldsUpdated: Object.keys(dto).filter(k => (dto as any)[k] !== undefined),
-      newStatus: dto.status,
-    });
-
     const saved = await this.templateRepository.save(template);
 
-    this.logger.log(`✅ Template updated: ${id}`, {
-      tenantId,
-      status: saved.status,
-      name: saved.name,
-    });
+    // ✅ تحقق
+    const verified = await this.templateRepository.findOne({ where: { id, tenantId } });
+    this.logger.log(`✅ Updated: id=${id}, status=${saved.status}, verifiedStatus=${verified?.status}`);
 
-    return {
-      ...saved,
-      content: saved.body,
-      isEnabled: saved.status === 'active' || saved.status === 'approved',
-    };
+    return this.mapToResponse(saved);
   }
 
   /**
-   * ✅ حذف قالب — soft delete للتوافق مع create() الذي يبحث withDeleted
+   * ✅ حذف قالب — soft delete
    */
   async delete(id: string, tenantId: string) {
     const template = await this.findByIdInternal(id, tenantId);
-    
-    this.logger.log(`🗑️ Soft-deleting template: ${id}`, {
-      tenantId,
-      name: template.name,
-      status: template.status,
-    });
-
+    this.logger.log(`🗑️ Soft-delete: id=${id}, name="${template.name}"`);
     await this.templateRepository.softDelete(template.id);
-    this.logger.log(`✅ Template soft-deleted: ${id}`, { tenantId });
   }
 
   /**
-   * ✅ تفعيل/تعطيل عدة قوالب دفعة واحدة
+   * ✅ تفعيل/تعطيل عدة قوالب
    */
   async bulkToggle(ids: string[], tenantId: string, enable: boolean) {
     const templates = await this.templateRepository.find({
-      where: {
-        id: { $in: ids } as any,
-        tenantId,
-      },
+      where: { id: { $in: ids } as any, tenantId },
     });
 
-    if (templates.length === 0) {
-      throw new NotFoundException('لم يتم العثور على قوالب');
-    }
+    if (templates.length === 0) throw new NotFoundException('لم يتم العثور على قوالب');
 
     const newStatus = enable ? TemplateStatus.ACTIVE : TemplateStatus.DISABLED;
-
-    // تحديث جميع القوالب
-    templates.forEach((t) => {
-      t.status = newStatus;
-    });
-
+    templates.forEach(t => { t.status = newStatus; });
     const saved = await this.templateRepository.save(templates);
-
-    this.logger.log(`✅ Bulk toggle: ${saved.length} templates`, {
-      tenantId,
-      newStatus,
-      ids: saved.map((t) => t.id),
-    });
 
     return {
       success: true,
       count: saved.length,
-      templates: saved.map((t) => ({
-        id: t.id,
-        name: t.name,
-        status: t.status,
-        isEnabled: t.status === TemplateStatus.ACTIVE || t.status === 'active',
+      templates: saved.map(t => ({
+        id: t.id, name: t.name, status: t.status,
+        isEnabled: ['active', 'approved'].includes(t.status),
       })),
-      message: enable
-        ? `تم تفعيل ${saved.length} قالب بنجاح`
-        : `تم تعطيل ${saved.length} قالب بنجاح`,
+      message: enable ? `تم تفعيل ${saved.length} قالب` : `تم تعطيل ${saved.length} قالب`,
     };
   }
 
   /**
-   * ✅ تفعيل/تعطيل قالب - يدعم جميع الحالات
+   * ✅ تفعيل/تعطيل قالب
    */
   async toggle(id: string, tenantId: string) {
     const template = await this.findByIdInternal(id, tenantId);
-    
-    // ✅ قائمة الحالات النشطة
-    const activeStatuses = [
-      TemplateStatus.ACTIVE,
-      TemplateStatus.APPROVED,
-      'active',
-      'approved',
-    ];
-    
-    // ✅ تحقق إذا القالب نشط حالياً
-    const isCurrentlyActive = activeStatuses.includes(template.status as any);
-    
-    // ✅ تبديل الحالة
-    if (isCurrentlyActive) {
-      template.status = TemplateStatus.DISABLED;
-    } else {
-      template.status = TemplateStatus.ACTIVE;
-    }
-
+    const isActive = ['active', 'approved'].includes(template.status);
+    template.status = isActive ? TemplateStatus.DISABLED : TemplateStatus.ACTIVE;
     const saved = await this.templateRepository.save(template);
-    
-    this.logger.log(`✅ Template toggled: ${id}`, {
-      tenantId,
-      oldStatus: isCurrentlyActive ? 'active' : 'disabled',
-      newStatus: saved.status,
-    });
-    
+
+    this.logger.log(`✅ Toggle: ${id} → ${saved.status}`);
     return {
-      id: saved.id,
-      name: saved.name,
-      status: saved.status,
-      isEnabled: saved.status === TemplateStatus.ACTIVE || saved.status === 'active',
-      content: saved.body,
-      triggerEvent: saved.triggerEvent,
-      message:
-        saved.status === TemplateStatus.ACTIVE ? 'تم تفعيل القالب' : 'تم تعطيل القالب',
+      id: saved.id, name: saved.name, status: saved.status,
+      isEnabled: ['active', 'approved'].includes(saved.status),
+      content: saved.body, triggerEvent: saved.triggerEvent,
+      message: isActive ? 'تم تعطيل القالب' : 'تم تفعيل القالب',
     };
   }
 
-  /**
-   * نسخ قالب
-   */
   async duplicate(id: string, tenantId: string, newName?: string) {
     const original = await this.findByIdInternal(id, tenantId);
-    const duplicate = this.templateRepository.create({
-      tenantId: original.tenantId,
-      name: newName || `${original.name}_copy`,
+    const dup = this.templateRepository.create({
+      tenantId: original.tenantId, name: newName || `${original.name}_copy`,
       displayName: newName || `${original.displayName} (نسخة)`,
-      description: original.description,
-      category: original.category,
-      channel: original.channel,
-      language: original.language,
-      body: original.body,
-      header: original.header,
-      footer: original.footer,
-      buttons: original.buttons,
-      variables: original.variables,
-      triggerEvent: original.triggerEvent,
-      status: TemplateStatus.DRAFT,
+      description: original.description, category: original.category,
+      channel: original.channel, language: original.language,
+      body: original.body, header: original.header, footer: original.footer,
+      buttons: original.buttons, variables: original.variables,
+      triggerEvent: original.triggerEvent, status: TemplateStatus.DRAFT,
       stats: { usageCount: 0 },
     });
-    return this.templateRepository.save(duplicate);
+    return this.templateRepository.save(dup);
   }
 
-  /**
-   * إرسال رسالة اختبارية
-   */
-  async sendTest(
-    id: string,
-    tenantId: string,
-    phone: string,
-    variables?: Record<string, string>,
-  ) {
+  async sendTest(id: string, tenantId: string, phone: string, variables?: Record<string, string>) {
     const template = await this.findByIdInternal(id, tenantId);
     let body = template.body || '';
     if (variables) {
@@ -408,25 +333,13 @@ export class TemplatesService {
         body = body.replace(new RegExp(`{{${key}}}`, 'g'), value);
       });
     }
-    this.logger.log(`Test message sent to ${phone}`, { templateId: id });
     return { success: true, message: 'تم إرسال رسالة الاختبار', preview: body };
   }
 
-  /**
-   * إرسال قالب للموافقة من WhatsApp
-   */
   async submitToWhatsApp(tenantId: string, dto: SubmitWhatsAppTemplateDto) {
-    this.logger.log(`Submitting template to WhatsApp: ${dto.name}`, { tenantId });
-    return {
-      success: true,
-      message: 'تم إرسال القالب للمراجعة. سيتم إشعارك عند الموافقة.',
-      estimatedTime: '24-48 ساعة',
-    };
+    return { success: true, message: 'تم إرسال القالب للمراجعة', estimatedTime: '24-48 ساعة' };
   }
 
-  /**
-   * جلب حالة قوالب WhatsApp
-   */
   async getWhatsAppTemplatesStatus(tenantId: string) {
     const templates = await this.templateRepository.find({
       where: { tenantId, channel: TemplateChannel.WHATSAPP },
@@ -436,35 +349,51 @@ export class TemplatesService {
       templates,
       summary: {
         total: templates.length,
-        approved: templates.filter((t) => t.status === TemplateStatus.APPROVED).length,
-        pending: templates.filter((t) => t.status === TemplateStatus.PENDING_APPROVAL).length,
-        rejected: templates.filter((t) => t.status === TemplateStatus.REJECTED).length,
+        approved: templates.filter(t => t.status === TemplateStatus.APPROVED).length,
+        pending: templates.filter(t => t.status === TemplateStatus.PENDING_APPROVAL).length,
+        rejected: templates.filter(t => t.status === TemplateStatus.REJECTED).length,
       },
     };
   }
 
-  /**
-   * مزامنة مع WhatsApp
-   */
   async syncWithWhatsApp(tenantId: string) {
-    this.logger.log(`Syncing WhatsApp templates`, { tenantId });
     return { success: true, message: 'تمت المزامنة بنجاح', synced: 0, added: 0, updated: 0 };
   }
 
-  /**
-   * إحصائيات القالب
-   */
   async getStats(_id: string, _tenantId: string) {
     return {
-      usageCount: 0,
-      sentCount: 0,
-      deliveredCount: 0,
-      readCount: 0,
-      clickCount: 0,
-      deliveryRate: 0,
-      readRate: 0,
-      clickRate: 0,
-      lastUsed: null,
+      usageCount: 0, sentCount: 0, deliveredCount: 0, readCount: 0,
+      clickCount: 0, deliveryRate: 0, readRate: 0, clickRate: 0, lastUsed: null,
+    };
+  }
+
+  /**
+   * ✅ Debug endpoint: عرض كل القوالب — للتشخيص
+   */
+  async debugGetAll(tenantId: string) {
+    const active = await this.templateRepository.find({
+      where: { tenantId },
+      order: { createdAt: 'DESC' },
+    });
+
+    const all = await this.templateRepository.find({
+      where: { tenantId },
+      withDeleted: true,
+      order: { createdAt: 'DESC' },
+    });
+
+    const qbResult = await this.templateRepository
+      .createQueryBuilder('t')
+      .where('t.tenant_id = :tenantId', { tenantId })
+      .andWhere('t.deleted_at IS NULL')
+      .orderBy('t.created_at', 'DESC')
+      .getMany();
+
+    return {
+      tenantId,
+      counts: { active: active.length, withDeleted: all.length, queryBuilder: qbResult.length },
+      active: active.map(t => ({ id: t.id, name: t.name, status: t.status, createdAt: t.createdAt })),
+      softDeleted: all.filter(t => t.deletedAt).map(t => ({ id: t.id, name: t.name, status: t.status, deletedAt: t.deletedAt })),
     };
   }
 }
