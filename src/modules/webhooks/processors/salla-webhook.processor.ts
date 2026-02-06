@@ -220,6 +220,32 @@ export class SallaWebhookProcessor extends WorkerHost {
     }
   }
 
+  /**
+   * ✅ v16: استخراج مبلغ رقمي من أي نوع بيانات
+   * سلة ترسل total بأشكال مختلفة:
+   *   - number: 299
+   *   - string: "299"
+   *   - object: { amount: 299, currency: "SAR" }
+   *   - object: { value: 299 }
+   */
+  private extractAmount(value: unknown): number {
+    if (!value) return 0;
+    if (typeof value === 'number') return value;
+    if (typeof value === 'string') {
+      const num = parseFloat(value);
+      return isNaN(num) ? 0 : num;
+    }
+    if (typeof value === 'object' && value !== null) {
+      const obj = value as Record<string, unknown>;
+      const numVal = obj.amount ?? obj.value ?? obj.total ?? obj.grand_total ?? obj.price;
+      if (numVal !== undefined && numVal !== null) {
+        const num = typeof numVal === 'number' ? numVal : parseFloat(String(numVal));
+        return isNaN(num) ? 0 : num;
+      }
+    }
+    return 0;
+  }
+
   private async syncOrderToDatabase(orderData: Record<string, unknown>, context: { tenantId?: string; storeId?: string }, customerId?: string): Promise<Order | null> {
     if (!context.storeId || !orderData?.id) { this.logger.warn('⚠️ Cannot sync order: missing storeId or id'); return null; }
     const sallaOrderId = String(orderData.id);
@@ -230,7 +256,7 @@ export class SallaWebhookProcessor extends WorkerHost {
         ? (orderData.items as Array<Record<string, unknown>>).map(item => ({
             productId: String(item.product_id || item.id || ''), name: String(item.name || ''),
             sku: (item.sku as string) || undefined, quantity: Number(item.quantity || 1),
-            unitPrice: Number(item.price || item.unit_price || 0), totalPrice: Number(item.total || 0),
+            unitPrice: this.extractAmount(item.price || item.unit_price), totalPrice: this.extractAmount(item.total),
           }))
         : [];
 
@@ -238,7 +264,7 @@ export class SallaWebhookProcessor extends WorkerHost {
         order.status = status;
         if (customerId) order.customerId = customerId;
         order.referenceId = (orderData.reference_id as string) || (orderData.order_number as string) || order.referenceId;
-        if (orderData.total) order.totalAmount = Number(orderData.total);
+        if (orderData.total) order.totalAmount = this.extractAmount(orderData.total);
         if (items.length > 0) order.items = items as any;
         order.metadata = { ...(order.metadata || {}), sallaData: orderData } as any;
         order = await this.orderRepository.save(order);
@@ -248,7 +274,7 @@ export class SallaWebhookProcessor extends WorkerHost {
           tenantId: context.tenantId, storeId: context.storeId, customerId: customerId || undefined,
           sallaOrderId, referenceId: (orderData.reference_id as string) || (orderData.order_number as string) || undefined,
           status, currency: (orderData.currency as string) || 'SAR',
-          totalAmount: Number(orderData.total || 0), subtotal: Number(orderData.sub_total || orderData.total || 0),
+          totalAmount: this.extractAmount(orderData.total), subtotal: this.extractAmount(orderData.sub_total || orderData.total),
           items: items as any, metadata: { sallaData: orderData } as any,
         });
         order = await this.orderRepository.save(order);
