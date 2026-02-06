@@ -153,10 +153,14 @@ export class TemplatesService {
     if (existingTemplate) {
       this.logger.log(`📝 Found existing: id=${existingTemplate.id}, status=${existingTemplate.status}, deleted=${!!existingTemplate.deletedAt}`);
 
-      // ✅ إزالة الـ soft delete بالطريقة الصحيحة
+      // ✅ إزالة الـ soft delete
       if (existingTemplate.deletedAt) {
         await this.templateRepository.restore(existingTemplate.id);
         this.logger.log(`♻️ Restored soft-deleted template: ${existingTemplate.id}`);
+
+        // ⚠️ FIX الجذري: مسح deletedAt من الكائن في الذاكرة
+        // بدون هذا السطر، save() يكتب القيمة القديمة ويعيد الحذف!
+        existingTemplate.deletedAt = undefined as any;
       }
 
       // تحديث القالب
@@ -165,7 +169,6 @@ export class TemplatesService {
       existingTemplate.triggerEvent = dto.triggerEvent ?? existingTemplate.triggerEvent;
       existingTemplate.category = dto.category || existingTemplate.category;
       if (dto.buttons) existingTemplate.buttons = dto.buttons as any;
-      // ✅ v15: حفظ sendSettings عند إعادة التفعيل — يحافظ على الإعدادات الافتراضية
       if (dto.sendSettings) existingTemplate.sendSettings = dto.sendSettings as any;
 
       const updated = await this.templateRepository.save(existingTemplate);
