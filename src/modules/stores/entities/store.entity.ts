@@ -4,6 +4,7 @@
  * ║                                                                                ║
  * ║  ✅ يدعم النمط السهل: tenantId nullable حتى يتم الربط                         ║
  * ║  ✅ يدعم سلة وزد                                                               ║
+ * ║  🔐 select: false على حقول التوكنات (لا تُحمّل تلقائياً)                       ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -85,14 +86,15 @@ export class Store extends BaseEntity {
   status: StoreStatus;
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 🔐 Tokens (مشتركة)
+  // 🔐 Tokens (مشتركة) - select: false لمنع التحميل التلقائي
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Column({
     name: 'access_token',
     type: 'text',
     nullable: true,
-    comment: 'Access Token',
+    select: false,   // 🔐 لا يُحمّل تلقائياً - يجب طلبه صراحة
+    comment: 'Access Token (مشفّر بـ AES-256-GCM)',
   })
   @Exclude()
   accessToken?: string;
@@ -101,7 +103,8 @@ export class Store extends BaseEntity {
     name: 'refresh_token',
     type: 'text',
     nullable: true,
-    comment: 'Refresh Token',
+    select: false,   // 🔐 لا يُحمّل تلقائياً
+    comment: 'Refresh Token (مشفّر بـ AES-256-GCM)',
   })
   @Exclude()
   refreshToken?: string;
@@ -119,6 +122,7 @@ export class Store extends BaseEntity {
     type: 'varchar',
     length: 255,
     nullable: true,
+    select: false,   // 🔐 لا يُحمّل تلقائياً
     comment: 'Secret للتحقق من Webhooks',
   })
   @Exclude()
