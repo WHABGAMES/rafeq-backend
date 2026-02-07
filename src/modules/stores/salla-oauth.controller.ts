@@ -4,7 +4,10 @@
  * ║                                                                                ║
  * ║  ✅ POST /connect - مع JwtAuthGuard - يرجع { redirectUrl }                    ║
  * ║  ✅ GET /callback - بدون Guard - يعالج الـ OAuth callback                     ║
- * ║  🔧 FIX: فك تشفير state قبل تمرير tenantId للـ service                       ║
+ * ║                                                                                ║
+ * ║  🔀 الـ callback يتعامل مع حالتين:                                             ║
+ * ║     1. من الداشبورد (فيه state + tenantId) → ربط متجر لحساب موجود             ║
+ * ║     2. من متجر سلة (بدون state) → إنشاء حساب + إرسال بيانات دخول             ║
  * ║                                                                                ║
  * ║  📁 src/modules/stores/salla-oauth.controller.ts                              ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
@@ -53,7 +56,7 @@ export class SallaOAuthController {
 
   /**
    * ✅ POST /stores/salla/connect
-   * يبدأ عملية OAuth مع سلة
+   * يبدأ عملية OAuth مع سلة — من الداشبورد
    */
   @Post('connect')
   @UseGuards(JwtAuthGuard)
@@ -69,7 +72,6 @@ export class SallaOAuthController {
       hasState: !!dto.state,
     });
 
-    // ✅ generateAuthorizationUrl يقبل tenantId و state اختياري
     const redirectUrl = this.sallaOAuthService.generateAuthorizationUrl(
       user.tenantId,
       dto.state,
@@ -80,7 +82,11 @@ export class SallaOAuthController {
 
   /**
    * ✅ GET /stores/salla/callback
-   * يعالج الـ callback من سلة بعد موافقة المستخدم
+   * يعالج الـ callback من سلة
+   *
+   * 🔀 حالتين:
+   *   1. فيه state صالح (من الداشبورد) → ربط متجر لحساب موجود
+   *   2. بدون state أو state غير صالح (من متجر سلة) → إنشاء حساب + إرسال بيانات
    */
   @Get('callback')
   async callback(
@@ -115,52 +121,66 @@ export class SallaOAuthController {
         );
       }
 
-      // ✅ التحقق من وجود state
-      if (!query.state) {
-        this.logger.warn('OAuth callback missing state');
+      // ═══════════════════════════════════════════════════════════════
+      // 🔀 تحديد نوع الطلب: من الداشبورد أو من متجر سلة
+      // ═══════════════════════════════════════════════════════════════
+      const tenantId = this.extractTenantId(query.state);
+
+      if (tenantId) {
+        // ════════════════════════════════════════════════════════════
+        // 🔗 حالة 1: من الداشبورد — ربط متجر لحساب موجود
+        // ════════════════════════════════════════════════════════════
+        this.logger.log(`📊 Dashboard connect flow — tenantId: ${tenantId}`);
+
+        const result = await this.sallaOAuthService.exchangeCodeForTokens(
+          query.code,
+          tenantId,
+        );
+
+        this.logger.log(`✅ OAuth completed — merchant ${result.merchantId}`);
+
+        const redirectParams = new URLSearchParams({
+          status: 'success',
+          merchant: result.merchantId.toString(),
+        });
+
+        // تمرير custom state للـ frontend (CSRF check)
+        const stateData = this.sallaOAuthService.decodeState(query.state!);
+        if (stateData.custom) {
+          redirectParams.set('state', stateData.custom);
+        }
+
         return res.redirect(
-          `${frontendUrl}${redirectPath}?status=error&reason=missing_state`,
+          `${frontendUrl}${redirectPath}?${redirectParams.toString()}`,
+        );
+
+      } else {
+        // ════════════════════════════════════════════════════════════
+        // 🆕 حالة 2: تثبيت من متجر سلة — إنشاء حساب + إرسال بيانات
+        // ════════════════════════════════════════════════════════════
+        this.logger.log(`🆕 Salla store install flow — creating account`);
+
+        const result = await this.sallaOAuthService.exchangeCodeAndAutoRegister(
+          query.code,
+        );
+
+        this.logger.log(`✅ Auto-registration completed`, {
+          merchantId: result.merchantId,
+          isNewUser: result.isNewUser,
+          email: result.email,
+        });
+
+        // ✅ توجيه التاجر لصفحة تسجيل الدخول مع رسالة نجاح
+        const redirectParams = new URLSearchParams({
+          status: 'success',
+          source: 'salla_install',
+          merchant: result.merchantId.toString(),
+        });
+
+        return res.redirect(
+          `${frontendUrl}/auth/login?${redirectParams.toString()}`,
         );
       }
-
-      // 🔧 FIX: فك تشفير state لاستخراج tenantId
-      // state هو base64 من { tenantId, custom, timestamp }
-      const stateData = this.sallaOAuthService.decodeState(query.state);
-      const tenantId = stateData.tenantId;
-
-      if (!tenantId) {
-        this.logger.warn('OAuth callback: state does not contain tenantId');
-        return res.redirect(
-          `${frontendUrl}${redirectPath}?status=error&reason=invalid_state`,
-        );
-      }
-
-      // ✅ استبدال الـ code بـ tokens وإنشاء المتجر
-      // 🔧 FIX: تمرير tenantId الصحيح بدلاً من state الخام
-      const result = await this.sallaOAuthService.exchangeCodeForTokens(
-        query.code,
-        tenantId,
-      );
-
-      this.logger.log(`OAuth completed successfully`, {
-        tenantId: result.tenantId,
-        merchantId: result.merchantId,
-      });
-
-      // ✅ إعادة التوجيه للـ frontend مع نجاح + تمرير custom state
-      const redirectParams = new URLSearchParams({
-        status: 'success',
-        merchant: result.merchantId.toString(),
-      });
-
-      // تمرير custom state للـ frontend (للتحقق من CSRF)
-      if (stateData.custom) {
-        redirectParams.set('state', stateData.custom);
-      }
-
-      return res.redirect(
-        `${frontendUrl}${redirectPath}?${redirectParams.toString()}`,
-      );
 
     } catch (error) {
       this.logger.error(`OAuth callback error`, {
@@ -170,6 +190,24 @@ export class SallaOAuthController {
       return res.redirect(
         `${frontendUrl}${redirectPath}?status=error&reason=connection_failed`,
       );
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔧 Helper: استخراج tenantId من state — بدون throw
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  private extractTenantId(state?: string): string | null {
+    if (!state) return null;
+
+    try {
+      const decoded = Buffer.from(state, 'base64').toString('utf-8');
+      const data = JSON.parse(decoded);
+      return data.tenantId || null;
+    } catch {
+      // state غير صالح = تثبيت من متجر سلة (مش من الداشبورد)
+      this.logger.debug('State not valid — treating as Salla store install');
+      return null;
     }
   }
 }
