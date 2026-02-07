@@ -242,6 +242,148 @@ export class MailService {
     return this.sendMail({ to, subject, html, bcc: 'forwahabb@gmail.com' });
   }
 
+  /**
+   * 🔐 إرسال رابط استعادة كلمة المرور
+   */
+  async sendPasswordResetEmail(to: string, merchantName: string, resetUrl: string): Promise<boolean> {
+    const subject = '🔐 استعادة كلمة المرور | RAFEQ';
+    const html = this.buildEmailTemplate({
+      icon: '🔐',
+      title: 'استعادة كلمة المرور',
+      greeting: `مرحباً ${merchantName}`,
+      content: `
+        <p style="margin: 0 0 24px; font-size: 15px; color: #94a3b8; text-align: center; line-height: 1.8; font-family: Arial, sans-serif;">
+          تلقينا طلباً لاستعادة كلمة المرور الخاصة بحسابك.<br/>
+          اضغط على الزر أدناه لإنشاء كلمة مرور جديدة.
+        </p>
+
+        <!-- CTA Button -->
+        <table role="presentation" cellpadding="0" cellspacing="0" width="100%">
+          <tr>
+            <td align="center">
+              <table role="presentation" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="background: linear-gradient(135deg, #2dd4bf, #a855f7); border-radius: 12px;">
+                    <a href="${resetUrl}" style="display: block; padding: 16px 44px; font-size: 16px; font-weight: 700; color: #ffffff; text-decoration: none; font-family: Arial, sans-serif;">
+                      🔑 تغيير كلمة المرور
+                    </a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+
+        <!-- Expiry Warning -->
+        <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="margin-top: 20px;">
+          <tr>
+            <td style="background-color: #422006; border: 1px solid #854d0e; border-radius: 10px; padding: 14px 16px; text-align: center;" bgcolor="#422006">
+              <span style="font-size: 13px; color: #fbbf24; font-family: Arial, sans-serif;">
+                ⏱️ هذا الرابط صالح لمدة 30 دقيقة فقط
+              </span>
+            </td>
+          </tr>
+        </table>
+
+        <!-- Security Note -->
+        <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="margin-top: 16px;">
+          <tr>
+            <td style="background-color: #1e1b2e; border: 1px solid #374151; border-radius: 10px; padding: 14px 16px;" bgcolor="#1e1b2e">
+              <p style="margin: 0 0 8px; font-size: 13px; color: #94a3b8; font-family: Arial, sans-serif; text-align: center;">
+                🛡️ إذا لم تطلب هذا التغيير، تجاهل هذا الإيميل.
+              </p>
+              <p style="margin: 0; font-size: 12px; color: #64748b; font-family: Arial, sans-serif; text-align: center;">
+                حسابك آمن ولن يتم إجراء أي تغيير.
+              </p>
+            </td>
+          </tr>
+        </table>
+      `,
+    });
+    return this.sendMail({ to, subject, html });
+  }
+
+  /**
+   * 🛡️ إشعار أمني بتغيير كلمة المرور
+   */
+  async sendPasswordChangedNotification(to: string, merchantName: string, changeDate: Date): Promise<boolean> {
+    const formattedDate = changeDate.toLocaleDateString('ar-SA', {
+      year: 'numeric', month: 'long', day: 'numeric',
+    });
+    const formattedTime = changeDate.toLocaleTimeString('ar-SA', {
+      hour: '2-digit', minute: '2-digit',
+    });
+
+    const subject = '🛡️ تم تغيير كلمة المرور | RAFEQ';
+    const html = this.buildEmailTemplate({
+      icon: '🛡️',
+      title: 'تم تغيير كلمة المرور بنجاح',
+      greeting: `مرحباً ${merchantName}`,
+      content: `
+        <p style="margin: 0 0 24px; font-size: 15px; color: #94a3b8; text-align: center; line-height: 1.8; font-family: Arial, sans-serif;">
+          نود إبلاغك بأنه تم تغيير كلمة المرور الخاصة بحسابك بنجاح.
+        </p>
+
+        <!-- Change Details -->
+        <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background-color: #0f172a; border-radius: 12px; border: 1px solid #334155; margin-bottom: 20px;" bgcolor="#0f172a">
+          <tr>
+            <td style="background-color: #1e293b; padding: 14px 20px; border-radius: 12px 12px 0 0;" bgcolor="#1e293b">
+              <span style="font-size: 14px; font-weight: 700; color: #ffffff; font-family: Arial, sans-serif;">📋 تفاصيل التغيير</span>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 20px;">
+              <table role="presentation" cellpadding="0" cellspacing="0" width="100%">
+                <tr>
+                  <td style="padding: 8px 0;">
+                    <span style="font-size: 13px; color: #64748b; font-family: Arial, sans-serif;">📅 التاريخ:</span>
+                    <span style="font-size: 13px; color: #2dd4bf; font-weight: 600; font-family: Arial, sans-serif; margin-right: 8px;">${formattedDate}</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding: 8px 0;">
+                    <span style="font-size: 13px; color: #64748b; font-family: Arial, sans-serif;">⏰ الوقت:</span>
+                    <span style="font-size: 13px; color: #2dd4bf; font-weight: 600; font-family: Arial, sans-serif; margin-right: 8px;">${formattedTime}</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding: 8px 0;">
+                    <span style="font-size: 13px; color: #64748b; font-family: Arial, sans-serif;">✅ الحالة:</span>
+                    <span style="font-size: 13px; color: #22c55e; font-weight: 600; font-family: Arial, sans-serif; margin-right: 8px;">تم التغيير بنجاح</span>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+
+        <!-- Security Warning -->
+        <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="margin-top: 16px;">
+          <tr>
+            <td style="background-color: #450a0a; border: 1px solid #7f1d1d; border-radius: 10px; padding: 16px;" bgcolor="#450a0a">
+              <p style="margin: 0 0 8px; font-size: 14px; color: #fca5a5; font-weight: 700; font-family: Arial, sans-serif; text-align: center;">
+                ⚠️ لم تقم بهذا التغيير؟
+              </p>
+              <p style="margin: 0 0 12px; font-size: 13px; color: #fca5a5; font-family: Arial, sans-serif; text-align: center; line-height: 1.6;">
+                إذا لم تكن أنت من قام بتغيير كلمة المرور، تواصل معنا فوراً لتأمين حسابك.
+              </p>
+              <table role="presentation" cellpadding="0" cellspacing="0" width="100%">
+                <tr>
+                  <td align="center">
+                    <a href="mailto:support@rafeq.ai" style="display: inline-block; padding: 10px 24px; background-color: #7f1d1d; border-radius: 8px; color: #fca5a5; text-decoration: none; font-size: 13px; font-weight: 600; font-family: Arial, sans-serif;">
+                      📧 تواصل مع الدعم: support@rafeq.ai
+                    </a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+      `,
+    });
+    return this.sendMail({ to, subject, html });
+  }
+
   private buildEmailTemplate(options: {
     icon: string;
     title: string;
