@@ -7,6 +7,7 @@
  * ║  ✅ يتحقق من صحة الـ API Key بإرسال طلب تجريبي للمنصة                        ║
  * ║  ✅ يشفّر المفاتيح قبل الحفظ                                                  ║
  * ║  ✅ يرجع نفس StoreResponse مثل OAuth                                          ║
+ * ║  🆕 يدعم المتاجر الأخرى (other) عبر API عام                                  ║
  * ║                                                                                ║
  * ║  📁 src/modules/stores/api-connect.controller.ts                              ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
@@ -22,6 +23,8 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
+import { HttpService } from '@nestjs/axios';
+import { firstValueFrom } from 'rxjs';
 
 // Services
 import { StoresService } from './stores.service';
@@ -53,6 +56,7 @@ export class ApiConnectController {
     private readonly storesService: StoresService,
     private readonly sallaApiService: SallaApiService,
     private readonly zidApiService: ZidApiService,
+    private readonly httpService: HttpService,
   ) {}
 
   /**
@@ -62,7 +66,7 @@ export class ApiConnectController {
   @Post('connect')
   @ApiOperation({
     summary: 'ربط متجر عبر API',
-    description: 'يربط متجر باستخدام API Key مباشرة بدلاً من OAuth',
+    description: 'يربط متجر باستخدام API Key مباشرة بدلاً من OAuth — يدعم سلة، زد، ومنصات أخرى',
   })
   @ApiResponse({ status: 201, description: 'تم ربط المتجر بنجاح' })
   @ApiResponse({ status: 400, description: 'مفتاح API غير صالح' })
@@ -78,6 +82,7 @@ export class ApiConnectController {
       platform: dto.platform,
       hasApiKey: !!dto.apiKey,
       hasApiSecret: !!dto.apiSecret,
+      platformName: dto.platformName || null,
     });
 
     // ═══════════════════════════════════════════════════════════════
@@ -88,6 +93,8 @@ export class ApiConnectController {
       return this.connectSallaViaApi(tenantId, dto);
     } else if (dto.platform === StorePlatform.ZID) {
       return this.connectZidViaApi(tenantId, dto);
+    } else if (dto.platform === StorePlatform.OTHER) {
+      return this.connectOtherViaApi(tenantId, dto);
     } else {
       throw new BadRequestException('منصة غير مدعومة');
     }
@@ -229,6 +236,175 @@ export class ApiConnectController {
       lastSync: store.lastSyncedAt?.toISOString() || null,
       createdAt: store.createdAt.toISOString(),
       stats: { orders: 0, products: 0, customers: 0 },
+    };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🆕 Other Platform API Connect
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  private async connectOtherViaApi(tenantId: string, dto: ConnectApiStoreDto) {
+    this.logger.log(`Validating Other Platform API key for tenant: ${tenantId}`, {
+      platformName: dto.platformName,
+      apiBaseUrl: dto.apiBaseUrl,
+    });
+
+    // ✅ Validation
+    if (!dto.platformName?.trim()) {
+      throw new BadRequestException('اسم المنصة مطلوب');
+    }
+    if (!dto.apiBaseUrl?.trim()) {
+      throw new BadRequestException('رابط API مطلوب للتحقق من المفتاح');
+    }
+
+    // ✅ تنظيف رابط API
+    const apiBaseUrl = dto.apiBaseUrl.trim().replace(/\/+$/, '');
+
+    // ✅ التحقق أن الرابط URL صالح
+    try {
+      new URL(apiBaseUrl);
+    } catch {
+      throw new BadRequestException('رابط API غير صالح. يجب أن يبدأ بـ https://');
+    }
+
+    // ✅ التحقق من صحة المفتاح بإرسال طلب تجريبي
+    let validationResponse: any = null;
+    try {
+      // نجرّب عدة أنماط شائعة لإرسال الـ API Key
+      const headers: Record<string, string> = {
+        'Accept': 'application/json',
+      };
+
+      // نجرّب Bearer token أولاً (الأكثر شيوعاً)
+      headers['Authorization'] = `Bearer ${dto.apiKey}`;
+
+      // بعض المنصات تستخدم X-API-Key
+      headers['X-API-Key'] = dto.apiKey;
+
+      const response = await firstValueFrom(
+        this.httpService.get(apiBaseUrl, {
+          headers,
+          timeout: 15000,
+          validateStatus: (status) => status < 500, // نقبل أي response غير 5xx
+        }),
+      );
+
+      // ✅ نتحقق من الاستجابة
+      if (response.status === 401 || response.status === 403) {
+        throw new BadRequestException(
+          'مفتاح الـ API غير صالح أو مرفوض. تأكد من صحة المفتاح والصلاحيات.',
+        );
+      }
+
+      if (response.status === 404) {
+        throw new BadRequestException(
+          'رابط API غير موجود (404). تأكد من صحة الرابط.',
+        );
+      }
+
+      if (response.status >= 400) {
+        throw new BadRequestException(
+          `المنصة ردّت بخطأ (${response.status}). تأكد من صحة الرابط والمفتاح.`,
+        );
+      }
+
+      validationResponse = response.data;
+      this.logger.log(`✅ Other platform API key validated successfully`, {
+        status: response.status,
+        platformName: dto.platformName,
+      });
+
+    } catch (error: any) {
+      // إذا كان الخطأ BadRequestException من عندنا — نمررها كما هي
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+
+      this.logger.warn(`Failed to validate Other Platform API key`, {
+        tenantId,
+        platformName: dto.platformName,
+        apiBaseUrl,
+        error: error?.message || 'Unknown',
+        code: error?.code,
+      });
+
+      // أخطاء اتصال
+      if (error?.code === 'ECONNREFUSED' || error?.code === 'ENOTFOUND') {
+        throw new BadRequestException(
+          'تعذر الاتصال بالمنصة. تأكد من صحة رابط API وأنه يعمل.',
+        );
+      }
+      if (error?.code === 'ECONNABORTED' || error?.code === 'ETIMEDOUT') {
+        throw new BadRequestException(
+          'انتهت مهلة الاتصال بالمنصة. حاول مرة أخرى أو تأكد من أن المنصة تعمل.',
+        );
+      }
+
+      throw new BadRequestException(
+        'فشل في التحقق من مفتاح الـ API. تأكد من الرابط والمفتاح وحاول مرة أخرى.',
+      );
+    }
+
+    // ✅ محاولة استخراج معلومات المتجر من الاستجابة
+    const extractedInfo = this.extractStoreInfo(validationResponse);
+
+    // ✅ إنشاء المتجر
+    const store = await this.storesService.connectOtherStore(tenantId, {
+      tokens: {
+        accessToken: dto.apiKey,
+        refreshToken: dto.apiSecret || '',
+        expiresAt: dto.apiSecret
+          ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000) // سنة إذا فيه secret
+          : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),  // 30 يوم بدون secret
+      },
+      storeInfo: {
+        platformName: dto.platformName!.trim(),
+        apiBaseUrl,
+        name: dto.name?.trim() || extractedInfo.name || dto.platformName!.trim(),
+        url: dto.url?.trim() || extractedInfo.url || '',
+        storeId: extractedInfo.id || '',
+      },
+    });
+
+    this.logger.log(`✅ Other platform store connected via API`, {
+      storeId: store.id,
+      tenantId,
+      platformName: dto.platformName,
+    });
+
+    return {
+      id: store.id,
+      name: store.name,
+      platform: store.platform,
+      platformName: store.otherPlatformName,
+      status: 'connected',
+      url: store.otherStoreUrl || dto.url || null,
+      lastSync: store.lastSyncedAt?.toISOString() || null,
+      createdAt: store.createdAt.toISOString(),
+      stats: { orders: 0, products: 0, customers: 0 },
+    };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔧 Helper: استخراج معلومات المتجر من استجابة API عامة
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  private extractStoreInfo(data: any): {
+    name?: string;
+    url?: string;
+    id?: string;
+  } {
+    if (!data || typeof data !== 'object') {
+      return {};
+    }
+
+    // محاولة استخراج من بنى مختلفة (REST APIs شائعة)
+    const source = data.data || data.store || data.shop || data.result || data;
+
+    return {
+      name: source.name || source.store_name || source.shop_name || source.title || undefined,
+      url: source.url || source.domain || source.shop_url || source.website || undefined,
+      id: source.id ? String(source.id) : (source.store_id ? String(source.store_id) : undefined),
     };
   }
 }
