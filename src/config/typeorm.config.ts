@@ -1,139 +1,762 @@
 /**
- * RAFIQ PLATFORM - TypeORM Configuration
- * src/config/typeorm.config.ts
- *
- * ✅ Fixed: exports TypeOrmModuleAsyncOptions for forRootAsync()
- * ✅ Fixed: Store entity relative import
+ * ╔═══════════════════════════════════════════════════════════════════════════════╗
+ * ║              RAFIQ PLATFORM - Template Dispatcher Service                      ║
+ * ║                                                                                ║
+ * ║  📌 يستمع لأحداث الـ webhooks ويرسل رسائل واتساب تلقائية                      ║
+ * ║                                                                                ║
+ * ║  ✅ v5: يقرأ data.customer + data.order.customer + lookup من DB              ║
+ * ║  ✅ v18: FIX — إزالة المستمعين المكررين + dedup بالهاتف + إصلاح [object Object] ║
+ * ║                                                                                ║
+ * ║  المسار:                                                                       ║
+ * ║  Webhook → Processor → EventEmitter → هذا الـ Service                          ║
+ * ║  → يبحث عن قالب مفعّل بنفس triggerEvent                                       ║
+ * ║  → يستبدل المتغيرات → يرسل عبر واتساب                                         ║
+ * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
-import { ConfigModule, ConfigService } from '@nestjs/config';
-import { TypeOrmModuleAsyncOptions, TypeOrmModuleOptions } from '@nestjs/typeorm';
+import { Injectable, Logger } from '@nestjs/common';
+import { OnEvent } from '@nestjs/event-emitter';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { MessageTemplate, Order, Customer } from '@database/entities';
+import { SendingMode } from '@database/entities/message-template.entity';
+import { Channel, ChannelType, ChannelStatus } from '../channels/entities/channel.entity';
+import { ChannelsService } from '../channels/channels.service';
+import { TemplateSchedulerService } from './template-scheduler.service';
 
-// Entities from database
-import { User } from '@database/entities/user.entity';
-import { Tenant } from '@database/entities/tenant.entity';
-import { Channel } from '@database/entities/channel.entity';
-import { Message } from '@database/entities/message.entity';
-import { Conversation } from '@database/entities/conversation.entity';
-import { Campaign } from '@database/entities/campaign.entity';
-import { Customer } from '@database/entities/customer.entity';
-import { Order } from '@database/entities/order.entity';
-import { WebhookEvent } from '@database/entities/webhook-event.entity';
-import { WebhookLog } from '../modules/webhooks/entities/webhook-log.entity';
-import { MessageTemplate } from '@database/entities/message-template.entity';
-import { Subscription } from '@database/entities/subscription.entity';
-import { SubscriptionPlan } from '@database/entities/subscription-plan.entity';
+@Injectable()
+export class TemplateDispatcherService {
+  private readonly logger = new Logger(TemplateDispatcherService.name);
 
-// ✅ Store entity - relative import (not in @database/entities)
-import { Store } from '../modules/stores/entities/store.entity';
+  /**
+   * ✅ v12: Dedup cache لمنع إرسال القالب مرتين
+   * سلة أحياناً ترسل order.cancelled + order.status.updated(ملغي) معاً
+   * كلاهما يُفعّل نفس القالب — الـ dedup يمنع التكرار
+   * Key: `${orderId}-${triggerEvent}-${tenantId}` → timestamp
+   */
+  private readonly recentDispatches = new Map<string, number>();
+  private readonly DEDUP_WINDOW_MS = 60_000; // 60 ثانية
 
-// NEW: Entities from modules
-import { Automation } from '../modules/automations/entities/automation.entity';
-import { StoreSettings } from '../modules/settings/entities/store-settings.entity';
+  constructor(
+    @InjectRepository(MessageTemplate)
+    private readonly templateRepository: Repository<MessageTemplate>,
 
-// =============================================================================
-// All Entities
-// =============================================================================
-const entities = [
-  User,
-  Tenant,
-  Store,
-  Channel,
-  Message,
-  Conversation,
-  Campaign,
-  Customer,
-  Order,
-  WebhookEvent,
-  WebhookLog,
-  MessageTemplate,
-  Subscription,
-  SubscriptionPlan,
-  // NEW
-  Automation,
-  StoreSettings,
-];
+    @InjectRepository(Channel)
+    private readonly channelRepository: Repository<Channel>,
 
-// =============================================================================
-// TypeORM Configuration Factory
-// =============================================================================
-const buildConfig = (
-  configService: ConfigService,
-): TypeOrmModuleOptions => {
-  const nodeEnv = configService.get<string>('app.env', 'development');
-  const isProduction = nodeEnv === 'production';
-  const isDevelopment = nodeEnv === 'development';
+    @InjectRepository(Order)
+    private readonly orderRepository: Repository<Order>,
 
-  return {
-    type: 'postgres',
-    host: configService.get<string>('database.host', 'localhost'),
-    port: configService.get<number>('database.port', 5432),
-    database: configService.get<string>('database.name', 'rafiq_db'),
-    username: configService.get<string>('database.username', 'rafiq_user'),
-    password: configService.get<string>('database.password', ''),
+    @InjectRepository(Customer)
+    private readonly customerRepository: Repository<Customer>,
 
-    // SSL enabled automatically in Production for DigitalOcean
-    ssl: isProduction || configService.get<boolean>('database.ssl', false)
-      ? {
-          rejectUnauthorized: false,
+    private readonly channelsService: ChannelsService,
+
+    // ✅ v13: خدمة الجدولة للإرسال المؤجل
+    private readonly templateSchedulerService: TemplateSchedulerService,
+  ) {}
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // Event Listeners
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @OnEvent('order.created')
+  async onOrderCreated(payload: Record<string, unknown>) {
+    await this.dispatch('order.created', payload);
+  }
+
+  // ✅ v8: حُذف @OnEvent('order.status.updated') العام نهائياً - كل حالة لها listener خاص
+
+  // ✅ v7: Events خاصة بكل حالة طلب - كل حالة ترسل القالب الصحيح
+  @OnEvent('order.status.processing')
+  async onOrderProcessing(payload: Record<string, unknown>) {
+    await this.dispatch('order.status.processing', payload);
+  }
+
+  @OnEvent('order.status.completed')
+  async onOrderCompleted(payload: Record<string, unknown>) {
+    await this.dispatch('order.status.completed', payload);
+  }
+
+  @OnEvent('order.status.in_transit')
+  async onOrderInTransit(payload: Record<string, unknown>) {
+    await this.dispatch('order.status.in_transit', payload);
+  }
+
+  @OnEvent('order.status.under_review')
+  async onOrderUnderReview(payload: Record<string, unknown>) {
+    await this.dispatch('order.status.under_review', payload);
+  }
+
+  @OnEvent('order.status.restoring')
+  async onOrderRestoring(payload: Record<string, unknown>) {
+    await this.dispatch('order.status.restoring', payload);
+  }
+
+  // ✅ v18: حُذف @OnEvent('order.status.shipped') — handleOrderStatusUpdated يُصدر الآن 'order.shipped' مباشرة
+  // الـ listener الموحّد هو @OnEvent('order.shipped') أسفل
+
+  @OnEvent('order.status.ready_to_ship')
+  async onOrderReadyToShip(payload: Record<string, unknown>) {
+    await this.dispatch('order.status.ready_to_ship', payload);
+  }
+
+  @OnEvent('order.status.pending_payment')
+  async onOrderPendingPayment(payload: Record<string, unknown>) {
+    await this.dispatch('order.status.pending_payment', payload);
+  }
+
+  @OnEvent('order.status.on_hold')
+  async onOrderOnHold(payload: Record<string, unknown>) {
+    await this.dispatch('order.status.on_hold', payload);
+  }
+
+  // ✅ v10: Listeners إضافية لحالات تأتي من order.status.updated بنص عربي
+  @OnEvent('order.status.paid')
+  async onOrderStatusPaid(payload: Record<string, unknown>) {
+    await this.dispatch('order.status.paid', payload);
+  }
+
+  // ✅ v18: حُذف @OnEvent('order.status.cancelled') — handleOrderStatusUpdated يُصدر الآن 'order.cancelled' مباشرة
+  // الـ listener الموحّد هو @OnEvent('order.cancelled') أسفل
+
+  // ✅ v18: حُذف @OnEvent('order.status.refunded') — handleOrderStatusUpdated يُصدر الآن 'order.refunded' مباشرة
+  // الـ listener الموحّد هو @OnEvent('order.refunded') أسفل
+
+  // ✅ v18: حُذف @OnEvent('order.status.delivered') — handleOrderStatusUpdated يُصدر الآن 'order.delivered' مباشرة
+  // الـ listener الموحّد هو @OnEvent('order.delivered') أسفل
+
+  @OnEvent('order.payment.updated')
+  async onOrderPaymentUpdated(payload: Record<string, unknown>) {
+    await this.dispatch('order.payment.updated', payload);
+  }
+
+  @OnEvent('order.shipped')
+  async onOrderShipped(payload: Record<string, unknown>) {
+    await this.dispatch('order.shipped', payload);
+  }
+
+  @OnEvent('order.delivered')
+  async onOrderDelivered(payload: Record<string, unknown>) {
+    await this.dispatch('order.delivered', payload);
+  }
+
+  @OnEvent('order.cancelled')
+  async onOrderCancelled(payload: Record<string, unknown>) {
+    await this.dispatch('order.cancelled', payload);
+  }
+
+  @OnEvent('customer.created')
+  async onCustomerCreated(payload: Record<string, unknown>) {
+    await this.dispatch('customer.created', payload);
+  }
+
+  @OnEvent('cart.abandoned')
+  async onCartAbandoned(payload: Record<string, unknown>) {
+    await this.dispatch('abandoned.cart', payload);
+  }
+
+  @OnEvent('shipment.created')
+  async onShipmentCreated(payload: Record<string, unknown>) {
+    await this.dispatch('shipment.created', payload);
+  }
+
+  @OnEvent('tracking.refreshed')
+  async onTrackingRefreshed(payload: Record<string, unknown>) {
+    await this.dispatch('tracking.refreshed', payload);
+  }
+
+  @OnEvent('review.added')
+  async onReviewAdded(payload: Record<string, unknown>) {
+    await this.dispatch('review.added', payload);
+  }
+
+  @OnEvent('product.available')
+  async onProductAvailable(payload: Record<string, unknown>) {
+    await this.dispatch('product.available', payload);
+  }
+
+  // ✅ v3: أحداث إضافية
+  @OnEvent('product.quantity.low')
+  async onProductQuantityLow(payload: Record<string, unknown>) {
+    await this.dispatch('product.quantity.low', payload);
+  }
+
+  @OnEvent('order.refunded')
+  async onOrderRefunded(payload: Record<string, unknown>) {
+    await this.dispatch('order.refunded', payload);
+  }
+
+  @OnEvent('product.created')
+  async onProductCreated(payload: Record<string, unknown>) {
+    await this.dispatch('product.created', payload);
+  }
+
+  @OnEvent('customer.otp.request')
+  async onCustomerOtpRequest(payload: Record<string, unknown>) {
+    await this.dispatch('customer.otp.request', payload);
+  }
+
+  @OnEvent('invoice.created')
+  async onInvoiceCreated(payload: Record<string, unknown>) {
+    await this.dispatch('invoice.created', payload);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // Main Dispatch Logic
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  private async dispatch(triggerEvent: string, payload: Record<string, unknown>): Promise<void> {
+    const tenantId = payload.tenantId as string | undefined;
+    const storeId = payload.storeId as string | undefined;
+    const raw = (payload.raw || payload) as Record<string, unknown>;
+
+    if (!tenantId) {
+      this.logger.warn(`⚠️ No tenantId for event ${triggerEvent} - skipping`);
+      return;
+    }
+
+    try {
+      this.logger.log(`📨 Dispatching templates for: ${triggerEvent}`, { tenantId, storeId });
+
+      // ✅ v18 FIX: Dedup بالهاتف — يمنع إرسال نفس القالب مرتين خلال 60 ثانية
+      // المشكلة السابقة: orderId مختلف بين الويب هوكين (order.status.updated vs order.cancelled)
+      //   order.status.updated يرسل id=2023873556
+      //   order.cancelled يرسل id=591468597
+      // → الحل: نستخدم رقم هاتف العميل كمفتاح رئيسي (ثابت بين الويب هوكين)
+      const customerPhoneForDedup = this.extractCustomerPhone(raw);
+      const fallbackId = String(raw.id || raw.orderId || payload.orderId || raw.reference_id || 'unknown');
+      const dedupIdentifier = customerPhoneForDedup || fallbackId;
+      const dedupKey = `${dedupIdentifier}-${triggerEvent}-${tenantId}`;
+      const now = Date.now();
+
+      this.logger.debug(`🔑 DEDUP: key=${dedupKey} (phone=${customerPhoneForDedup || 'N/A'}, fallback=${fallbackId})`);
+
+      // تنظيف الـ cache من الإدخالات القديمة
+      for (const [key, timestamp] of this.recentDispatches) {
+        if (now - timestamp > this.DEDUP_WINDOW_MS) this.recentDispatches.delete(key);
+      }
+
+      if (this.recentDispatches.has(dedupKey)) {
+        this.logger.warn(`🔁 DEDUP: Skipping duplicate dispatch for '${triggerEvent}' (key: ${dedupIdentifier}) — already sent within ${this.DEDUP_WINDOW_MS / 1000}s`);
+        return;
+      }
+      this.recentDispatches.set(dedupKey, now);
+
+      // 1️⃣ البحث عن القوالب المفعّلة بنفس triggerEvent
+      const templates = await this.templateRepository.find({
+        where: [
+          { tenantId, triggerEvent, status: 'approved' },
+          { tenantId, triggerEvent, status: 'active' },
+        ],
+      });
+
+      // ✅ LOG level بدل DEBUG - لازم يظهر في الـ production logs
+      this.logger.log(`📋 Templates found: ${templates.length} for trigger: ${triggerEvent}`, {
+        tenantId,
+        triggerEvent,
+        templateNames: templates.map(t => t.name),
+      });
+
+      if (templates.length === 0) {
+        this.logger.warn(`⚠️ No active templates found for trigger: ${triggerEvent} (tenantId: ${tenantId})`);
+        return;
+      }
+
+      // ✅ v16: Template Isolation — قالب واحد فقط لكل حدث
+      // إذا وُجد أكثر من قالب مفعّل لنفس الحدث → نرسل الأحدث فقط ونُحذّر
+      if (templates.length > 1) {
+        this.logger.warn(`⚠️ ISOLATION: ${templates.length} templates found for trigger "${triggerEvent}" — sending only the most recent one`, {
+          templateNames: templates.map(t => t.name),
+          templateIds: templates.map(t => t.id),
+        });
+      }
+      // ترتيب حسب الأحدث واختيار الأول فقط
+      const sortedTemplates = templates.sort((a, b) =>
+        (b.updatedAt?.getTime() || 0) - (a.updatedAt?.getTime() || 0)
+      );
+      const activeTemplate = sortedTemplates[0];
+
+      // 2️⃣ البحث عن قناة واتساب متصلة
+      const channel = await this.findActiveWhatsAppChannel(storeId);
+      if (!channel) {
+        this.logger.warn(`⚠️ No active WhatsApp channel for store ${storeId}`);
+        return;
+      }
+      this.logger.log(`📱 WhatsApp channel found: ${channel.id} (type: ${channel.type})`);
+
+      // 3️⃣ استخراج رقم هاتف العميل
+      let customerPhone = this.extractCustomerPhone(raw);
+
+      // ✅ v3: إذا ما لقينا الرقم من بيانات الـ webhook → نبحث في قاعدة البيانات
+      if (!customerPhone) {
+        this.logger.log(`🔍 Phone not in webhook data, looking up from database...`);
+        customerPhone = await this.lookupCustomerPhone(raw, storeId);
+      }
+
+      if (!customerPhone) {
+        this.logger.warn(`⚠️ No customer phone found for event ${triggerEvent}`, {
+          rawKeys: Object.keys(raw),
+          hasCustomer: !!raw.customer,
+          orderId: raw.id || raw.orderId,
+        });
+        return;
+      }
+
+      this.logger.log(`📞 Customer phone: ${customerPhone}`);
+
+      // 4️⃣ ✅ v16: إرسال قالب واحد فقط (Template Isolation)
+      const template = activeTemplate;
+      const sendSettings = template.sendSettings;
+
+      // ✅ تحديد نوع الإرسال من sendSettings
+      const mode = sendSettings?.sendingMode || SendingMode.INSTANT;
+
+      if (mode === SendingMode.MANUAL) {
+        this.logger.log(`⏭️ Skipping manual template: "${template.name}"`);
+        return;
+      }
+
+      // ✅ v15: فحص شرط الحالة — يعمل مع CONDITIONAL و DELAYED
+      if (sendSettings?.triggerCondition && (mode === SendingMode.CONDITIONAL || mode === SendingMode.DELAYED)) {
+        const condition = sendSettings.triggerCondition;
+
+        if (condition.orderStatus) {
+          const currentStatus = String(raw.status || raw.newStatus || '').toLowerCase();
+          if (currentStatus && currentStatus !== condition.orderStatus.toLowerCase()) {
+            this.logger.log(
+              `⏭️ Condition not met: "${template.name}" requires status "${condition.orderStatus}", got "${currentStatus}"`,
+            );
+            return;
+          }
         }
-      : false,
 
-    entities: entities,
+        if (condition.paymentMethod) {
+          const currentMethod = String(
+            raw.payment_method || (raw as any).paymentMethod || '',
+          ).toLowerCase();
+          if (currentMethod && currentMethod !== condition.paymentMethod.toLowerCase()) {
+            this.logger.log(
+              `⏭️ Condition not met: "${template.name}" requires payment "${condition.paymentMethod}", got "${currentMethod}"`,
+            );
+            return;
+          }
+        }
+      }
 
-    // =======================================================================
-    // Auto Synchronize
-    // =======================================================================
-    synchronize: configService.get<boolean>('database.synchronize', false),
+      // ✅ Delayed أو Conditional مع تأخير: جدولة بدل إرسال فوري
+      const delayMinutes = sendSettings?.delayMinutes;
+      if (delayMinutes && delayMinutes > 0 && (mode === SendingMode.DELAYED || mode === SendingMode.CONDITIONAL)) {
+        this.logger.log(
+          `⏰ Scheduling: "${template.name}" → ${customerPhone} (delay: ${delayMinutes}min)`,
+        );
 
-    // =======================================================================
-    // Logging
-    // =======================================================================
-    logging: isDevelopment
-      ? ['error', 'warn', 'migration']
-      : configService.get<boolean>('database.logging', false)
-        ? ['error', 'warn', 'migration']
-        : ['error'],
+        const orderId = String(raw.id || raw.orderId || raw.order_id || '');
+        await this.templateSchedulerService.scheduleDelayedSend({
+          template,
+          tenantId,
+          storeId,
+          customerPhone,
+          customerName: String(
+            (raw.customer as any)?.first_name ||
+            (raw.customer as any)?.name ||
+            raw.customerName ||
+            '',
+          ),
+          referenceId: orderId || undefined,
+          referenceType: triggerEvent.split('.')[0] || undefined,
+          triggerEvent,
+          payload: raw,
+          delayMinutes,
+          sequenceGroupKey: sendSettings?.sequence?.groupKey,
+          sequenceOrder: sendSettings?.sequence?.order,
+        });
 
-    // =======================================================================
-    // Connection Pool
-    // =======================================================================
-    extra: {
-      max: isProduction ? 20 : 5,
-      min: isProduction ? 5 : 1,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: isProduction ? 5000 : 10000,
-    },
+        return; // لا ترسل فورياً
+      }
 
-    // =======================================================================
-    // Retry Strategy
-    // =======================================================================
-    retryAttempts: isProduction ? 10 : 3,
-    retryDelay: 3000,
+      // ✅ Instant: إرسال فوري
+      this.logger.log(`📤 Sending template: "${template.name}" for trigger: ${triggerEvent}`);
+      await this.sendTemplate(template, channel, customerPhone, raw);
 
-    // =======================================================================
-    // Auto Load Entities (disabled - using explicit list)
-    // =======================================================================
-    autoLoadEntities: false,
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : 'Unknown';
+      this.logger.error(`❌ Template dispatch failed for ${triggerEvent}: ${msg}`, {
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+    }
+  }
 
-    // =======================================================================
-    // Keep Alive
-    // =======================================================================
-    keepConnectionAlive: false,
-  };
-};
+  /**
+   * إرسال قالب واحد
+   */
+  private async sendTemplate(
+    template: MessageTemplate,
+    channel: Channel,
+    customerPhone: string,
+    data: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      const message = this.replaceVariables(template.body, data);
 
-// =============================================================================
-// ✅ Export as TypeOrmModuleAsyncOptions (for forRootAsync)
-// This is what app.module.ts passes to TypeOrmModule.forRootAsync()
-// =============================================================================
-export const typeOrmConfig: TypeOrmModuleAsyncOptions = {
-  imports: [ConfigModule],
-  useFactory: buildConfig,
-  inject: [ConfigService],
-};
+      this.logger.log(`📤 Sending "${template.name}" to ${customerPhone}`, {
+        channelId: channel.id,
+        templateId: template.id,
+        messagePreview: message.substring(0, 80) + '...',
+      });
 
-// Aliases for backward compatibility
-export const buildTypeOrmConfig = typeOrmConfig;
-export const databaseConfig = typeOrmConfig;
-export default typeOrmConfig;
+      const result = await this.channelsService.sendWhatsAppMessage(
+        channel.id,
+        customerPhone,
+        message,
+      );
+
+      this.logger.log(`✅ Message sent: "${template.name}" → ${customerPhone}`, {
+        messageId: result?.messageId || 'N/A',
+      });
+
+      // تحديث إحصائيات الاستخدام
+      await this.incrementUsage(template.id);
+
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : 'Unknown';
+      this.logger.error(`❌ Failed to send "${template.name}" → ${customerPhone}: ${msg}`, {
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // Phone Lookup Helpers
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * استخراج رقم هاتف العميل من بيانات الـ webhook
+   */
+  private extractCustomerPhone(data: Record<string, unknown>): string | null {
+    // 1. من كائن customer (top-level)
+    const customer = data.customer as Record<string, unknown> | undefined;
+    if (customer) {
+      const fullPhone = this.buildFullPhone(customer);
+      if (fullPhone) {
+        this.logger.log(`📞 Phone found in webhook customer object: ${fullPhone}`);
+        return this.normalizePhone(fullPhone);
+      }
+    }
+
+    // ✅ v4: من كائن order.customer (سلة ترسل order.status.updated بهالشكل)
+    const orderObj = data.order as Record<string, unknown> | undefined;
+    if (orderObj) {
+      const orderCustomer = orderObj.customer as Record<string, unknown> | undefined;
+      if (orderCustomer) {
+        const fullPhone = this.buildFullPhone(orderCustomer);
+        if (fullPhone) {
+          this.logger.log(`📞 Phone found in order.customer: ${fullPhone}`);
+          return this.normalizePhone(fullPhone);
+        }
+      }
+      // ✅ v4: من order.shipping_address
+      const orderShipping = orderObj.shipping_address as Record<string, unknown> | undefined;
+      if (orderShipping?.phone) {
+        this.logger.log(`📞 Phone found in order.shipping_address: ${orderShipping.phone}`);
+        return this.normalizePhone(String(orderShipping.phone));
+      }
+    }
+
+    // 2. من الحقول المباشرة
+    const directPhone = data.customerPhone || data.mobile || data.phone;
+    if (directPhone) {
+      this.logger.log(`📞 Phone found in direct field: ${directPhone}`);
+      return this.normalizePhone(String(directPhone));
+    }
+
+    // 3. من عنوان الشحن (top-level)
+    const shipping = data.shipping_address as Record<string, unknown> | undefined;
+    if (shipping?.phone) {
+      this.logger.log(`📞 Phone found in shipping_address: ${shipping.phone}`);
+      return this.normalizePhone(String(shipping.phone));
+    }
+
+    // 4. من receiver
+    const receiver = data.receiver as Record<string, unknown> | undefined;
+    if (receiver?.phone || receiver?.mobile) {
+      const p = receiver.phone || receiver.mobile;
+      this.logger.log(`📞 Phone found in receiver: ${p}`);
+      return this.normalizePhone(String(p));
+    }
+
+    this.logger.log(`📞 No phone in webhook data (keys: ${Object.keys(data).join(', ')})`);
+    return null;
+  }
+
+  /**
+   * ✅ v3: جلب رقم العميل من قاعدة البيانات
+   * يبحث عن الطلب بـ sallaOrderId ثم يجلب رقم العميل من جدول customers
+   */
+  private async lookupCustomerPhone(
+    data: Record<string, unknown>,
+    storeId?: string,
+  ): Promise<string | null> {
+    if (!storeId) return null;
+
+    try {
+      // ✅ v4: البحث في data.id أو داخل data.order.id (سلة ترسل بيانات مختلفة حسب الحدث)
+      const orderObj = data.order as Record<string, unknown> | undefined;
+      const orderId = data.id || data.orderId || data.order_id || orderObj?.id || orderObj?.order_id;
+      if (!orderId) {
+        this.logger.log(`🔍 No order ID in data to lookup phone`);
+        return null;
+      }
+
+      const sallaOrderId = String(orderId);
+      this.logger.log(`🔍 Looking up order with sallaOrderId: ${sallaOrderId}, storeId: ${storeId}`);
+
+      // البحث عن الطلب بـ sallaOrderId
+      const order = await this.orderRepository.findOne({
+        where: { storeId, sallaOrderId },
+        relations: ['customer'],
+      });
+
+      if (!order) {
+        this.logger.log(`🔍 Order not found in DB for sallaOrderId: ${sallaOrderId}`);
+
+        // محاولة بديلة: البحث بالـ reference_id
+        const refId = data.reference_id || data.referenceId;
+        if (refId) {
+          const orderByRef = await this.orderRepository.findOne({
+            where: { storeId, referenceId: String(refId) } as any,
+            relations: ['customer'],
+          });
+          if (orderByRef?.customer?.phone) {
+            this.logger.log(`📞 Phone found via reference_id: ${orderByRef.customer.phone}`);
+            return this.normalizePhone(orderByRef.customer.phone);
+          }
+        }
+
+        return null;
+      }
+
+      // جلب الرقم من العميل
+      if (order.customer?.phone) {
+        this.logger.log(`📞 Phone found from DB customer: ${order.customer.phone}`);
+        return this.normalizePhone(order.customer.phone);
+      }
+
+      // إذا ما لقينا العميل بالعلاقة → نبحث مباشرة
+      if (order.customerId) {
+        const customer = await this.customerRepository.findOne({
+          where: { id: order.customerId },
+          select: ['id', 'phone'],
+        });
+        if (customer?.phone) {
+          this.logger.log(`📞 Phone found from customer lookup: ${customer.phone}`);
+          return this.normalizePhone(customer.phone);
+        }
+      }
+
+      // ✅ v4: محاولة أخيرة - البحث في metadata.sallaData عن رقم العميل
+      const sallaData = (order.metadata as any)?.sallaData as Record<string, unknown> | undefined;
+      if (sallaData) {
+        const sallaCustomer = sallaData.customer as Record<string, unknown> | undefined;
+        const sallaPhone = sallaCustomer?.mobile || sallaCustomer?.phone || sallaData.customer_phone;
+        if (sallaPhone) {
+          this.logger.log(`📞 Phone found from order sallaData: ${sallaPhone}`);
+          return this.normalizePhone(String(sallaPhone));
+        }
+        // من shipping_address في sallaData
+        const sallaShipping = sallaData.shipping_address as Record<string, unknown> | undefined;
+        if (sallaShipping?.phone) {
+          this.logger.log(`📞 Phone found from sallaData shipping: ${sallaShipping.phone}`);
+          return this.normalizePhone(String(sallaShipping.phone));
+        }
+      }
+
+      this.logger.warn(`⚠️ Order found but no customer phone (orderId: ${order.id})`);
+      return null;
+
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : 'Unknown';
+      this.logger.error(`❌ Error looking up customer phone: ${msg}`);
+      return null;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // Channel & Phone Helpers
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * البحث عن قناة واتساب متصلة
+   */
+  private async findActiveWhatsAppChannel(storeId?: string): Promise<Channel | null> {
+    if (!storeId) return null;
+
+    const channel = await this.channelRepository.findOne({
+      where: [
+        { storeId, type: ChannelType.WHATSAPP_QR, status: ChannelStatus.CONNECTED },
+        { storeId, type: ChannelType.WHATSAPP_OFFICIAL, status: ChannelStatus.CONNECTED },
+      ],
+    });
+
+    return channel || null;
+  }
+
+  /**
+   * تنظيف رقم الهاتف
+   */
+  /**
+   * ✅ v7: بناء الرقم الكامل من mobile_code + mobile
+   * سلة ترسل: { mobile: "561667877", mobile_code: "971" }
+   * النتيجة: "971561667877"
+   * 
+   * القاعدة: نأخذ الرقم كما هو من سلة بدون أي تعديل
+   * يشتغل مع أي دولة (سعودي، إماراتي، أمريكي، روسي...)
+   */
+  private buildFullPhone(obj: Record<string, unknown>): string | null {
+    const mobileCode = obj.mobile_code || obj.country_code || obj.countryCode;
+    const mobile = obj.mobile;
+
+    // ✅ لو فيه mobile_code + mobile → نجمعهم
+    if (mobileCode && mobile) {
+      const code = String(mobileCode).replace(/[^0-9]/g, '');
+      const num = String(mobile).replace(/[^0-9]/g, '');
+      if (code && num) {
+        this.logger.log(`📞 Built phone from mobile_code(${code}) + mobile(${num})`);
+        return code + num;
+      }
+    }
+
+    // ✅ لو فيه phone كامل (مثل "+971561667877") → نستخدمه كما هو
+    if (obj.phone) return String(obj.phone);
+
+    // ✅ لو فيه mobile بس بدون code → نرجعه كما هو
+    if (mobile) return String(mobile);
+
+    return null;
+  }
+
+  /**
+   * ✅ v7: تنظيف رقم الهاتف - فقط إزالة رموز بدون تغيير كود الدولة
+   * 
+   * القاعدة: لا نفترض أي كود دولة - الرقم يمر كما هو
+   * الأرقام اللي تجي من buildFullPhone أو من سلة مباشرة تكون كاملة
+   */
+  private normalizePhone(phone: string): string {
+    // فقط إزالة الرموز والمسافات
+    const cleaned = phone.replace(/[\s\-\(\)\+]/g, '');
+    return cleaned;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // Template Processing
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * استبدال المتغيرات في نص القالب
+   */
+  private replaceVariables(body: string, data: Record<string, unknown>): string {
+    let message = body;
+
+    // ✅ v18: safeString — يمنع [object Object] من الظهور في الرسائل
+    // سلة قد ترسل حقول كـ objects: { name: "ملغي", slug: "cancelled" }
+    const safeStr = (val: unknown, fallback = ''): string => {
+      if (val === null || val === undefined) return fallback;
+      if (typeof val === 'string') return val || fallback;
+      if (typeof val === 'number' || typeof val === 'boolean') return String(val);
+      if (typeof val === 'object') {
+        const obj = val as Record<string, unknown>;
+        // استخراج القيمة من الأنماط الشائعة لسلة
+        const extracted = obj.name || obj.slug || obj.value || obj.text || obj.title || obj.first_name;
+        if (extracted && typeof extracted === 'string') return extracted;
+        if (extracted && typeof extracted === 'number') return String(extracted);
+        // آخر محاولة: لا نُرجع [object Object]
+        this.logger.warn(`⚠️ safeStr: received object, falling back`, { keys: Object.keys(obj), raw: JSON.stringify(obj).substring(0, 150) });
+        return fallback;
+      }
+      return String(val) || fallback;
+    };
+
+    // ✅ v5: استخراج البيانات من كل المستويات (top-level + nested order)
+    const orderObj = (data.order || {}) as Record<string, unknown>;
+    const customer = (data.customer || orderObj.customer || {}) as Record<string, unknown>;
+    const urls = (data.urls || orderObj.urls || {}) as Record<string, unknown>;
+
+    // ✅ v16: DEBUG log لقيمة total
+    const rawTotal = data.total || orderObj.total;
+    if (rawTotal && typeof rawTotal === 'object') {
+      this.logger.debug(`💰 total is object: ${JSON.stringify(rawTotal).substring(0, 200)}`);
+    }
+
+    const variables: Record<string, string> = {
+      // ✅ v18: كل القيم تمر عبر safeStr لمنع [object Object]
+      customer_name: safeStr(customer.first_name || customer.name || data.customerName, 'عميلنا الكريم'),
+      customer_first_name: safeStr(customer.first_name || data.customerName, 'عميلنا'),
+      customer_phone: safeStr(customer.mobile || customer.phone),
+      customer_email: safeStr(customer.email),
+      order_id: safeStr(data.reference_id || orderObj.reference_id || data.order_number || orderObj.order_number || data.id || orderObj.id || data.orderId),
+      order_total: this.formatAmount(data.total || orderObj.total || (data.amounts as any)?.total || (orderObj.amounts as any)?.total),
+      order_status: safeStr(data.status || data.newStatus || orderObj.status),
+      order_date: new Date().toLocaleDateString('ar-SA'),
+      order_tracking: safeStr(urls.tracking || data.tracking_url || orderObj.tracking_url),
+      tracking_number: safeStr(data.tracking_number || data.trackingNumber || orderObj.tracking_number),
+      shipping_company: safeStr(data.shipping_company || data.shippingCompany || orderObj.shipping_company),
+      store_name: safeStr(data.store_name || orderObj.store_name, 'متجرنا'),
+      store_url: safeStr(data.store_url),
+      cart_total: this.formatAmount(data.total || data.cartTotal || orderObj.total),
+      cart_link: safeStr(data.cart_url || data.checkout_url || orderObj.checkout_url),
+      product_name: safeStr(data.name || data.productName),
+      product_price: this.formatAmount(data.price || orderObj.price),
+      payment_link: safeStr(data.payment_url || data.checkout_url || orderObj.payment_url),
+    };
+
+    for (const [key, value] of Object.entries(variables)) {
+      message = message.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), value || '');
+    }
+
+    // تنظيف المتغيرات غير المستبدلة
+    message = message.replace(/\{\{[^}]+\}\}/g, '');
+
+    return message.trim();
+  }
+
+  private formatAmount(amount: unknown): string {
+    if (!amount) return '0';
+
+    // ✅ v16: سلة قد ترسل total كـ object: { amount: 299, currency: "SAR" }
+    if (typeof amount === 'object' && amount !== null) {
+      const obj = amount as Record<string, unknown>;
+      // استخراج القيمة من الحقول المحتملة
+      const numVal = obj.amount ?? obj.value ?? obj.total ?? obj.price ?? obj.grand_total;
+      if (numVal !== undefined && numVal !== null) {
+        const num = typeof numVal === 'number' ? numVal : parseFloat(String(numVal));
+        if (!isNaN(num)) return num.toLocaleString('ar-SA');
+      }
+      // آخر محاولة: تحويل الـ object لـ JSON لتجنب [object Object]
+      this.logger.warn(`⚠️ formatAmount received object without amount field:`, { keys: Object.keys(obj), raw: JSON.stringify(obj).substring(0, 200) });
+      return '0';
+    }
+
+    const num = typeof amount === 'number' ? amount : parseFloat(String(amount));
+    if (isNaN(num)) return String(amount);
+    return num.toLocaleString('ar-SA');
+  }
+
+  /**
+   * تحديث عداد الاستخدام
+   */
+  private async incrementUsage(templateId: string): Promise<void> {
+    try {
+      await this.templateRepository
+        .createQueryBuilder()
+        .update(MessageTemplate)
+        .set({
+          stats: () =>
+            `jsonb_set(COALESCE(stats, '{"usageCount":0}'::jsonb), '{usageCount}', (COALESCE((stats->>'usageCount')::int, 0) + 1)::text::jsonb)`,
+        })
+        .where('id = :id', { id: templateId })
+        .execute();
+    } catch {
+      this.logger.warn(`Failed to increment usage for template ${templateId}`);
+    }
+  }
+}
