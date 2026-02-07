@@ -2,7 +2,7 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Auth DTOs                                  ║
  * ║                                                                                ║
- * ║  ✅ v6: Multi-Auth Support                                                     ║
+ * ║  ✅ v7: Multi-Auth Support + Forgot Password                                 ║
  * ║  🔑 Email + Password                                                          ║
  * ║  📧 Email OTP (رمز تحقق عبر الإيميل)                                          ║
  * ║  🔵 Google OAuth                                                              ║
@@ -193,6 +193,48 @@ export class ChangePasswordDto {
   @MinLength(8)
   @Matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).+$/, {
     message: 'رمز الدخول يجب أن يحتوي على حرف كبير وحرف صغير ورقم',
+  })
+  newPassword: string;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 🔐 FORGOT PASSWORD - استعادة كلمة المرور
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export class ForgotPasswordDto {
+  @ApiProperty({ description: 'البريد الإلكتروني المسجل', example: 'merchant@example.com' })
+  @IsEmail({}, { message: 'البريد الإلكتروني غير صالح' })
+  @IsNotEmpty({ message: 'البريد الإلكتروني مطلوب' })
+  email: string;
+}
+
+export class VerifyResetTokenDto {
+  @ApiProperty({ description: 'توكن استعادة كلمة المرور' })
+  @IsString() @IsNotEmpty({ message: 'التوكن مطلوب' })
+  token: string;
+
+  @ApiProperty({ description: 'البريد الإلكتروني', example: 'merchant@example.com' })
+  @IsEmail({}, { message: 'البريد الإلكتروني غير صالح' })
+  @IsNotEmpty({ message: 'البريد الإلكتروني مطلوب' })
+  email: string;
+}
+
+export class ResetPasswordDto {
+  @ApiProperty({ description: 'توكن استعادة كلمة المرور' })
+  @IsString() @IsNotEmpty({ message: 'التوكن مطلوب' })
+  token: string;
+
+  @ApiProperty({ description: 'البريد الإلكتروني', example: 'merchant@example.com' })
+  @IsEmail({}, { message: 'البريد الإلكتروني غير صالح' })
+  @IsNotEmpty({ message: 'البريد الإلكتروني مطلوب' })
+  email: string;
+
+  @ApiProperty({ description: 'كلمة المرور الجديدة', example: 'NewPassword123' })
+  @IsString()
+  @MinLength(8, { message: 'كلمة المرور يجب أن تكون 8 أحرف على الأقل' })
+  @MaxLength(128)
+  @Matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).+$/, {
+    message: 'كلمة المرور يجب أن تحتوي على حرف كبير وحرف صغير ورقم',
   })
   newPassword: string;
 }
