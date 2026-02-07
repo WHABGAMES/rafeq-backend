@@ -4,8 +4,8 @@
  * ║                                                                                ║
  * ║  📌 يستمع لأحداث الـ webhooks ويرسل رسائل واتساب تلقائية                      ║
  * ║                                                                                ║
- * ║  ✅ v17: FIX — Dedup محسّن لمنع تكرار رسائل القوالب                            ║
  * ║  ✅ v5: يقرأ data.customer + data.order.customer + lookup من DB              ║
+ * ║  ✅ v18: FIX — إزالة المستمعين المكررين + dedup بالهاتف + إصلاح [object Object] ║
  * ║                                                                                ║
  * ║  المسار:                                                                       ║
  * ║  Webhook → Processor → EventEmitter → هذا الـ Service                          ║
@@ -93,11 +93,8 @@ export class TemplateDispatcherService {
     await this.dispatch('order.status.restoring', payload);
   }
 
-  // ✅ v12: order.status.shipped → dispatch('order.shipped') لأن القالب triggerEvent = 'order.shipped'
-  @OnEvent('order.status.shipped')
-  async onOrderStatusShipped(payload: Record<string, unknown>) {
-    await this.dispatch('order.shipped', payload);
-  }
+  // ✅ v18: حُذف @OnEvent('order.status.shipped') — handleOrderStatusUpdated يُصدر الآن 'order.shipped' مباشرة
+  // الـ listener الموحّد هو @OnEvent('order.shipped') أسفل
 
   @OnEvent('order.status.ready_to_ship')
   async onOrderReadyToShip(payload: Record<string, unknown>) {
@@ -120,23 +117,14 @@ export class TemplateDispatcherService {
     await this.dispatch('order.status.paid', payload);
   }
 
-  // ✅ v12: order.status.cancelled → dispatch('order.cancelled') لأن القالب triggerEvent = 'order.cancelled'
-  @OnEvent('order.status.cancelled')
-  async onOrderStatusCancelled(payload: Record<string, unknown>) {
-    await this.dispatch('order.cancelled', payload);
-  }
+  // ✅ v18: حُذف @OnEvent('order.status.cancelled') — handleOrderStatusUpdated يُصدر الآن 'order.cancelled' مباشرة
+  // الـ listener الموحّد هو @OnEvent('order.cancelled') أسفل
 
-  // ✅ v12: order.status.refunded → dispatch('order.refunded') لأن القالب triggerEvent = 'order.refunded'
-  @OnEvent('order.status.refunded')
-  async onOrderStatusRefunded(payload: Record<string, unknown>) {
-    await this.dispatch('order.refunded', payload);
-  }
+  // ✅ v18: حُذف @OnEvent('order.status.refunded') — handleOrderStatusUpdated يُصدر الآن 'order.refunded' مباشرة
+  // الـ listener الموحّد هو @OnEvent('order.refunded') أسفل
 
-  // ✅ v12: order.status.delivered → dispatch('order.delivered') لأن القالب triggerEvent = 'order.delivered'
-  @OnEvent('order.status.delivered')
-  async onOrderStatusDelivered(payload: Record<string, unknown>) {
-    await this.dispatch('order.delivered', payload);
-  }
+  // ✅ v18: حُذف @OnEvent('order.status.delivered') — handleOrderStatusUpdated يُصدر الآن 'order.delivered' مباشرة
+  // الـ listener الموحّد هو @OnEvent('order.delivered') أسفل
 
   @OnEvent('order.payment.updated')
   async onOrderPaymentUpdated(payload: Record<string, unknown>) {
@@ -231,18 +219,18 @@ export class TemplateDispatcherService {
     try {
       this.logger.log(`📨 Dispatching templates for: ${triggerEvent}`, { tenantId, storeId });
 
-      // ✅ v17 FIX: Dedup محسّن — يمنع إرسال نفس القالب مرتين خلال 60 ثانية
-      // المشكلة السابقة: orderId قد يختلف بين webhook payloads المختلفة
-      // الحل: نستخدم عدة مصادر للـ orderId + نطبّع القيمة
-      const orderObj = raw.order as Record<string, unknown> | undefined;
-      const orderId = String(
-        raw.id || raw.orderId || payload.orderId ||
-        raw.reference_id || raw.order_number ||
-        orderObj?.id || orderObj?.reference_id ||
-        'unknown'
-      );
-      const dedupKey = `${orderId}-${triggerEvent}-${tenantId}`;
+      // ✅ v18 FIX: Dedup بالهاتف — يمنع إرسال نفس القالب مرتين خلال 60 ثانية
+      // المشكلة السابقة: orderId مختلف بين الويب هوكين (order.status.updated vs order.cancelled)
+      //   order.status.updated يرسل id=2023873556
+      //   order.cancelled يرسل id=591468597
+      // → الحل: نستخدم رقم هاتف العميل كمفتاح رئيسي (ثابت بين الويب هوكين)
+      const customerPhoneForDedup = this.extractCustomerPhone(raw);
+      const fallbackId = String(raw.id || raw.orderId || payload.orderId || raw.reference_id || 'unknown');
+      const dedupIdentifier = customerPhoneForDedup || fallbackId;
+      const dedupKey = `${dedupIdentifier}-${triggerEvent}-${tenantId}`;
       const now = Date.now();
+
+      this.logger.debug(`🔑 DEDUP: key=${dedupKey} (phone=${customerPhoneForDedup || 'N/A'}, fallback=${fallbackId})`);
 
       // تنظيف الـ cache من الإدخالات القديمة
       for (const [key, timestamp] of this.recentDispatches) {
@@ -250,11 +238,10 @@ export class TemplateDispatcherService {
       }
 
       if (this.recentDispatches.has(dedupKey)) {
-        this.logger.warn(`🔁 DEDUP: Skipping duplicate dispatch for '${triggerEvent}' (orderId: ${orderId}) — already sent within ${this.DEDUP_WINDOW_MS / 1000}s`);
+        this.logger.warn(`🔁 DEDUP: Skipping duplicate dispatch for '${triggerEvent}' (key: ${dedupIdentifier}) — already sent within ${this.DEDUP_WINDOW_MS / 1000}s`);
         return;
       }
       this.recentDispatches.set(dedupKey, now);
-      this.logger.debug(`🔑 DEDUP key set: ${dedupKey}`);
 
       // 1️⃣ البحث عن القوالب المفعّلة بنفس triggerEvent
       const templates = await this.templateRepository.find({
@@ -670,6 +657,25 @@ export class TemplateDispatcherService {
   private replaceVariables(body: string, data: Record<string, unknown>): string {
     let message = body;
 
+    // ✅ v18: safeString — يمنع [object Object] من الظهور في الرسائل
+    // سلة قد ترسل حقول كـ objects: { name: "ملغي", slug: "cancelled" }
+    const safeStr = (val: unknown, fallback = ''): string => {
+      if (val === null || val === undefined) return fallback;
+      if (typeof val === 'string') return val || fallback;
+      if (typeof val === 'number' || typeof val === 'boolean') return String(val);
+      if (typeof val === 'object') {
+        const obj = val as Record<string, unknown>;
+        // استخراج القيمة من الأنماط الشائعة لسلة
+        const extracted = obj.name || obj.slug || obj.value || obj.text || obj.title || obj.first_name;
+        if (extracted && typeof extracted === 'string') return extracted;
+        if (extracted && typeof extracted === 'number') return String(extracted);
+        // آخر محاولة: لا نُرجع [object Object]
+        this.logger.warn(`⚠️ safeStr: received object, falling back`, { keys: Object.keys(obj), raw: JSON.stringify(obj).substring(0, 150) });
+        return fallback;
+      }
+      return String(val) || fallback;
+    };
+
     // ✅ v5: استخراج البيانات من كل المستويات (top-level + nested order)
     const orderObj = (data.order || {}) as Record<string, unknown>;
     const customer = (data.customer || orderObj.customer || {}) as Record<string, unknown>;
@@ -682,24 +688,25 @@ export class TemplateDispatcherService {
     }
 
     const variables: Record<string, string> = {
-      customer_name: String(customer.first_name || customer.name || data.customerName || 'عميلنا الكريم'),
-      customer_first_name: String(customer.first_name || data.customerName || 'عميلنا'),
-      customer_phone: String(customer.mobile || customer.phone || ''),
-      customer_email: String(customer.email || ''),
-      order_id: String(data.reference_id || orderObj.reference_id || data.order_number || orderObj.order_number || data.id || orderObj.id || data.orderId || ''),
+      // ✅ v18: كل القيم تمر عبر safeStr لمنع [object Object]
+      customer_name: safeStr(customer.first_name || customer.name || data.customerName, 'عميلنا الكريم'),
+      customer_first_name: safeStr(customer.first_name || data.customerName, 'عميلنا'),
+      customer_phone: safeStr(customer.mobile || customer.phone),
+      customer_email: safeStr(customer.email),
+      order_id: safeStr(data.reference_id || orderObj.reference_id || data.order_number || orderObj.order_number || data.id || orderObj.id || data.orderId),
       order_total: this.formatAmount(data.total || orderObj.total || (data.amounts as any)?.total || (orderObj.amounts as any)?.total),
-      order_status: String(data.status || data.newStatus || orderObj.status || ''),
+      order_status: safeStr(data.status || data.newStatus || orderObj.status),
       order_date: new Date().toLocaleDateString('ar-SA'),
-      order_tracking: String(urls.tracking || data.tracking_url || orderObj.tracking_url || ''),
-      tracking_number: String(data.tracking_number || data.trackingNumber || orderObj.tracking_number || ''),
-      shipping_company: String(data.shipping_company || data.shippingCompany || orderObj.shipping_company || ''),
-      store_name: String(data.store_name || orderObj.store_name || 'متجرنا'),
-      store_url: String(data.store_url || ''),
+      order_tracking: safeStr(urls.tracking || data.tracking_url || orderObj.tracking_url),
+      tracking_number: safeStr(data.tracking_number || data.trackingNumber || orderObj.tracking_number),
+      shipping_company: safeStr(data.shipping_company || data.shippingCompany || orderObj.shipping_company),
+      store_name: safeStr(data.store_name || orderObj.store_name, 'متجرنا'),
+      store_url: safeStr(data.store_url),
       cart_total: this.formatAmount(data.total || data.cartTotal || orderObj.total),
-      cart_link: String(data.cart_url || data.checkout_url || orderObj.checkout_url || ''),
-      product_name: String(data.name || data.productName || ''),
+      cart_link: safeStr(data.cart_url || data.checkout_url || orderObj.checkout_url),
+      product_name: safeStr(data.name || data.productName),
       product_price: this.formatAmount(data.price || orderObj.price),
-      payment_link: String(data.payment_url || data.checkout_url || orderObj.payment_url || ''),
+      payment_link: safeStr(data.payment_url || data.checkout_url || orderObj.payment_url),
     };
 
     for (const [key, value] of Object.entries(variables)) {
