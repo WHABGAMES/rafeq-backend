@@ -100,7 +100,7 @@ export class EncryptExistingStoreTokens1707300000000 implements MigrationInterfa
     console.log(`✅ Encryption complete: ${encrypted} encrypted, ${skipped} already encrypted/skipped`);
   }
 
-  public async down(queryRunner: QueryRunner): Promise<void> {
+  public async down(_queryRunner: QueryRunner): Promise<void> {
     // ⚠️ لا يمكن التراجع عن التشفير بأمان
     // لكن decrypt() في encryption.util.ts يتعامل مع كلا التنسيقين
     console.log(
