@@ -4,6 +4,7 @@
  * ║                                                                                ║
  * ║  ✅ v6: Multi-Auth Support                                                     ║
  * ║  🔑 Email + Password | 📧 OTP | 🔵 Google | 🟢 Salla | 🟣 Zid               ║
+ * ║  📱 WhatsApp Business API لإرسال بيانات الدخول                                 ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -12,6 +13,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { PassportModule } from '@nestjs/passport';
+import { HttpModule } from '@nestjs/axios';
 import Redis from 'ioredis';
 
 // Entities
@@ -50,6 +52,13 @@ import { MailModule } from '../mail/mail.module';
     }),
     
     MailModule,
+    ConfigModule,
+
+    // 📱 HttpModule للـ WhatsApp Business API
+    HttpModule.register({
+      timeout: 15000,
+      maxRedirects: 3,
+    }),
   ],
   controllers: [AuthController],
   providers: [
