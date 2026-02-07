@@ -2,6 +2,7 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║              RAFIQ PLATFORM - Salla Webhook Processor                          ║
  * ║                                                                                ║
+ * ║  ✅ v17: FIX — Processor-level dedup لمنع تكرار رسائل القوالب                 ║
  * ║  ✅ v5: Security & Stability Fixes                                             ║
  * ║  🔧 FIX #18: TS2538 Build Error - mapSallaOrderStatus type-safe               ║
  * ║  🔧 FIX H5: Salla status object crash - handles object/string/undefined       ║
@@ -105,6 +106,62 @@ function cleanForMatch(text: string): string {
 })
 export class SallaWebhookProcessor extends WorkerHost {
   private readonly logger = new Logger(SallaWebhookProcessor.name);
+
+  /**
+   * ✅ v17 FIX: Processor-level dedup لمنع إرسال نفس الحدث مرتين
+   * 
+   * المشكلة: سلة ترسل ويب هوكين معاً:
+   *   order.status.updated (status="ملغي") + order.cancelled
+   * كلاهما يُطلق نفس القالب → رسالتين للعميل
+   * 
+   * الحل: نتتبع الأحداث المرسلة لكل طلب خلال نافذة زمنية
+   * أول handler يصل يُسجّل الحدث → الثاني يتخطاه
+   */
+  private readonly emittedTemplateEvents = new Map<string, number>();
+  private readonly TEMPLATE_DEDUP_WINDOW_MS = 120_000; // 2 دقيقة
+
+  /**
+   * ✅ v17: فحص وتسجيل الحدث — يمنع التكرار
+   * @returns true إذا يجب إرسال الحدث، false إذا تم إرساله مسبقاً
+   */
+  private shouldEmitTemplateEvent(orderId: unknown, eventCategory: string): boolean {
+    const id = String(orderId || 'unknown');
+    const key = `${id}-${eventCategory}`;
+    const now = Date.now();
+
+    // تنظيف القيم القديمة
+    for (const [k, ts] of this.emittedTemplateEvents) {
+      if (now - ts > this.TEMPLATE_DEDUP_WINDOW_MS) this.emittedTemplateEvents.delete(k);
+    }
+
+    if (this.emittedTemplateEvents.has(key)) {
+      this.logger.warn(`🔁 PROCESSOR DEDUP: Skipping "${eventCategory}" for order ${id} — already emitted within ${this.TEMPLATE_DEDUP_WINDOW_MS / 1000}s`);
+      return false;
+    }
+
+    this.emittedTemplateEvents.set(key, now);
+    return true;
+  }
+
+  /**
+   * ✅ v17: استخراج فئة الحدث الموحّدة من اسم الحدث
+   * order.status.cancelled → cancelled
+   * order.cancelled → cancelled
+   * order.status.shipped → shipped
+   * order.shipped → shipped
+   */
+  private extractEventCategory(eventName: string): string {
+    // إزالة prefixes: order.status. أو order.
+    return eventName
+      .replace('order.status.', '')
+      .replace('order.', '')
+      .replace('cart.', '')
+      .replace('customer.', '')
+      .replace('shipment.', '')
+      .replace('tracking.', '')
+      .replace('product.', '')
+      .replace('review.', '');
+  }
 
   constructor(
     private readonly sallaWebhooksService: SallaWebhooksService,
@@ -508,8 +565,12 @@ export class SallaWebhookProcessor extends WorkerHost {
     const eventPayload = { tenantId: context.tenantId, storeId: context.storeId, orderId: data.id, newStatus: data.status, previousStatus: data.previous_status, raw: data };
 
     if (specificEvent) {
-      this.logger.log(`📌 Emitting ONLY: ${specificEvent}`);
-      this.eventEmitter.emit(specificEvent, eventPayload);
+      // ✅ v17: Dedup — تسجيل الحدث لمنع handleOrderCancelled/Shipped/Delivered من إرساله مرة ثانية
+      const category = this.extractEventCategory(specificEvent);
+      if (this.shouldEmitTemplateEvent(data.id, category)) {
+        this.logger.log(`📌 Emitting ONLY: ${specificEvent}`);
+        this.eventEmitter.emit(specificEvent, eventPayload);
+      }
     } else {
       this.logger.warn(`⚠️ No event for slug "${templateSlug}" (db: ${newStatus}) - no template sent`);
     }
@@ -703,21 +764,33 @@ export class SallaWebhookProcessor extends WorkerHost {
   private async handleOrderShipped(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
     this.logger.log('Processing order.shipped', { orderId: data.id });
     await this.updateOrderStatusInDatabase(data, context, OrderStatus.SHIPPED, { shippedAt: new Date() });
-    this.eventEmitter.emit('order.shipped', { tenantId: context.tenantId, storeId: context.storeId, orderId: data.id, trackingNumber: data.tracking_number, shippingCompany: data.shipping_company, raw: data });
+
+    // ✅ v17: Dedup — إذا order.status.updated أرسل shipped مسبقاً → لا نُكرر
+    if (this.shouldEmitTemplateEvent(data.id, 'shipped')) {
+      this.eventEmitter.emit('order.shipped', { tenantId: context.tenantId, storeId: context.storeId, orderId: data.id, trackingNumber: data.tracking_number, shippingCompany: data.shipping_company, raw: data });
+    }
     return { handled: true, action: 'order_shipped', orderId: data.id, emittedEvent: 'order.shipped' };
   }
 
   private async handleOrderDelivered(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
     this.logger.log('Processing order.delivered', { orderId: data.id });
     await this.updateOrderStatusInDatabase(data, context, OrderStatus.DELIVERED, { deliveredAt: new Date() });
-    this.eventEmitter.emit('order.delivered', { tenantId: context.tenantId, storeId: context.storeId, orderId: data.id, raw: data });
+
+    // ✅ v17: Dedup — إذا order.status.updated أرسل delivered مسبقاً → لا نُكرر
+    if (this.shouldEmitTemplateEvent(data.id, 'delivered')) {
+      this.eventEmitter.emit('order.delivered', { tenantId: context.tenantId, storeId: context.storeId, orderId: data.id, raw: data });
+    }
     return { handled: true, action: 'order_delivered', orderId: data.id, emittedEvent: 'order.delivered' };
   }
 
   private async handleOrderCancelled(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
     this.logger.log('Processing order.cancelled', { orderId: data.id });
     await this.updateOrderStatusInDatabase(data, context, OrderStatus.CANCELLED, { cancelledAt: new Date() });
-    this.eventEmitter.emit('order.cancelled', { tenantId: context.tenantId, storeId: context.storeId, orderId: data.id, cancelReason: data.cancel_reason, raw: data });
+
+    // ✅ v17: Dedup — إذا order.status.updated أرسل cancelled مسبقاً → لا نُكرر
+    if (this.shouldEmitTemplateEvent(data.id, 'cancelled')) {
+      this.eventEmitter.emit('order.cancelled', { tenantId: context.tenantId, storeId: context.storeId, orderId: data.id, cancelReason: data.cancel_reason, raw: data });
+    }
     return { handled: true, action: 'order_cancelled', orderId: data.id, emittedEvent: 'order.cancelled' };
   }
 
@@ -796,7 +869,11 @@ export class SallaWebhookProcessor extends WorkerHost {
   private async handleOrderRefunded(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
     this.logger.log('Processing order.refunded', { orderId: data.id });
     await this.updateOrderStatusInDatabase(data, context, OrderStatus.REFUNDED);
-    this.eventEmitter.emit('order.refunded', { tenantId: context.tenantId, storeId: context.storeId, orderId: data.id, status: data.status, raw: data });
+
+    // ✅ v17: Dedup — إذا order.status.updated أرسل refunded مسبقاً → لا نُكرر
+    if (this.shouldEmitTemplateEvent(data.id, 'refunded')) {
+      this.eventEmitter.emit('order.refunded', { tenantId: context.tenantId, storeId: context.storeId, orderId: data.id, status: data.status, raw: data });
+    }
     return { handled: true, action: 'order_refunded', orderId: data.id, emittedEvent: 'order.refunded' };
   }
 
