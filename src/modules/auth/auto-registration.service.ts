@@ -8,17 +8,20 @@
  * ║                                                                                ║
  * ║  📋 السيناريو:                                                                 ║
  * ║  1. تاجر يثبّت التطبيق من سلة                                                  ║
- * ║  2. Webhook يوصل (app.store.authorize)                                        ║
+ * ║  2. OAuth callback أو Webhook يوصل                                            ║
  * ║  3. البحث عن الإيميل في قاعدة البيانات                                         ║
- * ║  4. إذا جديد: إنشاء حساب + باسورد = Aa + رقم التلفون                           ║
+ * ║  4. إذا جديد: إنشاء حساب + باسورد = Ra + رقم الجوال بدون كود الدولة           ║
  * ║  5. إذا موجود: إرسال تذكير ببيانات الدخول                                      ║
- * ║  6. إرسال بيانات الدخول عبر Email (و WhatsApp لاحقاً)                          ║
+ * ║  6. إرسال بيانات الدخول عبر Email + WhatsApp                                  ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { ConfigService } from '@nestjs/config';
+import { HttpService } from '@nestjs/axios';
+import { firstValueFrom } from 'rxjs';
 import * as bcrypt from 'bcryptjs';
 
 import { User, UserStatus, UserRole } from '@database/entities/user.entity';
@@ -58,6 +61,8 @@ export class AutoRegistrationService {
     private readonly userRepository: Repository<User>,
 
     private readonly mailService: MailService,
+    private readonly configService: ConfigService,
+    private readonly httpService: HttpService,
   ) {}
 
   /**
@@ -108,12 +113,12 @@ export class AutoRegistrationService {
           });
         }
 
-        // توليد باسورد جديد (لا نخزنه في preferences لأسباب أمنية)
+        // توليد الباسورد (نفس الصيغة دائماً لأنه مبني على رقم الجوال)
         password = this.generatePassword(mobile);
       }
 
       // ════════════════════════════════════════════════════════════════
-      // 📧 إرسال بيانات الدخول
+      // 📧📱 إرسال بيانات الدخول عبر Email + WhatsApp
       // ════════════════════════════════════════════════════════════════
       await this.sendWelcomeCredentials({
         email: email.toLowerCase(),
@@ -171,8 +176,7 @@ export class AutoRegistrationService {
       preferences: {
         source: 'salla_app_install',
         merchantId: merchantId,
-        hasSetPassword: true, // الباسورد تم توليده تلقائياً
-        // ⚠️ لا نخزن الباسورد كنص واضح في preferences لأسباب أمنية
+        hasSetPassword: true,
         passwordSetAt: new Date().toISOString(),
         autoRegistered: true,
         registeredAt: new Date().toISOString(),
@@ -186,26 +190,35 @@ export class AutoRegistrationService {
 
   /**
    * 🔐 توليد الباسورد
-   * Format: Aa + رقم التلفون
-   * Example: Aa966512345678
-   * Fallback: Aa + رقم عشوائي
+   * Format: Ra + رقم الجوال بدون كود الدولة
+   * Example: Ra561667877
+   * Fallback: Ra + رقم عشوائي
    */
   private generatePassword(mobile?: string): string {
-    // تنظيف رقم الجوال من أي رموز
     if (mobile && typeof mobile === 'string') {
-      const cleanMobile = mobile.replace(/\D/g, '');
+      let cleanMobile = mobile.replace(/\D/g, '');
+
+      // إزالة كود الدولة السعودية (966)
+      if (cleanMobile.startsWith('966') && cleanMobile.length > 9) {
+        cleanMobile = cleanMobile.slice(3);
+      }
+      // إزالة الصفر البادئ (05xxxxxxxx → 5xxxxxxxx)
+      if (cleanMobile.startsWith('0') && cleanMobile.length > 9) {
+        cleanMobile = cleanMobile.slice(1);
+      }
+
       if (cleanMobile.length >= 6) {
-        return `Aa${cleanMobile}`;
+        return `Ra${cleanMobile}`;
       }
     }
     // fallback - توليد رقم عشوائي إذا لم يكن هناك رقم جوال
     const randomNum = Date.now().toString().slice(-8);
     this.logger.warn(`⚠️ No valid mobile, using fallback password`);
-    return `Aa${randomNum}`;
+    return `Ra${randomNum}`;
   }
 
   /**
-   * 📧 إرسال بيانات الدخول عبر Email و WhatsApp
+   * 📧📱 إرسال بيانات الدخول عبر Email + WhatsApp
    */
   private async sendWelcomeCredentials(data: {
     email: string;
@@ -236,24 +249,123 @@ export class AutoRegistrationService {
     }
 
     // ════════════════════════════════════════════════════════════════
-    // 📱 إرسال WhatsApp (جاهز للتفعيل لاحقاً)
+    // 📱 إرسال WhatsApp عبر WhatsApp Business API
     // ════════════════════════════════════════════════════════════════
-    // TODO: تفعيل عند ربط WhatsApp Business API
-    /*
     try {
-      await this.whatsAppService.sendWelcomeCredentials({
-        to: mobile,
+      await this.sendWhatsAppCredentials({
+        mobile,
+        name,
         storeName,
         email,
         password,
-        loginUrl: 'https://rafeq.ai',
       });
-      this.logger.log(`📱 WhatsApp message sent to ${mobile}`);
     } catch (error: any) {
+      // WhatsApp فشل — مش مشكلة، الإيميل وصل
       this.logger.error(`❌ Failed to send WhatsApp: ${error.message}`);
     }
-    */
 
-    this.logger.log(`✅ Welcome credentials sent - Email: ${email}, Mobile: ${mobile}`);
+    this.logger.log(`✅ Welcome credentials sent — Email: ${email}, Mobile: ${mobile}`);
+  }
+
+  /**
+   * 📱 إرسال بيانات الدخول عبر WhatsApp Business API
+   *
+   * يستخدم نفس إعدادات WHATSAPP_PHONE_NUMBER_ID و WHATSAPP_ACCESS_TOKEN
+   * الموجودة في .env — نفس الإعدادات المستخدمة في WhatsAppOtpService
+   */
+  private async sendWhatsAppCredentials(data: {
+    mobile: string;
+    name: string;
+    storeName: string;
+    email: string;
+    password: string;
+  }): Promise<void> {
+    const phoneNumberId = this.configService.get<string>('WHATSAPP_PHONE_NUMBER_ID');
+    const accessToken = this.configService.get<string>('WHATSAPP_ACCESS_TOKEN');
+
+    if (!phoneNumberId || !accessToken) {
+      this.logger.warn('⚠️ WhatsApp credentials not configured — skipping WhatsApp notification');
+      return;
+    }
+
+    const formattedPhone = this.formatPhoneNumber(data.mobile);
+    const apiVersion = 'v18.0';
+    const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
+
+    // ────────────────────────────────────────────────────────────────
+    // رسالة الترحيب مع بيانات الدخول
+    // ────────────────────────────────────────────────────────────────
+    const message = [
+      `مرحباً ${data.name}! 🎉`,
+      ``,
+      `تم تفعيل حسابك في *رفيق* بنجاح ✅`,
+      ``,
+      `🏪 المتجر: *${data.storeName}*`,
+      ``,
+      `🔑 *بيانات الدخول:*`,
+      `📧 الإيميل: ${data.email}`,
+      `🔐 كلمة المرور: *${data.password}*`,
+      ``,
+      `🚀 رابط الدخول: https://rafeq.ai`,
+      ``,
+      `💡 ننصحك بتغيير كلمة المرور بعد أول تسجيل دخول`,
+    ].join('\n');
+
+    const payload = {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: formattedPhone,
+      type: 'text',
+      text: {
+        preview_url: true,
+        body: message,
+      },
+    };
+
+    try {
+      const response = await firstValueFrom(
+        this.httpService.post(url, payload, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+        }),
+      );
+
+      if (response.data?.messages?.[0]?.id) {
+        this.logger.log(`📱 WhatsApp welcome sent to ${this.maskPhone(formattedPhone)}`, {
+          messageId: response.data.messages[0].id,
+        });
+      }
+    } catch (error: any) {
+      this.logger.error(`❌ WhatsApp API error: ${error.response?.data?.error?.message || error.message}`, {
+        phone: this.maskPhone(formattedPhone),
+        status: error.response?.status,
+      });
+    }
+  }
+
+  /**
+   * 📞 تنسيق رقم الهاتف — WhatsApp يتطلب الرقم بدون + وبدون مسافات
+   */
+  private formatPhoneNumber(phone: string): string {
+    let cleaned = phone.replace(/\D/g, '');
+
+    // إضافة رمز السعودية إذا لم يكن موجوداً
+    if (cleaned.startsWith('05')) {
+      cleaned = '966' + cleaned.slice(1);
+    } else if (cleaned.startsWith('5') && cleaned.length === 9) {
+      cleaned = '966' + cleaned;
+    }
+
+    return cleaned;
+  }
+
+  /**
+   * 🎭 إخفاء رقم الهاتف للـ logging
+   */
+  private maskPhone(phone: string): string {
+    if (phone.length < 8) return phone;
+    return phone.slice(0, 3) + '****' + phone.slice(-4);
   }
 }
