@@ -3,7 +3,7 @@
  * ║                RAFIQ PLATFORM - Salla OAuth Service                          ║
  * ║                                                                              ║
  * ║  ✅ OAuth 2.0 Flow مع سلة                                                       ║
- * ║  ✅ يدعم Easy Mode و Standard OAuth                                            ║
+ * ║  ✅ يدعم Easy Mode و Standard OAuth و Custom Mode                             ║
  * ║  ✅ Auto Registration - إنشاء حساب تلقائي للتاجر                               ║
  * ║  🔐 NEW: تشفير التوكنات بـ AES-256-GCM                                         ║
  * ║                                                                              ║
@@ -212,6 +212,159 @@ export class SallaOAuthService {
     } catch (error: any) {
       this.logger.error('Failed to exchange code for tokens', { error: error.response?.data || error.message });
       throw new BadRequestException('Failed to exchange authorization code');
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🆕 Custom Mode — تثبيت من متجر سلة (بدون tenantId)
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * 🆕 نمط مخصص — تاجر ثبّت التطبيق من متجر سلة
+   * يستبدل code بـ tokens → ينشئ tenant + store + user → يرسل بيانات الدخول
+   */
+  async exchangeCodeAndAutoRegister(code: string): Promise<{
+    merchantId: number;
+    isNewUser: boolean;
+    email: string;
+  }> {
+    this.logger.log('🆕 exchangeCodeAndAutoRegister — Salla store install');
+
+    try {
+      // 1. استبدال code بـ tokens
+      const response = await firstValueFrom(
+        this.httpService.post<SallaTokenResponse>(
+          this.sallaTokenUrl,
+          new URLSearchParams({
+            grant_type: 'authorization_code',
+            client_id: this.clientId,
+            client_secret: this.clientSecret,
+            redirect_uri: this.redirectUri,
+            code,
+          }).toString(),
+          {
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+          },
+        ),
+      );
+
+      const tokens = response.data;
+
+      // 2. جلب بيانات التاجر
+      const merchantInfo = await this.fetchMerchantInfo(tokens.access_token);
+      this.logger.log(`📊 Merchant: ${merchantInfo.id} — ${merchantInfo.name}`);
+
+      // 3. البحث عن متجر موجود أو إنشاء جديد
+      let store = await this.storeRepository.findOne({
+        where: { sallaMerchantId: merchantInfo.id },
+      });
+
+      if (store) {
+        // متجر موجود — تحديث التوكنات
+        store.accessToken = encrypt(tokens.access_token) ?? undefined;
+        store.refreshToken = encrypt(tokens.refresh_token) ?? undefined;
+        store.tokenExpiresAt = this.calculateTokenExpiry(tokens.expires_in);
+        store.lastTokenRefreshAt = new Date();
+        store.status = StoreStatus.ACTIVE;
+        store.consecutiveErrors = 0;
+        store.lastError = undefined;
+        store.sallaStoreName = merchantInfo.name || store.sallaStoreName;
+        store.sallaEmail = merchantInfo.email || store.sallaEmail;
+        store.sallaMobile = merchantInfo.mobile || store.sallaMobile;
+        store.sallaDomain = merchantInfo.domain || store.sallaDomain;
+        store.sallaAvatar = merchantInfo.avatar || store.sallaAvatar;
+        store.sallaPlan = merchantInfo.plan || store.sallaPlan;
+
+        // إذا ما عنده tenant → ينشئ واحد
+        if (!store.tenantId) {
+          const tenant = await this.tenantsService.createTenantFromSalla({
+            merchantId: merchantInfo.id,
+            name: merchantInfo.name || merchantInfo.username || 'متجر سلة',
+            email: merchantInfo.email,
+            phone: merchantInfo.mobile,
+            logo: merchantInfo.avatar,
+            website: merchantInfo.domain,
+          });
+          store.tenantId = tenant.id;
+        }
+
+        this.logger.log(`📦 Updated existing store: ${store.id}`);
+      } else {
+        // متجر جديد — إنشاء tenant + store
+        const tenant = await this.tenantsService.createTenantFromSalla({
+          merchantId: merchantInfo.id,
+          name: merchantInfo.name || merchantInfo.username || 'متجر سلة',
+          email: merchantInfo.email,
+          phone: merchantInfo.mobile,
+          logo: merchantInfo.avatar,
+          website: merchantInfo.domain,
+        });
+
+        store = this.storeRepository.create({
+          tenantId: tenant.id,
+          name: merchantInfo.name || merchantInfo.username || `متجر سلة ${merchantInfo.id}`,
+          platform: StorePlatform.SALLA,
+          status: StoreStatus.ACTIVE,
+          sallaMerchantId: merchantInfo.id,
+          accessToken: encrypt(tokens.access_token) ?? undefined,
+          refreshToken: encrypt(tokens.refresh_token) ?? undefined,
+          tokenExpiresAt: this.calculateTokenExpiry(tokens.expires_in),
+          sallaStoreName: merchantInfo.name,
+          sallaEmail: merchantInfo.email,
+          sallaMobile: merchantInfo.mobile,
+          sallaDomain: merchantInfo.domain,
+          sallaAvatar: merchantInfo.avatar,
+          sallaPlan: merchantInfo.plan,
+          lastSyncedAt: new Date(),
+          settings: {},
+          subscribedEvents: [],
+        });
+
+        this.logger.log(`🆕 Created new store for merchant ${merchantInfo.id}`);
+      }
+
+      const savedStore = await this.storeRepository.save(store);
+
+      // 4. إنشاء/تحديث المستخدم + إرسال بيانات الدخول (إيميل + واتساب)
+      let isNewUser = false;
+      try {
+        const regResult = await this.autoRegistrationService.handleAppInstallation(
+          {
+            merchantId: merchantInfo.id,
+            email: merchantInfo.email,
+            mobile: merchantInfo.mobile,
+            name: merchantInfo.name || merchantInfo.username || 'تاجر',
+            storeName: merchantInfo.name,
+            avatar: merchantInfo.avatar,
+          },
+          savedStore,
+        );
+        isNewUser = regResult.isNewUser;
+
+        this.logger.log(`✅ Auto-registration: ${regResult.message}`, {
+          userId: regResult.userId,
+          isNewUser: regResult.isNewUser,
+        });
+      } catch (error: any) {
+        this.logger.error(`❌ Auto-registration failed: ${error.message}`, {
+          merchantId: merchantInfo.id,
+          email: merchantInfo.email,
+        });
+      }
+
+      return {
+        merchantId: merchantInfo.id,
+        isNewUser,
+        email: merchantInfo.email,
+      };
+
+    } catch (error: any) {
+      this.logger.error('Failed exchangeCodeAndAutoRegister', {
+        error: error.response?.data || error.message,
+      });
+      throw new BadRequestException('Failed to complete Salla store installation');
     }
   }
 
