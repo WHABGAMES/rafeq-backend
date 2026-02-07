@@ -2,12 +2,13 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Auth Service                               ║
  * ║                                                                                ║
- * ║  ✅ v6: Multi-Auth + Unified Accounts                                         ║
+ * ║  ✅ v7: Multi-Auth + Unified Accounts + Forgot Password                     ║
  * ║  🔑 Email + Password                                                          ║
  * ║  📧 Email OTP (رمز تحقق عبر الإيميل)                                          ║
  * ║  🔵 Google OAuth (ID Token verification)                                      ║
  * ║  🟢 Salla OAuth (Authorization Code)                                          ║
  * ║  🟣 Zid OAuth (Authorization Code)                                            ║
+ * ║  🔐 Forgot Password (Reset via signed token + email)                          ║
  * ║                                                                                ║
  * ║  ⚡ قاعدة ذهبية: حساب واحد لكل إيميل                                          ║
  * ║  عند الدخول بأي طريقة → بحث بالإيميل → ربط بالحساب الموجود                    ║
@@ -28,6 +29,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
+import * as crypto from 'crypto';
 import Redis from 'ioredis';
 
 import { User, UserStatus, UserRole, AuthProvider } from '@database/entities/user.entity';
@@ -668,15 +670,27 @@ export class AuthService {
 
       const user = await this.userRepository.findOne({
         where: { id: payload.sub },
-        select: ['id', 'email', 'tenantId', 'role', 'status'],
+        select: ['id', 'email', 'tenantId', 'role', 'status', 'preferences'],
       });
 
       if (!user || user.status !== UserStatus.ACTIVE) {
         throw new UnauthorizedException('المستخدم غير موجود أو غير مفعّل');
       }
 
+      // ✅ رفض التوكن إذا تم تغيير كلمة المرور بعد إصداره
+      if (user.preferences?.passwordResetAt && payload.iat) {
+        const resetTime = new Date(user.preferences.passwordResetAt as string).getTime() / 1000;
+        if (payload.iat < resetTime) {
+          throw new UnauthorizedException('تم تغيير كلمة المرور. يرجى تسجيل الدخول مجدداً.');
+        }
+      }
+
       return this.generateTokens(user);
     } catch (error: any) {
+      // ✅ إعادة رمي الخطأ إذا كان UnauthorizedException (مثل: تم تغيير كلمة المرور)
+      if (error instanceof UnauthorizedException) {
+        throw error;
+      }
       throw new UnauthorizedException('التوكن غير صالح أو منتهي الصلاحية');
     }
   }
@@ -859,6 +873,241 @@ export class AuthService {
         authProvider: AuthProvider.LOCAL,
       },
     };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔐 FORGOT PASSWORD - إرسال رابط استعادة كلمة المرور
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  private readonly RESET_TOKEN_EXPIRY_SECONDS = 30 * 60; // 30 دقيقة
+  private readonly RESET_TOKEN_PREFIX = 'password_reset:';
+  private readonly RESET_RATE_LIMIT_PREFIX = 'reset_rate:';
+  private readonly MAX_RESET_PER_HOUR = 3;
+
+  async forgotPassword(email: string): Promise<{ message: string }> {
+    const normalizedEmail = email.toLowerCase().trim();
+    this.logger.log(`🔐 Password reset requested for: ${this.maskEmail(normalizedEmail)}`);
+
+    // ✅ Rate limiting - حد أقصى 3 طلبات في الساعة
+    const rateLimitKey = `${this.RESET_RATE_LIMIT_PREFIX}${normalizedEmail}`;
+    const rateCount = await this.redis.get(rateLimitKey);
+    if (rateCount && parseInt(rateCount, 10) >= this.MAX_RESET_PER_HOUR) {
+      this.logger.warn(`Rate limit exceeded for password reset: ${this.maskEmail(normalizedEmail)}`);
+      // ❗ نرجع نفس الرسالة (لا نكشف أن الإيميل موجود أو لا)
+      return { message: 'إذا كان البريد الإلكتروني مسجلاً، سيتم إرسال رابط استعادة كلمة المرور' };
+    }
+
+    // ✅ البحث عن المستخدم
+    const user = await this.userRepository.findOne({
+      where: { email: normalizedEmail },
+      select: ['id', 'email', 'firstName', 'lastName', 'status'],
+    });
+
+    // ❗ رسالة موحدة سواء الإيميل موجود أو لا (حماية من تعداد الحسابات)
+    const successMessage = 'إذا كان البريد الإلكتروني مسجلاً، سيتم إرسال رابط استعادة كلمة المرور';
+
+    if (!user) {
+      this.logger.debug(`No user found for: ${this.maskEmail(normalizedEmail)}`);
+      return { message: successMessage };
+    }
+
+    if (user.status !== UserStatus.ACTIVE) {
+      this.logger.debug(`Inactive user attempted password reset: ${user.id}`);
+      return { message: successMessage };
+    }
+
+    // ✅ حذف أي توكن سابق لنفس المستخدم
+    const existingTokenKey = `${this.RESET_TOKEN_PREFIX}user:${user.id}`;
+    const existingToken = await this.redis.get(existingTokenKey);
+    if (existingToken) {
+      await this.redis.del(`${this.RESET_TOKEN_PREFIX}${existingToken}`);
+      await this.redis.del(existingTokenKey);
+    }
+
+    // ✅ توليد توكن آمن (64 bytes → 128 hex chars)
+    const resetToken = crypto.randomBytes(64).toString('hex');
+    const resetTokenHash = crypto
+      .createHmac('sha256', this.configService.get('JWT_SECRET', 'rafiq-secret'))
+      .update(resetToken)
+      .digest('hex');
+
+    // ✅ تخزين في Redis مع صلاحية 30 دقيقة
+    const tokenData = JSON.stringify({
+      userId: user.id,
+      email: normalizedEmail,
+      createdAt: Date.now(),
+    });
+
+    await this.redis.setex(
+      `${this.RESET_TOKEN_PREFIX}${resetTokenHash}`,
+      this.RESET_TOKEN_EXPIRY_SECONDS,
+      tokenData,
+    );
+
+    // ربط المستخدم بالتوكن (لحذف القديم عند طلب جديد)
+    await this.redis.setex(
+      existingTokenKey,
+      this.RESET_TOKEN_EXPIRY_SECONDS,
+      resetTokenHash,
+    );
+
+    // ✅ Increment rate limit
+    const rateExists = await this.redis.exists(rateLimitKey);
+    if (rateExists) {
+      await this.redis.incr(rateLimitKey);
+    } else {
+      await this.redis.setex(rateLimitKey, 3600, '1');
+    }
+
+    // ✅ بناء رابط إعادة التعيين
+    const frontendUrl = this.configService.get('FRONTEND_URL', 'https://rafeq.ai');
+    const resetUrl = `${frontendUrl}/auth/reset-password?token=${resetToken}&email=${encodeURIComponent(normalizedEmail)}`;
+
+    // ✅ إرسال الإيميل
+    try {
+      await this.mailService.sendPasswordResetEmail(
+        normalizedEmail,
+        user.firstName || 'عزيزي التاجر',
+        resetUrl,
+      );
+      this.logger.log(`✅ Password reset email sent to: ${this.maskEmail(normalizedEmail)}`);
+    } catch (error) {
+      this.logger.error(`❌ Failed to send reset email: ${error instanceof Error ? error.message : 'Unknown'}`);
+      // لا نكشف للمستخدم أن الإرسال فشل
+    }
+
+    return { message: successMessage };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔍 VERIFY RESET TOKEN - التحقق من صلاحية الرابط
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async verifyResetToken(token: string, email: string): Promise<{ valid: boolean }> {
+    const normalizedEmail = email.toLowerCase().trim();
+
+    const tokenHash = crypto
+      .createHmac('sha256', this.configService.get('JWT_SECRET', 'rafiq-secret'))
+      .update(token)
+      .digest('hex');
+
+    const tokenData = await this.redis.get(`${this.RESET_TOKEN_PREFIX}${tokenHash}`);
+
+    if (!tokenData) {
+      this.logger.debug(`Reset token not found or expired for: ${this.maskEmail(normalizedEmail)}`);
+      return { valid: false };
+    }
+
+    try {
+      const parsed = JSON.parse(tokenData);
+      if (parsed.email !== normalizedEmail) {
+        this.logger.warn(`Reset token email mismatch: expected ${this.maskEmail(normalizedEmail)}`);
+        return { valid: false };
+      }
+      return { valid: true };
+    } catch {
+      return { valid: false };
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔄 RESET PASSWORD - تحديث كلمة المرور عبر الرابط
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async resetPassword(token: string, email: string, newPassword: string): Promise<{ message: string }> {
+    const normalizedEmail = email.toLowerCase().trim();
+    this.logger.log(`🔄 Password reset attempt for: ${this.maskEmail(normalizedEmail)}`);
+
+    // ✅ التحقق من قوة كلمة المرور
+    if (newPassword.length < 8) {
+      throw new BadRequestException('كلمة المرور يجب أن تكون 8 أحرف على الأقل');
+    }
+    if (!/(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/.test(newPassword)) {
+      throw new BadRequestException('كلمة المرور يجب أن تحتوي على حرف كبير وحرف صغير ورقم');
+    }
+
+    // ✅ التحقق من التوكن
+    const tokenHash = crypto
+      .createHmac('sha256', this.configService.get('JWT_SECRET', 'rafiq-secret'))
+      .update(token)
+      .digest('hex');
+
+    const tokenKey = `${this.RESET_TOKEN_PREFIX}${tokenHash}`;
+    const tokenData = await this.redis.get(tokenKey);
+
+    if (!tokenData) {
+      throw new BadRequestException('رابط استعادة كلمة المرور غير صالح أو منتهي الصلاحية. يرجى طلب رابط جديد.');
+    }
+
+    let parsed: { userId: string; email: string; createdAt: number };
+    try {
+      parsed = JSON.parse(tokenData);
+    } catch {
+      throw new BadRequestException('رابط غير صالح');
+    }
+
+    // ✅ التأكد من تطابق الإيميل
+    if (parsed.email !== normalizedEmail) {
+      throw new BadRequestException('رابط غير صالح');
+    }
+
+    // ✅ البحث عن المستخدم (مع preferences للدمج)
+    const user = await this.userRepository.findOne({
+      where: { id: parsed.userId },
+      select: ['id', 'email', 'firstName', 'lastName', 'status', 'password', 'preferences'],
+    });
+
+    if (!user || user.status !== UserStatus.ACTIVE) {
+      throw new BadRequestException('الحساب غير موجود أو غير مفعّل');
+    }
+
+    // ✅ التأكد أن كلمة المرور الجديدة ليست نفس القديمة
+    if (user.password) {
+      const isSamePassword = await bcrypt.compare(newPassword, user.password);
+      if (isSamePassword) {
+        throw new BadRequestException('كلمة المرور الجديدة يجب أن تكون مختلفة عن الحالية');
+      }
+    }
+
+    // ✅ تشفير وحفظ كلمة المرور الجديدة (مع دمج التفضيلات القديمة)
+    const hashedPassword = await bcrypt.hash(newPassword, 12);
+    await this.userRepository.update(user.id, {
+      password: hashedPassword,
+      authProvider: AuthProvider.LOCAL,
+      preferences: {
+        ...(user.preferences || {}),
+        hasSetPassword: true,
+        passwordResetAt: new Date().toISOString(),
+      },
+    });
+
+    // ✅ حذف التوكن (استخدام مرة واحدة فقط)
+    await this.redis.del(tokenKey);
+    await this.redis.del(`${this.RESET_TOKEN_PREFIX}user:${user.id}`);
+
+    // ✅ إلغاء الجلسات القديمة:
+    // - Access Token قصير (15 دقيقة) → ينتهي تلقائياً
+    // - Refresh Token: يُرفض في refreshTokens() لأن preferences.passwordResetAt
+    //   أحدث من iat (وقت إصدار التوكن القديم)
+
+    // ✅ مسح محاولات الدخول الفاشلة
+    await this.clearLoginAttempts(normalizedEmail);
+
+    // ✅ إرسال إشعار أمني بتغيير كلمة المرور
+    try {
+      const changeDate = new Date();
+      await this.mailService.sendPasswordChangedNotification(
+        normalizedEmail,
+        user.firstName || 'عزيزي التاجر',
+        changeDate,
+      );
+      this.logger.log(`✅ Password changed notification sent to: ${this.maskEmail(normalizedEmail)}`);
+    } catch (error) {
+      this.logger.error(`❌ Failed to send password changed notification: ${error instanceof Error ? error.message : 'Unknown'}`);
+    }
+
+    this.logger.log(`✅ Password reset successful for user: ${user.id}`);
+    return { message: 'تم تغيير كلمة المرور بنجاح. يمكنك الآن تسجيل الدخول.' };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
