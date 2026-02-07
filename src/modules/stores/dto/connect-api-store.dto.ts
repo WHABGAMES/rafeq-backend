@@ -13,7 +13,6 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
-  IsUrl,
   MaxLength,
   MinLength,
   ValidateIf,
