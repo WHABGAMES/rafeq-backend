@@ -71,7 +71,7 @@ export class ZidOAuthController {
   })
   async connectStore(
     @Request() req: RequestWithUser,
-    @Body() dto: ZidConnectDto,
+    @Body() _dto: ZidConnectDto,
   ): Promise<{ redirectUrl: string }> {
     const tenantId = req.user.tenantId;
 
