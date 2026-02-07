@@ -2,7 +2,7 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Auth Controller                             ║
  * ║                                                                                ║
- * ║  ✅ v6: Multi-Auth Support                                                     ║
+ * ║  ✅ v7: Multi-Auth Support + Forgot Password                                 ║
  * ║  POST /auth/check-email     → التحقق من وجود الإيميل                          ║
  * ║  POST /auth/login           → Email + Password                                ║
  * ║  POST /auth/register        → تسجيل حساب جديد                                ║
@@ -18,6 +18,9 @@
  * ║  POST /auth/logout          → تسجيل الخروج                                   ║
  * ║  GET  /auth/me              → بيانات المستخدم الحالي                           ║
  * ║  POST /auth/change-password → تغيير كلمة المرور                               ║
+ * ║  POST /auth/forgot-password → 🆕 طلب استعادة كلمة المرور                      ║
+ * ║  POST /auth/verify-reset-token → 🆕 التحقق من صلاحية الرابط                   ║
+ * ║  POST /auth/reset-password  → 🆕 تحديث كلمة المرور عبر الرابط                 ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -57,6 +60,9 @@ import {
   RefreshTokenDto,
   RefreshTokenResponseDto,
   ChangePasswordDto,
+  ForgotPasswordDto,
+  VerifyResetTokenDto,
+  ResetPasswordDto,
   MessageResponseDto,
   UserProfileDto,
 } from './dto';
@@ -262,5 +268,35 @@ export class AuthController {
   ): Promise<MessageResponseDto> {
     await this.authService.changePassword(req.user.sub || req.user.id, dto.currentPassword, dto.newPassword);
     return { message: 'تم تغيير كلمة المرور بنجاح' };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔐 FORGOT PASSWORD - استعادة كلمة المرور
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Post('forgot-password')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'طلب استعادة كلمة المرور' })
+  @ApiResponse({ status: 200, description: 'تم إرسال رابط الاستعادة (إذا كان الإيميل مسجلاً)' })
+  async forgotPassword(@Body() dto: ForgotPasswordDto): Promise<MessageResponseDto> {
+    this.logger.log(`Forgot password request: ${this.maskEmail(dto.email)}`);
+    return this.authService.forgotPassword(dto.email);
+  }
+
+  @Post('verify-reset-token')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'التحقق من صلاحية رابط استعادة كلمة المرور' })
+  @ApiResponse({ status: 200, description: 'صلاحية الرابط' })
+  async verifyResetToken(@Body() dto: VerifyResetTokenDto): Promise<{ valid: boolean }> {
+    return this.authService.verifyResetToken(dto.token, dto.email);
+  }
+
+  @Post('reset-password')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'تحديث كلمة المرور عبر رابط الاستعادة' })
+  @ApiResponse({ status: 200, description: 'تم تحديث كلمة المرور بنجاح' })
+  async resetPassword(@Body() dto: ResetPasswordDto): Promise<MessageResponseDto> {
+    this.logger.log(`Reset password attempt: ${this.maskEmail(dto.email)}`);
+    return this.authService.resetPassword(dto.token, dto.email, dto.newPassword);
   }
 }
