@@ -1,0 +1,234 @@
+/**
+ * ╔═══════════════════════════════════════════════════════════════════════════════╗
+ * ║                RAFIQ PLATFORM - API Connect Controller                         ║
+ * ║                                                                                ║
+ * ║  POST /api/stores/api/connect — ربط متجر عبر API Key                          ║
+ * ║                                                                                ║
+ * ║  ✅ يتحقق من صحة الـ API Key بإرسال طلب تجريبي للمنصة                        ║
+ * ║  ✅ يشفّر المفاتيح قبل الحفظ                                                  ║
+ * ║  ✅ يرجع نفس StoreResponse مثل OAuth                                          ║
+ * ║                                                                                ║
+ * ║  📁 src/modules/stores/api-connect.controller.ts                              ║
+ * ╚═══════════════════════════════════════════════════════════════════════════════╝
+ */
+
+import {
+  Controller,
+  Post,
+  Body,
+  UseGuards,
+  Request,
+  Logger,
+  BadRequestException,
+} from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
+
+// Services
+import { StoresService } from './stores.service';
+import { SallaApiService } from './salla-api.service';
+import { ZidApiService } from './zid-api.service';
+
+// DTOs
+import { ConnectApiStoreDto } from './dto/connect-api-store.dto';
+
+// Auth
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { User } from '@database/entities';
+
+// Entities
+import { StorePlatform } from './entities/store.entity';
+
+interface RequestWithUser extends Request {
+  user: User;
+}
+
+@Controller('stores/api')
+@ApiTags('Store API Connect')
+@UseGuards(JwtAuthGuard)
+@ApiBearerAuth('JWT-auth')
+export class ApiConnectController {
+  private readonly logger = new Logger(ApiConnectController.name);
+
+  constructor(
+    private readonly storesService: StoresService,
+    private readonly sallaApiService: SallaApiService,
+    private readonly zidApiService: ZidApiService,
+  ) {}
+
+  /**
+   * POST /stores/api/connect
+   * ربط متجر عبر API Key بدلاً من OAuth
+   */
+  @Post('connect')
+  @ApiOperation({
+    summary: 'ربط متجر عبر API',
+    description: 'يربط متجر باستخدام API Key مباشرة بدلاً من OAuth',
+  })
+  @ApiResponse({ status: 201, description: 'تم ربط المتجر بنجاح' })
+  @ApiResponse({ status: 400, description: 'مفتاح API غير صالح' })
+  @ApiResponse({ status: 409, description: 'المتجر مربوط مسبقاً' })
+  async connectViaApi(
+    @Request() req: RequestWithUser,
+    @Body() dto: ConnectApiStoreDto,
+  ) {
+    const tenantId = req.user.tenantId;
+
+    this.logger.log(`API connect attempt`, {
+      tenantId,
+      platform: dto.platform,
+      hasApiKey: !!dto.apiKey,
+      hasApiSecret: !!dto.apiSecret,
+    });
+
+    // ═══════════════════════════════════════════════════════════════
+    // ✅ الخطوة 1: التحقق من صحة الـ API Key بإرسال طلب تجريبي
+    // ═══════════════════════════════════════════════════════════════
+
+    if (dto.platform === StorePlatform.SALLA) {
+      return this.connectSallaViaApi(tenantId, dto);
+    } else if (dto.platform === StorePlatform.ZID) {
+      return this.connectZidViaApi(tenantId, dto);
+    } else {
+      throw new BadRequestException('منصة غير مدعومة');
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🛒 Salla API Connect
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  private async connectSallaViaApi(tenantId: string, dto: ConnectApiStoreDto) {
+    this.logger.log(`Validating Salla API key for tenant: ${tenantId}`);
+
+    // ✅ التحقق بإرسال طلب لـ Salla API
+    let storeInfo: any;
+    try {
+      const response = await this.sallaApiService.getStoreInfo(dto.apiKey);
+      storeInfo = response.data;
+    } catch (error: any) {
+      this.logger.warn(`Invalid Salla API key`, {
+        tenantId,
+        error: error?.message || error?.status,
+      });
+
+      // رسائل خطأ واضحة حسب نوع الخطأ
+      const status = error?.status || error?.response?.status;
+      if (status === 401 || status === 403) {
+        throw new BadRequestException(
+          'مفتاح الـ API غير صالح أو منتهي الصلاحية. تأكد من نسخه بشكل صحيح من لوحة تحكم سلة.',
+        );
+      }
+      throw new BadRequestException(
+        'فشل في التحقق من مفتاح الـ API. تأكد من الاتصال بالإنترنت وحاول مرة أخرى.',
+      );
+    }
+
+    // ✅ الخطوة 2: إنشاء المتجر عبر StoresService
+    const store = await this.storesService.connectSallaStore(tenantId, {
+      tokens: {
+        accessToken: dto.apiKey,
+        refreshToken: dto.apiSecret || '',
+        expiresAt: dto.apiSecret
+          ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000) // سنة إذا فيه secret
+          : new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),  // 14 يوم بدون secret
+      },
+      merchantInfo: {
+        id: storeInfo.id,
+        name: dto.name || storeInfo.name || storeInfo.username,
+        username: storeInfo.username,
+        email: storeInfo.email || '',
+        mobile: storeInfo.mobile || '',
+        domain: dto.url || storeInfo.domain || '',
+        plan: storeInfo.plan || '',
+        avatar: storeInfo.avatar,
+      },
+    });
+
+    this.logger.log(`Salla store connected via API`, {
+      storeId: store.id,
+      tenantId,
+      merchantId: storeInfo.id,
+    });
+
+    // ✅ إرجاع بنفس تنسيق StoreResponse
+    return {
+      id: store.id,
+      name: store.name,
+      platform: store.platform,
+      status: 'connected',
+      url: store.sallaDomain || dto.url || null,
+      lastSync: store.lastSyncedAt?.toISOString() || null,
+      createdAt: store.createdAt.toISOString(),
+      stats: { orders: 0, products: 0, customers: 0 },
+    };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🏪 Zid API Connect
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  private async connectZidViaApi(tenantId: string, dto: ConnectApiStoreDto) {
+    this.logger.log(`Validating Zid API key for tenant: ${tenantId}`);
+
+    // ✅ التحقق بإرسال طلب لـ Zid API
+    let storeInfo: any;
+    try {
+      storeInfo = await this.zidApiService.getStoreInfo(dto.apiKey);
+    } catch (error: any) {
+      this.logger.warn(`Invalid Zid API key`, {
+        tenantId,
+        error: error?.message || error?.status,
+      });
+
+      const status = error?.status || error?.response?.status;
+      if (status === 401 || status === 403) {
+        throw new BadRequestException(
+          'مفتاح الـ API غير صالح أو منتهي الصلاحية. تأكد من نسخه بشكل صحيح من لوحة تحكم زد.',
+        );
+      }
+      throw new BadRequestException(
+        'فشل في التحقق من مفتاح الـ API. تأكد من الاتصال بالإنترنت وحاول مرة أخرى.',
+      );
+    }
+
+    // ✅ الخطوة 2: إنشاء المتجر
+    const store = await this.storesService.connectZidStore(tenantId, {
+      tokens: {
+        accessToken: dto.apiKey,
+        refreshToken: dto.apiSecret || '',
+        expiresAt: dto.apiSecret
+          ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)
+          : new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+      },
+      storeInfo: {
+        id: storeInfo.id,
+        uuid: storeInfo.uuid || storeInfo.id,
+        name: dto.name || storeInfo.name,
+        email: storeInfo.email || '',
+        mobile: storeInfo.mobile || '',
+        url: dto.url || storeInfo.url || '',
+        logo: storeInfo.logo,
+        currency: storeInfo.currency || 'SAR',
+        language: storeInfo.language || 'ar',
+        created_at: new Date().toISOString(),
+      },
+    });
+
+    this.logger.log(`Zid store connected via API`, {
+      storeId: store.id,
+      tenantId,
+      zidStoreId: storeInfo.id,
+    });
+
+    return {
+      id: store.id,
+      name: store.name,
+      platform: store.platform,
+      status: 'connected',
+      url: store.zidDomain || dto.url || null,
+      lastSync: store.lastSyncedAt?.toISOString() || null,
+      createdAt: store.createdAt.toISOString(),
+      stats: { orders: 0, products: 0, customers: 0 },
+    };
+  }
+}
