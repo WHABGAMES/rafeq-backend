@@ -4,6 +4,9 @@
  * ║                                                                                ║
  * ║  ✅ Fixed: إضافة syncStore method                                              ║
  * ║  ✅ يدعم سلة وزد                                                               ║
+ * ║  🔐 NEW: تشفير/فك تشفير التوكنات بـ AES-256-GCM                               ║
+ * ║                                                                                ║
+ * ║  📁 src/modules/stores/stores.service.ts                                      ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -17,6 +20,9 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+
+// 🔐 Encryption
+import { encrypt, decrypt } from '@common/utils/encryption.util';
 
 // Entities
 import { Store, StoreStatus, StorePlatform } from './entities/store.entity';
@@ -61,6 +67,44 @@ export class StoresService {
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔐 Token Encryption Helpers
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * تشفير التوكنات قبل الحفظ في قاعدة البيانات
+   */
+  private encryptTokens(store: Store, tokens: { accessToken: string; refreshToken: string }): void {
+    store.accessToken = encrypt(tokens.accessToken) ?? undefined;
+    store.refreshToken = encrypt(tokens.refreshToken) ?? undefined;
+  }
+
+  /**
+   * جلب متجر مع التوكنات (مشفّرة) - لأن select: false
+   */
+  private async findWithTokens(where: Record<string, any>): Promise<Store | null> {
+    return this.storeRepository
+      .createQueryBuilder('store')
+      .addSelect('store.accessToken')
+      .addSelect('store.refreshToken')
+      .where(where)
+      .getOne();
+  }
+
+  /**
+   * فك تشفير Access Token لاستخدامه مع API
+   */
+  private getDecryptedAccessToken(store: Store): string | null {
+    return decrypt(store.accessToken ?? null);
+  }
+
+  /**
+   * فك تشفير Refresh Token لاستخدامه في التجديد
+   */
+  private getDecryptedRefreshToken(store: Store): string | null {
+    return decrypt(store.refreshToken ?? null);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
   // 🛒 Salla Store Connection
   // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -87,8 +131,6 @@ export class StoresService {
       platform: StorePlatform.SALLA,
       status: StoreStatus.ACTIVE,
       sallaMerchantId: merchantInfo.id,
-      accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
       tokenExpiresAt: tokens.expiresAt,
       sallaStoreName: merchantInfo.name,
       sallaEmail: merchantInfo.email,
@@ -110,6 +152,9 @@ export class StoresService {
       ],
       lastSyncedAt: new Date(),
     });
+
+    // 🔐 تشفير التوكنات
+    this.encryptTokens(store, tokens);
 
     const savedStore = await this.storeRepository.save(store);
 
@@ -134,8 +179,8 @@ export class StoresService {
     tokens: ConnectSallaStoreData['tokens'],
     merchantInfo: SallaMerchantInfo,
   ): Promise<Store> {
-    store.accessToken = tokens.accessToken;
-    store.refreshToken = tokens.refreshToken;
+    // 🔐 تشفير التوكنات
+    this.encryptTokens(store, tokens);
     store.tokenExpiresAt = tokens.expiresAt;
     store.status = StoreStatus.ACTIVE;
     store.lastSyncedAt = new Date();
@@ -179,8 +224,6 @@ export class StoresService {
       status: StoreStatus.ACTIVE,
       zidStoreId: storeInfo.id,
       zidStoreUuid: storeInfo.uuid,
-      accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
       tokenExpiresAt: tokens.expiresAt,
       zidStoreName: storeInfo.name,
       zidEmail: storeInfo.email,
@@ -201,6 +244,9 @@ export class StoresService {
       ],
       lastSyncedAt: new Date(),
     });
+
+    // 🔐 تشفير التوكنات
+    this.encryptTokens(store, tokens);
 
     const savedStore = await this.storeRepository.save(store);
 
@@ -225,8 +271,8 @@ export class StoresService {
     tokens: ConnectZidStoreData['tokens'],
     storeInfo: ZidStoreInfo,
   ): Promise<Store> {
-    store.accessToken = tokens.accessToken;
-    store.refreshToken = tokens.refreshToken;
+    // 🔐 تشفير التوكنات
+    this.encryptTokens(store, tokens);
     store.tokenExpiresAt = tokens.expiresAt;
     store.status = StoreStatus.ACTIVE;
     store.lastSyncedAt = new Date();
@@ -266,6 +312,19 @@ export class StoresService {
     return store;
   }
 
+  /**
+   * جلب متجر بالمعرّف مع التوكنات (للعمليات الداخلية فقط)
+   */
+  async findByIdWithTokens(tenantId: string, storeId: string): Promise<Store> {
+    const store = await this.findWithTokens({ id: storeId, tenantId });
+
+    if (!store) {
+      throw new NotFoundException('Store not found');
+    }
+
+    return store;
+  }
+
   async findByMerchantId(merchantId: number): Promise<Store | null> {
     return this.storeRepository.findOne({
       where: { sallaMerchantId: merchantId },
@@ -294,11 +353,12 @@ export class StoresService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // ✅ NEW: Sync Store - مزامنة بيانات المتجر من المنصة
+  // ✅ Sync Store - مزامنة بيانات المتجر من المنصة
   // ═══════════════════════════════════════════════════════════════════════════════
 
   async syncStore(tenantId: string, storeId: string): Promise<Store> {
-    const store = await this.findById(tenantId, storeId);
+    // 🔐 جلب المتجر مع التوكنات
+    const store = await this.findByIdWithTokens(tenantId, storeId);
 
     // التحقق من أن المتجر نشط
     if (store.status !== StoreStatus.ACTIVE) {
@@ -351,11 +411,9 @@ export class StoresService {
     this.logger.debug(`Syncing Salla store: ${store.sallaMerchantId}`);
 
     try {
-      // جلب بيانات المتجر من سلة
       const response = await this.sallaApiService.getStoreInfo(accessToken);
       const merchantInfo = response.data;
 
-      // تحديث بيانات المتجر
       store.sallaStoreName = merchantInfo.name;
       store.sallaEmail = merchantInfo.email;
       store.sallaMobile = merchantInfo.mobile;
@@ -376,10 +434,8 @@ export class StoresService {
     this.logger.debug(`Syncing Zid store: ${store.zidStoreId}`);
 
     try {
-      // جلب بيانات المتجر من زد - يرجع الـ object مباشرة
       const storeInfo = await this.zidApiService.getStoreInfo(accessToken);
 
-      // تحديث بيانات المتجر
       store.zidStoreName = storeInfo.name;
       store.zidEmail = storeInfo.email;
       store.zidMobile = storeInfo.mobile;
@@ -398,31 +454,43 @@ export class StoresService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 🔐 Token Management
+  // 🔐 Token Management (مع تشفير/فك تشفير)
   // ═══════════════════════════════════════════════════════════════════════════════
 
   async ensureValidToken(store: Store): Promise<string> {
-    if (!store.needsTokenRefresh && store.accessToken) {
-      return store.accessToken;
+    // 🔐 فك تشفير التوكن الحالي
+    const currentToken = this.getDecryptedAccessToken(store);
+
+    if (!store.needsTokenRefresh && currentToken) {
+      return currentToken;
     }
 
     this.logger.log(`Refreshing token for store: ${store.id} (${store.platform})`);
 
     try {
+      // 🔐 فك تشفير refresh token
+      const refreshToken = this.getDecryptedRefreshToken(store);
+      if (!refreshToken) {
+        throw new Error('No refresh token available');
+      }
+
       let tokens;
 
       if (store.platform === StorePlatform.SALLA) {
-        tokens = await this.sallaOAuthService.refreshAccessToken(store.refreshToken!);
+        tokens = await this.sallaOAuthService.refreshAccessToken(refreshToken);
         store.tokenExpiresAt = this.sallaOAuthService.calculateTokenExpiry(tokens.expires_in);
       } else if (store.platform === StorePlatform.ZID) {
-        tokens = await this.zidOAuthService.refreshAccessToken(store.refreshToken!);
+        tokens = await this.zidOAuthService.refreshAccessToken(refreshToken);
         store.tokenExpiresAt = this.zidOAuthService.calculateTokenExpiry(tokens.expires_in);
       } else {
         throw new Error(`Unsupported platform: ${store.platform}`);
       }
 
-      store.accessToken = tokens.access_token;
-      store.refreshToken = tokens.refresh_token;
+      // 🔐 تشفير التوكنات الجديدة
+      this.encryptTokens(store, {
+        accessToken: tokens.access_token,
+        refreshToken: tokens.refresh_token,
+      });
       store.lastTokenRefreshAt = new Date();
       store.consecutiveErrors = 0;
 
@@ -540,16 +608,24 @@ export class StoresService {
   async getStoreStats(store: Store): Promise<{ orders: number; products: number; customers: number }> {
     const stats = { orders: 0, products: 0, customers: 0 };
 
-    if (store.status !== StoreStatus.ACTIVE || !store.accessToken) {
+    if (store.status !== StoreStatus.ACTIVE) {
       return stats;
     }
 
     try {
-      const accessToken = await this.ensureValidToken(store);
+      // 🔐 جلب المتجر مع التوكنات إذا لم تكن محمّلة
+      let storeWithTokens = store;
+      if (!store.accessToken) {
+        const loaded = await this.findWithTokens({ id: store.id });
+        if (!loaded) return stats;
+        storeWithTokens = loaded;
+      }
 
-      if (store.platform === StorePlatform.SALLA) {
+      const accessToken = await this.ensureValidToken(storeWithTokens);
+
+      if (storeWithTokens.platform === StorePlatform.SALLA) {
         const [ordersRes, productsRes, customersRes] = await Promise.allSettled([
-          this.sallaApiService.getOrders(accessToken, { page: 1, perPage: 50 }),
+          this.sallaApiService.getOrders(accessToken, { page: 1, perPage: 1 }),
           this.sallaApiService.getProducts(accessToken, { page: 1, perPage: 1 }),
           this.sallaApiService.getCustomers(accessToken, { page: 1, perPage: 1 }),
         ]);
@@ -567,9 +643,9 @@ export class StoresService {
             ?? (Array.isArray(customersRes.value.data) ? customersRes.value.data.length : 0);
         }
 
-      } else if (store.platform === StorePlatform.ZID) {
+      } else if (storeWithTokens.platform === StorePlatform.ZID) {
         const [ordersRes, productsRes, customersRes] = await Promise.allSettled([
-          this.zidApiService.getOrders(accessToken, { page: 1, per_page: 50 }),
+          this.zidApiService.getOrders(accessToken, { page: 1, per_page: 1 }),
           this.zidApiService.getProducts(accessToken, { page: 1, per_page: 1 }),
           this.zidApiService.getCustomers(accessToken, { page: 1, per_page: 1 }),
         ]);
