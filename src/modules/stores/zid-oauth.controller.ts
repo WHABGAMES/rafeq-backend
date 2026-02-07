@@ -3,14 +3,21 @@
  * ║                RAFIQ PLATFORM - Zid OAuth Controller                           ║
  * ║                                                                                ║
  * ║  Endpoints:                                                                    ║
- * ║  GET /api/stores/zid/connect   → بدء OAuth مع زد                              ║
- * ║  GET /api/stores/zid/callback  → Callback من زد                               ║
+ * ║  POST /api/stores/zid/connect  → بدء OAuth مع زد (يرجع { redirectUrl })       ║
+ * ║  GET  /api/stores/zid/callback → Callback من زد                               ║
+ * ║                                                                                ║
+ * ║  🔧 FIX: POST بدل GET في connect لمطابقة الـ Frontend                         ║
+ * ║  🔧 FIX: يرجع JSON { redirectUrl } بدل redirect مباشر                         ║
+ * ║                                                                                ║
+ * ║  📁 src/modules/stores/zid-oauth.controller.ts                                ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
 import {
   Controller,
   Get,
+  Post,
+  Body,
   Query,
   Res,
   Logger,
@@ -34,6 +41,11 @@ interface RequestWithUser extends Request {
   user: User;
 }
 
+// DTO
+interface ZidConnectDto {
+  state?: string;
+}
+
 @Controller('stores/zid')
 @ApiTags('Zid OAuth')
 export class ZidOAuthController {
@@ -46,26 +58,30 @@ export class ZidOAuthController {
   ) {}
 
   /**
-   * GET /api/stores/zid/connect
-   * بدء عملية OAuth مع زد
+   * 🔧 FIX: POST /api/stores/zid/connect
+   * بدء عملية OAuth مع زد - يرجع { redirectUrl } بدل redirect مباشر
+   * لمطابقة الـ Frontend الذي يستخدم POST ويتوقع JSON
    */
-  @Get('connect')
+  @Post('connect')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({
     summary: 'بدء ربط متجر زد',
-    description: 'يُحول المستخدم لصفحة تسجيل الدخول في زد',
+    description: 'يُرجع رابط OAuth لزد - الـ Frontend يتولى التحويل',
   })
   async connectStore(
     @Request() req: RequestWithUser,
-    @Res() res: Response,
-  ): Promise<void> {
+    @Body() dto: ZidConnectDto,
+  ): Promise<{ redirectUrl: string }> {
     const tenantId = req.user.tenantId;
 
     try {
-      const authUrl = this.zidOAuthService.generateAuthorizationUrl(tenantId);
-      this.logger.log(`Redirecting tenant ${tenantId} to Zid OAuth`);
-      res.redirect(authUrl);
+      const redirectUrl = this.zidOAuthService.generateAuthorizationUrl(tenantId);
+      
+      this.logger.log(`Generated Zid OAuth URL for tenant ${tenantId}`);
+      
+      // ✅ يرجع JSON بدل redirect
+      return { redirectUrl };
     } catch (error: any) {
       this.logger.error('Failed to start Zid OAuth flow', error);
       throw new BadRequestException('فشل في بدء عملية الربط مع زد');
@@ -89,18 +105,21 @@ export class ZidOAuthController {
     @Query('error_description') errorDescription: string,
     @Res() res: Response,
   ): Promise<void> {
-    const frontendUrl = this.configService.get<string>('app.frontendUrl') || 'https://rafeq.ai';
+    const frontendUrl = this.configService.get<string>('app.frontendUrl')
+      || this.configService.get<string>('FRONTEND_URL')
+      || 'https://rafeq.ai';
+    const redirectPath = '/dashboard/stores';
 
     try {
       if (error) {
         this.logger.warn('OAuth error from Zid', { error, errorDescription });
-        res.redirect(`${frontendUrl}/dashboard/stores?error=${encodeURIComponent(errorDescription || error)}`);
+        res.redirect(`${frontendUrl}${redirectPath}?status=error&reason=${encodeURIComponent(errorDescription || error)}`);
         return;
       }
 
       if (!code || !state) {
         this.logger.warn('Missing code or state in Zid callback');
-        res.redirect(`${frontendUrl}/dashboard/stores?error=missing_params`);
+        res.redirect(`${frontendUrl}${redirectPath}?status=error&reason=missing_params`);
         return;
       }
 
@@ -122,13 +141,13 @@ export class ZidOAuthController {
         zidStoreId: storeInfo.id,
       });
 
-      res.redirect(`${frontendUrl}/dashboard/stores?success=true&store_id=${store.id}`);
+      res.redirect(`${frontendUrl}${redirectPath}?status=success&store_id=${store.id}`);
 
     } catch (error: any) {
       this.logger.error('Zid OAuth callback error', {
         error: error instanceof Error ? error.message : 'Unknown',
       });
-      res.redirect(`${frontendUrl}/dashboard/stores?error=connection_failed`);
+      res.redirect(`${frontendUrl}${redirectPath}?status=error&reason=connection_failed`);
     }
   }
 }
