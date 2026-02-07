@@ -2,8 +2,11 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Stores Module                              ║
  * ║                                                                                ║
- * ║  Module لإدارة المتاجر المرتبطة بالمنصة (سلة + زد)                              ║
+ * ║  Module لإدارة المتاجر المرتبطة بالمنصة (سلة + زد + API)                       ║
  * ║  ✅ مع دعم Auto Registration للتجار                                            ║
+ * ║  🆕 مع دعم الربط عبر API Key                                                  ║
+ * ║                                                                                ║
+ * ║  📁 src/modules/stores/stores.module.ts                                       ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -18,6 +21,7 @@ import { AuthModule } from '../auth/auth.module';
 import { StoresController } from './stores.controller';
 import { SallaOAuthController } from './salla-oauth.controller';
 import { ZidOAuthController } from './zid-oauth.controller';
+import { ApiConnectController } from './api-connect.controller';  // 🆕
 
 // Services
 import { StoresService } from './stores.service';
@@ -46,6 +50,7 @@ import { Store } from './entities/store.entity';
     StoresController,
     SallaOAuthController,
     ZidOAuthController,
+    ApiConnectController,    // 🆕
   ],
 
   providers: [
