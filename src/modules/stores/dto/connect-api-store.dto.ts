@@ -3,6 +3,7 @@
  * ║                    RAFIQ PLATFORM - API Connect DTO                            ║
  * ║                                                                                ║
  * ║  DTO للربط عبر API Key بدلاً من OAuth                                          ║
+ * ║  🆕 يدعم متاجر أخرى (other) بالإضافة لسلة وزد                                ║
  * ║  📁 src/modules/stores/dto/connect-api-store.dto.ts                           ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
@@ -12,8 +13,10 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  IsUrl,
   MaxLength,
   MinLength,
+  ValidateIf,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { StorePlatform } from '../entities/store.entity';
@@ -21,11 +24,11 @@ import { StorePlatform } from '../entities/store.entity';
 export class ConnectApiStoreDto {
   @ApiProperty({
     description: 'المنصة',
-    enum: [StorePlatform.SALLA, StorePlatform.ZID],
+    enum: [StorePlatform.SALLA, StorePlatform.ZID, StorePlatform.OTHER],
     example: 'salla',
   })
-  @IsIn([StorePlatform.SALLA, StorePlatform.ZID], {
-    message: 'المنصة يجب أن تكون salla أو zid',
+  @IsIn([StorePlatform.SALLA, StorePlatform.ZID, StorePlatform.OTHER], {
+    message: 'المنصة يجب أن تكون salla أو zid أو other',
   })
   platform: StorePlatform;
 
@@ -64,4 +67,28 @@ export class ConnectApiStoreDto {
   @IsString()
   @MaxLength(500)
   url?: string;
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🆕 حقول المتاجر الأخرى (مطلوبة فقط إذا platform = other)
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @ApiPropertyOptional({
+    description: 'اسم المنصة (مطلوب للمتاجر الأخرى)',
+    example: 'Shopify',
+  })
+  @ValidateIf((o) => o.platform === StorePlatform.OTHER)
+  @IsNotEmpty({ message: 'اسم المنصة مطلوب للمتاجر الأخرى' })
+  @IsString()
+  @MaxLength(100)
+  platformName?: string;
+
+  @ApiPropertyOptional({
+    description: 'رابط API الأساسي للتحقق من صحة المفتاح (مطلوب للمتاجر الأخرى)',
+    example: 'https://mystore.myplatform.com/api',
+  })
+  @ValidateIf((o) => o.platform === StorePlatform.OTHER)
+  @IsNotEmpty({ message: 'رابط API مطلوب للتحقق من المفتاح' })
+  @IsString()
+  @MaxLength(500)
+  apiBaseUrl?: string;
 }
