@@ -4,6 +4,7 @@
  * ║                                                                                ║
  * ║  ✅ Fixed: إضافة syncStore method                                              ║
  * ║  ✅ يدعم سلة وزد                                                               ║
+ * ║  🆕 يدعم متاجر أخرى (OTHER) عبر API                                           ║
  * ║  🔐 NEW: تشفير/فك تشفير التوكنات بـ AES-256-GCM                               ║
  * ║                                                                                ║
  * ║  📁 src/modules/stores/stores.service.ts                                      ║
@@ -49,6 +50,22 @@ interface ConnectZidStoreData {
     expiresAt: Date;
   };
   storeInfo: ZidStoreInfo;
+}
+
+// 🆕 بيانات ربط المتاجر الأخرى
+interface ConnectOtherStoreData {
+  tokens: {
+    accessToken: string;
+    refreshToken: string;
+    expiresAt: Date;
+  };
+  storeInfo: {
+    platformName: string;
+    apiBaseUrl: string;
+    name: string;
+    url: string;
+    storeId: string;
+  };
 }
 
 @Injectable()
@@ -290,6 +307,91 @@ export class StoresService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
+  // 🆕 Other Platform Store Connection
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async connectOtherStore(
+    tenantId: string,
+    data: ConnectOtherStoreData,
+  ): Promise<Store> {
+    const { tokens, storeInfo } = data;
+
+    // التحقق من عدم وجود متجر بنفس الـ API base URL لنفس الـ tenant
+    const existingStore = await this.storeRepository.findOne({
+      where: {
+        tenantId,
+        platform: StorePlatform.OTHER,
+        otherApiBaseUrl: storeInfo.apiBaseUrl,
+      },
+    });
+
+    if (existingStore) {
+      // تحديث المتجر الموجود بدلاً من إنشاء جديد
+      return this.updateOtherStoreConnection(existingStore, tokens, storeInfo);
+    }
+
+    const store = this.storeRepository.create({
+      tenantId,
+      name: storeInfo.name || storeInfo.platformName,
+      platform: StorePlatform.OTHER,
+      status: StoreStatus.ACTIVE,
+      tokenExpiresAt: tokens.expiresAt,
+      otherPlatformName: storeInfo.platformName,
+      otherApiBaseUrl: storeInfo.apiBaseUrl,
+      otherStoreUrl: storeInfo.url || undefined,
+      otherStoreId: storeInfo.storeId || undefined,
+      settings: {
+        autoReply: true,
+        welcomeMessageEnabled: true,
+        orderNotificationsEnabled: true,
+      },
+      subscribedEvents: [],
+      lastSyncedAt: new Date(),
+    });
+
+    // 🔐 تشفير التوكنات
+    this.encryptTokens(store, tokens);
+
+    const savedStore = await this.storeRepository.save(store);
+
+    this.eventEmitter.emit('store.connected', {
+      storeId: savedStore.id,
+      tenantId,
+      platform: StorePlatform.OTHER,
+      platformName: storeInfo.platformName,
+    });
+
+    this.logger.log(`🆕 Other platform store connected: ${savedStore.name}`, {
+      storeId: savedStore.id,
+      tenantId,
+      platformName: storeInfo.platformName,
+      apiBaseUrl: storeInfo.apiBaseUrl,
+    });
+
+    return savedStore;
+  }
+
+  private async updateOtherStoreConnection(
+    store: Store,
+    tokens: ConnectOtherStoreData['tokens'],
+    storeInfo: ConnectOtherStoreData['storeInfo'],
+  ): Promise<Store> {
+    // 🔐 تشفير التوكنات
+    this.encryptTokens(store, tokens);
+    store.tokenExpiresAt = tokens.expiresAt;
+    store.status = StoreStatus.ACTIVE;
+    store.lastSyncedAt = new Date();
+    store.consecutiveErrors = 0;
+    store.lastError = undefined;
+    store.name = storeInfo.name || store.name;
+    store.otherPlatformName = storeInfo.platformName;
+    store.otherStoreUrl = storeInfo.url || store.otherStoreUrl;
+    store.otherStoreId = storeInfo.storeId || store.otherStoreId;
+
+    return this.storeRepository.save(store);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
   // 📊 Common Operations
   // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -375,6 +477,9 @@ export class StoresService {
         await this.syncSallaStore(store, accessToken);
       } else if (store.platform === StorePlatform.ZID) {
         await this.syncZidStore(store, accessToken);
+      } else if (store.platform === StorePlatform.OTHER) {
+        // 🆕 المتاجر الأخرى: تحديث وقت المزامنة فقط (لا يوجد API محدد)
+        this.logger.debug(`Other platform sync — marking as synced: ${store.otherPlatformName}`);
       }
 
       // تحديث وقت آخر مزامنة
@@ -463,6 +568,14 @@ export class StoresService {
 
     if (!store.needsTokenRefresh && currentToken) {
       return currentToken;
+    }
+
+    // 🆕 المتاجر الأخرى: لا يوجد آلية refresh — نرجع التوكن الحالي
+    if (store.platform === StorePlatform.OTHER) {
+      if (currentToken) {
+        return currentToken;
+      }
+      throw new BadRequestException('مفتاح API المتجر غير موجود. يرجى إعادة ربط المتجر.');
     }
 
     this.logger.log(`Refreshing token for store: ${store.id} (${store.platform})`);
@@ -663,6 +776,7 @@ export class StoresService {
             ?? (Array.isArray(customersRes.value.data) ? customersRes.value.data.length : 0);
         }
       }
+      // 🆕 OTHER: لا نجلب إحصائيات (ما نعرف بنية API)
 
       this.logger.debug(`Store stats for ${store.id}: orders=${stats.orders}, products=${stats.products}, customers=${stats.customers}`);
 
