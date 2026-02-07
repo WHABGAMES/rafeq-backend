@@ -7,6 +7,7 @@
  * ║  ✅ Fixed: Status mapping (active → connected)                                ║
  * ║  🔧 FIX: إزالة التحقق من store.accessToken لأنها select: false                ║
  * ║        → getStoreStats يتولى تحميل التوكنات داخلياً                            ║
+ * ║  🆕 دعم منصة OTHER في transformStoreResponse                                  ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -52,6 +53,7 @@ interface StoreResponse {
   id: string;
   name: string;
   platform: string;
+  platformName?: string;  // 🆕 اسم المنصة (للمتاجر الأخرى)
   status: 'connected' | 'disconnected' | 'pending' | 'error';
   url: string | null;
   lastSync: string | null;
@@ -78,12 +80,15 @@ function transformStoreResponse(store: Store, stats?: { orders: number; products
     url = store.sallaDomain || null;
   } else if (store.platform === StorePlatform.ZID) {
     url = store.zidDomain || null;
+  } else if (store.platform === StorePlatform.OTHER) {
+    url = store.otherStoreUrl || null;
   }
 
   return {
     id: store.id,
-    name: store.name || store.sallaStoreName || store.zidStoreName || 'متجر',
+    name: store.name || store.sallaStoreName || store.zidStoreName || store.otherPlatformName || 'متجر',
     platform: store.platform,
+    platformName: store.platform === StorePlatform.OTHER ? store.otherPlatformName : undefined,
     status: statusMap[store.status] || 'disconnected',
     url,
     lastSync: store.lastSyncedAt ? store.lastSyncedAt.toISOString() : null,
