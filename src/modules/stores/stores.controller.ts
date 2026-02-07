@@ -5,6 +5,8 @@
  * ║  ✅ Fixed: Response transformation لمطابقة Frontend                           ║
  * ║  ✅ Fixed: إضافة endpoint للمزامنة                                             ║
  * ║  ✅ Fixed: Status mapping (active → connected)                                ║
+ * ║  🔧 FIX: إزالة التحقق من store.accessToken لأنها select: false                ║
+ * ║        → getStoreStats يتولى تحميل التوكنات داخلياً                            ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -123,7 +125,9 @@ export class StoresController {
     const results: StoreResponse[] = [];
     for (const store of stores) {
       let stats = { orders: 0, products: 0, customers: 0 };
-      if (store.status === StoreStatus.ACTIVE && store.accessToken) {
+      // 🔧 FIX: لا نتحقق من store.accessToken لأنها select: false
+      // getStoreStats يتولى تحميل التوكنات داخلياً
+      if (store.status === StoreStatus.ACTIVE) {
         try {
           stats = await this.storesService.getStoreStats(store);
         } catch (err) {
@@ -161,7 +165,8 @@ export class StoresController {
     const store = await this.storesService.findById(req.user.tenantId, id);
     
     let stats = { orders: 0, products: 0, customers: 0 };
-    if (store.status === StoreStatus.ACTIVE && store.accessToken) {
+    // 🔧 FIX: لا نتحقق من store.accessToken لأنها select: false
+    if (store.status === StoreStatus.ACTIVE) {
       try {
         stats = await this.storesService.getStoreStats(store);
       } catch (err) {
