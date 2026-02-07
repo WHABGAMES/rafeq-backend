@@ -4,6 +4,7 @@
  * ║                                                                                ║
  * ║  📌 يستمع لأحداث الـ webhooks ويرسل رسائل واتساب تلقائية                      ║
  * ║                                                                                ║
+ * ║  ✅ v17: FIX — Dedup محسّن لمنع تكرار رسائل القوالب                            ║
  * ║  ✅ v5: يقرأ data.customer + data.order.customer + lookup من DB              ║
  * ║                                                                                ║
  * ║  المسار:                                                                       ║
@@ -230,8 +231,16 @@ export class TemplateDispatcherService {
     try {
       this.logger.log(`📨 Dispatching templates for: ${triggerEvent}`, { tenantId, storeId });
 
-      // ✅ v12: Dedup — منع إرسال نفس القالب مرتين خلال 60 ثانية
-      const orderId = (raw.id || raw.orderId || payload.orderId || '') as string;
+      // ✅ v17 FIX: Dedup محسّن — يمنع إرسال نفس القالب مرتين خلال 60 ثانية
+      // المشكلة السابقة: orderId قد يختلف بين webhook payloads المختلفة
+      // الحل: نستخدم عدة مصادر للـ orderId + نطبّع القيمة
+      const orderObj = raw.order as Record<string, unknown> | undefined;
+      const orderId = String(
+        raw.id || raw.orderId || payload.orderId ||
+        raw.reference_id || raw.order_number ||
+        orderObj?.id || orderObj?.reference_id ||
+        'unknown'
+      );
       const dedupKey = `${orderId}-${triggerEvent}-${tenantId}`;
       const now = Date.now();
 
@@ -241,10 +250,11 @@ export class TemplateDispatcherService {
       }
 
       if (this.recentDispatches.has(dedupKey)) {
-        this.logger.warn(`🔁 DEDUP: Skipping duplicate dispatch for '${triggerEvent}' (orderId: ${orderId}) - already sent within ${this.DEDUP_WINDOW_MS / 1000}s`);
+        this.logger.warn(`🔁 DEDUP: Skipping duplicate dispatch for '${triggerEvent}' (orderId: ${orderId}) — already sent within ${this.DEDUP_WINDOW_MS / 1000}s`);
         return;
       }
       this.recentDispatches.set(dedupKey, now);
+      this.logger.debug(`🔑 DEDUP key set: ${dedupKey}`);
 
       // 1️⃣ البحث عن القوالب المفعّلة بنفس triggerEvent
       const templates = await this.templateRepository.find({
