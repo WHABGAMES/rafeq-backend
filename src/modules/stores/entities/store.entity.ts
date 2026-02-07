@@ -4,6 +4,7 @@
  * ║                                                                                ║
  * ║  ✅ يدعم النمط السهل: tenantId nullable حتى يتم الربط                         ║
  * ║  ✅ يدعم سلة وزد                                                               ║
+ * ║  🆕 يدعم متاجر أخرى (OTHER) عبر API                                           ║
  * ║  🔐 select: false على حقول التوكنات (لا تُحمّل تلقائياً)                       ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
@@ -32,6 +33,7 @@ export enum StorePlatform {
   SALLA = 'salla',
   ZID = 'zid',
   SHOPIFY = 'shopify',
+  OTHER = 'other',  // 🆕 متاجر أخرى
 }
 
 @Entity('stores')
@@ -280,6 +282,46 @@ export class Store extends BaseEntity {
   zidLanguage?: string;
 
   // ═══════════════════════════════════════════════════════════════════════════════
+  // 🆕 Other Platform fields (Generic)
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Column({
+    name: 'other_platform_name',
+    type: 'varchar',
+    length: 100,
+    nullable: true,
+    comment: 'اسم المنصة (مثل: Shopify, WooCommerce, OpenCart...)',
+  })
+  otherPlatformName?: string;
+
+  @Column({
+    name: 'other_api_base_url',
+    type: 'varchar',
+    length: 500,
+    nullable: true,
+    comment: 'رابط API الأساسي للمنصة',
+  })
+  otherApiBaseUrl?: string;
+
+  @Column({
+    name: 'other_store_url',
+    type: 'varchar',
+    length: 500,
+    nullable: true,
+    comment: 'رابط المتجر الخارجي',
+  })
+  otherStoreUrl?: string;
+
+  @Column({
+    name: 'other_store_id',
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+    comment: 'معرّف المتجر في المنصة الخارجية',
+  })
+  otherStoreId?: string;
+
+  // ═══════════════════════════════════════════════════════════════════════════════
   // 📊 Common fields
   // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -373,12 +415,14 @@ export class Store extends BaseEntity {
   get platformStoreId(): string | number | undefined {
     if (this.platform === StorePlatform.SALLA) return this.sallaMerchantId;
     if (this.platform === StorePlatform.ZID) return this.zidStoreId;
+    if (this.platform === StorePlatform.OTHER) return this.otherStoreId;
     return undefined;
   }
 
   get platformStoreName(): string | undefined {
     if (this.platform === StorePlatform.SALLA) return this.sallaStoreName;
     if (this.platform === StorePlatform.ZID) return this.zidStoreName;
+    if (this.platform === StorePlatform.OTHER) return this.otherPlatformName;
     return this.name;
   }
 
