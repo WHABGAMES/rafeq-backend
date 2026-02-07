@@ -5,6 +5,9 @@
  * ║  ✅ OAuth 2.0 Flow مع سلة                                                       ║
  * ║  ✅ يدعم Easy Mode و Standard OAuth                                            ║
  * ║  ✅ Auto Registration - إنشاء حساب تلقائي للتاجر                               ║
+ * ║  🔐 NEW: تشفير التوكنات بـ AES-256-GCM                                         ║
+ * ║                                                                              ║
+ * ║  📁 src/modules/stores/salla-oauth.service.ts                                ║
  * ╚══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -18,6 +21,9 @@ import { firstValueFrom } from 'rxjs';
 
 import { Store, StoreStatus, StorePlatform } from './entities/store.entity';
 import { AutoRegistrationService } from '../auth/auto-registration.service';
+
+// 🔐 Encryption
+import { encrypt, decrypt } from '@common/utils/encryption.util';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ✅ Exported Types
@@ -152,8 +158,9 @@ export class SallaOAuthService {
 
       if (store) {
         store.tenantId = tenantId;
-        store.accessToken = tokens.access_token;
-        store.refreshToken = tokens.refresh_token;
+        // 🔐 تشفير التوكنات
+        store.accessToken = encrypt(tokens.access_token) ?? undefined;
+        store.refreshToken = encrypt(tokens.refresh_token) ?? undefined;
         store.tokenExpiresAt = this.calculateTokenExpiry(tokens.expires_in);
         store.lastTokenRefreshAt = new Date();
         store.status = StoreStatus.ACTIVE;
@@ -175,8 +182,9 @@ export class SallaOAuthService {
           platform: StorePlatform.SALLA,
           status: StoreStatus.ACTIVE,
           sallaMerchantId: merchantInfo.id,
-          accessToken: tokens.access_token,
-          refreshToken: tokens.refresh_token,
+          // 🔐 تشفير التوكنات
+          accessToken: encrypt(tokens.access_token) ?? undefined,
+          refreshToken: encrypt(tokens.refresh_token) ?? undefined,
           tokenExpiresAt: this.calculateTokenExpiry(tokens.expires_in),
           sallaStoreName: merchantInfo.name,
           sallaEmail: merchantInfo.email,
@@ -280,6 +288,7 @@ export class SallaOAuthService {
   /**
    * ✅ معالجة app.store.authorize من webhook سلة
    * 🆕 مع Auto Registration - إنشاء حساب تلقائي للتاجر
+   * 🔐 مع تشفير التوكنات
    */
   async handleAppStoreAuthorize(
     merchantId: number,
@@ -293,9 +302,6 @@ export class SallaOAuthService {
     const expiresIn = data.expires || 3600;
 
     if (store) {
-      // ════════════════════════════════════════════════════════════════
-      // 📦 المتجر موجود - تحديث البيانات
-      // ════════════════════════════════════════════════════════════════
       if (!store.tenantId) {
         const tenant = await this.tenantsService.createTenantFromSalla({
           merchantId,
@@ -308,8 +314,9 @@ export class SallaOAuthService {
         store.tenantId = tenant.id;
       }
       
-      store.accessToken = data.access_token;
-      store.refreshToken = data.refresh_token;
+      // 🔐 تشفير التوكنات
+      store.accessToken = encrypt(data.access_token) ?? undefined;
+      store.refreshToken = encrypt(data.refresh_token) ?? undefined;
       store.tokenExpiresAt = this.calculateTokenExpiry(expiresIn);
       store.lastTokenRefreshAt = new Date();
       store.status = StoreStatus.ACTIVE;
@@ -324,9 +331,6 @@ export class SallaOAuthService {
       
       this.logger.log(`📦 Updated store for merchant ${merchantId}`);
     } else {
-      // ════════════════════════════════════════════════════════════════
-      // 🆕 متجر جديد - إنشاء Tenant + Store
-      // ════════════════════════════════════════════════════════════════
       const tenant = await this.tenantsService.createTenantFromSalla({
         merchantId,
         name: merchantInfo.name || merchantInfo.username || `متجر سلة`,
@@ -342,8 +346,9 @@ export class SallaOAuthService {
         platform: StorePlatform.SALLA,
         status: StoreStatus.ACTIVE,
         sallaMerchantId: merchantId,
-        accessToken: data.access_token,
-        refreshToken: data.refresh_token,
+        // 🔐 تشفير التوكنات
+        accessToken: encrypt(data.access_token) ?? undefined,
+        refreshToken: encrypt(data.refresh_token) ?? undefined,
         tokenExpiresAt: this.calculateTokenExpiry(expiresIn),
         sallaStoreName: merchantInfo.name,
         sallaEmail: merchantInfo.email,
@@ -361,9 +366,7 @@ export class SallaOAuthService {
 
     const savedStore = await this.storeRepository.save(store);
 
-    // ════════════════════════════════════════════════════════════════
     // 👤 إنشاء/تحديث المستخدم + إرسال بيانات الدخول
-    // ════════════════════════════════════════════════════════════════
     try {
       const result = await this.autoRegistrationService.handleAppInstallation(
         {
@@ -388,7 +391,6 @@ export class SallaOAuthService {
         merchantId,
         email: merchantInfo.email,
       });
-      // لا نرمي الخطأ - المتجر تم إنشاؤه بنجاح
     }
 
     return savedStore;
