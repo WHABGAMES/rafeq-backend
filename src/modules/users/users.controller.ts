@@ -1,6 +1,18 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Users Controller                           ║
+ * ║                                                                                ║
+ * ║  Endpoints:                                                                   ║
+ * ║  GET    /users              → قائمة الموظفين                                   ║
+ * ║  GET    /users/stats        → إحصائيات                                         ║
+ * ║  GET    /users/:id          → موظف معين                                        ║
+ * ║  POST   /users/invite       → دعوة موظف (Owner only)                           ║
+ * ║  POST   /users/accept-invite → قبول الدعوة (Public - no auth)                  ║
+ * ║  POST   /users/verify-invite → التحقق من الرابط (Public - no auth)             ║
+ * ║  PATCH  /users/:id          → تحديث موظف                                      ║
+ * ║  PATCH  /users/:id/permissions → تحديث الصلاحيات (Owner only)                  ║
+ * ║  PATCH  /users/:id/toggle-status → تفعيل/تعطيل (Owner only)                   ║
+ * ║  DELETE /users/:id          → حذف موظف (Owner only)                            ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -14,6 +26,8 @@ import {
   Param,
   UseGuards,
   ParseUUIDPipe,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -25,48 +39,151 @@ import {
 import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
 import { CurrentUser, CurrentTenant } from '@common/decorators/current-user.decorator';
 import { User } from '@database/entities';
-import { UsersService } from './users.service';
+import { UsersService, StaffPermissions } from './users.service';
 import { CreateUserDto, UpdateUserDto } from './dto';
 
-@Controller({
-  path: 'users',
-  version: '1',
-})
-@ApiTags('Users')
-@ApiBearerAuth('JWT-auth')
-@UseGuards(JwtAuthGuard)
+// ═══════════════════════════════════════════════════════════════════════════════
+// DTOs للـ endpoints الجديدة
+// ═══════════════════════════════════════════════════════════════════════════════
+
+import { IsEmail, IsNotEmpty, IsString, IsOptional, IsEnum, MinLength } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { UserRole } from '@database/entities';
+
+export class InviteStaffDto {
+  @ApiProperty({ description: 'البريد الإلكتروني للموظف', example: 'staff@example.com' })
+  @IsEmail({}, { message: 'البريد الإلكتروني غير صحيح' })
+  @IsNotEmpty({ message: 'البريد الإلكتروني مطلوب' })
+  email: string;
+
+  @ApiPropertyOptional({ description: 'الدور', enum: ['agent', 'manager', 'marketing'] })
+  @IsOptional()
+  @IsEnum(UserRole)
+  role?: UserRole;
+
+  @ApiPropertyOptional({ description: 'الصلاحيات المخصصة' })
+  @IsOptional()
+  permissions?: Partial<StaffPermissions>;
+}
+
+export class AcceptInviteDto {
+  @ApiProperty({ description: 'توكن الدعوة' })
+  @IsString()
+  @IsNotEmpty()
+  token: string;
+
+  @ApiProperty({ description: 'البريد الإلكتروني' })
+  @IsEmail()
+  @IsNotEmpty()
+  email: string;
+
+  @ApiProperty({ description: 'كلمة المرور' })
+  @IsString()
+  @MinLength(8, { message: 'كلمة المرور يجب أن تكون 8 أحرف على الأقل' })
+  password: string;
+
+  @ApiProperty({ description: 'اسم الموظف' })
+  @IsString()
+  @IsNotEmpty()
+  name: string;
+}
+
+export class VerifyInviteDto {
+  @ApiProperty()
+  @IsString()
+  @IsNotEmpty()
+  token: string;
+
+  @ApiProperty()
+  @IsEmail()
+  @IsNotEmpty()
+  email: string;
+}
+
+export class UpdatePermissionsDto {
+  @ApiProperty({ description: 'الصلاحيات المحدّثة' })
+  @IsNotEmpty()
+  permissions: Partial<StaffPermissions>;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Controller
+// ═══════════════════════════════════════════════════════════════════════════════
+
+@Controller('users')
+@ApiTags('Users / Staff Management')
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🔓 Public Endpoints (لا تحتاج auth)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * POST /api/v1/users/verify-invite
+   * التحقق من صلاحية رابط الدعوة
+   */
+  @Post('verify-invite')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'التحقق من رابط الدعوة' })
+  verifyInvite(@Body() dto: VerifyInviteDto) {
+    return this.usersService.verifyInviteToken(dto.token, dto.email);
+  }
+
+  /**
+   * POST /api/v1/users/accept-invite
+   * قبول الدعوة وإنشاء الحساب
+   */
+  @Post('accept-invite')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'قبول الدعوة وتعيين كلمة المرور' })
+  @ApiResponse({ status: 201, description: 'تم إنشاء الحساب بنجاح' })
+  @ApiResponse({ status: 400, description: 'رابط غير صالح أو منتهي' })
+  acceptInvite(@Body() dto: AcceptInviteDto) {
+    return this.usersService.acceptInvite(
+      dto.token,
+      dto.email,
+      dto.password,
+      dto.name,
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🔒 Protected Endpoints (تحتاج auth)
+  // ═══════════════════════════════════════════════════════════════════════════
+
   /**
    * GET /api/v1/users
-   * جلب كل مستخدمي المتجر
+   * قائمة كل الموظفين في المتجر
    */
   @Get()
-  @ApiOperation({ summary: 'قائمة المستخدمين' })
-  @ApiResponse({ status: 200, description: 'قائمة المستخدمين' })
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({ summary: 'قائمة الموظفين' })
   findAll(@CurrentTenant() tenantId: string): Promise<User[]> {
     return this.usersService.findAll(tenantId);
   }
 
   /**
    * GET /api/v1/users/stats
-   * إحصائيات المستخدمين
+   * إحصائيات الموظفين
    */
   @Get('stats')
-  @ApiOperation({ summary: 'إحصائيات المستخدمين' })
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({ summary: 'إحصائيات الموظفين' })
   getStats(@CurrentTenant() tenantId: string) {
     return this.usersService.getStats(tenantId);
   }
 
   /**
    * GET /api/v1/users/:id
-   * جلب مستخدم معين
+   * بيانات موظف معين
    */
   @Get(':id')
-  @ApiOperation({ summary: 'جلب مستخدم معين' })
-  @ApiResponse({ status: 200, description: 'بيانات المستخدم' })
-  @ApiResponse({ status: 404, description: 'المستخدم غير موجود' })
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({ summary: 'بيانات موظف معين' })
   findOne(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentTenant() tenantId: string,
@@ -75,14 +192,31 @@ export class UsersController {
   }
 
   /**
-   * POST /api/v1/users
-   * إنشاء مستخدم جديد (دعوة موظف)
+   * POST /api/v1/users/invite
+   * دعوة موظف جديد (Owner only)
+   */
+  @Post('invite')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('JWT-auth')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'دعوة موظف جديد' })
+  @ApiResponse({ status: 200, description: 'تم إرسال الدعوة' })
+  @ApiResponse({ status: 403, description: 'فقط Owner يمكنه الدعوة' })
+  @ApiResponse({ status: 409, description: 'البريد مسجّل مسبقاً' })
+  invite(
+    @Body() dto: InviteStaffDto,
+    @CurrentUser() user: User,
+  ) {
+    return this.usersService.inviteStaff(user.tenantId, user, dto);
+  }
+
+  /**
+   * POST /api/v1/users (Legacy - للتوافقية)
    */
   @Post()
-  @ApiOperation({ summary: 'إنشاء مستخدم جديد' })
-  @ApiResponse({ status: 201, description: 'تم إنشاء المستخدم' })
-  @ApiResponse({ status: 409, description: 'البريد مستخدم مسبقاً' })
-  @ApiResponse({ status: 403, description: 'ليس لديك صلاحية' })
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({ summary: 'إنشاء مستخدم (legacy)' })
   create(
     @Body() dto: CreateUserDto,
     @CurrentUser() user: User,
@@ -91,13 +225,46 @@ export class UsersController {
   }
 
   /**
+   * PATCH /api/v1/users/:id/permissions
+   * تحديث صلاحيات موظف (Owner only)
+   */
+  @Patch(':id/permissions')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({ summary: 'تحديث صلاحيات موظف' })
+  @ApiResponse({ status: 200, description: 'تم التحديث' })
+  @ApiResponse({ status: 403, description: 'فقط Owner' })
+  updatePermissions(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdatePermissionsDto,
+    @CurrentUser() user: User,
+  ) {
+    return this.usersService.updatePermissions(id, user.tenantId, dto.permissions, user.role);
+  }
+
+  /**
+   * PATCH /api/v1/users/:id/toggle-status
+   * تفعيل/تعطيل حساب (Owner only)
+   */
+  @Patch(':id/toggle-status')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({ summary: 'تفعيل/تعطيل حساب موظف' })
+  toggleStatus(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.usersService.toggleStatus(id, user.tenantId, user.role);
+  }
+
+  /**
    * PATCH /api/v1/users/:id
-   * تحديث مستخدم
+   * تحديث بيانات موظف
    */
   @Patch(':id')
-  @ApiOperation({ summary: 'تحديث مستخدم' })
-  @ApiResponse({ status: 200, description: 'تم التحديث' })
-  @ApiResponse({ status: 404, description: 'المستخدم غير موجود' })
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({ summary: 'تحديث بيانات موظف' })
   update(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateUserDto,
@@ -108,17 +275,17 @@ export class UsersController {
 
   /**
    * DELETE /api/v1/users/:id
-   * حذف مستخدم
+   * حذف موظف (Owner only)
    */
   @Delete(':id')
-  @ApiOperation({ summary: 'حذف مستخدم' })
-  @ApiResponse({ status: 200, description: 'تم الحذف' })
-  @ApiResponse({ status: 403, description: 'لا يمكن حذف صاحب المتجر' })
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({ summary: 'حذف موظف' })
   async remove(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: User,
   ): Promise<{ message: string }> {
     await this.usersService.remove(id, user.tenantId, user.role);
-    return { message: 'تم حذف المستخدم بنجاح' };
+    return { message: 'تم حذف الموظف بنجاح' };
   }
 }
