@@ -15,7 +15,7 @@ export { BaseEntity } from './base.entity';
 // CORE ENTITIES
 // ═══════════════════════════════════════════════════════════════════════════════
 export { Tenant, TenantStatus } from './tenant.entity';
-export { User, UserStatus, UserRole } from './user.entity';
+export { User, UserStatus, UserRole, AuthProvider } from './user.entity';
 
 // ✅ Store - يُستورد مباشرة من الموقع الجديد
 export { Store, StoreStatus, StorePlatform } from '../../modules/stores/entities/store.entity';
