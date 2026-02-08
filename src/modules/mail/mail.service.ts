@@ -384,6 +384,93 @@ export class MailService {
     return this.sendMail({ to, subject, html });
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 📨 دعوة موظف
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async sendStaffInviteEmail(options: {
+    to: string;
+    storeName: string;
+    inviterName: string;
+    role: string;
+    inviteUrl: string;
+  }): Promise<boolean> {
+    const { to, storeName, inviterName, role, inviteUrl } = options;
+
+    const subject = `📨 دعوة للانضمام إلى ${storeName} | RAFEQ`;
+    const html = this.buildEmailTemplate({
+      icon: '📨',
+      title: 'دعوة للانضمام كموظف',
+      storeBadge: storeName,
+      greeting: 'مرحباً!',
+      content: `
+        <p style="margin: 0 0 24px; font-size: 15px; color: #94a3b8; text-align: center; line-height: 1.8; font-family: Arial, sans-serif;">
+          قام <strong style="color: #ffffff;">${inviterName}</strong> بدعوتك للانضمام إلى فريق
+          <strong style="color: #2dd4bf;">${storeName}</strong>
+          بدور <strong style="color: #a855f7;">${role}</strong> على منصة رفيق.
+        </p>
+
+        <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="margin-bottom: 24px;">
+          <tr>
+            <td align="center">
+              <table role="presentation" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="background-color: #1e1b2e; border: 1px solid #a855f7; border-radius: 12px; padding: 12px 28px;" bgcolor="#1e1b2e">
+                    <span style="font-size: 14px; color: #a855f7; font-family: Arial, sans-serif; font-weight: 600;">
+                      👤 الدور: ${role}
+                    </span>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+
+        <p style="margin: 0 0 24px; font-size: 14px; color: #64748b; text-align: center; font-family: Arial, sans-serif;">
+          اضغط على الزر أدناه لقبول الدعوة وتعيين كلمة المرور الخاصة بك.
+        </p>
+
+        <table role="presentation" cellpadding="0" cellspacing="0" width="100%">
+          <tr>
+            <td align="center">
+              <table role="presentation" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="background: linear-gradient(135deg, #2dd4bf, #a855f7); border-radius: 12px;">
+                    <a href="${inviteUrl}" style="display: block; padding: 16px 44px; font-size: 16px; font-weight: 700; color: #ffffff; text-decoration: none; font-family: Arial, sans-serif;">
+                      ✅ قبول الدعوة
+                    </a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+
+        <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="margin-top: 20px;">
+          <tr>
+            <td style="background-color: #422006; border: 1px solid #854d0e; border-radius: 10px; padding: 14px 16px; text-align: center;" bgcolor="#422006">
+              <span style="font-size: 13px; color: #fbbf24; font-family: Arial, sans-serif;">
+                ⏱️ هذا الرابط صالح لمدة 72 ساعة فقط ولا يمكن استخدامه أكثر من مرة
+              </span>
+            </td>
+          </tr>
+        </table>
+
+        <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="margin-top: 16px;">
+          <tr>
+            <td style="background-color: #1e1b2e; border: 1px solid #374151; border-radius: 10px; padding: 14px 16px;" bgcolor="#1e1b2e">
+              <p style="margin: 0; font-size: 12px; color: #64748b; font-family: Arial, sans-serif; text-align: center;">
+                🛡️ إذا لم تكن تتوقع هذه الدعوة، تجاهل هذا الإيميل.
+              </p>
+            </td>
+          </tr>
+        </table>
+      `,
+    });
+
+    return this.sendMail({ to, subject, html });
+  }
+
   private buildEmailTemplate(options: {
     icon: string;
     title: string;
