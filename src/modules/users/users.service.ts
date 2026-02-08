@@ -3,11 +3,12 @@
  * ║                    RAFIQ PLATFORM - Users Service                              ║
  * ║                                                                                ║
  * ║  ✅ نظام الموظفين الكامل:                                                       ║
- * ║     - دعوة موظف عبر الإيميل (invite token → Redis)                              ║
+ * ║     - دعوة موظف عبر الإيميل (invite token → Database)                           ║
  * ║     - قبول الدعوة وتعيين كلمة المرور                                            ║
  * ║     - نظام صلاحيات مرن (permissions jsonb)                                     ║
  * ║     - تفعيل/تعطيل الحساب                                                       ║
- * ║     - Audit log لكل العمليات                                                   ║
+ * ║                                                                                ║
+ * ║  ⚡ يعتمد على Database فقط — لا يحتاج Redis                                     ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -20,10 +21,8 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, MoreThan } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
-import { Inject } from '@nestjs/common';
-import Redis from 'ioredis';
 import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
 
@@ -37,17 +36,15 @@ import { MailService } from '../mail/mail.service';
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export interface StaffPermissions {
-  conversations: boolean;    // إدارة المحادثات
-  contacts: boolean;         // إدارة العملاء
-  templates: boolean;        // إدارة القوالب
-  campaigns: boolean;        // إدارة الحملات
-  automations: boolean;      // إدارة الأتمتة
-  analytics: boolean;        // عرض التحليلات
-  settings: boolean;         // تعديل الإعدادات
-  quickReplies: boolean;     // الردود السريعة
-  ai: boolean;               // إعدادات الذكاء الاصطناعي
-  // 🔒 محجوزة للـ Owner فقط:
-  // billing, stores, staff management
+  conversations: boolean;
+  contacts: boolean;
+  templates: boolean;
+  campaigns: boolean;
+  automations: boolean;
+  analytics: boolean;
+  settings: boolean;
+  quickReplies: boolean;
+  ai: boolean;
 }
 
 export const DEFAULT_STAFF_PERMISSIONS: StaffPermissions = {
@@ -75,12 +72,10 @@ export const FULL_PERMISSIONS: StaffPermissions = {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 📌 Invite Token Constants
+// 📌 Constants
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const INVITE_TOKEN_PREFIX = 'staff_invite:';
-const INVITE_TOKEN_EXPIRY = 72 * 60 * 60; // 72 ساعة
-const INVITE_RATE_LIMIT_PREFIX = 'invite_rate:';
+const INVITE_TOKEN_EXPIRY_HOURS = 72;
 const MAX_INVITES_PER_HOUR = 10;
 
 @Injectable()
@@ -94,9 +89,6 @@ export class UsersService {
     @InjectRepository(Tenant)
     private readonly tenantRepository: Repository<Tenant>,
 
-    @Inject('REDIS_CLIENT')
-    private readonly redis: Redis,
-
     private readonly configService: ConfigService,
     private readonly mailService: MailService,
   ) {}
@@ -106,12 +98,21 @@ export class UsersService {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   async findAll(tenantId: string): Promise<User[]> {
-    return this.userRepository.find({
+    const users = await this.userRepository.find({
       where: { tenantId },
       order: {
-        role: 'ASC',       // Owner أولاً
+        role: 'ASC',
         createdAt: 'DESC',
       },
+    });
+
+    // ✅ إزالة بيانات الدعوة الحساسة من الاستجابة
+    return users.map(user => {
+      if (user.preferences?.invite) {
+        const { invite, ...cleanPrefs } = user.preferences as any;
+        user.preferences = cleanPrefs;
+      }
+      return user;
     });
   }
 
@@ -144,7 +145,7 @@ export class UsersService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 📨 دعوة موظف جديد
+  // 📨 دعوة موظف جديد (Database-based — لا يحتاج Redis)
   // ═══════════════════════════════════════════════════════════════════════════════
 
   async inviteStaff(
@@ -152,28 +153,35 @@ export class UsersService {
     inviterUser: User,
     dto: { email: string; role?: UserRole; permissions?: Partial<StaffPermissions> },
   ): Promise<{ message: string; inviteId: string }> {
-    // ✅ فقط Owner يمكنه دعوة موظفين
     if (inviterUser.role !== UserRole.OWNER) {
       throw new ForbiddenException('فقط صاحب المتجر يمكنه إضافة موظفين');
     }
 
     const email = dto.email.toLowerCase().trim();
 
-    // ✅ Rate limiting
-    const rateLimitKey = `${INVITE_RATE_LIMIT_PREFIX}${tenantId}`;
-    const rateCount = await this.redis.get(rateLimitKey);
-    if (rateCount && parseInt(rateCount, 10) >= MAX_INVITES_PER_HOUR) {
-      throw new BadRequestException('تم تجاوز الحد الأقصى للدعوات. حاول لاحقاً.');
-    }
-
-    // ✅ لا يمكن إنشاء Owner آخر
     if (dto.role === UserRole.OWNER) {
       throw new ForbiddenException('لا يمكن إنشاء حساب Owner آخر');
+    }
+
+    // ✅ Rate limiting عبر Database
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    const recentInvites = await this.userRepository.count({
+      where: {
+        tenantId,
+        status: UserStatus.PENDING,
+        createdAt: MoreThan(oneHourAgo),
+      },
+    });
+    if (recentInvites >= MAX_INVITES_PER_HOUR) {
+      throw new BadRequestException('تم تجاوز الحد الأقصى للدعوات. حاول لاحقاً.');
     }
 
     // ✅ التحقق من عدم وجود المستخدم مسبقاً
     const existing = await this.findByEmail(email);
     if (existing) {
+      if (existing.tenantId === tenantId && existing.status === UserStatus.PENDING) {
+        return this.resendInvite(existing, inviterUser);
+      }
       if (existing.tenantId === tenantId) {
         throw new ConflictException('هذا الموظف موجود بالفعل في متجرك');
       }
@@ -186,38 +194,34 @@ export class UsersService {
 
     // ✅ توليد Invite Token
     const inviteToken = crypto.randomBytes(48).toString('hex');
-    const inviteTokenHash = crypto
-      .createHmac('sha256', this.configService.get('JWT_SECRET', 'rafiq-secret'))
-      .update(inviteToken)
-      .digest('hex');
+    const inviteTokenHash = this.hashToken(inviteToken);
 
     const role = dto.role || UserRole.AGENT;
     const permissions = { ...DEFAULT_STAFF_PERMISSIONS, ...(dto.permissions || {}) };
 
-    // ✅ تخزين في Redis (72 ساعة)
-    const inviteData = JSON.stringify({
-      email,
+    // ✅ إنشاء المستخدم بحالة PENDING مع بيانات الدعوة في preferences
+    const user = this.userRepository.create({
       tenantId,
-      inviterId: inviterUser.id,
+      email,
+      firstName: 'موظف',
+      lastName: 'جديد',
       role,
-      permissions,
-      storeName,
-      createdAt: Date.now(),
+      status: UserStatus.PENDING,
+      emailVerified: false,
+      authProvider: AuthProvider.LOCAL,
+      preferences: {
+        permissions,
+        invite: {
+          tokenHash: inviteTokenHash,
+          inviterId: inviterUser.id,
+          storeName,
+          expiresAt: new Date(Date.now() + INVITE_TOKEN_EXPIRY_HOURS * 60 * 60 * 1000).toISOString(),
+          createdAt: new Date().toISOString(),
+        },
+      },
     });
 
-    await this.redis.setex(
-      `${INVITE_TOKEN_PREFIX}${inviteTokenHash}`,
-      INVITE_TOKEN_EXPIRY,
-      inviteData,
-    );
-
-    // ✅ Rate limit increment
-    const rateExists = await this.redis.exists(rateLimitKey);
-    if (rateExists) {
-      await this.redis.incr(rateLimitKey);
-    } else {
-      await this.redis.setex(rateLimitKey, 3600, '1');
-    }
+    const savedUser = await this.userRepository.save(user);
 
     // ✅ بناء رابط الدعوة
     const frontendUrl = this.configService.get('FRONTEND_URL', 'https://rafeq.ai');
@@ -235,12 +239,60 @@ export class UsersService {
       this.logger.log(`✅ Staff invite sent to: ${email} for tenant: ${tenantId}`);
     } catch (error) {
       this.logger.error(`❌ Failed to send invite email: ${error instanceof Error ? error.message : 'Unknown'}`);
-      // لا نفشل العملية — الرابط محفوظ في Redis
     }
 
     return {
       message: `تم إرسال دعوة إلى ${email}`,
-      inviteId: inviteTokenHash.substring(0, 8), // معرّف مختصر للتتبع
+      inviteId: savedUser.id.substring(0, 8),
+    };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔄 إعادة إرسال الدعوة
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  private async resendInvite(
+    pendingUser: User,
+    inviterUser: User,
+  ): Promise<{ message: string; inviteId: string }> {
+    const invitePrefs = pendingUser.preferences?.invite as any;
+    const storeName = invitePrefs?.storeName || 'رفيق';
+
+    const inviteToken = crypto.randomBytes(48).toString('hex');
+    const inviteTokenHash = this.hashToken(inviteToken);
+
+    pendingUser.preferences = {
+      ...pendingUser.preferences,
+      invite: {
+        tokenHash: inviteTokenHash,
+        inviterId: inviterUser.id,
+        storeName,
+        expiresAt: new Date(Date.now() + INVITE_TOKEN_EXPIRY_HOURS * 60 * 60 * 1000).toISOString(),
+        createdAt: new Date().toISOString(),
+      },
+    };
+
+    await this.userRepository.save(pendingUser);
+
+    const frontendUrl = this.configService.get('FRONTEND_URL', 'https://rafeq.ai');
+    const inviteUrl = `${frontendUrl}/auth/accept-invite?token=${inviteToken}&email=${encodeURIComponent(pendingUser.email)}`;
+
+    try {
+      await this.mailService.sendStaffInviteEmail({
+        to: pendingUser.email,
+        storeName,
+        inviterName: inviterUser.firstName || 'صاحب المتجر',
+        role: this.getRoleLabel(pendingUser.role),
+        inviteUrl,
+      });
+      this.logger.log(`✅ Staff invite re-sent to: ${pendingUser.email}`);
+    } catch (error) {
+      this.logger.error(`❌ Failed to resend invite email: ${error instanceof Error ? error.message : 'Unknown'}`);
+    }
+
+    return {
+      message: `تم إعادة إرسال الدعوة إلى ${pendingUser.email}`,
+      inviteId: pendingUser.id.substring(0, 8),
     };
   }
 
@@ -255,63 +307,52 @@ export class UsersService {
     name: string,
   ): Promise<{ message: string; userId: string }> {
     const normalizedEmail = email.toLowerCase().trim();
+    const tokenHash = this.hashToken(token);
 
-    // ✅ Hash token للمقارنة
-    const tokenHash = crypto
-      .createHmac('sha256', this.configService.get('JWT_SECRET', 'rafiq-secret'))
-      .update(token)
-      .digest('hex');
-
-    // ✅ جلب بيانات الدعوة من Redis
-    const inviteKey = `${INVITE_TOKEN_PREFIX}${tokenHash}`;
-    const inviteDataRaw = await this.redis.get(inviteKey);
-
-    if (!inviteDataRaw) {
-      throw new BadRequestException('رابط الدعوة غير صالح أو منتهي الصلاحية');
-    }
-
-    const inviteData = JSON.parse(inviteDataRaw);
-
-    // ✅ التحقق من تطابق الإيميل
-    if (inviteData.email !== normalizedEmail) {
-      throw new BadRequestException('البريد الإلكتروني لا يتطابق مع الدعوة');
-    }
-
-    // ✅ التحقق من عدم وجود المستخدم مسبقاً (race condition)
-    const existing = await this.findByEmail(normalizedEmail);
-    if (existing) {
-      await this.redis.del(inviteKey);
-      throw new ConflictException('البريد الإلكتروني مسجّل بالفعل');
-    }
-
-    // ✅ تشفير كلمة المرور
-    const hashedPassword = await bcrypt.hash(password, 12);
-    const nameParts = name.split(' ');
-
-    // ✅ إنشاء المستخدم
-    const user = this.userRepository.create({
-      tenantId: inviteData.tenantId,
-      email: normalizedEmail,
-      password: hashedPassword,
-      firstName: nameParts[0] || 'موظف',
-      lastName: nameParts.slice(1).join(' ') || '',
-      role: inviteData.role || UserRole.AGENT,
-      status: UserStatus.ACTIVE,
-      emailVerified: true,
-      authProvider: AuthProvider.LOCAL,
-      preferences: {
-        permissions: inviteData.permissions || DEFAULT_STAFF_PERMISSIONS,
-        invitedBy: inviteData.inviterId,
-        invitedAt: new Date().toISOString(),
+    const pendingUser = await this.userRepository.findOne({
+      where: {
+        email: normalizedEmail,
+        status: UserStatus.PENDING,
       },
     });
 
-    const savedUser = await this.userRepository.save(user);
+    if (!pendingUser) {
+      throw new BadRequestException('رابط الدعوة غير صالح أو منتهي الصلاحية');
+    }
 
-    // ✅ حذف التوكن (استخدام واحد فقط)
-    await this.redis.del(inviteKey);
+    const inviteData = pendingUser.preferences?.invite as any;
+    if (!inviteData || !inviteData.tokenHash) {
+      throw new BadRequestException('رابط الدعوة غير صالح');
+    }
 
-    this.logger.log(`✅ Staff account created: ${normalizedEmail} → tenant: ${inviteData.tenantId}`);
+    if (inviteData.tokenHash !== tokenHash) {
+      throw new BadRequestException('رابط الدعوة غير صالح');
+    }
+
+    if (new Date(inviteData.expiresAt) < new Date()) {
+      throw new BadRequestException('رابط الدعوة منتهي الصلاحية. اطلب دعوة جديدة.');
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 12);
+    const nameParts = name.split(' ');
+
+    pendingUser.password = hashedPassword;
+    pendingUser.firstName = nameParts[0] || 'موظف';
+    pendingUser.lastName = nameParts.slice(1).join(' ') || '';
+    pendingUser.status = UserStatus.ACTIVE;
+    pendingUser.emailVerified = true;
+
+    const permissions = pendingUser.preferences?.permissions || DEFAULT_STAFF_PERMISSIONS;
+    pendingUser.preferences = {
+      permissions,
+      invitedBy: inviteData.inviterId,
+      invitedAt: inviteData.createdAt,
+      activatedAt: new Date().toISOString(),
+    };
+
+    const savedUser = await this.userRepository.save(pendingUser);
+
+    this.logger.log(`✅ Staff account activated: ${normalizedEmail} → tenant: ${pendingUser.tenantId}`);
 
     return {
       message: 'تم إنشاء حسابك بنجاح! يمكنك الآن تسجيل الدخول.',
@@ -328,25 +369,33 @@ export class UsersService {
     storeName?: string;
     role?: string;
   }> {
-    const tokenHash = crypto
-      .createHmac('sha256', this.configService.get('JWT_SECRET', 'rafiq-secret'))
-      .update(token)
-      .digest('hex');
+    const tokenHash = this.hashToken(token);
+    const normalizedEmail = email.toLowerCase().trim();
 
-    const inviteDataRaw = await this.redis.get(`${INVITE_TOKEN_PREFIX}${tokenHash}`);
-    if (!inviteDataRaw) {
+    const pendingUser = await this.userRepository.findOne({
+      where: {
+        email: normalizedEmail,
+        status: UserStatus.PENDING,
+      },
+    });
+
+    if (!pendingUser) {
       return { valid: false };
     }
 
-    const inviteData = JSON.parse(inviteDataRaw);
-    if (inviteData.email !== email.toLowerCase().trim()) {
+    const inviteData = pendingUser.preferences?.invite as any;
+    if (!inviteData || inviteData.tokenHash !== tokenHash) {
+      return { valid: false };
+    }
+
+    if (new Date(inviteData.expiresAt) < new Date()) {
       return { valid: false };
     }
 
     return {
       valid: true,
       storeName: inviteData.storeName,
-      role: this.getRoleLabel(inviteData.role),
+      role: this.getRoleLabel(pendingUser.role),
     };
   }
 
@@ -494,6 +543,13 @@ export class UsersService {
   // ═══════════════════════════════════════════════════════════════════════════════
   // 🛠️ Helpers
   // ═══════════════════════════════════════════════════════════════════════════════
+
+  private hashToken(token: string): string {
+    return crypto
+      .createHmac('sha256', this.configService.get('JWT_SECRET', 'rafiq-secret'))
+      .update(token)
+      .digest('hex');
+  }
 
   private getRoleLabel(role: UserRole): string {
     const labels: Record<string, string> = {
