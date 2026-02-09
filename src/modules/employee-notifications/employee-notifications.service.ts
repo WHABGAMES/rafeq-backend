@@ -574,7 +574,7 @@ export class EmployeeNotificationsService {
   }
 
   /**
-   * استبدال المتغيرات في القالب
+   * استبدال المتغيرات في القالب + إضافة الفقرة التحفيزية
    */
   private renderTemplate(
     rule: NotificationRule,
@@ -608,7 +608,30 @@ export class EmployeeNotificationsService {
       message = message.replace(new RegExp(this.escapeRegex(key), 'g'), safeValue);
     }
 
+    // ✅ إضافة الفقرة التحفيزية
+    const motivational = this.getMotivationalText(rule.motivationalMessage);
+    message = `${message}\n\n—\n\nفريق رفيق يقولك:\n${motivational}`;
+
     return { title, message };
+  }
+
+  /**
+   * ✅ الفقرة التحفيزية: نص التاجر أو نص افتراضي عشوائي
+   */
+  private getMotivationalText(customMessage: string | null | undefined): string {
+    if (customMessage && customMessage.trim()) {
+      return customMessage.trim();
+    }
+
+    const defaults = [
+      'الله يبارك لك في تجارتك 🤍',
+      'ربي يوفقك ويسعدك في عملك 🌟',
+      'الله يزيدك من فضله ويبارك في رزقك 💫',
+      'بالتوفيق والنجاح دائماً 🚀',
+      'عملك مميز، الله يعطيك العافية 🤍',
+    ];
+
+    return defaults[Math.floor(Math.random() * defaults.length)];
   }
 
   /**
