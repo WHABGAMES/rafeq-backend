@@ -32,6 +32,10 @@ import { Store } from '../modules/stores/entities/store.entity';
 import { Automation } from '../modules/automations/entities/automation.entity';
 import { StoreSettings } from '../modules/settings/entities/store-settings.entity';
 
+// 🔔 Employee Notifications
+import { NotificationRule } from '../modules/employee-notifications/entities/notification-rule.entity';
+import { EmployeeNotification } from '../modules/employee-notifications/entities/employee-notification.entity';
+
 // =============================================================================
 // All Entities
 // =============================================================================
@@ -54,6 +58,9 @@ const entities = [
   Automation,
   StoreSettings,
   ScheduledTemplateSend,  // ✅ v18: تسجيل entity الإرسال المجدول
+  // 🔔 Employee Notifications
+  NotificationRule,
+  EmployeeNotification,
 ];
 
 // =============================================================================
