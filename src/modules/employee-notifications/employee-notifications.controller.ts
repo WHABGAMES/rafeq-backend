@@ -19,6 +19,7 @@ import {
   ParseUUIDPipe,
   HttpCode,
   HttpStatus,
+  UseGuards,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 
@@ -38,11 +39,11 @@ import {
 
 // Decorators (من نظام الصلاحيات الموجود)
 import { CurrentTenant } from '../../common/decorators';
-// import { Permissions } from '../../common/decorators';
-// import { PermissionGuard } from '../auth/guards/permission.guard';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
 @ApiTags('Employee Notifications')
 @ApiBearerAuth()
+@UseGuards(JwtAuthGuard)
 @Controller('employee-notifications')
 export class EmployeeNotificationsController {
   constructor(
