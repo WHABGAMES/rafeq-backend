@@ -139,8 +139,16 @@ export class SallaWebhookProcessor extends WorkerHost {
         newStatus: WebhookStatus.PROCESSED, message: `Processed in ${dur}ms`, durationMs: dur, metadata: result,
       });
       this.eventEmitter.emit(`salla.${eventType}`, { webhookEventId, tenantId, storeId, data, result });
-      // 🔔 إطلاق حدث لنظام تنبيهات الموظفين
-      this.eventEmitter.emit('webhook.processed', { webhookEventId, eventType, tenantId, storeId, data });
+
+      // ✅ إطلاق حدث webhook.processed لنظام تنبيهات الموظفين
+      this.eventEmitter.emit('webhook.processed', {
+        webhookEventId,
+        eventType,
+        tenantId,
+        storeId,
+        data,
+      });
+
       this.logger.log(`✅ Webhook processed: ${eventType} in ${dur}ms`, { jobId: job.id, webhookEventId });
     } catch (error) {
       const dur = Date.now() - startTime;
