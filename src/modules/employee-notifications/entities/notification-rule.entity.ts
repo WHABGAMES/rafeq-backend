@@ -172,6 +172,13 @@ export class NotificationRule {
   whatsappTemplate: string | null;
 
   /**
+   * فقرة تحفيزية من التاجر (تظهر تحت "فريق رفيق يقولك:")
+   * إذا فارغة يُستخدم النص الافتراضي
+   */
+  @Column({ type: 'text', nullable: true })
+  motivationalMessage: string | null;
+
+  /**
    * شروط إضافية (JSON)
    * مثال: { "afterHour": 21, "beforeHour": 6 } للتنبيهات بعد ساعة معينة
    * مثال: { "minOrderAmount": 500 } للطلبات فوق مبلغ معين
