@@ -133,15 +133,18 @@ export class NotificationProcessor extends WorkerHost {
       throw new Error('Employee email not available');
     }
 
+    // تجهيز HTML للبريد
+    const emailHtml = this.buildEmailHtml(data);
+
     // TODO: استخدام خدمة البريد الموجودة (مثل MailerService أو SendGrid)
     // await this.mailerService.sendMail({
     //   to: data.employeeEmail,
     //   subject: data.title,
-    //   html: this.buildEmailHtml(data),
+    //   html: emailHtml,
     // });
 
     this.logger.debug(
-      `📧 Email notification → ${data.employeeEmail}: ${data.title}`,
+      `📧 Email notification → ${data.employeeEmail}: ${data.title} (${emailHtml.length} chars)`,
     );
   }
 
