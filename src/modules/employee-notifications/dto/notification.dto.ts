@@ -82,6 +82,11 @@ export class CreateNotificationRuleDto {
   @IsString()
   whatsappTemplate?: string;
 
+  // فقرة تحفيزية
+  @IsOptional()
+  @IsString()
+  motivationalMessage?: string;
+
   // شروط إضافية
   @IsOptional()
   @IsObject()
@@ -183,6 +188,7 @@ export class NotificationRuleResponseDto {
   emailSubject: string | null;
   emailTemplate: string | null;
   whatsappTemplate: string | null;
+  motivationalMessage: string | null;
   conditions: Record<string, unknown> | null;
   isActive: boolean;
   priority: number;
