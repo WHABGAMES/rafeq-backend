@@ -513,7 +513,7 @@ export class EmployeeNotificationsService {
     status: NotificationStatus,
     errorMessage?: string,
   ): Promise<void> {
-    const update: Partial<EmployeeNotification> = { status };
+    const update: { status: NotificationStatus; errorMessage?: string } = { status };
 
     if (errorMessage) {
       update.errorMessage = errorMessage;
@@ -616,7 +616,7 @@ export class EmployeeNotificationsService {
    */
   private extractVariables(
     data: Record<string, unknown>,
-    context: EventContext,
+    _context: EventContext,
   ): TemplateVariables {
     const now = new Date();
 
