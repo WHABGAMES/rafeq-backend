@@ -40,7 +40,6 @@ export type PermissionType =
   | 'contacts'
   | 'templates'
   | 'campaigns'
-  | 'automations'
   | 'analytics'
   | 'settings'
   | 'quickReplies'
@@ -135,7 +134,6 @@ export class PermissionGuard implements CanActivate {
       contacts: 'العملاء',
       templates: 'القوالب',
       campaigns: 'الحملات',
-      automations: 'الأتمتة',
       analytics: 'التحليلات',
       settings: 'الإعدادات',
       quickReplies: 'الردود السريعة',
