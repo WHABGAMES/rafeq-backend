@@ -78,7 +78,7 @@ import { AnalyticsModule } from '@modules/analytics/analytics.module';
 // ═══════════════════════════════════════════════════════════════════════════════
 import { TemplatesModule } from '@modules/templates/templates.module';
 import { ContactsModule } from '@modules/contacts/contacts.module';
-import { AutomationsModule } from '@modules/automations/automations.module';
+
 import { IntegrationsModule } from '@modules/integrations/integrations.module';
 import { CsatModule } from '@modules/csat/csat.module';
 import { QuickRepliesModule } from '@modules/quick-replies/quick-replies.module';
@@ -422,7 +422,6 @@ import { EmployeeNotificationsModule } from '@modules/employee-notifications/emp
     
     // 📝 القوالب والرسائل الآلية
     TemplatesModule,
-    AutomationsModule,
     
     // 👥 العملاء والتصنيفات
     ContactsModule,
