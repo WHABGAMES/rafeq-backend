@@ -71,6 +71,8 @@ export enum RecipientType {
   SPECIFIC_EMPLOYEES = 'specific_employees',
   BY_ROLE = 'by_role',
   ASSIGNED_EMPLOYEE = 'assigned_employee',
+  CUSTOM_PHONES = 'custom_phones',
+  CUSTOM_EMAILS = 'custom_emails',
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -139,6 +141,20 @@ export class NotificationRule {
    */
   @Column({ type: 'simple-json', nullable: true })
   targetRoles: string[] | null;
+
+  /**
+   * أرقام واتساب مخصصة (عند recipientType = CUSTOM_PHONES)
+   * مثال: ['+966501234567', '+966509876543']
+   */
+  @Column({ type: 'simple-json', nullable: true })
+  customPhones: string[] | null;
+
+  /**
+   * إيميلات مخصصة (عند recipientType = CUSTOM_EMAILS)
+   * مثال: ['manager@store.com', 'owner@store.com']
+   */
+  @Column({ type: 'simple-json', nullable: true })
+  customEmails: string[] | null;
 
   /**
    * قالب رسالة الإشعار الداخلي (Dashboard)
