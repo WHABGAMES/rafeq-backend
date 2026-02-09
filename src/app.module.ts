@@ -86,6 +86,7 @@ import { TagsModule } from '@modules/tags/tags.module';
 import { SettingsModule } from '@modules/settings/settings.module';
 import { GatewayModule } from '@modules/gateway/gateway.module';
 import { MailModule } from '@modules/mail/mail.module';
+import { EmployeeNotificationsModule } from '@modules/employee-notifications/employee-notifications.module';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // تعريف الوحدة
@@ -444,6 +445,9 @@ import { MailModule } from '@modules/mail/mail.module';
 
     // 📧 Mail Module للـ OTP
     MailModule,
+
+    // 🔔 تنبيهات الموظفين
+    EmployeeNotificationsModule,
   ],
 
   // ═══════════════════════════════════════════════════════════════════════════════
