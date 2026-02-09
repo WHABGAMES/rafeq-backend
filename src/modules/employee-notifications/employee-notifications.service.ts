@@ -674,16 +674,42 @@ export class EmployeeNotificationsService {
   }
 
   /**
-   * تحديد المستلمين حسب نوع القاعدة
+   * تحديد المستلمين حسب أنواع القاعدة (يدعم أنواع متعددة)
    * 
    * TODO: يحتاج ربط فعلي مع EmployeesService لجلب بيانات الموظفين
-   * حالياً يُرجع placeholder - يجب حقن EmployeesService في الـ constructor
    */
   private async resolveRecipients(
     rule: NotificationRule,
     data: Record<string, unknown>,
   ): Promise<EmployeeInfo[]> {
-    switch (rule.recipientType) {
+    const allRecipients: EmployeeInfo[] = [];
+    const seenIds = new Set<string>();
+
+    // ✅ معالجة كل نوع مستلم
+    for (const type of rule.recipientTypes) {
+      const recipients = await this.resolveByType(type, rule, data);
+      
+      // منع التكرار
+      for (const r of recipients) {
+        if (!seenIds.has(r.id)) {
+          seenIds.add(r.id);
+          allRecipients.push(r);
+        }
+      }
+    }
+
+    return allRecipients;
+  }
+
+  /**
+   * معالجة نوع مستلم واحد
+   */
+  private async resolveByType(
+    type: string,
+    rule: NotificationRule,
+    data: Record<string, unknown>,
+  ): Promise<EmployeeInfo[]> {
+    switch (type) {
       case RecipientType.ALL_EMPLOYEES:
         // TODO: return await this.employeesService.findAll(rule.tenantId);
         this.logger.warn('resolveRecipients: ALL_EMPLOYEES - needs EmployeesService integration');
@@ -712,26 +738,46 @@ export class EmployeeNotificationsService {
       case RecipientType.CUSTOM_PHONES:
         if (!rule.customPhones?.length) return [];
         return rule.customPhones.map((phone, idx) => ({
-          id: `custom-phone-${idx}`,
+          id: `custom-phone-${idx}-${phone}`,
           name: phone,
           email: null,
-          phone,
+          phone: this.normalizePhone(phone),
           role: null,
         }));
 
       case RecipientType.CUSTOM_EMAILS:
         if (!rule.customEmails?.length) return [];
         return rule.customEmails.map((email, idx) => ({
-          id: `custom-email-${idx}`,
+          id: `custom-email-${idx}-${email}`,
           name: email,
-          email,
+          email: email.toLowerCase().trim(),
           phone: null,
           role: null,
         }));
 
       default:
+        this.logger.warn(`Unknown recipient type: ${type}`);
         return [];
     }
+  }
+
+  /**
+   * ✅ تنظيف رقم الهاتف — ضمان صيغة دولية
+   */
+  private normalizePhone(phone: string): string {
+    let cleaned = phone.replace(/[\s\-()]/g, '');
+    
+    // إذا يبدأ بـ 0 وبدون + → إزالة الصفر (التاجر يحدد رمز الدولة من الواجهة)
+    if (cleaned.startsWith('00')) {
+      cleaned = '+' + cleaned.substring(2);
+    }
+    
+    // إذا ما يبدأ بـ + أضف +
+    if (!cleaned.startsWith('+')) {
+      cleaned = '+' + cleaned;
+    }
+    
+    return cleaned;
   }
 
   /**
