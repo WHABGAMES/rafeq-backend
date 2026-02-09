@@ -39,7 +39,6 @@ import {
   Message,
   MessageDirection,
   Order,
-  Channel,
 } from '@database/entities';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -172,9 +171,6 @@ export class AIService {
 
     @InjectRepository(Order)
     private readonly orderRepo: Repository<Order>,
-
-    @InjectRepository(Channel)
-    private readonly channelRepo: Repository<Channel>,
   ) {
     const apiKey = this.configService.get<string>('ai.apiKey');
     this.openai = new OpenAI({ apiKey: apiKey || '' });
