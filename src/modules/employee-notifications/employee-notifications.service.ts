@@ -664,9 +664,9 @@ export class EmployeeNotificationsService {
       message = message.replace(new RegExp(this.escapeRegex(key), 'g'), safeValue);
     }
 
-    // ✅ إضافة الفقرة التحفيزية
+    // ✅ الترتيب: الرسالة → الرابط → فريق رفيق يقولك + عبارة تحفيزية (آخر شي)
     const motivational = this.getMotivationalText(rule.motivationalMessage);
-    message = `${message}\n\n—\n\nفريق رفيق يقولك:\n${motivational}`;
+    message = `${message}\n\nفريق رفيق يقولك:\n${motivational}`;
 
     return { title, message };
   }
