@@ -1032,7 +1032,8 @@ export class EmployeeNotificationsService {
       case NotificationChannel.EMAIL:
         return !!employee.email && employee.email.includes('@');
       case NotificationChannel.DASHBOARD:
-        return true;
+        // ✅ Dashboard فقط للموظفين الحقيقيين (ليس custom-phone أو custom-email)
+        return !employee.id.startsWith('custom-');
       default:
         return false;
     }
