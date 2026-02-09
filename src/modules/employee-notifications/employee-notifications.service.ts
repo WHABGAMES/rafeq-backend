@@ -709,6 +709,26 @@ export class EmployeeNotificationsService {
         this.logger.warn('resolveRecipients: ASSIGNED_EMPLOYEE - needs EmployeesService integration');
         return [];
 
+      case RecipientType.CUSTOM_PHONES:
+        if (!rule.customPhones?.length) return [];
+        return rule.customPhones.map((phone, idx) => ({
+          id: `custom-phone-${idx}`,
+          name: phone,
+          email: null,
+          phone,
+          role: null,
+        }));
+
+      case RecipientType.CUSTOM_EMAILS:
+        if (!rule.customEmails?.length) return [];
+        return rule.customEmails.map((email, idx) => ({
+          id: `custom-email-${idx}`,
+          name: email,
+          email,
+          phone: null,
+          role: null,
+        }));
+
       default:
         return [];
     }
