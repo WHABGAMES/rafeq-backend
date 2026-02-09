@@ -29,6 +29,9 @@ import { ChannelsModule } from '../channels/channels.module';
 // 👥 للبحث عن الموظفين
 import { UsersModule } from '../users/users.module';
 
+// 🏪 لجلب اسم المتجر
+import { StoresModule } from '../stores/stores.module';
+
 @Module({
   imports: [
     TypeOrmModule.forFeature([NotificationRule, EmployeeNotification]),
@@ -54,6 +57,9 @@ import { UsersModule } from '../users/users.module';
 
     // 👥 لجلب بيانات الموظفين (UsersService)
     UsersModule,
+
+    // 🏪 لجلب اسم المتجر (StoresService)
+    StoresModule,
   ],
 
   controllers: [EmployeeNotificationsController],
