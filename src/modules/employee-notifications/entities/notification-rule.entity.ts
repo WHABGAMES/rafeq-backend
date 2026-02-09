@@ -120,37 +120,36 @@ export class NotificationRule {
   channels: NotificationChannel[];
 
   /**
-   * نوع المستلمين
+   * أنواع المستلمين (يمكن اختيار أكثر من نوع)
+   * مثال: ['custom_phones', 'custom_emails'] أو ['all_employees']
    */
   @Column({
-    type: 'enum',
-    enum: RecipientType,
-    default: RecipientType.ALL_EMPLOYEES,
+    type: 'simple-array',
   })
-  recipientType: RecipientType;
+  recipientTypes: string[];
 
   /**
-   * قائمة IDs الموظفين المحددين (عند recipientType = SPECIFIC_EMPLOYEES)
+   * قائمة IDs الموظفين المحددين (عند recipientTypes يتضمن SPECIFIC_EMPLOYEES)
    */
   @Column({ type: 'simple-json', nullable: true })
   specificEmployeeIds: string[] | null;
 
   /**
-   * الأدوار المستهدفة (عند recipientType = BY_ROLE)
+   * الأدوار المستهدفة (عند recipientTypes يتضمن BY_ROLE)
    * مثال: ['support', 'manager', 'warehouse']
    */
   @Column({ type: 'simple-json', nullable: true })
   targetRoles: string[] | null;
 
   /**
-   * أرقام واتساب مخصصة (عند recipientType = CUSTOM_PHONES)
+   * أرقام واتساب مخصصة (عند recipientTypes يتضمن CUSTOM_PHONES)
    * مثال: ['+966501234567', '+966509876543']
    */
   @Column({ type: 'simple-json', nullable: true })
   customPhones: string[] | null;
 
   /**
-   * إيميلات مخصصة (عند recipientType = CUSTOM_EMAILS)
+   * إيميلات مخصصة (عند recipientTypes يتضمن CUSTOM_EMAILS)
    * مثال: ['manager@store.com', 'owner@store.com']
    */
   @Column({ type: 'simple-json', nullable: true })
