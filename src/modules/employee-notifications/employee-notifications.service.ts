@@ -11,6 +11,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
+import { ConfigService } from '@nestjs/config';
 
 // Entities
 import {
@@ -34,6 +35,9 @@ import {
 
 // 👥 لجلب بيانات الموظفين الحقيقية
 import { UsersService } from '../users/users.service';
+
+// 🏪 لجلب اسم المتجر
+import { StoresService } from '../stores/stores.service';
 
 // ═══════════════════════════════════════════════════════════
 // Types
@@ -79,6 +83,12 @@ export class EmployeeNotificationsService {
 
     // 👥 لجلب بيانات الموظفين
     private readonly usersService: UsersService,
+
+    // 🏪 لجلب اسم المتجر
+    private readonly storesService: StoresService,
+
+    // ⚙️ للإعدادات (مثل رابط الواجهة)
+    private readonly configService: ConfigService,
   ) {}
 
   // ═══════════════════════════════════════════════════════════
@@ -213,6 +223,9 @@ export class EmployeeNotificationsService {
       `Found ${matchingRules.length} matching rules for ${eventType}`,
     );
 
+    // ✅ جلب اسم المتجر من الـ Store
+    const storeName = await this.getStoreName(context.tenantId, context.storeId);
+
     let totalNotifications = 0;
 
     // 2. لكل قاعدة، فحص الشروط وإنشاء التنبيهات
@@ -234,6 +247,8 @@ export class EmployeeNotificationsService {
 
         // تحضير المتغيرات
         const variables = this.extractVariables(data, context);
+        // ✅ تعيين اسم المتجر من الـ DB (بدلاً من الاعتماد على بيانات الـ webhook)
+        if (storeName) variables['{اسم_المتجر}'] = storeName;
 
         // إنشاء تنبيه لكل موظف ولكل قناة
         for (const employee of recipients) {
@@ -495,6 +510,9 @@ export class EmployeeNotificationsService {
       eventType: rule.triggerEvent,
       data: testData,
     });
+    // ✅ جلب اسم المتجر
+    const storeName = await this.getStoreName(tenantId);
+    if (storeName) variables['{اسم_المتجر}'] = storeName;
 
     let lastNotification: EmployeeNotification | null = null;
 
@@ -681,13 +699,15 @@ export class EmployeeNotificationsService {
   ): TemplateVariables {
     const now = new Date();
 
+    const baseUrl = this.configService.get<string>('app.frontendUrl', 'https://rafeq.ai');
+
     return {
       // بيانات الطلب
       '{رقم_الطلب}': this.safeGet(data, 'id') || this.safeGet(data, 'order_id'),
       '{مبلغ_الطلب}': this.safeGet(data, 'total.amount') || this.safeGet(data, 'amounts.total.amount'),
       '{حالة_الطلب}': this.safeGet(data, 'status.name') || this.safeGet(data, 'status'),
       '{طريقة_الدفع}': this.safeGet(data, 'payment_method'),
-      '{رابط_الطلب}': `/dashboard/orders/${this.safeGet(data, 'id') || ''}`,
+      '{رابط_الطلب}': `${baseUrl}/dashboard/orders/${this.safeGet(data, 'id') || ''}`,
 
       // بيانات العميل
       '{اسم_العميل}':
@@ -932,20 +952,44 @@ export class EmployeeNotificationsService {
 
     if (!entityId) return null;
 
+    // ✅ رابط كامل بدلاً من نسبي (يمنع انعكاس RTL في واتساب)
+    const baseUrl = this.configService.get<string>('app.frontendUrl', 'https://rafeq.ai');
+
     if (eventType.startsWith('order.')) {
-      return `/dashboard/orders/${entityId}`;
+      return `${baseUrl}/dashboard/orders/${entityId}`;
     }
     if (eventType.startsWith('customer.')) {
-      return `/dashboard/customers/${entityId}`;
+      return `${baseUrl}/dashboard/customers/${entityId}`;
     }
     if (eventType.startsWith('product.')) {
-      return `/dashboard/products/${entityId}`;
+      return `${baseUrl}/dashboard/products/${entityId}`;
     }
     if (eventType.startsWith('review.')) {
-      return `/dashboard/reviews/${entityId}`;
+      return `${baseUrl}/dashboard/reviews/${entityId}`;
     }
 
     return null;
+  }
+
+  /**
+   * ✅ جلب اسم المتجر من قاعدة البيانات
+   */
+  private async getStoreName(tenantId: string, storeId?: string): Promise<string | null> {
+    try {
+      if (storeId) {
+        const store = await this.storesService.findById(tenantId, storeId);
+        return store?.name || store?.sallaStoreName || null;
+      }
+      // إذا ما فيه storeId، نجلب أول متجر للـ tenant
+      const stores = await this.storesService.findByTenant(tenantId);
+      if (stores?.length > 0) {
+        return stores[0].name || stores[0].sallaStoreName || null;
+      }
+      return null;
+    } catch {
+      this.logger.debug(`Could not fetch store name for tenant ${tenantId}`);
+      return null;
+    }
   }
 
   /**
@@ -973,11 +1017,11 @@ export class EmployeeNotificationsService {
   private getDefaultTemplate(event: NotificationTriggerEvent): string {
     const templates: Record<string, string> = {
       [NotificationTriggerEvent.ORDER_CREATED]:
-        'مرحباً {اسم_الموظف}، تم استلام طلب جديد رقم {رقم_الطلب} من العميل {اسم_العميل} بمبلغ {مبلغ_الطلب} ر.س',
+        'مرحباً فريق {اسم_المتجر}، تم استلام طلب جديد رقم {رقم_الطلب} من العميل {اسم_العميل} بمبلغ {مبلغ_الطلب} ر.س',
       [NotificationTriggerEvent.ORDER_ASSIGNED]:
         'مرحباً {اسم_الموظف}، تم إسناد الطلب رقم {رقم_الطلب} لك، الرجاء المتابعة.',
       [NotificationTriggerEvent.ORDER_CANCELLED]:
-        'تنبيه: تم إلغاء الطلب رقم {رقم_الطلب} من العميل {اسم_العميل}',
+        'فريق {اسم_المتجر}، تنبيه: تم إلغاء الطلب رقم {رقم_الطلب} من العميل {اسم_العميل}',
       [NotificationTriggerEvent.ORDER_STATUS_UPDATED]:
         'تم تحديث حالة الطلب رقم {رقم_الطلب} إلى: {حالة_الطلب}',
       [NotificationTriggerEvent.CUSTOMER_MESSAGE_RECEIVED]:
