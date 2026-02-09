@@ -40,7 +40,6 @@ export interface StaffPermissions {
   contacts: boolean;
   templates: boolean;
   campaigns: boolean;
-  automations: boolean;
   analytics: boolean;
   settings: boolean;
   quickReplies: boolean;
@@ -52,7 +51,6 @@ export const DEFAULT_STAFF_PERMISSIONS: StaffPermissions = {
   contacts: true,
   templates: false,
   campaigns: false,
-  automations: false,
   analytics: false,
   settings: false,
   quickReplies: true,
@@ -64,7 +62,6 @@ export const FULL_PERMISSIONS: StaffPermissions = {
   contacts: true,
   templates: true,
   campaigns: true,
-  automations: true,
   analytics: true,
   settings: true,
   quickReplies: true,
