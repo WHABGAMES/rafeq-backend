@@ -134,9 +134,13 @@ export class NotificationProcessor extends WorkerHost {
    * ✅ إرسال بريد إلكتروني فعلي عبر MailService
    */
   private async sendEmailNotification(data: NotificationJobData): Promise<void> {
-    if (!data.employeeEmail) {
-      this.logger.warn(`No email for employee: ${data.employeeName}`);
-      throw new Error('Employee email not available');
+    if (!data.employeeEmail || !data.employeeEmail.includes('@')) {
+      this.logger.warn(`⏭️ Skipping email — no valid email for: ${data.employeeName}`);
+      await this.notificationsService.updateNotificationStatus(
+        data.notificationId,
+        NotificationStatus.FAILED,
+      );
+      return; // لا ترمي خطأ — لا حاجة لإعادة المحاولة
     }
 
     const emailHtml = this.buildEmailHtml(data);
@@ -160,9 +164,13 @@ export class NotificationProcessor extends WorkerHost {
    * ✅ إرسال رسالة واتساب فعلية عبر WhatsAppBaileysService
    */
   private async sendWhatsAppNotification(data: NotificationJobData): Promise<void> {
-    if (!data.employeePhone) {
-      this.logger.warn(`No phone for employee: ${data.employeeName}`);
-      throw new Error('Employee phone not available');
+    if (!data.employeePhone || data.employeePhone.trim().length < 5) {
+      this.logger.warn(`⏭️ Skipping WhatsApp — no valid phone for: ${data.employeeName}`);
+      await this.notificationsService.updateNotificationStatus(
+        data.notificationId,
+        NotificationStatus.FAILED,
+      );
+      return; // لا ترمي خطأ — لا حاجة لإعادة المحاولة
     }
 
     // البحث عن قناة واتساب متصلة
