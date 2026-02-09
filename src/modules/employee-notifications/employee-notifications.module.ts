@@ -22,6 +22,13 @@ import { EmployeeNotificationsController } from './employee-notifications.contro
 import { NotificationProcessor } from './notification.processor';
 import { NotificationEventListener } from './listeners/notification-event.listener';
 
+// 🔔 External Modules for sending
+import { MailModule } from '../mail/mail.module';
+import { ChannelsModule } from '../channels/channels.module';
+
+// 👥 للبحث عن الموظفين
+import { UsersModule } from '../users/users.module';
+
 @Module({
   imports: [
     TypeOrmModule.forFeature([NotificationRule, EmployeeNotification]),
@@ -38,6 +45,15 @@ import { NotificationEventListener } from './listeners/notification-event.listen
         },
       },
     }),
+
+    // 📧 للإرسال عبر البريد الإلكتروني
+    MailModule,
+
+    // 📱 للإرسال عبر واتساب (WhatsAppBaileysService)
+    ChannelsModule,
+
+    // 👥 لجلب بيانات الموظفين (UsersService)
+    UsersModule,
   ],
 
   controllers: [EmployeeNotificationsController],
