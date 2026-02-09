@@ -3,16 +3,25 @@
  * ║          RAFIQ PLATFORM - Notification Queue Processor                         ║
  * ║                                                                                ║
  * ║  معالج الـ Queue: إرسال التنبيهات عبر القنوات المختلفة                        ║
- * ║  Dashboard (فوري) | Email (SMTP) | WhatsApp (API)                              ║
+ * ║  Dashboard (فوري) | Email (SMTP) | WhatsApp (Baileys)                          ║
+ * ║                                                                                ║
+ * ║  ✅ v2: ربط فعلي مع MailService و WhatsAppBaileysService                      ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 import { EmployeeNotificationsService } from './employee-notifications.service';
 import { NotificationChannel } from './entities/notification-rule.entity';
 import { NotificationStatus } from './entities/employee-notification.entity';
+
+// ✅ خدمات الإرسال الفعلية
+import { MailService } from '../mail/mail.service';
+import { WhatsAppBaileysService } from '../channels/whatsapp/whatsapp-baileys.service';
+import { Channel, ChannelStatus } from '../channels/entities/channel.entity';
 
 // ═══════════════════════════════════════════════════════════
 // Types
@@ -29,6 +38,7 @@ interface NotificationJobData {
   message: string;
   actionUrl: string | null;
   priority: number;
+  tenantId?: string;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -41,6 +51,10 @@ export class NotificationProcessor extends WorkerHost {
 
   constructor(
     private readonly notificationsService: EmployeeNotificationsService,
+    private readonly mailService: MailService,
+    private readonly whatsAppBaileysService: WhatsAppBaileysService,
+    @InjectRepository(Channel)
+    private readonly channelRepository: Repository<Channel>,
   ) {
     super();
   }
@@ -48,8 +62,8 @@ export class NotificationProcessor extends WorkerHost {
   async process(job: Job<NotificationJobData>): Promise<void> {
     const { data } = job;
 
-    this.logger.debug(
-      `Processing notification: ${data.notificationId} via ${data.channel}`,
+    this.logger.log(
+      `🔔 Processing notification: ${data.notificationId} via ${data.channel} → ${data.employeeName}`,
     );
 
     try {
@@ -108,24 +122,16 @@ export class NotificationProcessor extends WorkerHost {
    * يتم حفظه في قاعدة البيانات فقط — الواجهة تقرأه
    */
   private async sendDashboardNotification(data: NotificationJobData): Promise<void> {
-    // الإشعار الداخلي يكون محفوظ بالفعل في DB بحالة DELIVERED
-    // هنا يمكن إضافة WebSocket/SSE push إذا كان متاحاً
-    
-    this.logger.debug(
+    this.logger.log(
       `📋 Dashboard notification ready: ${data.title} → ${data.employeeName}`,
     );
 
     // TODO: إرسال عبر WebSocket للتحديث الفوري
-    // this.gateway.sendToUser(data.employeeId, {
-    //   type: 'notification',
-    //   title: data.title,
-    //   message: data.message,
-    //   actionUrl: data.actionUrl,
-    // });
+    // this.gateway.sendToUser(data.employeeId, { type: 'notification', ... });
   }
 
   /**
-   * إرسال بريد إلكتروني
+   * ✅ إرسال بريد إلكتروني فعلي عبر MailService
    */
   private async sendEmailNotification(data: NotificationJobData): Promise<void> {
     if (!data.employeeEmail) {
@@ -133,23 +139,25 @@ export class NotificationProcessor extends WorkerHost {
       throw new Error('Employee email not available');
     }
 
-    // تجهيز HTML للبريد
     const emailHtml = this.buildEmailHtml(data);
 
-    // TODO: استخدام خدمة البريد الموجودة (مثل MailerService أو SendGrid)
-    // await this.mailerService.sendMail({
-    //   to: data.employeeEmail,
-    //   subject: data.title,
-    //   html: emailHtml,
-    // });
+    this.logger.log(`📧 Sending email to ${data.employeeEmail}: ${data.title}`);
 
-    this.logger.debug(
-      `📧 Email notification → ${data.employeeEmail}: ${data.title} (${emailHtml.length} chars)`,
-    );
+    const sent = await this.mailService.sendMail({
+      to: data.employeeEmail,
+      subject: `🔔 ${data.title}`,
+      html: emailHtml,
+    });
+
+    if (!sent) {
+      throw new Error(`Failed to send email to ${data.employeeEmail}`);
+    }
+
+    this.logger.log(`✅ Email sent to ${data.employeeEmail}`);
   }
 
   /**
-   * إرسال رسالة واتساب
+   * ✅ إرسال رسالة واتساب فعلية عبر WhatsAppBaileysService
    */
   private async sendWhatsAppNotification(data: NotificationJobData): Promise<void> {
     if (!data.employeePhone) {
@@ -157,15 +165,31 @@ export class NotificationProcessor extends WorkerHost {
       throw new Error('Employee phone not available');
     }
 
-    // TODO: استخدام خدمة الواتساب الموجودة
-    // await this.whatsappService.sendMessage({
-    //   to: data.employeePhone,
-    //   message: data.message,
-    // });
+    // البحث عن قناة واتساب متصلة
+    const channel = await this.channelRepository.findOne({
+      where: { status: ChannelStatus.CONNECTED },
+      order: { createdAt: 'DESC' },
+    });
 
-    this.logger.debug(
-      `📱 WhatsApp notification → ${data.employeePhone}: ${data.message.substring(0, 50)}...`,
+    if (!channel) {
+      throw new Error('No connected WhatsApp channel found');
+    }
+
+    // تنظيف الرقم
+    const phone = data.employeePhone.replace(/[^0-9]/g, '');
+
+    this.logger.log(`📱 Sending WhatsApp to ${phone} via channel ${channel.id}`);
+
+    // بناء الرسالة
+    const whatsappMessage = `🔔 *${data.title}*\n\n${data.message}${data.actionUrl ? `\n\n🔗 ${data.actionUrl}` : ''}`;
+
+    await this.whatsAppBaileysService.sendTextMessage(
+      channel.id,
+      phone,
+      whatsappMessage,
     );
+
+    this.logger.log(`✅ WhatsApp sent to ${phone}`);
   }
 
   /**
