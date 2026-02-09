@@ -180,8 +180,23 @@ export class NotificationProcessor extends WorkerHost {
 
     this.logger.log(`📱 Sending WhatsApp to ${phone} via channel ${channel.id}`);
 
-    // بناء الرسالة
-    const whatsappMessage = `🔔 *${data.title}*\n\n${data.message}${data.actionUrl ? `\n\n🔗 ${data.actionUrl}` : ''}`;
+    // بناء الرسالة — الترتيب: نص الرسالة → الرابط → فريق رفيق يقولك (آخر شي)
+    let whatsappMessage = `🔔 *${data.title}*\n\n`;
+
+    // فصل نص الرسالة عن فقرة "فريق رفيق يقولك"
+    const parts = data.message.split('\n\nفريق رفيق يقولك:');
+    const mainText = parts[0];
+    const motivationalPart = parts[1] ? `\nفريق رفيق يقولك:${parts[1]}` : '';
+
+    whatsappMessage += mainText;
+
+    // الرابط بعد نص الرسالة
+    if (data.actionUrl) {
+      whatsappMessage += `\n\n👇 اضغط هنا لرؤية الطلب:\n${data.actionUrl}`;
+    }
+
+    // فريق رفيق يقولك آخر شي
+    whatsappMessage += `\n${motivationalPart}`;
 
     await this.whatsAppBaileysService.sendTextMessage(
       channel.id,
