@@ -62,6 +62,11 @@ export { SubscriptionPlan, PlanStatus } from './subscription-plan.entity';
 export { Subscription, SubscriptionStatus, BillingInterval, PaymentProvider, UsageStats } from './subscription.entity';
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// AI ENTITIES
+// ═══════════════════════════════════════════════════════════════════════════════
+export { KnowledgeBase, KnowledgeCategory } from '../../modules/ai/entities/knowledge-base.entity';
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // ALL ENTITIES ARRAY
 // ═══════════════════════════════════════════════════════════════════════════════
 import { Tenant } from './tenant.entity';
@@ -80,6 +85,7 @@ import { WebhookLog } from '../../modules/webhooks/entities/webhook-log.entity';
 import { SubscriptionPlan } from './subscription-plan.entity';
 import { Subscription } from './subscription.entity';
 import { ScheduledTemplateSend } from './scheduled-template-send.entity';
+import { KnowledgeBase } from '../../modules/ai/entities/knowledge-base.entity';
 
 export const allEntities = [
   Tenant,
@@ -97,4 +103,5 @@ export const allEntities = [
   SubscriptionPlan,
   Subscription,
   ScheduledTemplateSend,
+  KnowledgeBase,
 ];
