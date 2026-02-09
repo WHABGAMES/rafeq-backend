@@ -3,7 +3,7 @@
  * ║              RAFIQ PLATFORM - AI Module (Production v2)                        ║
  * ║                                                                                ║
  * ║  ✅ يسجل جميع الـ entities المطلوبة لـ ai.service.ts                          ║
- * ║  ✅ KnowledgeBase + StoreSettings + Channel + Conversation + Message + Order   ║
+ * ║  ✅ KnowledgeBase + StoreSettings + Conversation + Message + Order             ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -14,7 +14,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 // ✅ Entities
-import { Message, Conversation, Customer, Order, Channel } from '@database/entities';
+import { Message, Conversation, Customer, Order } from '@database/entities';
 import { StoreSettings } from '../settings/entities/store-settings.entity';
 import { KnowledgeBase } from './entities/knowledge-base.entity';
 
@@ -33,7 +33,6 @@ import { AiController } from './ai.controller';
       Conversation,     // المحادثات
       Message,          // الرسائل
       Order,            // الطلبات (tool: get_order_status)
-      Channel,          // القنوات (للربط بين conversation → storeId)
       Customer,         // بيانات العملاء
     ]),
 
