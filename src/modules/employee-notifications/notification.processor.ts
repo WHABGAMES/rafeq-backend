@@ -173,8 +173,21 @@ export class NotificationProcessor extends WorkerHost {
    */
   private buildEmailHtml(data: NotificationJobData): string {
     const safeTitle = this.escapeHtml(data.title);
-    const safeMessage = this.escapeHtml(data.message);
     const safeActionUrl = data.actionUrl ? this.escapeHtml(data.actionUrl) : null;
+
+    // فصل الرسالة الأساسية عن الفقرة التحفيزية
+    const parts = data.message.split('\n\n—\n\n');
+    const mainMessage = this.escapeHtml(parts[0] || '');
+    const motivationalPart = parts[1] || '';
+
+    // استخراج النص التحفيزي بعد "فريق رفيق يقولك:"
+    let motivationalLabel = '';
+    let motivationalText = '';
+    if (motivationalPart.includes('فريق رفيق يقولك:')) {
+      const motParts = motivationalPart.split('فريق رفيق يقولك:');
+      motivationalLabel = 'فريق رفيق يقولك:';
+      motivationalText = this.escapeHtml((motParts[1] || '').trim());
+    }
 
     return `
       <!DOCTYPE html>
@@ -188,6 +201,9 @@ export class NotificationProcessor extends WorkerHost {
           .header h1 { margin: 0; font-size: 20px; }
           .body { padding: 24px; color: #333; line-height: 1.8; }
           .action-btn { display: inline-block; background: #6366f1; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; margin-top: 16px; }
+          .motivational { margin-top: 24px; padding: 16px 20px; background: linear-gradient(135deg, #fef9f0, #fdf6ec); border-radius: 8px; border-right: 4px solid #f59e0b; text-align: center; }
+          .motivational-label { font-size: 13px; color: #92400e; font-weight: 600; margin: 0 0 6px; }
+          .motivational-text { font-size: 15px; color: #78350f; margin: 0; line-height: 1.8; }
           .footer { padding: 16px 24px; background: #f9fafb; color: #6b7280; font-size: 12px; text-align: center; }
         </style>
       </head>
@@ -197,8 +213,14 @@ export class NotificationProcessor extends WorkerHost {
             <h1>${safeTitle}</h1>
           </div>
           <div class="body">
-            <p>${safeMessage}</p>
+            <p>${mainMessage.replace(/\n/g, '<br>')}</p>
             ${safeActionUrl ? `<a href="${safeActionUrl}" class="action-btn">عرض التفاصيل</a>` : ''}
+            ${motivationalText ? `
+            <div class="motivational">
+              <p class="motivational-label">🌟 ${this.escapeHtml(motivationalLabel)}</p>
+              <p class="motivational-text">${motivationalText}</p>
+            </div>
+            ` : ''}
           </div>
           <div class="footer">
             <p>هذا تنبيه تلقائي من منصة رفيق — لا تحتاج للرد على هذا البريد</p>
