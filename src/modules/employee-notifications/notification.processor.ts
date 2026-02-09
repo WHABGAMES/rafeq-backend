@@ -84,11 +84,13 @@ export class NotificationProcessor extends WorkerHost {
           this.logger.warn(`Unknown channel: ${data.channel}`);
       }
 
-      // تحديث الحالة إلى "مُرسل"
-      await this.notificationsService.updateNotificationStatus(
-        data.notificationId,
-        NotificationStatus.SENT,
-      );
+      // تحديث الحالة إلى "مُرسل" (فقط للقنوات الخارجية — Dashboard يكون DELIVERED مباشرة)
+      if (data.channel !== NotificationChannel.DASHBOARD) {
+        await this.notificationsService.updateNotificationStatus(
+          data.notificationId,
+          NotificationStatus.SENT,
+        );
+      }
 
       this.logger.log(
         `✅ Notification sent: ${data.notificationId} → ${data.channel} → ${data.employeeName}`,
