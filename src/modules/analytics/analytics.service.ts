@@ -3,6 +3,13 @@
  * ║              RAFIQ PLATFORM - Analytics Service                                ║
  * ║                                                                                ║
  * ║  📌 Business Logic للتحليلات والتقارير                                         ║
+ * ║                                                                                ║
+ * ║  ✅ جميع البيانات حقيقية من قاعدة البيانات — لا يوجد أي قيم hardcoded          ║
+ * ║  ✅ byChannel: JOIN مع channels + normalize whatsapp_official/qr → whatsapp    ║
+ * ║  ✅ byStatus: مفلتر بالتاريخ                                                   ║
+ * ║  ✅ Team: وقت الرد + الحل + نسبة الحل — كلها حقيقية                            ║
+ * ║  ✅ Overview: يقبل DateRange + مقارنة مع الفترة السابقة                         ║
+ * ║  ✅ TypeORM: entity alias = property names, raw alias = SQL column names        ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -33,7 +40,7 @@ export interface OverviewStats {
   conversations: {
     total: number;
     today: number;
-    change: number; // نسبة التغيير عن الأمس
+    change: number;
   };
   messages: {
     total: number;
@@ -98,105 +105,130 @@ export class AnalyticsService {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   /**
-   * جلب الإحصائيات العامة
+   * ✅ FIX #1: يقبل DateRange اختياري
+   * ✅ FIX #2: responseTime.average — حقيقي من DB (كان hardcoded: 5)
+   * ✅ FIX #3: responseTime.change — حقيقي من DB (كان hardcoded: -20)
    */
-  async getOverview(tenantId: string): Promise<OverviewStats> {
+  async getOverview(tenantId: string, range?: DateRange): Promise<OverviewStats> {
+    const now = new Date();
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
+    // الفترة الحالية (حسب الفلتر أو اليوم كاملاً)
+    const currentStart = range?.startDate ?? today;
+    const currentEnd = range?.endDate ?? now;
 
-    // محادثات اليوم
+    // الفترة السابقة المماثلة (نفس المدة قبلها مباشرة)
+    const periodMs = currentEnd.getTime() - currentStart.getTime();
+    const previousStart = new Date(currentStart.getTime() - periodMs);
+    const previousEnd = new Date(currentStart.getTime());
+
+    // ─── المحادثات ───
+    const conversationsCurrent = await this.conversationRepository.count({
+      where: { tenantId, createdAt: Between(currentStart, currentEnd) },
+    });
+    const conversationsPrevious = await this.conversationRepository.count({
+      where: { tenantId, createdAt: Between(previousStart, previousEnd) },
+    });
     const conversationsToday = await this.conversationRepository.count({
-      where: {
-        tenantId,
-        createdAt: MoreThanOrEqual(today),
-      },
+      where: { tenantId, createdAt: MoreThanOrEqual(today) },
     });
 
-    // محادثات الأمس
-    const conversationsYesterday = await this.conversationRepository.count({
-      where: {
-        tenantId,
-        createdAt: Between(yesterday, today),
-      },
+    // ─── الرسائل ───
+    const messagesCurrent = await this.messageRepository.count({
+      where: { tenantId, createdAt: Between(currentStart, currentEnd) },
     });
-
-    // إجمالي المحادثات
-    const totalConversations = await this.conversationRepository.count({
-      where: { tenantId } as any,
+    const messagesPrevious = await this.messageRepository.count({
+      where: { tenantId, createdAt: Between(previousStart, previousEnd) },
     });
-
-    // رسائل اليوم
     const messagesToday = await this.messageRepository.count({
-      where: {
-        tenantId,
-        createdAt: MoreThanOrEqual(today),
-      },
+      where: { tenantId, createdAt: MoreThanOrEqual(today) },
     });
 
-    // رسائل الأمس
-    const messagesYesterday = await this.messageRepository.count({
-      where: {
-        tenantId,
-        createdAt: Between(yesterday, today),
-      },
+    // ─── العملاء ───
+    const customersCurrent = await this.customerRepository.count({
+      where: { tenantId, createdAt: Between(currentStart, currentEnd) } as any,
     });
-
-    // إجمالي الرسائل
-    const totalMessages = await this.messageRepository.count({
-      where: { tenantId } as any,
+    const customersPrevious = await this.customerRepository.count({
+      where: { tenantId, createdAt: Between(previousStart, previousEnd) } as any,
     });
-
-    // عملاء جدد اليوم
-    const newCustomersToday = await this.customerRepository.count({
-      where: {
-        tenantId,
-        createdAt: MoreThanOrEqual(today),
-      } as any,
+    const customersToday = await this.customerRepository.count({
+      where: { tenantId, createdAt: MoreThanOrEqual(today) } as any,
     });
-
-    // عملاء جدد الأمس
-    const newCustomersYesterday = await this.customerRepository.count({
-      where: {
-        tenantId,
-        createdAt: Between(yesterday, today),
-      } as any,
-    });
-
-    // إجمالي العملاء
     const totalCustomers = await this.customerRepository.count({
       where: { tenantId } as any,
     });
 
-    // حساب نسب التغيير
-    const calcChange = (today: number, yesterday: number): number => {
-      if (yesterday === 0) return today > 0 ? 100 : 0;
-      return Math.round(((today - yesterday) / yesterday) * 100);
+    // ─── ✅ متوسط وقت الرد الحقيقي (بدل hardcoded 5) ───
+    const avgResponseCurrent = await this.calculateAvgResponseTime(
+      tenantId, currentStart, currentEnd,
+    );
+    const avgResponsePrevious = await this.calculateAvgResponseTime(
+      tenantId, previousStart, previousEnd,
+    );
+
+    // ─── نسب التغيير ───
+    const calcChange = (current: number, previous: number): number => {
+      if (previous === 0) return current > 0 ? 100 : 0;
+      return Math.round(((current - previous) / previous) * 100);
     };
+
+    // ✅ لوقت الرد: انخفاض = تحسن = إيجابي (بدل hardcoded -20)
+    const responseTimeChange = avgResponsePrevious === 0
+      ? 0
+      : Math.round(((avgResponsePrevious - avgResponseCurrent) / avgResponsePrevious) * 100);
 
     return {
       conversations: {
-        total: totalConversations,
+        total: conversationsCurrent,
         today: conversationsToday,
-        change: calcChange(conversationsToday, conversationsYesterday),
+        change: calcChange(conversationsCurrent, conversationsPrevious),
       },
       messages: {
-        total: totalMessages,
+        total: messagesCurrent,
         today: messagesToday,
-        change: calcChange(messagesToday, messagesYesterday),
+        change: calcChange(messagesCurrent, messagesPrevious),
       },
       customers: {
         total: totalCustomers,
-        new: newCustomersToday,
-        change: calcChange(newCustomersToday, newCustomersYesterday),
+        new: customersToday,
+        change: calcChange(customersCurrent, customersPrevious),
       },
       responseTime: {
-        average: 5, // TODO: حساب فعلي
-        change: -20, // TODO: حساب فعلي
+        average: avgResponseCurrent,
+        change: responseTimeChange,
       },
     };
+  }
+
+  /**
+   * ✅ حساب متوسط وقت الرد الحقيقي من DB
+   *
+   * conv = ENTITY alias (conversationRepository.createQueryBuilder)
+   * → TypeORM resolves: conv.firstResponseAt → "conv"."first_response_at"
+   * → TypeORM resolves: conv.createdAt → "conv"."created_at"
+   */
+  private async calculateAvgResponseTime(
+    tenantId: string,
+    startDate: Date,
+    endDate: Date,
+  ): Promise<number> {
+    const result = await this.conversationRepository
+      .createQueryBuilder('conv')
+      .select(
+        'AVG(EXTRACT(EPOCH FROM (conv.firstResponseAt - conv.createdAt)) / 60)',
+        'avgMinutes',
+      )
+      .where('conv.tenantId = :tenantId', { tenantId })
+      .andWhere('conv.createdAt BETWEEN :start AND :end', {
+        start: startDate,
+        end: endDate,
+      })
+      .andWhere('conv.firstResponseAt IS NOT NULL')
+      .getRawOne();
+
+    const avg = parseFloat(result?.avgMinutes);
+    return Number.isFinite(avg) ? Math.round(avg) : 0;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -204,13 +236,18 @@ export class AnalyticsService {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   /**
-   * إحصائيات المحادثات
+   * ✅ FIX #4: byChannel — JOIN مع channels table بدل UUID
+   * ✅ FIX #5: byChannel — normalize whatsapp_official/whatsapp_qr → whatsapp
+   * ✅ FIX #6: byStatus — مفلتر بالتاريخ
+   *
+   * conv = ENTITY alias → property names (conv.createdAt, conv.channelId)
+   * ch = RAW TABLE alias → SQL column names (ch.id, ch.type)
    */
   async getConversationStats(
     tenantId: string,
     range: DateRange,
   ): Promise<ConversationStats> {
-    // المحادثات حسب اليوم
+    // ─── المحادثات حسب اليوم ───
     const byDay = await this.conversationRepository
       .createQueryBuilder('conv')
       .select("DATE(conv.createdAt)", 'date')
@@ -224,29 +261,56 @@ export class AnalyticsService {
       .orderBy('date', 'ASC')
       .getRawMany();
 
-    // المحادثات حسب القناة
-    const byChannel = await this.conversationRepository
+    // ─── ✅ FIX: المحادثات حسب القناة ───
+    //
+    // المشكلة الأصلية: conv.channel هو ManyToOne relation → يرجع UUID
+    // Frontend CHANNEL_AR يتوقع: 'whatsapp', 'instagram', 'discord', etc.
+    // Backend ChannelType: 'whatsapp_official', 'whatsapp_qr', 'instagram', etc.
+    //
+    // الحل: JOIN channels table → normalize whatsapp types
+    //
+    // conv = entity alias → conv.channelId resolves to conv.channel_id
+    // ch = raw table alias → ch.id, ch.type are literal SQL column names
+    const byChannelRaw = await this.conversationRepository
       .createQueryBuilder('conv')
-      .select('conv.channel', 'channel')
+      .innerJoin('channels', 'ch', 'ch.id = conv.channelId')
+      .select(
+        `CASE
+          WHEN ch.type IN ('whatsapp_official', 'whatsapp_qr') THEN 'whatsapp'
+          ELSE ch.type
+        END`,
+        'channel',
+      )
       .addSelect('COUNT(*)', 'count')
       .where('conv.tenantId = :tenantId', { tenantId })
       .andWhere('conv.createdAt BETWEEN :start AND :end', {
         start: range.startDate,
         end: range.endDate,
       })
-      .groupBy('conv.channel')
+      .groupBy(
+        `CASE
+          WHEN ch.type IN ('whatsapp_official', 'whatsapp_qr') THEN 'whatsapp'
+          ELSE ch.type
+        END`,
+      )
+      .orderBy('count', 'DESC')
       .getRawMany();
 
-    // المحادثات حسب الحالة
+    // ─── ✅ FIX: المحادثات حسب الحالة — مع فلتر تاريخ ───
+    // الأصلي كان بدون فلتر تاريخ → يعرض كل البيانات من بداية الحساب
     const byStatus = await this.conversationRepository
       .createQueryBuilder('conv')
       .select('conv.status', 'status')
       .addSelect('COUNT(*)', 'count')
       .where('conv.tenantId = :tenantId', { tenantId })
+      .andWhere('conv.createdAt BETWEEN :start AND :end', {
+        start: range.startDate,
+        end: range.endDate,
+      })
       .groupBy('conv.status')
       .getRawMany();
 
-    // أوقات الذروة
+    // ─── أوقات الذروة ───
     const peakHours = await this.conversationRepository
       .createQueryBuilder('conv')
       .select("EXTRACT(HOUR FROM conv.createdAt)", 'hour')
@@ -262,8 +326,8 @@ export class AnalyticsService {
 
     return {
       byDay: byDay.map(d => ({ date: d.date, count: parseInt(d.count) })),
-      byChannel: byChannel.map(c => ({
-        channel: c.channel,
+      byChannel: byChannelRaw.map(c => ({
+        channel: c.channel || 'other',
         count: parseInt(c.count),
       })),
       byStatus: byStatus.map(s => ({
@@ -282,33 +346,84 @@ export class AnalyticsService {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   /**
-   * أداء الفريق
+   * ✅ FIX #7:  avgResponseTime — حقيقي (كان hardcoded: 3)
+   * ✅ FIX #8:  avgResolutionTime — حقيقي (كان hardcoded: 15)
+   * ✅ FIX #9:  satisfactionRate — نسبة الحل الحقيقية (كان hardcoded: 95)
+   * ✅ FIX #10: assignedAgentId → assigned_to_id (العمود الحقيقي)
+   * ✅ FIX:     UserRole = owner, manager, agent, marketing (لا يوجد admin/support)
+   *
+   * ⚠️ TypeORM CONTEXT RULES:
+   * user = ENTITY alias (userRepository.createQueryBuilder)
+   *   → user.tenantId resolves → "user"."tenant_id"
+   *   → user.firstName resolves → "user"."first_name"
+   *   → user.lastName resolves → "user"."last_name"
+   *   → user.role resolves → "user"."role"
+   *
+   * conv = RAW TABLE alias (leftJoin with string table name)
+   *   → MUST use SQL column names:
+   *     conv.assigned_to_id (NOT conv.assignedToId)
+   *     conv.created_at (NOT conv.createdAt)
+   *     conv.first_response_at (NOT conv.firstResponseAt)
+   *     conv.resolved_at (NOT conv.resolvedAt)
+   *     conv.status (same either way)
+   *     conv.id (same either way)
    */
   async getTeamPerformance(
     tenantId: string,
-    _range: DateRange,
+    range: DateRange,
   ): Promise<TeamPerformance> {
-    // جلب الموظفين مع إحصائياتهم
     const agents = await this.userRepository
       .createQueryBuilder('user')
-      .leftJoin('conversations', 'conv', 'conv.assignedAgentId = user.id')
+      // conv = RAW table alias → ALL conv columns use SQL names
+      .leftJoin(
+        'conversations',
+        'conv',
+        'conv.assigned_to_id = user.id AND conv.created_at BETWEEN :start AND :end',
+        { start: range.startDate, end: range.endDate },
+      )
+      // user = entity alias → TypeORM resolves property names
       .select('user.id', 'id')
       .addSelect("CONCAT(user.firstName, ' ', user.lastName)", 'name')
       .addSelect('COUNT(conv.id)', 'conversationsHandled')
+      // conv = raw alias → SQL column names in raw expressions
+      .addSelect(
+        'ROUND(AVG(EXTRACT(EPOCH FROM (conv.first_response_at - conv.created_at)) / 60))',
+        'avgResponseTime',
+      )
+      .addSelect(
+        'ROUND(AVG(EXTRACT(EPOCH FROM (conv.resolved_at - conv.created_at)) / 60))',
+        'avgResolutionTime',
+      )
+      .addSelect(
+        `CASE WHEN COUNT(conv.id) > 0
+          THEN ROUND(
+            COUNT(CASE WHEN conv.status IN ('resolved', 'closed') THEN 1 END)
+            * 100.0 / COUNT(conv.id)
+          )
+          ELSE 0
+        END`,
+        'satisfactionRate',
+      )
       .where('user.tenantId = :tenantId', { tenantId })
-      .andWhere("user.role IN ('agent', 'manager')")
+      // ✅ الأدوار الحقيقية من UserRole enum (لا يوجد admin أو support)
+      .andWhere('user.role IN (:...roles)', {
+        roles: ['owner', 'manager', 'agent', 'marketing'],
+      })
+      // PostgreSQL GROUP BY — primary key + explicit name columns
       .groupBy('user.id')
-      .orderBy('conversationsHandled', 'DESC')
+      .addGroupBy('user.firstName')
+      .addGroupBy('user.lastName')
+      .orderBy('COUNT(conv.id)', 'DESC')
       .getRawMany();
 
     return {
       agents: agents.map(a => ({
         id: a.id,
-        name: a.name,
+        name: a.name?.trim() || 'غير معروف',
         conversationsHandled: parseInt(a.conversationsHandled) || 0,
-        avgResponseTime: 3, // TODO: حساب فعلي
-        avgResolutionTime: 15, // TODO: حساب فعلي
-        satisfactionRate: 95, // TODO: حساب فعلي
+        avgResponseTime: parseInt(a.avgResponseTime) || 0,
+        avgResolutionTime: parseInt(a.avgResolutionTime) || 0,
+        satisfactionRate: parseInt(a.satisfactionRate) || 0,
       })),
     };
   }
@@ -317,9 +432,6 @@ export class AnalyticsService {
   // 📣 Campaign Stats
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * إحصائيات الحملات
-   */
   async getCampaignStats(
     tenantId: string,
     range: DateRange,
@@ -358,9 +470,6 @@ export class AnalyticsService {
   // 📈 Trends
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * جلب الاتجاهات (Trends)
-   */
   async getTrends(
     tenantId: string,
     metric: 'conversations' | 'messages' | 'customers',
@@ -407,9 +516,6 @@ export class AnalyticsService {
   // 📊 Export
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * تصدير تقرير
-   */
   async exportReport(
     tenantId: string,
     reportType: string,
@@ -421,7 +527,7 @@ export class AnalyticsService {
 
     switch (reportType) {
       case 'overview':
-        data = await this.getOverview(tenantId);
+        data = await this.getOverview(tenantId, range);
         filename = 'overview-report';
         break;
       case 'conversations':
@@ -437,12 +543,11 @@ export class AnalyticsService {
         filename = 'campaigns-report';
         break;
       default:
-        data = await this.getOverview(tenantId);
+        data = await this.getOverview(tenantId, range);
         filename = 'report';
     }
 
     if (format === 'csv') {
-      // تحويل لـ CSV (مبسط)
       const csvContent = this.jsonToCsv(data);
       return {
         data: csvContent,
@@ -458,21 +563,21 @@ export class AnalyticsService {
     };
   }
 
-  /**
-   * تحويل JSON لـ CSV (مبسط)
-   */
   private jsonToCsv(data: unknown): string {
     if (Array.isArray(data)) {
       if (data.length === 0) return '';
       const headers = Object.keys(data[0]);
       const rows = data.map(row =>
-        headers.map(h => JSON.stringify((row as Record<string, unknown>)[h] ?? '')).join(','),
+        headers
+          .map(h => JSON.stringify((row as Record<string, unknown>)[h] ?? ''))
+          .join(','),
       );
       return [headers.join(','), ...rows].join('\n');
     }
-    
-    // للكائنات، نحولها لصفوف
+
     const entries = Object.entries(data as Record<string, unknown>);
-    return entries.map(([key, value]) => `${key},${JSON.stringify(value)}`).join('\n');
+    return entries
+      .map(([key, value]) => `${key},${JSON.stringify(value)}`)
+      .join('\n');
   }
 }
