@@ -47,7 +47,7 @@ import {
 } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
-import { AIService } from './ai.service';
+import { AIService, SearchPriority } from './ai.service';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DTOs
@@ -80,7 +80,7 @@ class UpdateAISettingsDto {
   autoHandoff?: boolean;
   handoffAfterFailures?: number;
   handoffKeywords?: string[];
-  searchPriority?: string;
+  searchPriority?: SearchPriority;
   silenceOnHandoff?: boolean;
   silenceDurationMinutes?: number;
   silenceOnAgentOpen?: boolean;
