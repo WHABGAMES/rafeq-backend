@@ -50,8 +50,9 @@ export class EmployeeNotification {
 
   /**
    * ID الموظف المستلم
+   * varchar لدعم المعرفات المخصصة مثل custom-phone-xxx أو custom-email-xxx
    */
-  @Column({ type: 'uuid' })
+  @Column({ type: 'varchar', length: 255 })
   employeeId: string;
 
   /**
