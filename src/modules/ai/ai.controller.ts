@@ -48,22 +48,37 @@ import {
 
 import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
 import { AIService, SearchPriority } from './ai.service';
+import {
+  IsString,
+  IsBoolean,
+  IsOptional,
+  IsNumber,
+  IsArray,
+  IsEnum,
+} from 'class-validator';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DTOs
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class RespondDto {
+  @IsString()
   conversationId: string;
+
+  @IsString()
   message: string;
 }
 
 class AnalyzeDto {
+  @IsString()
   message: string;
 }
 
 class TestResponseDto {
+  @IsString()
   message: string;
+
+  @IsOptional()
   storeContext?: {
     storeName: string;
     tone: string;
@@ -71,52 +86,124 @@ class TestResponseDto {
 }
 
 class UpdateAISettingsDto {
+  @IsOptional() @IsBoolean()
   enabled?: boolean;
+
+  @IsOptional() @IsString()
   model?: string;
+
+  @IsOptional() @IsNumber()
   temperature?: number;
+
+  @IsOptional() @IsNumber()
   maxTokens?: number;
+
+  @IsOptional() @IsString()
   language?: 'ar' | 'en' | 'auto';
+
+  @IsOptional() @IsString()
   tone?: 'formal' | 'friendly' | 'professional';
+
+  @IsOptional() @IsBoolean()
   autoHandoff?: boolean;
+
+  @IsOptional() @IsNumber()
   handoffAfterFailures?: number;
+
+  @IsOptional() @IsArray()
   handoffKeywords?: string[];
+
+  @IsOptional() @IsEnum(SearchPriority)
   searchPriority?: SearchPriority;
+
+  @IsOptional() @IsBoolean()
   silenceOnHandoff?: boolean;
+
+  @IsOptional() @IsNumber()
   silenceDurationMinutes?: number;
+
+  @IsOptional() @IsBoolean()
   silenceOnAgentOpen?: boolean;
+
+  @IsOptional() @IsNumber()
   silenceAfterAgentMinutes?: number;
+
+  @IsOptional() @IsArray()
   handoffNotifyEmployeeIds?: string[];
+
+  @IsOptional() @IsArray()
   handoffNotifyPhones?: string[];
+
+  @IsOptional() @IsArray()
   handoffNotifyEmails?: string[];
+
+  @IsOptional() @IsString()
   storeName?: string;
+
+  @IsOptional() @IsString()
   storeDescription?: string;
+
+  @IsOptional() @IsString()
   workingHours?: string;
+
+  @IsOptional() @IsString()
   returnPolicy?: string;
+
+  @IsOptional() @IsString()
   shippingInfo?: string;
+
+  @IsOptional() @IsString()
   welcomeMessage?: string;
+
+  @IsOptional() @IsString()
   fallbackMessage?: string;
+
+  @IsOptional() @IsString()
   handoffMessage?: string;
 }
 
 class AddKnowledgeDto {
+  @IsString()
   title: string;
+
+  @IsString()
   content: string;
+
+  @IsOptional() @IsString()
   category?: string;
+
+  @IsOptional() @IsArray()
   keywords?: string[];
+
+  @IsOptional() @IsNumber()
   priority?: number;
 }
 
 class UpdateKnowledgeDto {
+  @IsOptional() @IsString()
   title?: string;
+
+  @IsOptional() @IsString()
   content?: string;
+
+  @IsOptional() @IsString()
   category?: string;
+
+  @IsOptional() @IsArray()
   keywords?: string[];
+
+  @IsOptional() @IsNumber()
   priority?: number;
+
+  @IsOptional() @IsBoolean()
   isActive?: boolean;
 }
 
 class TrainBotDto {
+  @IsOptional() @IsArray()
   faqs?: Array<{ question: string; answer: string }>;
+
+  @IsOptional() @IsArray()
   documents?: Array<{ title: string; content: string }>;
 }
 
