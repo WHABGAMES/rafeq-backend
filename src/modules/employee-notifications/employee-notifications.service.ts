@@ -250,9 +250,17 @@ export class EmployeeNotificationsService {
         // ✅ تعيين اسم المتجر من الـ DB (بدلاً من الاعتماد على بيانات الـ webhook)
         if (storeName) variables['{اسم_المتجر}'] = storeName;
 
-        // إنشاء تنبيه لكل موظف ولكل قناة
+        // إنشاء تنبيه لكل موظف ولكل قناة (مع فلترة التوافق)
         for (const employee of recipients) {
           for (const channel of rule.channels) {
+            // ✅ فلترة: لا ترسل whatsapp بدون جوال، ولا email بدون بريد
+            if (!this.canSendToChannel(employee, channel)) {
+              this.logger.debug(
+                `⏭️ Skipping ${channel} for "${employee.name}" — missing contact info`,
+              );
+              continue;
+            }
+
             const notification = await this.createNotification(
               rule,
               employee,
@@ -516,8 +524,16 @@ export class EmployeeNotificationsService {
 
     let lastNotification: EmployeeNotification | null = null;
 
-    // ✅ إرسال لكل قناة مع إضافة للـ Queue
+    // ✅ إرسال لكل قناة مع فلترة التوافق
     for (const channel of rule.channels) {
+      // ✅ فلترة: لا ترسل whatsapp بدون جوال، ولا email بدون بريد
+      if (!this.canSendToChannel(testEmployee, channel)) {
+        this.logger.debug(
+          `⏭️ Skipping test ${channel} for "${testEmployee.name}" — missing contact info`,
+        );
+        continue;
+      }
+
       const notification = await this.createNotification(
         rule,
         testEmployee,
@@ -557,7 +573,13 @@ export class EmployeeNotificationsService {
       this.logger.log(`📧 Test notification queued: ${notification.id} → ${channel}`);
     }
 
-    return lastNotification!;
+    if (!lastNotification) {
+      throw new NotFoundException(
+        'لا يمكن إرسال التنبيه: المستلم لا يملك بيانات اتصال مناسبة للقنوات المحددة',
+      );
+    }
+
+    return lastNotification;
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -997,6 +1019,25 @@ export class EmployeeNotificationsService {
   /**
    * ✅ تنظيف رقم الهاتف — ضمان صيغة دولية
    */
+  /**
+   * ✅ فحص توافق المستلم مع القناة
+   * - whatsapp: يحتاج رقم جوال
+   * - email: يحتاج بريد إلكتروني
+   * - dashboard: دائماً متاح
+   */
+  private canSendToChannel(employee: EmployeeInfo, channel: NotificationChannel): boolean {
+    switch (channel) {
+      case NotificationChannel.WHATSAPP:
+        return !!employee.phone && employee.phone.trim().length > 0;
+      case NotificationChannel.EMAIL:
+        return !!employee.email && employee.email.includes('@');
+      case NotificationChannel.DASHBOARD:
+        return true;
+      default:
+        return false;
+    }
+  }
+
   private normalizePhone(phone: string): string {
     let cleaned = phone.replace(/[\s\-()]/g, '');
     
