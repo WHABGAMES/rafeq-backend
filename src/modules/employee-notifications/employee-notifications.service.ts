@@ -32,6 +32,9 @@ import {
   NotificationStatsResponseDto,
 } from './dto/notification.dto';
 
+// 👥 لجلب بيانات الموظفين الحقيقية
+import { UsersService } from '../users/users.service';
+
 // ═══════════════════════════════════════════════════════════
 // Types
 // ═══════════════════════════════════════════════════════════
@@ -73,6 +76,9 @@ export class EmployeeNotificationsService {
 
     @InjectQueue('employee-notifications')
     private readonly notificationQueue: Queue,
+
+    // 👥 لجلب بيانات الموظفين
+    private readonly usersService: UsersService,
   ) {}
 
   // ═══════════════════════════════════════════════════════════
@@ -472,11 +478,15 @@ export class EmployeeNotificationsService {
       customer: { first_name: 'أحمد', last_name: 'محمد', mobile: '0501234567' },
     };
 
+    // ✅ استخدام البيانات الحقيقية من القاعدة
+    const testPhone = rule.customPhones?.[0] || '+966501234567';
+    const testEmail = rule.customEmails?.[0] || 'test@example.com';
+
     const testEmployee: EmployeeInfo = {
       id: testEmployeeId || 'test-employee-id',
-      name: 'موظف تجريبي',
-      email: 'test@example.com',
-      phone: '+966501234567',
+      name: 'اختبار تنبيه',
+      email: testEmail,
+      phone: testPhone,
       role: 'support',
     };
 
@@ -486,22 +496,50 @@ export class EmployeeNotificationsService {
       data: testData,
     });
 
-    const channel = rule.channels[0] || NotificationChannel.DASHBOARD;
+    let lastNotification: EmployeeNotification | null = null;
 
-    const notification = await this.createNotification(
-      rule,
-      testEmployee,
-      channel,
-      variables,
-      {
-        tenantId,
-        eventType: rule.triggerEvent,
-        data: testData,
-      },
-    );
+    // ✅ إرسال لكل قناة مع إضافة للـ Queue
+    for (const channel of rule.channels) {
+      const notification = await this.createNotification(
+        rule,
+        testEmployee,
+        channel,
+        variables,
+        {
+          tenantId,
+          eventType: rule.triggerEvent,
+          data: testData,
+        },
+      );
 
-    this.logger.log(`📧 Test notification created: ${notification.id}`);
-    return notification;
+      // ✅ إضافة للـ Queue للإرسال الفعلي
+      await this.notificationQueue.add(
+        `send-${channel}`,
+        {
+          notificationId: notification.id,
+          channel,
+          employeeId: testEmployee.id,
+          employeeName: testEmployee.name,
+          employeeEmail: testEmployee.email,
+          employeePhone: testEmployee.phone,
+          title: notification.title,
+          message: notification.message,
+          actionUrl: notification.actionUrl,
+          priority: rule.priority,
+          tenantId,
+        },
+        {
+          priority: 1,
+          attempts: 1, // اختبار = محاولة واحدة فقط
+          removeOnComplete: true,
+        },
+      );
+
+      lastNotification = notification;
+      this.logger.log(`📧 Test notification queued: ${notification.id} → ${channel}`);
+    }
+
+    return lastNotification!;
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -675,8 +713,7 @@ export class EmployeeNotificationsService {
 
   /**
    * تحديد المستلمين حسب أنواع القاعدة (يدعم أنواع متعددة)
-   * 
-   * TODO: يحتاج ربط فعلي مع EmployeesService لجلب بيانات الموظفين
+   * ✅ مربوط مع UsersService لجلب بيانات الموظفين الحقيقية
    */
   private async resolveRecipients(
     rule: NotificationRule,
@@ -710,30 +747,73 @@ export class EmployeeNotificationsService {
     data: Record<string, unknown>,
   ): Promise<EmployeeInfo[]> {
     switch (type) {
-      case RecipientType.ALL_EMPLOYEES:
-        // TODO: return await this.employeesService.findAll(rule.tenantId);
-        this.logger.warn('resolveRecipients: ALL_EMPLOYEES - needs EmployeesService integration');
-        return [];
+      case RecipientType.ALL_EMPLOYEES: {
+        // ✅ جلب جميع الموظفين النشطين من UsersService
+        const users = await this.usersService.findAll(rule.tenantId);
+        return users
+          .filter(u => u.status === 'active')
+          .map(u => ({
+            id: u.id,
+            name: `${u.firstName} ${u.lastName}`.trim() || u.email,
+            email: u.email || null,
+            phone: u.phone || null,
+            role: u.role || null,
+          }));
+      }
 
-      case RecipientType.SPECIFIC_EMPLOYEES:
+      case RecipientType.SPECIFIC_EMPLOYEES: {
         if (!rule.specificEmployeeIds?.length) return [];
-        // TODO: return await this.employeesService.findByIds(rule.tenantId, rule.specificEmployeeIds);
-        this.logger.warn('resolveRecipients: SPECIFIC_EMPLOYEES - needs EmployeesService integration');
-        return [];
+        // ✅ جلب موظفين محددين
+        const results: EmployeeInfo[] = [];
+        for (const empId of rule.specificEmployeeIds) {
+          try {
+            const user = await this.usersService.findOne(empId, rule.tenantId);
+            results.push({
+              id: user.id,
+              name: `${user.firstName} ${user.lastName}`.trim() || user.email,
+              email: user.email || null,
+              phone: user.phone || null,
+              role: user.role || null,
+            });
+          } catch {
+            this.logger.warn(`Employee not found: ${empId}`);
+          }
+        }
+        return results;
+      }
 
-      case RecipientType.BY_ROLE:
+      case RecipientType.BY_ROLE: {
         if (!rule.targetRoles?.length) return [];
-        // TODO: return await this.employeesService.findByRoles(rule.tenantId, rule.targetRoles);
-        this.logger.warn('resolveRecipients: BY_ROLE - needs EmployeesService integration');
-        return [];
+        // ✅ جلب موظفين حسب الدور
+        const allUsers = await this.usersService.findAll(rule.tenantId);
+        return allUsers
+          .filter(u => u.status === 'active' && rule.targetRoles!.includes(u.role))
+          .map(u => ({
+            id: u.id,
+            name: `${u.firstName} ${u.lastName}`.trim() || u.email,
+            email: u.email || null,
+            phone: u.phone || null,
+            role: u.role || null,
+          }));
+      }
 
-      case RecipientType.ASSIGNED_EMPLOYEE:
+      case RecipientType.ASSIGNED_EMPLOYEE: {
         const assignedId = this.safeGet(data, 'assigned_to') || this.safeGet(data, 'employee_id');
         if (!assignedId) return [];
-        // TODO: const employee = await this.employeesService.findById(rule.tenantId, assignedId);
-        // return employee ? [employee] : [];
-        this.logger.warn('resolveRecipients: ASSIGNED_EMPLOYEE - needs EmployeesService integration');
-        return [];
+        try {
+          const user = await this.usersService.findOne(String(assignedId), rule.tenantId);
+          return [{
+            id: user.id,
+            name: `${user.firstName} ${user.lastName}`.trim() || user.email,
+            email: user.email || null,
+            phone: user.phone || null,
+            role: user.role || null,
+          }];
+        } catch {
+          this.logger.warn(`Assigned employee not found: ${assignedId}`);
+          return [];
+        }
+      }
 
       case RecipientType.CUSTOM_PHONES:
         if (!rule.customPhones?.length) return [];
