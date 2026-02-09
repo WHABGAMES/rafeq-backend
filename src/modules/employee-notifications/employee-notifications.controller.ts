@@ -38,7 +38,7 @@ import {
 } from './dto/notification.dto';
 
 // Decorators (من نظام الصلاحيات الموجود)
-import { CurrentTenant } from '../../common/decorators';
+import { CurrentTenant, CurrentUser } from '../../common/decorators';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
 @ApiTags('Employee Notifications')
@@ -179,15 +179,12 @@ export class EmployeeNotificationsController {
   @ApiOperation({ summary: 'جلب إشعاراتي' })
   async getMyNotifications(
     @CurrentTenant() tenantId: string,
-    // TODO: استخراج employeeId من الـ JWT token
-    // @CurrentUser() userId: string,
+    @CurrentUser('id') userId: string,
     @Query() filter: NotificationFilterDto,
   ) {
-    // TODO: استبدال بالـ userId الحقيقي من الـ token
-    const employeeId = 'current-user-id';
     return this.notificationsService.getEmployeeNotifications(
       tenantId,
-      employeeId,
+      userId,
       filter,
     );
   }
@@ -198,10 +195,11 @@ export class EmployeeNotificationsController {
    */
   @Get('my/unread-count')
   @ApiOperation({ summary: 'عدد الإشعارات غير المقروءة' })
-  async getUnreadCount(@CurrentTenant() tenantId: string) {
-    // TODO: استبدال بالـ userId الحقيقي
-    const employeeId = 'current-user-id';
-    const count = await this.notificationsService.getUnreadCount(tenantId, employeeId);
+  async getUnreadCount(
+    @CurrentTenant() tenantId: string,
+    @CurrentUser('id') userId: string,
+  ) {
+    const count = await this.notificationsService.getUnreadCount(tenantId, userId);
     return { unreadCount: count };
   }
 
@@ -214,10 +212,10 @@ export class EmployeeNotificationsController {
   @ApiOperation({ summary: 'تحديد إشعارات كمقروءة' })
   async markAsRead(
     @CurrentTenant() tenantId: string,
+    @CurrentUser('id') userId: string,
     @Body() dto: MarkNotificationsReadDto,
   ) {
-    const employeeId = 'current-user-id';
-    await this.notificationsService.markAsRead(tenantId, employeeId, dto.notificationIds);
+    await this.notificationsService.markAsRead(tenantId, userId, dto.notificationIds);
     return { success: true };
   }
 
@@ -228,9 +226,11 @@ export class EmployeeNotificationsController {
   @Post('my/mark-all-read')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'تحديد جميع الإشعارات كمقروءة' })
-  async markAllAsRead(@CurrentTenant() tenantId: string) {
-    const employeeId = 'current-user-id';
-    await this.notificationsService.markAllAsRead(tenantId, employeeId);
+  async markAllAsRead(
+    @CurrentTenant() tenantId: string,
+    @CurrentUser('id') userId: string,
+  ) {
+    await this.notificationsService.markAllAsRead(tenantId, userId);
     return { success: true };
   }
 
