@@ -59,6 +59,16 @@ export class CreateNotificationRuleDto {
   @IsString({ each: true })
   targetRoles?: string[];
 
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  customPhones?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  customEmails?: string[];
+
   // قوالب الرسائل
   @IsOptional()
   @IsString()
@@ -183,6 +193,8 @@ export class NotificationRuleResponseDto {
   recipientType: RecipientType;
   specificEmployeeIds: string[] | null;
   targetRoles: string[] | null;
+  customPhones: string[] | null;
+  customEmails: string[] | null;
   dashboardTitle: string | null;
   dashboardTemplate: string | null;
   emailSubject: string | null;
