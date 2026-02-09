@@ -22,7 +22,6 @@ import { PartialType } from '@nestjs/mapped-types';
 import {
   NotificationTriggerEvent,
   NotificationChannel,
-  RecipientType,
 } from '../entities/notification-rule.entity';
 
 // ═══════════════════════════════════════════════════════════
@@ -46,8 +45,10 @@ export class CreateNotificationRuleDto {
   @IsEnum(NotificationChannel, { each: true })
   channels: NotificationChannel[];
 
-  @IsEnum(RecipientType)
-  recipientType: RecipientType;
+  @IsArray()
+  @ArrayMinSize(1)
+  @IsString({ each: true })
+  recipientTypes: string[];
 
   @IsOptional()
   @IsArray()
@@ -190,7 +191,7 @@ export class NotificationRuleResponseDto {
   description: string | null;
   triggerEvent: NotificationTriggerEvent;
   channels: NotificationChannel[];
-  recipientType: RecipientType;
+  recipientTypes: string[];
   specificEmployeeIds: string[] | null;
   targetRoles: string[] | null;
   customPhones: string[] | null;
