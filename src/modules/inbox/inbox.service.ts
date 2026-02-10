@@ -183,20 +183,28 @@ export class InboxService {
       : {};
 
     // ✅ BUG-INB1 + BUG-INB4: تحويل لصيغة الواجهة
-    const conversations: ConversationDto[] = items.map(conv => ({
-      id: conv.id,
-      customerId: conv.customerId || conv.customerExternalId || '',
-      customerName: this.getDisplayName(conv),
-      customerPhone: this.isLidIdentifier(conv.customerExternalId) ? '' : this.cleanPhoneDisplay(conv.customerPhone || conv.customerExternalId),
-      channel: this.mapChannelType(conv.channel?.type),
-      status: conv.status,
-      lastMessage: lastMessages[conv.id] || '',
-      lastMessageAt: (conv.lastMessageAt || conv.createdAt).toISOString(),
-      unreadCount: conv.messagesCount || 0,
-      assignedTo: conv.assignedToId,
-      tags: conv.tags || [],
-      aiHandled: conv.handler === ConversationHandler.AI,
-    }));
+    const conversations: ConversationDto[] = items.map(conv => {
+      // ✅ استخراج الرقم: أولاً من customerPhone المحفوظ، ثم من JID
+      const phone = this.cleanPhoneDisplay(conv.customerPhone) || (this.isLidIdentifier(conv.customerExternalId) ? '' : this.cleanPhoneDisplay(conv.customerExternalId));
+      const name = conv.customerName?.trim() || '';
+
+      return {
+        id: conv.id,
+        customerId: conv.customerId || conv.customerExternalId || '',
+        // ✅ الرقم أولاً إذا متوفر، وإلا الاسم
+        customerName: phone || name || (this.isLidIdentifier(conv.customerExternalId) ? 'عميل واتساب' : 'عميل'),
+        // ✅ الاسم الحقيقي (يظهر تحت الرقم فقط إذا كلاهما متوفر)
+        customerPhone: (name && phone) ? name : '',
+        channel: this.mapChannelType(conv.channel?.type),
+        status: conv.status,
+        lastMessage: lastMessages[conv.id] || '',
+        lastMessageAt: (conv.lastMessageAt || conv.createdAt).toISOString(),
+        unreadCount: conv.messagesCount || 0,
+        assignedTo: conv.assignedToId,
+        tags: conv.tags || [],
+        aiHandled: conv.handler === ConversationHandler.AI,
+      };
+    });
 
     return { conversations, total };
   }
@@ -344,10 +352,16 @@ export class InboxService {
       take: 100,
     });
 
+    // ✅ استخراج الرقم: أولاً من customerPhone المحفوظ، ثم من JID
+    const detailPhone = this.cleanPhoneDisplay(conversation.customerPhone) || (this.isLidIdentifier(conversation.customerExternalId) ? '' : this.cleanPhoneDisplay(conversation.customerExternalId));
+    const detailName = conversation.customerName?.trim() || '';
+
     return {
       ...conversation,
-      customerName: this.getDisplayName(conversation),
-      customerPhone: this.isLidIdentifier(conversation.customerExternalId) ? '' : this.cleanPhoneDisplay(conversation.customerPhone || conversation.customerExternalId),
+      // ✅ الرقم أولاً إذا متوفر، وإلا الاسم
+      customerName: detailPhone || detailName || (this.isLidIdentifier(conversation.customerExternalId) ? 'عميل واتساب' : 'عميل'),
+      // ✅ الاسم الحقيقي (يظهر تحت الرقم فقط إذا كلاهما متوفر)
+      customerPhone: (detailName && detailPhone) ? detailName : '',
       customerExternalId: conversation.customerExternalId || '',
       messages: messages.map(m => this.mapMessage(m)),
     };
@@ -594,21 +608,6 @@ export class InboxService {
   private isLidIdentifier(externalId?: string | null): boolean {
     if (!externalId) return false;
     return externalId.includes('@lid');
-  }
-
-  /**
-   * ✅ إرجاع الاسم المناسب للعميل
-   * إذا كان @lid ولا يوجد اسم → نعرض 'عميل واتساب'
-   * إذا كان رقم حقيقي ولا يوجد اسم → نعرض الرقم
-   */
-  private getDisplayName(conv: { customerName?: string | null; customerPhone?: string | null; customerExternalId?: string | null }): string {
-    // إذا يوجد اسم → نستخدمه مباشرة
-    if (conv.customerName?.trim()) return conv.customerName.trim();
-    // إذا @lid ولا يوجد اسم → عميل واتساب
-    if (this.isLidIdentifier(conv.customerExternalId)) return 'عميل واتساب';
-    // إذا يوجد رقم حقيقي → نعرضه
-    const phone = this.cleanPhoneDisplay(conv.customerPhone || conv.customerExternalId);
-    return phone || 'عميل';
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
