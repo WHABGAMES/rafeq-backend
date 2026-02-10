@@ -664,22 +664,35 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
     const session = this.getConnectedSession(channelId);
     const resolvedJid = this.resolveJidForSending(channelId, to);
     this.logger.debug(`📤 Sending message: ${to} → resolved: ${resolvedJid}`);
+
     const result = await session.socket!.sendMessage(resolvedJid, { text });
-    return { messageId: result?.key?.id || '' };
+    const messageId = result?.key?.id;
+
+    if (!messageId) {
+      this.logger.error(`❌ sendTextMessage: WhatsApp returned no messageId for ${resolvedJid}`);
+      throw new Error(`WhatsApp send failed: no messageId returned for ${resolvedJid}`);
+    }
+
+    this.logger.log(`✅ WhatsApp confirmed send: messageId=${messageId} to=${resolvedJid}`);
+    return { messageId };
   }
 
   async sendImageMessage(channelId: string, to: string, imageUrl: string, caption?: string): Promise<{ messageId: string }> {
     const session = this.getConnectedSession(channelId);
     const resolvedJid = this.resolveJidForSending(channelId, to);
     const result = await session.socket!.sendMessage(resolvedJid, { image: { url: imageUrl }, caption });
-    return { messageId: result?.key?.id || '' };
+    const messageId = result?.key?.id;
+    if (!messageId) throw new Error(`WhatsApp image send failed: no messageId for ${resolvedJid}`);
+    return { messageId };
   }
 
   async sendDocumentMessage(channelId: string, to: string, documentUrl: string, fileName: string, mimeType: string): Promise<{ messageId: string }> {
     const session = this.getConnectedSession(channelId);
     const resolvedJid = this.resolveJidForSending(channelId, to);
     const result = await session.socket!.sendMessage(resolvedJid, { document: { url: documentUrl }, fileName, mimetype: mimeType });
-    return { messageId: result?.key?.id || '' };
+    const messageId = result?.key?.id;
+    if (!messageId) throw new Error(`WhatsApp document send failed: no messageId for ${resolvedJid}`);
+    return { messageId };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -798,57 +811,27 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
 
       // ✅ تحديد نوع الـ JID: هل هو رقم حقيقي أم @lid داخلي
       const isLidJid = jid.includes('@lid');
+      // @lid = معرّف داخلي لواتساب وليس رقم هاتف حقيقي
+      // @s.whatsapp.net = رقم هاتف حقيقي
       let realPhone = isLidJid ? undefined : fromPhone;
 
-      // ✅ استخراج الرقم الحقيقي من @lid — 3 مصادر بالترتيب:
+      // ✅ محاولة استخراج الرقم الحقيقي من خريطة @lid → phone
       if (isLidJid) {
-        const key = msg.key as any;
-
-        // 1️⃣ remoteJidAlt (v6.8.0+) — الأفضل والأدق
-        if (key.remoteJidAlt && !String(key.remoteJidAlt).includes('@lid')) {
-          const altJid = String(key.remoteJidAlt);
-          realPhone = altJid.split('@')[0].replace(/\D/g, '');
-          if (realPhone) {
-            this.logger.log(`📱 Phone from remoteJidAlt: ${jid} → ${realPhone}`);
-          }
-        }
-        // 2️⃣ senderPn (v6.7.x) — متوفر في بعض الإصدارات
-        if (!realPhone && key.senderPn) {
-          const pn = String(key.senderPn);
-          if (!pn.includes('@lid')) {
-            realPhone = pn.split('@')[0].replace(/\D/g, '');
-            if (realPhone) {
-              this.logger.log(`📱 Phone from senderPn: ${jid} → ${realPhone}`);
-            }
-          }
-        }
-        // 3️⃣ خريطة contacts.upsert المحلية
-        else {
-          const channelMap = this.lidToPhone.get(channelId);
-          if (channelMap?.has(jid)) {
-            realPhone = channelMap.get(jid);
-            this.logger.log(`📱 Phone from lidToPhone map: ${jid} → ${realPhone}`);
-          }
-        }
-
-        // ✅ حفظ الربط في الخريطة للاستخدام المستقبلي
-        if (realPhone) {
-          if (!this.lidToPhone.has(channelId)) {
-            this.lidToPhone.set(channelId, new Map());
-          }
-          this.lidToPhone.get(channelId)!.set(jid, realPhone);
+        const channelMap = this.lidToPhone.get(channelId);
+        if (channelMap?.has(jid)) {
+          realPhone = channelMap.get(jid);
+          this.logger.log(`📱 Resolved @lid to phone: ${jid} → ${realPhone}`);
         } else {
-          // 🔍 LOG: تشخيص — عرض كل حقول الـ key لإيجاد الرقم
-          this.logger.warn(`⚠️ @lid phone NOT found: ${jid}`);
-          this.logger.log(`🔍 msg.key fields: ${JSON.stringify(Object.keys(key))}`);
-          this.logger.log(`🔍 msg.key full: ${JSON.stringify({
-            remoteJid: key.remoteJid,
-            remoteJidAlt: key.remoteJidAlt,
-            senderPn: key.senderPn,
-            participant: key.participant,
-            participantAlt: key.participantAlt,
-            addressingMode: key.addressingMode,
-            id: key.id,
+          // 🔍 LOG: تشخيص — عرض كل حقول الرسالة لإيجاد الرقم
+          this.logger.warn(`⚠️ @lid NOT resolved: ${jid} | Map size: ${channelMap?.size || 0}`);
+          this.logger.log(`🔍 Raw message keys: ${JSON.stringify({
+            keyRemoteJid: msg.key?.remoteJid,
+            keyParticipant: msg.key?.participant,
+            keyId: msg.key?.id,
+            pushName: (msg as any).pushName,
+            verifiedBizName: (msg as any).verifiedBizName,
+            participant: (msg as any).participant,
+            messageKeys: Object.keys(msg || {}),
           })}`);
         }
       }
@@ -1027,26 +1010,28 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
   }
 
   /**
-   * ✅ تحويل JID للإرسال
-   * الإرسال لـ @lid يعمل مباشرة (مؤكد من Baileys maintainers)
-   * لكن @s.whatsapp.net أكثر موثوقية → نفضله إذا عندنا الرقم
+   * ✅ تحويل @lid إلى @s.whatsapp.net للإرسال
+   * @lid هو معرّف داخلي لواتساب — الإرسال إليه ينشئ محادثة جديدة
+   * يجب استخدام @s.whatsapp.net (الرقم الحقيقي) للرد في نفس المحادثة
    */
   private resolveJidForSending(channelId: string, jid: string): string {
-    // إذا كان @lid → حاول إيجاد الرقم الحقيقي (أفضل) وإلا أرسل لـ @lid مباشرة
+    // إذا كان @lid → حاول إيجاد الرقم الحقيقي
     if (jid.includes('@lid')) {
       const channelMap = this.lidToPhone.get(channelId);
       if (channelMap?.has(jid)) {
         const phone = channelMap.get(jid)!;
-        this.logger.log(`📤 SEND: Using phone instead of @lid: ${jid} → ${phone}@s.whatsapp.net`);
+        this.logger.log(`📤 SEND: Resolved @lid: ${jid} → ${phone}@s.whatsapp.net`);
         return `${phone}@s.whatsapp.net`;
       }
 
-      // @lid مباشرة — يعمل حسب Baileys docs
-      this.logger.log(`📤 SEND: Sending to @lid directly: ${jid}`);
+      // ⚠️ لم نتمكن من إيجاد الرقم — نرسل لـ @lid كآخر حل
+      this.logger.warn(`📤 SEND: Cannot resolve @lid: ${jid} — map size: ${channelMap?.size || 0} — sending to @lid directly (may create new thread!)`);
       return jid;
     }
 
-    return this.formatJid(jid);
+    const formatted = this.formatJid(jid);
+    this.logger.debug(`📤 SEND: ${jid} → ${formatted}`);
+    return formatted;
   }
 
   private formatJid(phoneNumber: string): string {
