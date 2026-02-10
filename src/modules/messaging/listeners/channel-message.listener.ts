@@ -62,8 +62,9 @@ interface ChannelMessagePayload {
  */
 interface BaileysMessagePayload {
   channelId: string;
-  from: string;        // Full JID (e.g. 967501234567@s.whatsapp.net or 967501234567@lid)
-  fromPhone?: string;  // Clean phone number for display (e.g. 967501234567)
+  from: string;        // Full JID (e.g. 967501234567@s.whatsapp.net or 67173456302225@lid)
+  fromPhone?: string;  // Real phone number (only for @s.whatsapp.net, undefined for @lid)
+  pushName?: string;   // WhatsApp display name
   messageId: string;
   text: string;
   timestamp: Date;
@@ -196,6 +197,9 @@ export class ChannelMessageListener {
       // 2️⃣ معالجة الرسالة
       // ✅ استخدام الـ JID الكامل للمطابقة والإرسال، والرقم النظيف للعرض
       const cleanPhone = payload.fromPhone || this.cleanPhoneNumber(payload.from);
+      // ✅ @lid = معرّف داخلي وليس رقم حقيقي → لا نحفظه كرقم هاتف
+      const isLid = payload.from.includes('@lid');
+      const displayPhone = isLid ? undefined : cleanPhone;
 
       const message = await this.messageService.processIncomingMessage({
         channelId: channel.id,
@@ -205,8 +209,9 @@ export class ChannelMessageListener {
         type: MessageType.TEXT,
         content: payload.text || '',
         timestamp: payload.timestamp || new Date(),
-        senderExternalId: payload.from,  // ✅ JID كامل للمطابقة + الإرسال (مثل 967501234567@lid)
-        senderPhone: cleanPhone,          // ✅ رقم نظيف للعرض (مثل 967501234567)
+        senderExternalId: payload.from,  // ✅ JID كامل للمطابقة + الإرسال
+        senderName: payload.pushName,     // ✅ اسم العميل من واتساب
+        senderPhone: displayPhone,        // ✅ رقم حقيقي فقط (undefined لـ @lid)
       });
 
       // 3️⃣ تحديث عداد الرسائل فقط (lastActivityAt يُحدّث داخل transaction في message.service)
