@@ -181,10 +181,7 @@ export class MessageService {
 
     // 2️⃣ VALIDATE CHANNEL
     const channel = await this.channelRepo.findOne({
-      where: {
-        id: data.channelId,
-        storeId: data.tenantId,
-      },
+      where: { id: data.channelId },
     });
 
     if (!channel) {
