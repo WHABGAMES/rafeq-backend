@@ -274,7 +274,7 @@ export class AIService {
 
   async getKnowledge(
     tenantId: string,
-    filters?: { category?: string; search?: string },
+    filters?: { category?: string; search?: string; type?: string },
   ) {
     const qb = this.knowledgeRepo
       .createQueryBuilder('kb')
@@ -285,8 +285,11 @@ export class AIService {
     if (filters?.category) {
       qb.andWhere('kb.category = :category', { category: filters.category });
     }
+    if (filters?.type) {
+      qb.andWhere('kb.type = :type', { type: filters.type });
+    }
     if (filters?.search) {
-      qb.andWhere('(kb.title ILIKE :search OR kb.content ILIKE :search)', {
+      qb.andWhere('(kb.title ILIKE :search OR kb.content ILIKE :search OR kb.answer ILIKE :search)', {
         search: `%${filters.search}%`,
       });
     }
@@ -316,15 +319,21 @@ export class AIService {
     data: {
       title: string;
       content: string;
+      answer?: string;
+      type?: string;
       category?: string;
       keywords?: string[];
       priority?: number;
     },
   ): Promise<KnowledgeBase> {
+    const entryType = data.type || 'article';
+
     const entry = this.knowledgeRepo.create({
       tenantId,
       title: data.title,
-      content: data.content,
+      content: entryType === 'qna' ? (data.content || data.title) : data.content,
+      answer: entryType === 'qna' ? (data.answer || null) : null,
+      type: entryType,
       category:
         (data.category as KnowledgeCategory) || KnowledgeCategory.GENERAL,
       keywords: data.keywords || [],
@@ -342,6 +351,8 @@ export class AIService {
     data: Partial<{
       title: string;
       content: string;
+      answer: string;
+      type: string;
       category: string;
       keywords: string[];
       priority: number;
@@ -589,22 +600,50 @@ export class AIService {
       });
 
       if (knowledge.length > 0) {
+        // ✅ تقسيم إلى معلومات عامة وأسئلة وأجوبة
+        const articles = knowledge.filter((kb) => kb.type !== 'qna');
+        const qnaEntries = knowledge.filter((kb) => kb.type === 'qna');
+
         let knowledgeText = '';
-        for (const kb of knowledge) {
-          const entry = `\n[${kb.title}]: ${kb.content}`;
-          if (knowledgeText.length + entry.length > MAX_KNOWLEDGE_CHARS) {
-            this.logger.debug(
-              `Knowledge base truncated at ${knowledgeText.length} chars ` +
-                `(${knowledge.indexOf(kb)}/${knowledge.length} entries)`,
-            );
-            break;
-          }
-          knowledgeText += entry;
-        }
-        if (knowledgeText) {
-          prompt += isAr
+
+        // معلومات عامة (articles)
+        if (articles.length > 0) {
+          knowledgeText += isAr
             ? '\n\n=== معلومات المتجر ==='
             : '\n\n=== Knowledge Base ===';
+          for (const kb of articles) {
+            const entry = `\n[${kb.title}]: ${kb.content}`;
+            if (knowledgeText.length + entry.length > MAX_KNOWLEDGE_CHARS) {
+              this.logger.debug(
+                `Knowledge base truncated at ${knowledgeText.length} chars`,
+              );
+              break;
+            }
+            knowledgeText += entry;
+          }
+        }
+
+        // أسئلة وأجوبة (Q&A)
+        if (qnaEntries.length > 0) {
+          knowledgeText += isAr
+            ? '\n\n=== أسئلة وأجوبة شائعة ==='
+            : '\n\n=== Frequently Asked Questions ===';
+          knowledgeText += isAr
+            ? '\nعندما يسأل العميل سؤالاً مشابهاً، استخدم الجواب المحدد:'
+            : '\nWhen a customer asks a similar question, use the specified answer:';
+          for (const kb of qnaEntries) {
+            const entry = `\n${isAr ? 'س' : 'Q'}: ${kb.title}\n${isAr ? 'ج' : 'A'}: ${kb.answer || kb.content}`;
+            if (knowledgeText.length + entry.length > MAX_KNOWLEDGE_CHARS) {
+              this.logger.debug(
+                `Q&A truncated at ${knowledgeText.length} chars`,
+              );
+              break;
+            }
+            knowledgeText += entry;
+          }
+        }
+
+        if (knowledgeText) {
           prompt += knowledgeText;
         }
       }
@@ -1240,7 +1279,9 @@ export class AIService {
       for (const faq of data.faqs) {
         await this.addKnowledge(tenantId, {
           title: faq.question,
-          content: faq.answer,
+          content: faq.question,
+          answer: faq.answer,
+          type: 'qna',
           category: 'general',
         });
         added++;
