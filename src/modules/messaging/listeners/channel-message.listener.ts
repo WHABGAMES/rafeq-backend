@@ -62,7 +62,8 @@ interface ChannelMessagePayload {
  */
 interface BaileysMessagePayload {
   channelId: string;
-  from: string;
+  from: string;        // Full JID (e.g. 967501234567@s.whatsapp.net or 967501234567@lid)
+  fromPhone?: string;  // Clean phone number for display (e.g. 967501234567)
   messageId: string;
   text: string;
   timestamp: Date;
@@ -193,7 +194,8 @@ export class ChannelMessageListener {
       }
 
       // 2️⃣ معالجة الرسالة
-      const cleanPhone = this.cleanPhoneNumber(payload.from);
+      // ✅ استخدام الـ JID الكامل للمطابقة والإرسال، والرقم النظيف للعرض
+      const cleanPhone = payload.fromPhone || this.cleanPhoneNumber(payload.from);
 
       const message = await this.messageService.processIncomingMessage({
         channelId: channel.id,
@@ -203,8 +205,8 @@ export class ChannelMessageListener {
         type: MessageType.TEXT,
         content: payload.text || '',
         timestamp: payload.timestamp || new Date(),
-        senderExternalId: cleanPhone,
-        senderPhone: cleanPhone,
+        senderExternalId: payload.from,  // ✅ JID كامل للمطابقة + الإرسال (مثل 967501234567@lid)
+        senderPhone: cleanPhone,          // ✅ رقم نظيف للعرض (مثل 967501234567)
       });
 
       // 3️⃣ تحديث عداد الرسائل فقط (lastActivityAt يُحدّث داخل transaction في message.service)
