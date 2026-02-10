@@ -22,13 +22,17 @@ import { Message, Conversation, Order } from '@database/entities';
 import { StoreSettings } from '../settings/entities/store-settings.entity';
 import { KnowledgeBase } from './entities/knowledge-base.entity';
 
-// Service, Controller & Listener
+// Service, Controller & Listeners
 import { AIService } from './ai.service';
 import { AiController } from './ai.controller';
 import { AIMessageListener } from './ai-message.listener';
+import { AIHandoffListener } from './ai-handoff.listener';
 
 // ✅ BUG-1: MessagingModule مطلوب لـ AIMessageListener → MessageService
 import { MessagingModule } from '../messaging/messaging.module';
+
+// ✅ ChannelsModule مطلوب لـ AIHandoffListener → إرسال إشعارات واتساب
+import { ChannelsModule } from '../channels/channels.module';
 
 @Module({
   imports: [
@@ -50,6 +54,9 @@ import { MessagingModule } from '../messaging/messaging.module';
     // ✅ BUG-1 FIX: MessagingModule يوفر MessageService للـ AIMessageListener
     forwardRef(() => MessagingModule),
 
+    // ✅ ChannelsModule يوفر ChannelsService لإرسال إشعارات التحويل البشري
+    ChannelsModule,
+
     ConfigModule,
   ],
 
@@ -57,7 +64,8 @@ import { MessagingModule } from '../messaging/messaging.module';
 
   providers: [
     AIService,
-    AIMessageListener, // ✅ BUG-1 FIX: الرد التلقائي على الرسائل الواردة
+    AIMessageListener,    // ✅ الرد التلقائي على الرسائل الواردة
+    AIHandoffListener,    // ✅ إشعارات واتساب عند التحويل البشري
   ],
 
   exports: [AIService],
