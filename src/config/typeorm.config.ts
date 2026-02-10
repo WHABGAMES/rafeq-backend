@@ -36,6 +36,9 @@ import { StoreSettings } from '../modules/settings/entities/store-settings.entit
 import { NotificationRule } from '../modules/employee-notifications/entities/notification-rule.entity';
 import { EmployeeNotification } from '../modules/employee-notifications/entities/employee-notification.entity';
 
+// 🤖 AI - Knowledge Base
+import { KnowledgeBase } from '../modules/ai/entities/knowledge-base.entity';
+
 // =============================================================================
 // All Entities
 // =============================================================================
@@ -61,6 +64,8 @@ const entities = [
   // 🔔 Employee Notifications
   NotificationRule,
   EmployeeNotification,
+  // 🤖 AI
+  KnowledgeBase,
 ];
 
 // =============================================================================
