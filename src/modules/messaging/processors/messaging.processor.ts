@@ -146,8 +146,8 @@ export class MessagingProcessor extends WorkerHost {
         return { status: 'no_recipient' };
       }
 
-      // ✅ تنظيف الرقم من @lid, @s.whatsapp.net, @c.us
-      const recipient = rawRecipient.split('@')[0].replace(/\D/g, '') || rawRecipient;
+      // ✅ الاحتفاظ بالـ JID كاملاً — formatJid يتعامل مع الصيغتين
+      const recipient = rawRecipient;
 
       this.logger.log(
         `📤 Sending to: ${recipient} | Channel: ${channel.type} | isWhatsApp: ${channel.isWhatsApp} | Content: "${(message.content || '').substring(0, 50)}..."`,
