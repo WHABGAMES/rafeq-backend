@@ -11,7 +11,7 @@
  */
 
 import { Processor, WorkerHost } from '@nestjs/bullmq';
-import { Injectable, Logger } from '@nestjs/common';
+import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -50,7 +50,6 @@ interface SendMessageJobData {
 // ⚙️ PROCESSOR
 // ═══════════════════════════════════════════════════════════════════════════════
 
-@Injectable()
 @Processor('messaging')
 export class MessagingProcessor extends WorkerHost {
   private readonly logger = new Logger(MessagingProcessor.name);
@@ -71,6 +70,7 @@ export class MessagingProcessor extends WorkerHost {
     private readonly channelsService: ChannelsService,
   ) {
     super();
+    this.logger.log('🚀 MessagingProcessor initialized — listening on queue: messaging');
   }
 
   async process(job: Job): Promise<unknown> {
@@ -156,7 +156,7 @@ export class MessagingProcessor extends WorkerHost {
   ): Promise<{ status: string; externalId?: string }> {
     const { messageId, conversationId, channelId } = job.data;
 
-    this.logger.debug(`📤 Sending message: ${messageId} via channel: ${channelId}`);
+    this.logger.log(`📤 [send-message] Job picked up — messageId: ${messageId}, channelId: ${channelId}`);
 
     try {
       // 1️⃣ تحميل البيانات
@@ -195,10 +195,10 @@ export class MessagingProcessor extends WorkerHost {
         return { status: 'channel_not_found' };
       }
 
-      // 2️⃣ تحديد المستقبل (رقم العميل)
-      const recipient = conversation.customerExternalId || conversation.customerPhone;
+      // 2️⃣ تحديد المستقبل (رقم العميل) + تنظيف من JID format
+      const rawRecipient = conversation.customerExternalId || conversation.customerPhone;
 
-      if (!recipient) {
+      if (!rawRecipient) {
         this.logger.error(`No recipient found for conversation: ${conversationId}`);
         await this.messageRepo.update(messageId, {
           status: MessageStatus.FAILED,
@@ -206,6 +206,13 @@ export class MessagingProcessor extends WorkerHost {
         });
         return { status: 'no_recipient' };
       }
+
+      // تنظيف الرقم من @lid, @s.whatsapp.net, @c.us
+      const recipient = rawRecipient.split('@')[0].replace(/\D/g, '') || rawRecipient;
+
+      this.logger.log(
+        `📤 Sending to: ${recipient} | Channel: ${channel.type} | isWhatsApp: ${channel.isWhatsApp} | Content: "${(message.content || '').substring(0, 50)}..."`,
+      );
 
       // 3️⃣ الإرسال الفعلي عبر القناة
       let externalId: string | undefined;
