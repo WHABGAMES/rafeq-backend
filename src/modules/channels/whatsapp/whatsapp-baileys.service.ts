@@ -751,17 +751,18 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
         continue;
       }
 
-      // ✅ إزالة كل JID suffixes: @s.whatsapp.net, @lid, @c.us
-      const from = jid.split('@')[0].replace(/\D/g, '');
+      // ✅ إزالة كل JID suffixes للتحقق فقط
+      const fromPhone = jid.split('@')[0].replace(/\D/g, '');
 
-      if (!from) continue; // تخطي إذا لم يبقَ رقم
+      if (!fromPhone) continue; // تخطي إذا لم يبقَ رقم
 
       const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
       const timestamp = msg.messageTimestamp ? new Date(Number(msg.messageTimestamp) * 1000) : new Date();
 
       this.eventEmitter.emit('whatsapp.message.received', {
         channelId,
-        from,
+        from: jid,          // ✅ JID الكامل للإرسال الصحيح (يشمل @lid و @s.whatsapp.net)
+        fromPhone,           // ✅ الرقم النظيف للعرض
         messageId: msg.key.id || '',
         text,
         timestamp,
@@ -787,6 +788,11 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
   }
 
   private formatJid(phoneNumber: string): string {
+    // ✅ إذا كان JID كامل (يحتوي @) → إرجاعه كما هو
+    if (phoneNumber.includes('@')) {
+      return phoneNumber;
+    }
+    // أرقام عادية → تحويل لصيغة WhatsApp
     let cleaned = phoneNumber.replace(/^\+|^00/, '').replace(/\D/g, '');
     return `${cleaned}@s.whatsapp.net`;
   }
