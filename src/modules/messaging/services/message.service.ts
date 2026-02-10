@@ -1,6 +1,11 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Message Service                            ║
+ * ║                                                                                ║
+ * ║  🔧 v3 Fixes:                                                                  ║
+ * ║  - BUG-4: aiMetadata يُحفظ في العمود الصحيح (ai_metadata)                     ║
+ * ║  - FIX:   @nestjs/bull → @nestjs/bullmq (مطابقة لبقية المشروع)                ║
+ * ║  - FIX:   تحديث firstResponseAt عند أول رد                                    ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -8,8 +13,10 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, In } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { InjectQueue } from '@nestjs/bull';
-import { Queue } from 'bull';
+
+// ✅ FIX: المشروع كله يستخدم @nestjs/bullmq وليس @nestjs/bull
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 
 // Entities
 import {
@@ -17,8 +24,9 @@ import {
   MessageDirection,
   MessageType,
   MessageStatus,
-  MessageSender,
 } from '../../../database/entities/message.entity';
+// ✅ MessageSender غير مُصدّر من index.ts — نستورده من ملف الـ entity
+import { MessageSender } from '../../../database/entities/message.entity';
 import {
   Conversation,
   ConversationStatus,
@@ -135,16 +143,17 @@ export class MessageService {
   constructor(
     @InjectRepository(Message)
     private readonly messageRepo: Repository<Message>,
-    
+
     @InjectRepository(Conversation)
     private readonly conversationRepo: Repository<Conversation>,
-    
+
     @InjectRepository(Channel)
     private readonly channelRepo: Repository<Channel>,
-    
+
     private readonly dataSource: DataSource,
     private readonly eventEmitter: EventEmitter2,
-    
+
+    // ✅ FIX: @nestjs/bullmq بدل @nestjs/bull
     @InjectQueue('messaging')
     private readonly messagingQueue: Queue,
   ) {}
@@ -200,7 +209,7 @@ export class MessageService {
 
     if (isNewConversation) {
       this.logger.log(`📝 Creating new conversation for ${data.senderExternalId}`);
-      
+
       conversation = this.conversationRepo.create({
         tenantId: data.tenantId,
         channelId: data.channelId,
@@ -214,7 +223,7 @@ export class MessageService {
         metadata: {},
         tags: [],
       });
-      
+
       await this.conversationRepo.save(conversation);
     }
 
@@ -285,10 +294,12 @@ export class MessageService {
       this.logger.log(`✅ Message saved in ${duration}ms: ${message.id}`);
 
       return message;
-
     } catch (error: any) {
       await queryRunner.rollbackTransaction();
-      this.logger.error(`❌ Failed to save message: ${(error as Error).message}`);
+      this.logger.error('❌ Failed to save incoming message', {
+        error: error.message,
+        channelId: data.channelId,
+      });
       throw error;
     } finally {
       await queryRunner.release();
@@ -299,6 +310,12 @@ export class MessageService {
   // 📤 CREATE OUTGOING MESSAGE
   // ═══════════════════════════════════════════════════════════════════════════
 
+  /**
+   * ✅ BUG-4 FIX: aiMetadata يُحفظ في عمود ai_metadata المخصص
+   *    بدلاً من أن يُنشر (spread) داخل metadata العام
+   *
+   * ✅ تحديث firstResponseAt عند أول رد (لحساب avgResponseTime بدقة)
+   */
   async createOutgoingMessage(data: OutgoingMessageData): Promise<Message> {
     this.logger.log(`📤 Creating outgoing message for conversation: ${data.conversationId}`);
 
@@ -311,6 +328,7 @@ export class MessageService {
       throw new NotFoundException(`Conversation not found: ${data.conversationId}`);
     }
 
+    // ✅ BUG-4 FIX: فصل aiMetadata عن metadata
     const message = this.messageRepo.create({
       tenantId: conversation.tenantId,
       conversationId: conversation.id,
@@ -320,24 +338,57 @@ export class MessageService {
       sender: data.sender,
       content: data.content,
       media: data.media,
+
+      // ✅ metadata العام: بيانات غير AI فقط
       metadata: {
-        agentId: data.agentId,
-        ...data.aiMetadata,
-        interactive: data.interactive,
-        template: data.template,
+        ...(data.agentId ? { agentId: data.agentId } : {}),
+        ...(data.interactive ? { interactive: data.interactive } : {}),
+        ...(data.template ? { template: data.template } : {}),
       },
+
+      // ✅ BUG-4 FIX: ai_metadata: العمود المخصص لبيانات الـ AI
+      aiMetadata: data.aiMetadata
+        ? {
+            intent: data.aiMetadata.intent,
+            confidence: data.aiMetadata.confidence,
+            toolsCalled: data.aiMetadata.toolsCalled,
+            processingTime: data.aiMetadata.processingTime,
+          }
+        : undefined,
     });
 
     const savedMessage = await this.messageRepo.save(message);
 
-    await this.messagingQueue.add('send-message', {
-      messageId: savedMessage.id,
-      conversationId: conversation.id,
-      channelId: conversation.channelId,
-    }, {
-      attempts: 3,
-      backoff: { type: 'exponential', delay: 1000 },
-    });
+    // ✅ تحديث firstResponseAt عند أول رد (لحساب BUG-10 avgResponseTime)
+    if (!conversation.firstResponseAt && data.sender !== MessageSender.CUSTOMER) {
+      await this.conversationRepo.update(conversation.id, {
+        firstResponseAt: new Date(),
+      });
+    }
+
+    // تحديث عداد الرسائل وآخر رسالة
+    await this.conversationRepo
+      .createQueryBuilder()
+      .update(Conversation)
+      .set({
+        messagesCount: () => '"messages_count" + 1',
+        lastMessageAt: new Date(),
+      })
+      .where('id = :id', { id: conversation.id })
+      .execute();
+
+    await this.messagingQueue.add(
+      'send-message',
+      {
+        messageId: savedMessage.id,
+        conversationId: conversation.id,
+        channelId: conversation.channelId,
+      },
+      {
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 1000 },
+      },
+    );
 
     return savedMessage;
   }
@@ -364,10 +415,14 @@ export class MessageService {
       .where('message.conversationId = :conversationId', { conversationId });
 
     if (options.before) {
-      queryBuilder.andWhere('message.createdAt < :before', { before: options.before });
+      queryBuilder.andWhere('message.createdAt < :before', {
+        before: options.before,
+      });
     }
     if (options.after) {
-      queryBuilder.andWhere('message.createdAt > :after', { after: options.after });
+      queryBuilder.andWhere('message.createdAt > :after', {
+        after: options.after,
+      });
     }
 
     const total = await queryBuilder.getCount();
@@ -413,11 +468,15 @@ export class MessageService {
     }
 
     if (filters.status) {
-      queryBuilder.andWhere('message.status = :status', { status: filters.status });
+      queryBuilder.andWhere('message.status = :status', {
+        status: filters.status,
+      });
     }
 
     if (filters.sender) {
-      queryBuilder.andWhere('message.sender = :sender', { sender: filters.sender });
+      queryBuilder.andWhere('message.sender = :sender', {
+        sender: filters.sender,
+      });
     }
 
     if (filters.startDate) {
@@ -539,7 +598,10 @@ export class MessageService {
 
     const avgResponseTime = await this.conversationRepo
       .createQueryBuilder('conversation')
-      .select('AVG(EXTRACT(EPOCH FROM (conversation.firstResponseAt - conversation.createdAt)))', 'avg')
+      .select(
+        'AVG(EXTRACT(EPOCH FROM (conversation.firstResponseAt - conversation.createdAt)))',
+        'avg',
+      )
       .where('conversation.tenantId = :tenantId', { tenantId })
       .andWhere('conversation.firstResponseAt IS NOT NULL')
       .andWhere('conversation.createdAt BETWEEN :startDate AND :endDate', {
@@ -548,27 +610,39 @@ export class MessageService {
       })
       .getRawOne();
 
-    const directionMap = directionStats.reduce((acc, item) => {
-      acc[item.direction] = parseInt(item.count);
-      return acc;
-    }, {} as Record<string, number>);
+    const directionMap = directionStats.reduce(
+      (acc, item) => {
+        acc[item.direction] = parseInt(item.count);
+        return acc;
+      },
+      {} as Record<string, number>,
+    );
 
     return {
       total: (directionMap.inbound || 0) + (directionMap.outbound || 0),
       inbound: directionMap.inbound || 0,
       outbound: directionMap.outbound || 0,
-      byStatus: statusStats.reduce((acc, item) => {
-        acc[item.status] = parseInt(item.count);
-        return acc;
-      }, {} as Record<string, number>),
-      bySender: senderStats.reduce((acc, item) => {
-        acc[item.sender] = parseInt(item.count);
-        return acc;
-      }, {} as Record<string, number>),
-      byType: typeStats.reduce((acc, item) => {
-        acc[item.type] = parseInt(item.count);
-        return acc;
-      }, {} as Record<string, number>),
+      byStatus: statusStats.reduce(
+        (acc, item) => {
+          acc[item.status] = parseInt(item.count);
+          return acc;
+        },
+        {} as Record<string, number>,
+      ),
+      bySender: senderStats.reduce(
+        (acc, item) => {
+          acc[item.sender] = parseInt(item.count);
+          return acc;
+        },
+        {} as Record<string, number>,
+      ),
+      byType: typeStats.reduce(
+        (acc, item) => {
+          acc[item.type] = parseInt(item.count);
+          return acc;
+        },
+        {} as Record<string, number>,
+      ),
       avgResponseTime: parseFloat(avgResponseTime?.avg) || 0,
     };
   }
