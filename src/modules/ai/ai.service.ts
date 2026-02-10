@@ -1019,7 +1019,6 @@ export class AIService {
     tenantId: string,
     message: string,
     storeId?: string,
-    storeContext?: { storeName: string; tone: string },
   ): Promise<{ reply: string; processingTime: number; toolsUsed?: string[] }> {
     const startTime = Date.now();
 
