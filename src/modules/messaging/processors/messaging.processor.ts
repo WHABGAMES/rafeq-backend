@@ -206,7 +206,7 @@ export class MessagingProcessor extends WorkerHost {
   private async handleProcessIncoming(
     job: Job<ProcessIncomingJobData>,
   ): Promise<{ status: string }> {
-    const { messageId, conversationId, isNewConversation } = job.data;
+    const { messageId, isNewConversation } = job.data;
 
     this.logger.debug(
       `📥 [process-incoming] messageId: ${messageId}, isNew: ${isNewConversation}`,
