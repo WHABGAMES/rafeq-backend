@@ -125,7 +125,10 @@ export class InboxService {
       .createQueryBuilder('conv')
       .leftJoinAndSelect('conv.channel', 'channel')
       .leftJoinAndSelect('conv.assignedTo', 'agent')
-      .where('conv.tenantId = :tenantId', { tenantId });
+      .where('conv.tenantId = :tenantId', { tenantId })
+      // ✅ فلترة محادثات broadcast (status@broadcast)
+      // NULL-safe: conversations without customerExternalId must still appear
+      .andWhere("(conv.customerExternalId IS NULL OR conv.customerExternalId NOT LIKE :broadcast)", { broadcast: '%broadcast%' });
 
     if (filters.status) {
       queryBuilder.andWhere('conv.status = :status', {
@@ -183,8 +186,8 @@ export class InboxService {
     const conversations: ConversationDto[] = items.map(conv => ({
       id: conv.id,
       customerId: conv.customerId || conv.customerExternalId || '',
-      customerName: conv.customerName || this.cleanPhoneDisplay(conv.customerPhone || conv.customerExternalId) || 'عميل',
-      customerPhone: this.cleanPhoneDisplay(conv.customerPhone) || '',
+      customerName: this.getDisplayName(conv),
+      customerPhone: this.isLidIdentifier(conv.customerExternalId) ? '' : this.cleanPhoneDisplay(conv.customerPhone || conv.customerExternalId),
       channel: this.mapChannelType(conv.channel?.type),
       status: conv.status,
       lastMessage: lastMessages[conv.id] || '',
@@ -343,9 +346,9 @@ export class InboxService {
 
     return {
       ...conversation,
-      customerName: conversation.customerName || this.cleanPhoneDisplay(conversation.customerPhone || conversation.customerExternalId) || 'عميل',
-      customerPhone: this.cleanPhoneDisplay(conversation.customerPhone || conversation.customerExternalId) || '',
-      customerExternalId: conversation.customerExternalId?.split('@')[0] || conversation.customerExternalId,
+      customerName: this.getDisplayName(conversation),
+      customerPhone: this.isLidIdentifier(conversation.customerExternalId) ? '' : this.cleanPhoneDisplay(conversation.customerPhone || conversation.customerExternalId),
+      customerExternalId: conversation.customerExternalId || '',
       messages: messages.map(m => this.mapMessage(m)),
     };
   }
@@ -570,15 +573,66 @@ export class InboxService {
 
   /**
    * ✅ تنظيف عرض رقم الهاتف
-   * يزيل @lid, @s.whatsapp.net, @c.us وأي suffix آخر
-   * ويضيف + في البداية إذا كان رقم دولي
+   * يزيل @s.whatsapp.net, @c.us وأي suffix آخر
+   * لا يعرض أرقام @lid لأنها معرّفات داخلية وليست أرقام هاتف حقيقية
    */
   private cleanPhoneDisplay(raw?: string | null): string {
     if (!raw) return '';
+    // @lid = معرّف داخلي لواتساب وليس رقم هاتف حقيقي
+    if (raw.includes('@lid')) return '';
     // إزالة أي suffix بعد @
     const digits = raw.split('@')[0].replace(/\D/g, '');
-    if (!digits) return raw;
+    if (!digits) return '';
     // إضافة + للأرقام الدولية
     return `+${digits}`;
+  }
+
+  /**
+   * ✅ هل الـ customerExternalId هو @lid (معرّف داخلي لواتساب)؟
+   * @lid = Linked Identity Device — ليس رقم هاتف حقيقي
+   */
+  private isLidIdentifier(externalId?: string | null): boolean {
+    if (!externalId) return false;
+    return externalId.includes('@lid');
+  }
+
+  /**
+   * ✅ إرجاع الاسم المناسب للعميل
+   * إذا كان @lid ولا يوجد اسم → نعرض 'عميل واتساب'
+   * إذا كان رقم حقيقي ولا يوجد اسم → نعرض الرقم
+   */
+  private getDisplayName(conv: { customerName?: string | null; customerPhone?: string | null; customerExternalId?: string | null }): string {
+    // إذا يوجد اسم → نستخدمه مباشرة
+    if (conv.customerName?.trim()) return conv.customerName.trim();
+    // إذا @lid ولا يوجد اسم → عميل واتساب
+    if (this.isLidIdentifier(conv.customerExternalId)) return 'عميل واتساب';
+    // إذا يوجد رقم حقيقي → نعرضه
+    const phone = this.cleanPhoneDisplay(conv.customerPhone || conv.customerExternalId);
+    return phone || 'عميل';
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🗑️ DELETE CONVERSATION
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * حذف محادثة مع جميع رسائلها نهائياً من قاعدة البيانات
+   * الرسائل تُحذف تلقائياً بسبب ON DELETE CASCADE
+   */
+  async deleteConversation(tenantId: string, conversationId: string): Promise<void> {
+    const conversation = await this.conversationRepository.findOne({
+      where: { id: conversationId, tenantId },
+    });
+
+    if (!conversation) {
+      throw new NotFoundException(`المحادثة غير موجودة: ${conversationId}`);
+    }
+
+    this.logger.log(`🗑️ Deleting conversation ${conversationId} with all messages`);
+
+    // الرسائل تُحذف تلقائياً بسبب ON DELETE CASCADE في message entity
+    await this.conversationRepository.remove(conversation);
+
+    this.logger.log(`✅ Conversation ${conversationId} deleted successfully`);
   }
 }
