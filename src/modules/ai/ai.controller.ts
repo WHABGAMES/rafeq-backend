@@ -377,10 +377,14 @@ export class AiController {
   async testResponse(
     @Req() req: any,
     @Body() dto: TestResponseDto,
+    @Headers('x-store-id') storeIdHeader?: string,
+    @Query('storeId') storeIdQuery?: string,
   ) {
+    const storeId = this.getStoreId(storeIdHeader, storeIdQuery);
     return this.aiService.testResponse(
       req.user.tenantId,
       dto.message,
+      storeId,
       dto.storeContext,
     );
   }
