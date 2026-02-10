@@ -1,6 +1,10 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║              RAFIQ PLATFORM - Inbox Controller                                 ║
+ * ║              RAFIQ PLATFORM - Inbox Controller (Production v2)                 ║
+ * ║                                                                                ║
+ * ║  🔧 v2 Fixes:                                                                  ║
+ * ║  - BUG-INB2: إضافة GET /inbox/:id/messages (كان مفقود)                        ║
+ * ║  - BUG-INB3: إضافة POST /inbox/:id/messages (كان مفقود)                       ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -43,6 +47,10 @@ import {
 export class InboxController {
   constructor(private readonly inboxService: InboxService) {}
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 📋 قائمة المحادثات
+  // ═══════════════════════════════════════════════════════════════════════════
+
   @Get()
   @ApiOperation({
     summary: 'قائمة المحادثات',
@@ -84,6 +92,10 @@ export class InboxController {
     });
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 📊 إحصائيات
+  // ═══════════════════════════════════════════════════════════════════════════
+
   @Get('stats')
   @ApiOperation({
     summary: 'إحصائيات الـ Inbox',
@@ -95,16 +107,69 @@ export class InboxController {
     return this.inboxService.getStats(tenantId, userId);
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 📝 تفاصيل محادثة
+  // ═══════════════════════════════════════════════════════════════════════════
+
   @Get(':id')
   @ApiOperation({
     summary: 'تفاصيل محادثة',
     description: 'جلب محادثة مع الرسائل',
   })
-  async getConversation(@CurrentUser() user: any,
-    @Param('id') id: string) {
+  async getConversation(
+    @CurrentUser() user: any,
+    @Param('id') id: string,
+  ) {
     const tenantId = user.tenantId;
     return this.inboxService.getConversation(id, tenantId);
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 💬 رسائل المحادثة
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * ✅ BUG-INB2 FIX: كان مفقود — الواجهة تستدعيه لتحميل الرسائل
+   */
+  @Get(':id/messages')
+  @ApiOperation({
+    summary: 'رسائل المحادثة',
+    description: 'جلب رسائل محادثة معينة مع التصفح',
+  })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  async getMessages(
+    @CurrentUser() user: any,
+    @Param('id') id: string,
+    @Query('page') page = 1,
+    @Query('limit') limit = 50,
+  ) {
+    const tenantId = user.tenantId;
+    return this.inboxService.getMessages(id, tenantId, { page, limit });
+  }
+
+  /**
+   * ✅ BUG-INB3 FIX: كان مفقود — الواجهة تستدعيه لإرسال الرسائل
+   */
+  @Post(':id/messages')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    summary: 'إرسال رسالة',
+    description: 'إرسال رسالة جديدة في المحادثة',
+  })
+  async sendMessage(
+    @CurrentUser() user: any,
+    @Param('id') id: string,
+    @Body() body: { content: string },
+  ) {
+    const tenantId = user.tenantId;
+    const userId = user.id;
+    return this.inboxService.sendMessage(id, body.content, userId, tenantId);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 👥 إدارة المحادثات
+  // ═══════════════════════════════════════════════════════════════════════════
 
   @Post(':id/assign')
   @HttpCode(HttpStatus.OK)
@@ -125,8 +190,10 @@ export class InboxController {
   @ApiOperation({
     summary: 'إلغاء تعيين المحادثة',
   })
-  async unassign(@CurrentUser() user: any,
-    @Param('id') id: string) {
+  async unassign(
+    @CurrentUser() user: any,
+    @Param('id') id: string,
+  ) {
     const tenantId = user.tenantId;
     return this.inboxService.unassign(id, tenantId);
   }
@@ -176,8 +243,10 @@ export class InboxController {
   @ApiOperation({
     summary: 'وضع علامة مقروء',
   })
-  async markAsRead(@CurrentUser() user: any,
-    @Param('id') id: string) {
+  async markAsRead(
+    @CurrentUser() user: any,
+    @Param('id') id: string,
+  ) {
     const tenantId = user.tenantId;
     await this.inboxService.markAsRead(id, tenantId);
   }
