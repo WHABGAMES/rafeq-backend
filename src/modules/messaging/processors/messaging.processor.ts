@@ -135,9 +135,9 @@ export class MessagingProcessor extends WorkerHost {
       }
 
       // 2️⃣ تحديد المستقبل (رقم العميل)
-      // ✅ الأولوية: رقم الهاتف الحقيقي أولاً (للرد في نفس المحادثة)
-      // @lid هو معرّف واتساب داخلي — الإرسال إليه ينشئ محادثة جديدة!
-      const rawRecipient = conversation.customerPhone || conversation.customerExternalId;
+      // ✅ استخدام customerExternalId (الـ JID الأصلي) للإرسال
+      // whatsapp-baileys.service سيحوّل @lid → @s.whatsapp.net إذا توفر الربط
+      const rawRecipient = conversation.customerExternalId || conversation.customerPhone;
 
       if (!rawRecipient) {
         this.logger.error(`No recipient for conversation: ${conversationId}`);
