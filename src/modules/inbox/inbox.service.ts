@@ -1,30 +1,46 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║              RAFIQ PLATFORM - Inbox Service                                    ║
+ * ║              RAFIQ PLATFORM - Inbox Service (Production v2)                    ║
+ * ║                                                                                ║
+ * ║  🔧 v2 Fixes:                                                                  ║
+ * ║  - BUG-INB1: return { items, meta } → { conversations, total }                ║
+ * ║  - BUG-INB2: إضافة getMessages endpoint مفقود                                  ║
+ * ║  - BUG-INB3: إضافة sendMessage endpoint مفقود                                  ║
+ * ║  - BUG-INB4: تحويل حقول Entity لصيغة Frontend                                 ║
+ * ║  - BUG-INB5: تحميل آخر رسالة لكل محادثة (lastMessage)                          ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
 import {
   Injectable,
   NotFoundException,
+  Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
-import { Conversation, Message, User } from '@database/entities';
 import {
+  Conversation,
   ConversationStatus,
   ConversationPriority,
-} from '@database/entities/conversation.entity';
+  ConversationHandler,
+  Message,
+  MessageStatus,
+  MessageType,
+  User,
+  ChannelType,
+} from '@database/entities';
+import { MessageSender } from '@database/entities/message.entity';
+
+// ✅ MessageService: لإرسال الرسائل من الـ inbox
+import { MessageService, OutgoingMessageData } from '../messaging/services/message.service';
 
 // Re-export for controller
 export { ConversationStatus, ConversationPriority };
 
-/**
- * ═══════════════════════════════════════════════════════════════════════════════
- * 📌 Types
- * ═══════════════════════════════════════════════════════════════════════════════
- */
+// ═══════════════════════════════════════════════════════════════════════════════
+// 📌 Types
+// ═══════════════════════════════════════════════════════════════════════════════
 
 export interface InboxFilters {
   status?: ConversationStatus;
@@ -46,22 +62,65 @@ export interface InboxStats {
   avgResolutionTime: number;
 }
 
+/**
+ * ✅ الشكل الذي تتوقعه الواجهة الأمامية
+ */
+interface ConversationDto {
+  id: string;
+  customerId: string;
+  customerName: string;
+  customerPhone: string;
+  channel: string;
+  status: string;
+  lastMessage: string;
+  lastMessageAt: string;
+  unreadCount: number;
+  assignedTo?: string;
+  tags: string[];
+  aiHandled: boolean;
+}
+
+interface MessageDto {
+  id: string;
+  conversationId: string;
+  content: string;
+  sender: string;
+  timestamp: string;
+  read: boolean;
+  attachments?: string[];
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 📬 INBOX SERVICE
+// ═══════════════════════════════════════════════════════════════════════════════
+
 @Injectable()
 export class InboxService {
+  private readonly logger = new Logger(InboxService.name);
+
   constructor(
     @InjectRepository(Conversation)
     private readonly conversationRepository: Repository<Conversation>,
+
     @InjectRepository(Message)
     private readonly messageRepository: Repository<Message>,
+
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
+
+    // ✅ BUG-INB3: لإرسال الرسائل من الـ inbox
+    private readonly messageService: MessageService,
   ) {}
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 📋 قائمة المحادثات
+  // ═══════════════════════════════════════════════════════════════════════════
 
   async getConversations(
     tenantId: string,
     filters: InboxFilters = {},
     pagination = { page: 1, limit: 20 },
-  ) {
+  ): Promise<{ conversations: ConversationDto[]; total: number }> {
     const queryBuilder = this.conversationRepository
       .createQueryBuilder('conv')
       .leftJoinAndSelect('conv.channel', 'channel')
@@ -75,8 +134,8 @@ export class InboxService {
     }
 
     if (filters.channel) {
-      queryBuilder.andWhere('conv.channelId = :channel', {
-        channel: filters.channel,
+      queryBuilder.andWhere('channel.type LIKE :channel', {
+        channel: `%${filters.channel}%`,
       });
     }
 
@@ -115,38 +174,107 @@ export class InboxService {
       .take(pagination.limit)
       .getManyAndCount();
 
-    return {
-      items,
-      meta: {
-        total,
-        page: pagination.page,
-        limit: pagination.limit,
-        totalPages: Math.ceil(total / pagination.limit),
-      },
-    };
+    // ✅ BUG-INB5: تحميل آخر رسالة لكل محادثة
+    const lastMessages = items.length > 0
+      ? await this.getLastMessages(items.map(c => c.id))
+      : {};
+
+    // ✅ BUG-INB1 + BUG-INB4: تحويل لصيغة الواجهة
+    const conversations: ConversationDto[] = items.map(conv => ({
+      id: conv.id,
+      customerId: conv.customerId || conv.customerExternalId || '',
+      customerName: conv.customerName || conv.customerPhone || 'عميل',
+      customerPhone: conv.customerPhone || '',
+      channel: this.mapChannelType(conv.channel?.type),
+      status: conv.status,
+      lastMessage: lastMessages[conv.id] || '',
+      lastMessageAt: (conv.lastMessageAt || conv.createdAt).toISOString(),
+      unreadCount: conv.messagesCount || 0,
+      assignedTo: conv.assignedToId,
+      tags: conv.tags || [],
+      aiHandled: conv.handler === ConversationHandler.AI,
+    }));
+
+    return { conversations, total };
   }
 
-  async getConversation(id: string, tenantId: string) {
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 💬 رسائل محادثة معينة
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * ✅ BUG-INB2: endpoint مفقود — الواجهة تستدعي GET /inbox/:id/messages
+   */
+  async getMessages(
+    conversationId: string,
+    tenantId: string,
+    pagination = { page: 1, limit: 50 },
+  ): Promise<{ messages: MessageDto[]; total: number }> {
+    // التحقق من ملكية المحادثة
     const conversation = await this.conversationRepository.findOne({
-      where: { id, tenantId },
-      relations: ['channel', 'assignedTo'],
+      where: { id: conversationId, tenantId },
+      select: ['id'],
     });
 
     if (!conversation) {
       throw new NotFoundException('المحادثة غير موجودة');
     }
 
-    const messages = await this.messageRepository.find({
-      where: { conversationId: id },
+    const [items, total] = await this.messageRepository.findAndCount({
+      where: { conversationId },
       order: { createdAt: 'ASC' },
-      take: 100,
+      skip: (pagination.page - 1) * pagination.limit,
+      take: pagination.limit,
     });
 
-    return {
-      ...conversation,
-      messages,
-    };
+    const messages: MessageDto[] = items.map(msg => this.mapMessage(msg));
+
+    return { messages, total };
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 📤 إرسال رسالة من الـ inbox
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * ✅ BUG-INB3: endpoint مفقود — الواجهة تستدعي POST /inbox/:id/messages
+   * يُنشئ رسالة صادرة ويضعها في queue للإرسال عبر WhatsApp/Discord/...
+   */
+  async sendMessage(
+    conversationId: string,
+    content: string,
+    userId: string,
+    tenantId: string,
+  ): Promise<MessageDto> {
+    // التحقق من ملكية المحادثة
+    const conversation = await this.conversationRepository.findOne({
+      where: { id: conversationId, tenantId },
+    });
+
+    if (!conversation) {
+      throw new NotFoundException('المحادثة غير موجودة');
+    }
+
+    // ✅ إرسال عبر MessageService (يحفظ + يضع في queue للإرسال الفعلي)
+    const message = await this.messageService.createOutgoingMessage({
+      conversationId,
+      type: MessageType.TEXT,
+      content,
+      sender: MessageSender.AGENT,
+      agentId: userId,
+    });
+
+    // تحديث آخر رسالة في المحادثة
+    await this.conversationRepository.update(conversationId, {
+      lastMessageAt: new Date(),
+    });
+
+    return this.mapMessage(message);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 📊 إحصائيات
+  // ═══════════════════════════════════════════════════════════════════════════
 
   async getStats(tenantId: string, userId?: string): Promise<InboxStats> {
     const baseQuery = this.conversationRepository
@@ -192,6 +320,36 @@ export class InboxService {
       avgResolutionTime,
     };
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 📝 تفاصيل محادثة
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  async getConversation(id: string, tenantId: string) {
+    const conversation = await this.conversationRepository.findOne({
+      where: { id, tenantId },
+      relations: ['channel', 'assignedTo'],
+    });
+
+    if (!conversation) {
+      throw new NotFoundException('المحادثة غير موجودة');
+    }
+
+    const messages = await this.messageRepository.find({
+      where: { conversationId: id },
+      order: { createdAt: 'ASC' },
+      take: 100,
+    });
+
+    return {
+      ...conversation,
+      messages: messages.map(m => this.mapMessage(m)),
+    };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 👥 إدارة المحادثات
+  // ═══════════════════════════════════════════════════════════════════════════
 
   async assignToAgent(
     id: string,
@@ -299,6 +457,10 @@ export class InboxService {
     );
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🔧 HELPERS
+  // ═══════════════════════════════════════════════════════════════════════════
+
   private async getConversationById(
     id: string,
     tenantId: string,
@@ -312,5 +474,94 @@ export class InboxService {
     }
 
     return conversation;
+  }
+
+  /**
+   * ✅ BUG-INB5: تحميل آخر رسالة لكل محادثة (batch)
+   * يستخدم DISTINCT ON لـ PostgreSQL لجلب آخر رسالة لكل محادثة بكفاءة
+   */
+  private async getLastMessages(
+    conversationIds: string[],
+  ): Promise<Record<string, string>> {
+    if (conversationIds.length === 0) return {};
+
+    try {
+      // استخدام raw query مع DISTINCT ON (PostgreSQL)
+      const results = await this.messageRepository
+        .createQueryBuilder('m')
+        .select(['m.conversationId', 'm.content'])
+        .where('m.conversationId IN (:...ids)', { ids: conversationIds })
+        .orderBy('m.conversationId')
+        .addOrderBy('m.createdAt', 'DESC')
+        .distinctOn(['m.conversationId'])
+        .getRawMany();
+
+      const map: Record<string, string> = {};
+      for (const row of results) {
+        const convId = row.m_conversation_id || row.m_conversationId;
+        const content = row.m_content;
+        if (convId && content) {
+          map[convId] = content.length > 100 ? content.slice(0, 100) + '...' : content;
+        }
+      }
+
+      return map;
+    } catch (error) {
+      // fallback إذا فشل DISTINCT ON
+      this.logger.warn('Failed to batch-load last messages, using fallback');
+
+      const map: Record<string, string> = {};
+      for (const id of conversationIds) {
+        const msg = await this.messageRepository.findOne({
+          where: { conversationId: id },
+          order: { createdAt: 'DESC' },
+          select: ['content'],
+        });
+        if (msg?.content) {
+          map[id] = msg.content.length > 100
+            ? msg.content.slice(0, 100) + '...'
+            : msg.content;
+        }
+      }
+
+      return map;
+    }
+  }
+
+  /**
+   * ✅ BUG-INB4: تحويل نوع القناة لاسم بسيط
+   * 'whatsapp_official' → 'whatsapp'
+   * 'whatsapp_qr'       → 'whatsapp'
+   */
+  private mapChannelType(type?: ChannelType | string): string {
+    if (!type) return 'unknown';
+
+    const map: Record<string, string> = {
+      [ChannelType.WHATSAPP_OFFICIAL]: 'whatsapp',
+      [ChannelType.WHATSAPP_QR]: 'whatsapp',
+      [ChannelType.INSTAGRAM]: 'instagram',
+      [ChannelType.DISCORD]: 'discord',
+      [ChannelType.TELEGRAM]: 'telegram',
+      [ChannelType.SMS]: 'sms',
+      [ChannelType.EMAIL]: 'email',
+    };
+
+    return map[type] || type;
+  }
+
+  /**
+   * ✅ BUG-INB4: تحويل Message entity لصيغة Frontend
+   * Entity: { id, conversationId, content, sender, createdAt, status }
+   * Frontend: { id, conversationId, content, sender, timestamp, read }
+   */
+  private mapMessage(msg: Message): MessageDto {
+    return {
+      id: msg.id,
+      conversationId: msg.conversationId,
+      content: msg.content || '',
+      sender: msg.sender || 'system',
+      timestamp: msg.createdAt.toISOString(),
+      read: msg.status === MessageStatus.READ,
+    };
   }
 }
