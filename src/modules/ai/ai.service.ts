@@ -1152,22 +1152,23 @@ export class AIService {
     conversationId: string;
     message: string;
   }): Promise<AIResponse> {
-    const settings = await this.getSettings(params.tenantId);
-
-    if (!settings.enabled) {
-      return { reply: '', confidence: 0, shouldHandoff: false };
-    }
-
+    // ✅ تحميل المحادثة أولاً لجلب storeId من القناة
     const conv = await this.conversationRepo.findOne({
       where: { id: params.conversationId },
       relations: ['channel'], // ✅ نحمّل القناة لجلب storeId
     });
 
+    // ✅ storeId من Channel — يضمن عزل الإعدادات لكل متجر
+    const storeId = conv?.channel?.storeId;
+
+    const settings = await this.getSettings(params.tenantId, storeId);
+
+    if (!settings.enabled) {
+      return { reply: '', confidence: 0, shouldHandoff: false };
+    }
+
     // ✅ BUG-3 + BUG-5: قراءة failedAttempts و handoffAt من aiContext
     const aiContext = (conv?.aiContext || {}) as Record<string, unknown>;
-
-    // ✅ BUG-16: storeId من Channel (Conversation لا يملك storeId مباشرة)
-    const storeId = conv?.channel?.storeId;
 
     const context: ConversationContext = {
       conversationId: params.conversationId,
