@@ -5,6 +5,8 @@
  * ║  🔧 v2 Fixes:                                                                  ║
  * ║  - BUG-INB2: إضافة GET /inbox/:id/messages (كان مفقود)                        ║
  * ║  - BUG-INB3: إضافة POST /inbox/:id/messages (كان مفقود)                       ║
+ * ║  🔧 v3 Fixes:                                                                  ║
+ * ║  - إضافة DELETE /inbox/:id لحذف المحادثة مع رسائلها                           ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -13,6 +15,7 @@ import {
   Get,
   Post,
   Patch,
+  Delete,
   Body,
   Param,
   Query,
@@ -264,5 +267,19 @@ export class InboxController {
     const tenantId = user.tenantId;
     const userId = user.id;
     return this.inboxService.addNote(id, body.note, userId, tenantId);
+  }
+
+  @Delete(':id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({
+    summary: 'حذف محادثة نهائياً',
+    description: 'يحذف المحادثة مع جميع رسائلها من قاعدة البيانات',
+  })
+  async deleteConversation(
+    @CurrentUser() user: any,
+    @Param('id') id: string,
+  ) {
+    const tenantId = user.tenantId;
+    await this.inboxService.deleteConversation(tenantId, id);
   }
 }
