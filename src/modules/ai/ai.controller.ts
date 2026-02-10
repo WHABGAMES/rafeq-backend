@@ -77,12 +77,6 @@ class AnalyzeDto {
 class TestResponseDto {
   @IsString()
   message: string;
-
-  @IsOptional()
-  storeContext?: {
-    storeName: string;
-    tone: string;
-  };
 }
 
 class UpdateAISettingsDto {
@@ -385,7 +379,6 @@ export class AiController {
       req.user.tenantId,
       dto.message,
       storeId,
-      dto.storeContext,
     );
   }
 
