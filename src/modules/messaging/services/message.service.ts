@@ -356,24 +356,8 @@ export class MessageService {
 
     const savedMessage = await this.messageRepo.save(message);
 
-    // ✅ تحديث firstResponseAt عند أول رد (لحساب BUG-10 avgResponseTime)
-    if (!conversation.firstResponseAt && data.sender !== MessageSender.CUSTOMER) {
-      await this.conversationRepo.update(conversation.id, {
-        firstResponseAt: new Date(),
-      });
-    }
-
-    // تحديث عداد الرسائل وآخر رسالة
-    await this.conversationRepo
-      .createQueryBuilder()
-      .update(Conversation)
-      .set({
-        messagesCount: () => '"messages_count" + 1',
-        lastMessageAt: new Date(),
-      })
-      .where('id = :id', { id: conversation.id })
-      .execute();
-
+    // ✅ CRITICAL: إضافة job الإرسال فوراً بعد الحفظ — قبل أي شيء آخر
+    // هذا يضمن الإرسال حتى لو فشلت تحديثات العدادات
     await this.messagingQueue.add(
       'send-message',
       {
@@ -386,6 +370,32 @@ export class MessageService {
         backoff: { type: 'exponential', delay: 1000 },
       },
     );
+
+    // تحديثات غير حرجة — لا يجب أن تمنع الإرسال
+    try {
+      // تحديث firstResponseAt عند أول رد
+      if (!conversation.firstResponseAt && data.sender !== MessageSender.CUSTOMER) {
+        await this.conversationRepo.update(conversation.id, {
+          firstResponseAt: new Date(),
+        });
+      }
+
+      // تحديث عداد الرسائل وآخر رسالة
+      await this.conversationRepo
+        .createQueryBuilder()
+        .update(Conversation)
+        .set({
+          messagesCount: () => '"messages_count" + 1',
+          lastMessageAt: new Date(),
+        })
+        .where('id = :id', { id: conversation.id })
+        .execute();
+    } catch (updateError) {
+      // لا نوقف الإرسال بسبب فشل العدادات
+      this.logger.warn(
+        `⚠️ Counter update failed for conversation ${conversation.id}: ${updateError instanceof Error ? updateError.message : 'Unknown'}`,
+      );
+    }
 
     return savedMessage;
   }
