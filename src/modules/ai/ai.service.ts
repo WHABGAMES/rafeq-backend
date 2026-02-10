@@ -1018,8 +1018,9 @@ export class AIService {
   async testResponse(
     tenantId: string,
     message: string,
+    storeId?: string,
     storeContext?: { storeName: string; tone: string },
-  ): Promise<{ reply: string; processingTime: number }> {
+  ): Promise<{ reply: string; processingTime: number; toolsUsed?: string[] }> {
     const startTime = Date.now();
 
     if (!this.isApiKeyConfigured) {
@@ -1030,26 +1031,109 @@ export class AIService {
     }
 
     try {
-      const settings = await this.getSettings(tenantId);
+      const settings = await this.getSettings(tenantId, storeId);
 
-      const sysPrompt = storeContext
-        ? `أنت مساعد خدمة عملاء لمتجر "${storeContext.storeName}". كن ${storeContext.tone === 'friendly' ? 'ودوداً' : 'مهنياً'}.`
-        : `أنت مساعد خدمة عملاء لمتجر "${settings.storeName || 'المتجر'}". أجب باختصار.`;
+      // ✅ استخدام نفس buildSystemPrompt الكامل (مع المكتبة + معلومات المتجر)
+      const testContext: ConversationContext = {
+        conversationId: 'test',
+        tenantId,
+        storeId: storeId || undefined,
+        customerId: '',
+        customerName: undefined,
+        channel: '',
+        messageCount: 0,
+        failedAttempts: 0,
+        isHandedOff: false,
+        previousMessages: [],
+      };
+
+      // ✅ إذا لم يأتِ storeId من الهيدر، نحاول جلبه من أول قناة
+      if (!testContext.storeId) {
+        try {
+          const anyConv = await this.conversationRepo.findOne({
+            where: { tenantId },
+            relations: ['channel'],
+            order: { createdAt: 'DESC' },
+          });
+          if (anyConv?.channel?.storeId) {
+            testContext.storeId = anyConv.channel.storeId;
+          }
+        } catch {
+          /* no conversation yet — OK */
+        }
+      }
+
+      const systemPrompt = await this.buildSystemPrompt(settings, testContext);
+
+      // ✅ استخدام نفس الأدوات المتاحة في generateResponse
+      const tools = this.getAvailableTools();
+
+      const messages: ChatCompletionMessageParam[] = [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: message },
+      ];
 
       const completion = await this.openai.chat.completions.create({
         model: settings.model || AI_DEFAULTS.model,
-        messages: [
-          { role: 'system', content: sysPrompt },
-          { role: 'user', content: message },
-        ],
-        temperature: 0.7,
-        max_tokens: 500,
+        messages,
+        tools: tools.length > 0 ? tools : undefined,
+        tool_choice: tools.length > 0 ? 'auto' : undefined,
+        temperature: settings.temperature ?? 0.7,
+        max_tokens: settings.maxTokens || 1000,
       });
 
+      const assistantMsg = completion.choices[0]?.message;
+      if (!assistantMsg) throw new Error('No response from OpenAI');
+
+      let finalReply = assistantMsg.content || '';
+      const toolsUsed: string[] = [];
+
+      // ✅ تنفيذ الأدوات إذا طلبها OpenAI
+      if (assistantMsg.tool_calls?.length) {
+        const toolResults = await this.executeToolCalls(
+          assistantMsg.tool_calls,
+          testContext,
+          settings,
+        );
+        toolsUsed.push(...toolResults.map((r) => r.name));
+
+        // إذا كان التحويل البشري — نرجع رسالة التحويل
+        const handoffTool = toolResults.find(
+          (r) => r.name === 'request_human_agent',
+        );
+        if (handoffTool) {
+          return {
+            reply: `[تحويل بشري] ${settings.handoffMessage || AI_DEFAULTS.handoffMessage}`,
+            processingTime: Date.now() - startTime,
+            toolsUsed,
+          };
+        }
+
+        // إرسال نتائج الأدوات لـ OpenAI للحصول على رد نهائي
+        const toolMessages: ChatCompletionMessageParam[] = [
+          ...messages,
+          assistantMsg as ChatCompletionMessageParam,
+          ...toolResults.map((r) => ({
+            role: 'tool' as const,
+            tool_call_id: r.toolCallId,
+            content: JSON.stringify(r.result),
+          })),
+        ];
+
+        const followUp = await this.openai.chat.completions.create({
+          model: settings.model || AI_DEFAULTS.model,
+          messages: toolMessages,
+          temperature: settings.temperature ?? 0.7,
+          max_tokens: settings.maxTokens || 1000,
+        });
+
+        finalReply = followUp.choices[0]?.message?.content || finalReply;
+      }
+
       return {
-        reply:
-          completion.choices[0]?.message?.content || 'لم أتمكن من الرد',
+        reply: finalReply || 'لم أتمكن من الرد',
         processingTime: Date.now() - startTime,
+        toolsUsed: toolsUsed.length > 0 ? toolsUsed : undefined,
       };
     } catch (error) {
       return {
