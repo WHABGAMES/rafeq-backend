@@ -756,13 +756,23 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
 
       if (!fromPhone) continue; // تخطي إذا لم يبقَ رقم
 
+      // ✅ تحديد نوع الـ JID: هل هو رقم حقيقي أم @lid داخلي
+      const isLidJid = jid.includes('@lid');
+      // @lid = معرّف داخلي لواتساب وليس رقم هاتف حقيقي
+      // @s.whatsapp.net = رقم هاتف حقيقي
+      const realPhone = isLidJid ? undefined : fromPhone;
+
+      // ✅ استخراج اسم العميل من pushName (اسم واتساب الظاهر)
+      const pushName = (msg as any).pushName || undefined;
+
       const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
       const timestamp = msg.messageTimestamp ? new Date(Number(msg.messageTimestamp) * 1000) : new Date();
 
       this.eventEmitter.emit('whatsapp.message.received', {
         channelId,
         from: jid,          // ✅ JID الكامل للإرسال الصحيح (يشمل @lid و @s.whatsapp.net)
-        fromPhone,           // ✅ الرقم النظيف للعرض
+        fromPhone: realPhone, // ✅ رقم الهاتف الحقيقي فقط (undefined لـ @lid)
+        pushName,             // ✅ اسم العميل من واتساب
         messageId: msg.key.id || '',
         text,
         timestamp,
