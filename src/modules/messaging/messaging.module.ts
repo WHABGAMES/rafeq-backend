@@ -2,9 +2,8 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Messaging Module                          ║
  * ║                                                                                ║
- * ║  🔧 v4 Fixes:                                                                  ║
- * ║  - BUG-6:  MessagingProcessor لمعالجة queue jobs                              ║
- * ║  - BRIDGE: ChannelMessageListener يربط أحداث القنوات بالرسائل                  ║
+ * ║  ✅ v2: يسجل MessagingProcessor لمعالجة queue jobs                            ║
+ * ║  ✅ v2: يستورد ChannelsModule للإرسال الفعلي عبر WhatsApp                     ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -21,13 +20,10 @@ import { Store } from '../stores/entities/store.entity';
 import { MessageService } from './services/message.service';
 import { ConversationManagerService } from './services/conversation-manager.service';
 
-// ✅ BUG-6 FIX: Queue Processor
+// Processor
 import { MessagingProcessor } from './processors/messaging.processor';
 
-// ✅ BRIDGE: يربط أحداث واتساب/ديسكورد بنظام الرسائل والذكاء الاصطناعي
-import { ChannelMessageListener } from './listeners/channel-message.listener';
-
-// ✅ SEND: Processor يحتاج ChannelsService لإرسال الرسائل فعلياً
+// ChannelsModule — للإرسال الفعلي عبر WhatsApp
 import { ChannelsModule } from '../channels/channels.module';
 
 @Module({
@@ -37,7 +33,7 @@ import { ChannelsModule } from '../channels/channels.module';
       Conversation,
       Customer,
       Channel,
-      Store, // ✅ مطلوب لـ ChannelMessageListener (channel → store → tenantId)
+      Store,
     ]),
 
     BullModule.registerQueue({
@@ -57,18 +53,19 @@ import { ChannelsModule } from '../channels/channels.module';
 
     ConfigModule,
 
-    // ✅ ChannelsModule يوفر ChannelsService للـ Processor (إرسال واتساب فعلي)
-    // ChannelsModule لا يستورد MessagingModule — لا يوجد circular dependency
+    // ✅ ChannelsModule يُصدّر ChannelsService المطلوب للـ processor
     forwardRef(() => ChannelsModule),
   ],
 
   providers: [
     MessageService,
     ConversationManagerService,
-    MessagingProcessor,        // ✅ BUG-6: process-incoming + send-message
-    ChannelMessageListener,    // ✅ BRIDGE: channel events → message processing → AI
+    MessagingProcessor, // ✅ NEW: يعالج send-message + process-incoming
   ],
 
-  exports: [MessageService, ConversationManagerService],
+  exports: [
+    MessageService,
+    ConversationManagerService,
+  ],
 })
 export class MessagingModule {}
