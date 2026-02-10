@@ -743,7 +743,19 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
 
     for (const msg of messages) {
       if (msg.key.fromMe) continue;
-      const from = msg.key.remoteJid?.replace('@s.whatsapp.net', '') || '';
+
+      const jid = msg.key.remoteJid || '';
+
+      // ✅ تخطي المجموعات و broadcast (مثل status@broadcast)
+      if (jid.includes('@g.us') || jid.includes('@broadcast') || jid === 'status@broadcast') {
+        continue;
+      }
+
+      // ✅ إزالة كل JID suffixes: @s.whatsapp.net, @lid, @c.us
+      const from = jid.split('@')[0].replace(/\D/g, '');
+
+      if (!from) continue; // تخطي إذا لم يبقَ رقم
+
       const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
       const timestamp = msg.messageTimestamp ? new Date(Number(msg.messageTimestamp) * 1000) : new Date();
 
