@@ -183,8 +183,8 @@ export class InboxService {
     const conversations: ConversationDto[] = items.map(conv => ({
       id: conv.id,
       customerId: conv.customerId || conv.customerExternalId || '',
-      customerName: conv.customerName || conv.customerPhone || 'عميل',
-      customerPhone: conv.customerPhone || '',
+      customerName: conv.customerName || this.cleanPhoneDisplay(conv.customerPhone || conv.customerExternalId) || 'عميل',
+      customerPhone: this.cleanPhoneDisplay(conv.customerPhone) || '',
       channel: this.mapChannelType(conv.channel?.type),
       status: conv.status,
       lastMessage: lastMessages[conv.id] || '',
@@ -343,6 +343,9 @@ export class InboxService {
 
     return {
       ...conversation,
+      customerName: conversation.customerName || this.cleanPhoneDisplay(conversation.customerPhone || conversation.customerExternalId) || 'عميل',
+      customerPhone: this.cleanPhoneDisplay(conversation.customerPhone || conversation.customerExternalId) || '',
+      customerExternalId: conversation.customerExternalId?.split('@')[0] || conversation.customerExternalId,
       messages: messages.map(m => this.mapMessage(m)),
     };
   }
@@ -563,5 +566,19 @@ export class InboxService {
       timestamp: msg.createdAt.toISOString(),
       read: msg.status === MessageStatus.READ,
     };
+  }
+
+  /**
+   * ✅ تنظيف عرض رقم الهاتف
+   * يزيل @lid, @s.whatsapp.net, @c.us وأي suffix آخر
+   * ويضيف + في البداية إذا كان رقم دولي
+   */
+  private cleanPhoneDisplay(raw?: string | null): string {
+    if (!raw) return '';
+    // إزالة أي suffix بعد @
+    const digits = raw.split('@')[0].replace(/\D/g, '');
+    if (!digits) return raw;
+    // إضافة + للأرقام الدولية
+    return `+${digits}`;
   }
 }
