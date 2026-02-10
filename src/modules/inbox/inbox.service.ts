@@ -65,7 +65,7 @@ export interface InboxStats {
 /**
  * ✅ الشكل الذي تتوقعه الواجهة الأمامية
  */
-interface ConversationDto {
+export interface ConversationDto {
   id: string;
   customerId: string;
   customerName: string;
@@ -80,7 +80,7 @@ interface ConversationDto {
   aiHandled: boolean;
 }
 
-interface MessageDto {
+export interface MessageDto {
   id: string;
   conversationId: string;
   content: string;
