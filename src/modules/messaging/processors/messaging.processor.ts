@@ -1,222 +1,1097 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║              RAFIQ PLATFORM - Messaging Queue Processor                        ║
+ * ║                    RAFIQ PLATFORM - WhatsApp Baileys Service                   ║
  * ║                                                                                ║
- * ║  ✅ يعالج jobs من queue 'messaging':                                           ║
- * ║     - send-message: إرسال فعلي عبر WhatsApp/Discord                           ║
- * ║     - process-incoming: معالجة إضافية للرسائل الواردة                          ║
- * ║                                                                                ║
- * ║  ✅ يتبع نفس نمط notification.processor.ts (BullMQ + WorkerHost)              ║
+ * ║  ✅ QR Code + Phone Pairing Code Support                                      ║
+ * ║  ✅ إصلاح Connection Failure (code 405)                                        ║
+ * ║  ✅ Proper session cleanup + retry limits                                      ║
+ * ║  ✅ v10: حفظ الجلسات في PostgreSQL (لا تضيع عند deploy)                       ║
+ * ║  ✅ v10: إصلاح ربط الهاتف (Phone Pairing Code)                                ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
-import { Processor, WorkerHost } from '@nestjs/bullmq';
-import { Logger } from '@nestjs/common';
-import { Job } from 'bullmq';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { EventEmitter2 } from '@nestjs/event-emitter';
+import * as path from 'path';
+import * as fs from 'fs';
 
-// Entities
-import {
-  Message,
-  MessageStatus,
-  Conversation,
-  Channel,
-} from '@database/entities';
+import makeWASocket, {
+  DisconnectReason,
+  useMultiFileAuthState,
+  WASocket,
+  ConnectionState,
+  MessageUpsertType,
+  WAMessage,
+  fetchLatestBaileysVersion,
+  makeCacheableSignalKeyStore,
 
-// ChannelsService: الإرسال الفعلي عبر واتساب
-import { ChannelsService } from '../../channels/channels.service';
+} from '@whiskeysockets/baileys';
+import { Boom } from '@hapi/boom';
+import * as QRCode from 'qrcode';
+import { Channel, ChannelType, ChannelStatus } from '../entities/channel.entity';
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 📌 JOB INTERFACES
+// ✅ Silent Logger - بديل pino بدون dependency خارجي
 // ═══════════════════════════════════════════════════════════════════════════════
 
-interface SendMessageJobData {
-  messageId: string;
-  conversationId: string;
+const noopFn = () => {};
+const silentLogger = {
+  level: 'silent',
+  child: () => silentLogger,
+  trace: noopFn,
+  debug: noopFn,
+  info: noopFn,
+  warn: noopFn,
+  error: noopFn,
+  fatal: noopFn,
+} as any;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Types
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export interface WhatsAppSession {
+  socket: WASocket | null;
   channelId: string;
+  status: 'connecting' | 'qr_ready' | 'connected' | 'disconnected' | 'pairing_code';
+  qrCode?: string;
+  qrExpiresAt?: Date;
+  pairingCode?: string;
+  phoneNumber?: string;
+  retryCount: number;
+  connectionMethod: 'qr' | 'phone_code';
 }
 
-interface ProcessIncomingJobData {
-  messageId: string;
-  conversationId: string;
-  channelId: string;
-  tenantId: string;
-  isNewConversation: boolean;
+export interface QRSessionResult {
+  sessionId: string;
+  qrCode: string;
+  pairingCode?: string;
+  expiresAt: Date;
+  status: 'pending' | 'scanning' | 'connected' | 'expired';
+  phoneNumber?: string;
+}
+
+export interface MessageUpsert {
+  messages: WAMessage[];
+  type: MessageUpsertType;
+}
+
+/**
+ * ✅ v10: هيكل بيانات الجلسة المحفوظة في DB
+ */
+interface StoredSessionData {
+  creds: string; // JSON serialized creds
+  keys: Record<string, string>; // key type -> JSON serialized data
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ⚙️ PROCESSOR
+// Constants
 // ═══════════════════════════════════════════════════════════════════════════════
 
-@Processor('messaging')
-export class MessagingProcessor extends WorkerHost {
-  private readonly logger = new Logger(MessagingProcessor.name);
+const MAX_RETRIES = 3;
+const QR_TIMEOUT_MS = 120000;
+const INIT_TIMEOUT_MS = 90000;
+const RECONNECT_BASE_DELAY_MS = 5000;
+
+@Injectable()
+export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
+  private readonly logger = new Logger(WhatsAppBaileysService.name);
+  private readonly sessions = new Map<string, WhatsAppSession>();
+  // ✅ خريطة تربط معرّفات @lid بأرقام الهاتف الحقيقية لكل قناة
+  private readonly lidToPhone = new Map<string, Map<string, string>>();
+  private sessionsPath: string;
 
   constructor(
-    @InjectRepository(Message)
-    private readonly messageRepo: Repository<Message>,
-
-    @InjectRepository(Conversation)
-    private readonly conversationRepo: Repository<Conversation>,
-
-    @InjectRepository(Channel)
-    private readonly channelRepo: Repository<Channel>,
-
+    private readonly configService: ConfigService,
     private readonly eventEmitter: EventEmitter2,
-
-    private readonly channelsService: ChannelsService,
+    @InjectRepository(Channel)
+    private readonly channelRepository: Repository<Channel>,
   ) {
-    super();
-    this.logger.log('🚀 MessagingProcessor initialized — listening on queue: messaging');
+    this.sessionsPath = this.initializeSessionsPath();
   }
 
-  async process(job: Job): Promise<unknown> {
-    switch (job.name) {
-      case 'send-message':
-        return this.handleSendMessage(job as Job<SendMessageJobData>);
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ✅ v10: حفظ واستعادة Auth State من/إلى PostgreSQL
+  // ═══════════════════════════════════════════════════════════════════════════════
 
-      case 'process-incoming':
-        return this.handleProcessIncoming(job as Job<ProcessIncomingJobData>);
+  /**
+   * ✅ v10: حفظ auth state كامل في عمود session_data في جدول channels
+   */
+  private async saveSessionToDB(channelId: string, sessionPath: string): Promise<void> {
+    try {
+      const credsPath = path.join(sessionPath, 'creds.json');
+      if (!fs.existsSync(credsPath)) return;
 
-      default:
-        this.logger.warn(`Unknown job type: ${job.name}`);
-        return { status: 'unknown_job_type' };
+      const creds = fs.readFileSync(credsPath, 'utf8');
+      
+      // جمع كل ملفات المفاتيح
+      const keys: Record<string, string> = {};
+      const files = fs.readdirSync(sessionPath);
+      for (const file of files) {
+        if (file !== 'creds.json' && file.endsWith('.json')) {
+          const content = fs.readFileSync(path.join(sessionPath, file), 'utf8');
+          keys[file] = content;
+        }
+      }
+
+      const sessionData: StoredSessionData = { creds, keys };
+
+      await this.channelRepository.update(channelId, {
+        sessionData: JSON.stringify(sessionData),
+      });
+
+      this.logger.debug(`💾 Session saved to DB: ${channelId} (${Object.keys(keys).length} key files)`);
+    } catch (error) {
+      this.logger.warn(`Failed to save session to DB: ${channelId} - ${error instanceof Error ? error.message : 'Unknown'}`);
     }
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // 📤 SEND MESSAGE — الإرسال الفعلي عبر WhatsApp
-  // ═══════════════════════════════════════════════════════════════════════════
+  /**
+   * ✅ v10: استعادة auth state من DB إلى الملفات
+   * يُستخدم عند بدء التشغيل بعد deploy جديد
+   */
+  private async restoreSessionFromDB(channelId: string, sessionPath: string): Promise<boolean> {
+    try {
+      const channel = await this.channelRepository.findOne({
+        where: { id: channelId },
+        select: ['id', 'sessionData'],
+      });
 
-  private async handleSendMessage(
-    job: Job<SendMessageJobData>,
-  ): Promise<{ status: string; externalId?: string }> {
-    const { messageId, conversationId, channelId } = job.data;
+      if (!channel?.sessionData) {
+        this.logger.debug(`No DB session data for: ${channelId}`);
+        return false;
+      }
 
-    this.logger.log(`📤 [send-message] Job picked up — messageId: ${messageId}`);
+      const sessionData: StoredSessionData = JSON.parse(channel.sessionData);
+
+      // إنشاء مجلد الجلسة
+      if (!fs.existsSync(sessionPath)) {
+        fs.mkdirSync(sessionPath, { recursive: true });
+      }
+
+      // كتابة creds
+      fs.writeFileSync(path.join(sessionPath, 'creds.json'), sessionData.creds);
+
+      // كتابة المفاتيح
+      for (const [fileName, content] of Object.entries(sessionData.keys)) {
+        fs.writeFileSync(path.join(sessionPath, fileName), content);
+      }
+
+      this.logger.log(`📥 Session restored from DB: ${channelId} (${Object.keys(sessionData.keys).length} key files)`);
+      return true;
+    } catch (error) {
+      this.logger.warn(`Failed to restore session from DB: ${channelId} - ${error instanceof Error ? error.message : 'Unknown'}`);
+      return false;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔄 Lifecycle
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * ✅ v10: عند بدء التشغيل — استعادة الجلسات من DB ثم إعادة الاتصال
+   */
+  async onModuleInit(): Promise<void> {
+    this.logger.log('🔄 WhatsApp Baileys Service starting - checking for sessions to restore...');
 
     try {
-      // 1️⃣ تحميل البيانات
-      const message = await this.messageRepo.findOne({
-        where: { id: messageId },
+      const connectedChannels = await this.channelRepository.find({
+        where: {
+          type: ChannelType.WHATSAPP_QR,
+          status: ChannelStatus.CONNECTED,
+        },
       });
 
-      if (!message) {
-        this.logger.warn(`Message not found: ${messageId}`);
-        return { status: 'message_not_found' };
+      if (connectedChannels.length === 0) {
+        this.logger.log('📱 No connected WhatsApp QR channels found');
+        return;
       }
 
-      const conversation = await this.conversationRepo.findOne({
-        where: { id: conversationId },
-      });
+      this.logger.log(`📱 Found ${connectedChannels.length} connected channel(s) to restore`);
 
-      if (!conversation) {
-        this.logger.warn(`Conversation not found: ${conversationId}`);
-        await this.messageRepo.update(messageId, {
-          status: MessageStatus.FAILED,
-          errorMessage: 'Conversation not found',
-        });
-        return { status: 'conversation_not_found' };
+      for (const channel of connectedChannels) {
+        const sessionPath = path.join(this.sessionsPath, `wa_${channel.id}`);
+
+        // ✅ v10: أولاً — تحقق من الملفات المحلية
+        let hasAuthState = fs.existsSync(sessionPath) &&
+          fs.readdirSync(sessionPath).length > 0;
+
+        // ✅ v10: ثانياً — إذا ما في ملفات محلية، استعد من DB
+        if (!hasAuthState) {
+          this.logger.log(`📥 No local files for ${channel.id} - restoring from DB...`);
+          hasAuthState = await this.restoreSessionFromDB(channel.id, sessionPath);
+        }
+
+        if (hasAuthState) {
+          this.logger.log(`🔄 Restoring session for channel ${channel.id} (${channel.whatsappPhoneNumber || channel.name})`);
+          try {
+            await this.restoreSession(channel.id);
+            this.logger.log(`✅ Session restored for channel ${channel.id}`);
+          } catch (error) {
+            const msg = error instanceof Error ? error.message : 'Unknown';
+            this.logger.error(`❌ Failed to restore session ${channel.id}: ${msg}`);
+            await this.markChannelDisconnected(channel.id);
+          }
+        } else {
+          this.logger.warn(`⚠️ No auth state (local or DB) for channel ${channel.id} - marking as disconnected`);
+          await this.markChannelDisconnected(channel.id);
+        }
       }
-
-      const channel = await this.channelRepo.findOne({
-        where: { id: channelId },
-      });
-
-      if (!channel) {
-        this.logger.warn(`Channel not found: ${channelId}`);
-        await this.messageRepo.update(messageId, {
-          status: MessageStatus.FAILED,
-          errorMessage: 'Channel not found',
-        });
-        return { status: 'channel_not_found' };
-      }
-
-      // 2️⃣ تحديد المستقبل (رقم العميل)
-      // ✅ استخدام customerExternalId (الـ JID الأصلي) للإرسال
-      // whatsapp-baileys.service سيحوّل @lid → @s.whatsapp.net إذا توفر الربط
-      const rawRecipient = conversation.customerExternalId || conversation.customerPhone;
-
-      if (!rawRecipient) {
-        this.logger.error(`No recipient for conversation: ${conversationId}`);
-        await this.messageRepo.update(messageId, {
-          status: MessageStatus.FAILED,
-          errorMessage: 'No recipient phone number',
-        });
-        return { status: 'no_recipient' };
-      }
-
-      // ✅ الاحتفاظ بالـ JID كاملاً — formatJid يتعامل مع الصيغتين
-      const recipient = rawRecipient;
-
-      this.logger.log(
-        `📤 Sending to: ${recipient} | Channel: ${channel.type} | isWhatsApp: ${channel.isWhatsApp} | Content: "${(message.content || '').substring(0, 50)}..."`,
-      );
-
-      // 3️⃣ الإرسال الفعلي
-      let externalId: string | undefined;
-
-      if (channel.isWhatsApp) {
-        const result = await this.channelsService.sendWhatsAppMessage(
-          channel.id,
-          recipient,
-          message.content || '',
-        );
-        externalId = result?.messageId;
-      } else {
-        // قنوات أخرى — event لحين بناء الإرسال المباشر
-        this.eventEmitter.emit(`channel.${channel.type}.send`, {
-          message,
-          channel,
-          conversation,
-          recipient,
-        });
-      }
-
-      // 4️⃣ تحديث حالة الرسالة
-      await this.messageRepo.update(messageId, {
-        status: MessageStatus.SENT,
-        sentAt: new Date(),
-        ...(externalId ? { externalId } : {}),
-      });
-
-      this.logger.log(`✅ Message ${messageId} sent to ${recipient} via ${channel.type}`);
-
-      return { status: 'sent', externalId };
-
     } catch (error) {
-      this.logger.error(`❌ Failed to send message: ${messageId}`, {
-        error: error instanceof Error ? error.message : 'Unknown',
-        stack: error instanceof Error ? error.stack : undefined,
-      });
-
-      await this.messageRepo.update(messageId, {
-        status: MessageStatus.FAILED,
-        errorMessage: error instanceof Error ? error.message : 'Send failed',
-      });
-
-      throw error; // BullMQ will retry
+      const msg = error instanceof Error ? error.message : 'Unknown';
+      this.logger.error(`❌ Error during session restoration: ${msg}`);
     }
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // 📥 PROCESS INCOMING — معالجة إضافية للرسائل الواردة
-  // ═══════════════════════════════════════════════════════════════════════════
+  /**
+   * ✅ v10: استعادة جلسة — مع حفظ تلقائي للـ DB عند كل creds.update
+   */
+  private async restoreSession(channelId: string): Promise<void> {
+    const sessionPath = path.join(this.sessionsPath, `wa_${channelId}`);
 
-  private async handleProcessIncoming(
-    job: Job<ProcessIncomingJobData>,
-  ): Promise<{ status: string }> {
-    const { messageId, isNewConversation } = job.data;
+    const { version } = await fetchLatestBaileysVersion();
+    const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
 
-    this.logger.debug(
-      `📥 [process-incoming] messageId: ${messageId}, isNew: ${isNewConversation}`,
-    );
+    const sock = makeWASocket({
+      auth: {
+        creds: state.creds,
+        keys: makeCacheableSignalKeyStore(state.keys, silentLogger),
+      },
+      version,
+      printQRInTerminal: false,
+      browser: ['Rafiq Platform', 'Chrome', '126.0.0'],
+      connectTimeoutMs: 60000,
+      defaultQueryTimeoutMs: 60000,
+      keepAliveIntervalMs: 25000,
+      markOnlineOnConnect: false,
+      generateHighQualityLinkPreview: false,
+      logger: silentLogger,
+      syncFullHistory: false,
+    });
 
-    // المعالجة الإضافية تحصل عبر EventEmitter (مثل AI auto-reply)
-    // هذا الـ job يضمن أن الأحداث تُعالج حتى لو حصل خطأ
+    const session: WhatsAppSession = {
+      socket: sock,
+      channelId,
+      status: 'connecting',
+      retryCount: 0,
+      connectionMethod: 'qr',
+    };
 
-    return { status: 'processed' };
+    this.sessions.set(channelId, session);
+
+    // ✅ v10: حفظ مزدوج — ملفات + DB
+    sock.ev.on('creds.update', async () => {
+      await saveCreds();
+      await this.saveSessionToDB(channelId, sessionPath);
+    });
+
+    sock.ev.on('connection.update', async (update: Partial<ConnectionState>) => {
+      await this.handleConnectionUpdate(channelId, update);
+    });
+
+    sock.ev.on('messages.upsert', async (messageUpdate: MessageUpsert) => {
+      await this.handleIncomingMessages(channelId, messageUpdate);
+    });
+
+    // ✅ التقاط جهات الاتصال لربط @lid بأرقام الهاتف الحقيقية
+    sock.ev.on('contacts.upsert', (contacts: any[]) => {
+      this.handleContactsUpsert(channelId, contacts);
+    });
+
+    // ✅ تاريخ المحادثات — يحتوي على ربط @lid بأرقام الهاتف
+    sock.ev.on('messaging-history.set', (data: any) => {
+      this.handleHistorySet(channelId, data);
+    });
+
+    // ✅ تحديث جهات الاتصال
+    sock.ev.on('contacts.update', (updates: any[]) => {
+      this.handleContactsUpsert(channelId, updates);
+    });
+  }
+
+  /**
+   * تحديث حالة القناة في DB إلى disconnected
+   */
+  private async markChannelDisconnected(channelId: string): Promise<void> {
+    try {
+      await this.channelRepository.update(channelId, {
+        status: ChannelStatus.DISCONNECTED,
+        disconnectedAt: new Date(),
+        lastError: 'جلسة واتساب انتهت - يرجى إعادة مسح QR Code',
+        lastErrorAt: new Date(),
+      });
+      this.logger.log(`📌 Channel ${channelId} marked as disconnected in DB`);
+    } catch (error) {
+      this.logger.error(`Failed to update channel status: ${error instanceof Error ? error.message : 'Unknown'}`);
+    }
+  }
+
+  private initializeSessionsPath(): string {
+    const configPath = this.configService.get<string>('WHATSAPP_SESSIONS_PATH');
+    const candidates = [
+      configPath,
+      path.join(process.cwd(), 'whatsapp-sessions'),
+      '/tmp/whatsapp-sessions',
+    ].filter(Boolean) as string[];
+
+    for (const candidate of candidates) {
+      try {
+        if (!fs.existsSync(candidate)) {
+          fs.mkdirSync(candidate, { recursive: true });
+        }
+        const testFile = path.join(candidate, '.write-test');
+        fs.writeFileSync(testFile, 'ok');
+        fs.unlinkSync(testFile);
+        this.logger.log(`✅ Sessions directory: ${candidate}`);
+        return candidate;
+      } catch {
+        this.logger.warn(`⚠️ Cannot write to: ${candidate}`);
+      }
+    }
+
+    const fallback = '/tmp/wa-sessions';
+    fs.mkdirSync(fallback, { recursive: true });
+    return fallback;
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    this.logger.log('Shutting down all WhatsApp sessions...');
+
+    // ✅ v10: حفظ جميع الجلسات في DB قبل الإغلاق
+    for (const [channelId] of this.sessions) {
+      const sessionPath = path.join(this.sessionsPath, `wa_${channelId}`);
+      await this.saveSessionToDB(channelId, sessionPath);
+    }
+
+    const promises: Promise<void>[] = [];
+    for (const [channelId] of this.sessions) {
+      promises.push(this.closeSession(channelId));
+    }
+    await Promise.allSettled(promises);
+    this.sessions.clear();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔌 Session Init - QR Code
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async initSession(channelId: string): Promise<QRSessionResult> {
+    this.logger.log(`🔄 [QR] Init: ${channelId}`);
+    return this.createBaileysSession(channelId, 'qr');
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 📱 Session Init - Phone Pairing Code
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async initSessionWithPhoneCode(
+    channelId: string,
+    phoneNumber: string,
+  ): Promise<QRSessionResult> {
+    this.logger.log(`📱 [Phone] Init: ${channelId}, phone: ${phoneNumber}`);
+    return this.createBaileysSession(channelId, 'phone_code', phoneNumber);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🏗️ Core Session Builder
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  private async createBaileysSession(
+    channelId: string,
+    method: 'qr' | 'phone_code',
+    phoneNumber?: string,
+  ): Promise<QRSessionResult> {
+    // ✅ v10: تنظيف كامل — حذف الملفات + الـ memory
+    await this.fullCleanupSession(channelId);
+
+    const sessionPath = path.join(this.sessionsPath, `wa_${channelId}`);
+
+    // ✅ v10: إنشاء مجلد نظيف
+    if (!fs.existsSync(sessionPath)) {
+      fs.mkdirSync(sessionPath, { recursive: true });
+    }
+
+    try {
+      const { version } = await fetchLatestBaileysVersion();
+      this.logger.log(`Baileys v${version.join('.')}`);
+
+      const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
+
+      const sock = makeWASocket({
+        auth: {
+          creds: state.creds,
+          keys: makeCacheableSignalKeyStore(state.keys, silentLogger),
+        },
+        version,
+        printQRInTerminal: method === 'qr',
+        browser: ['Rafiq Platform', 'Chrome', '126.0.0'],
+        connectTimeoutMs: 60000,
+        defaultQueryTimeoutMs: 60000,
+        keepAliveIntervalMs: 25000,
+        markOnlineOnConnect: false,
+        generateHighQualityLinkPreview: false,
+        logger: silentLogger,
+        syncFullHistory: false,
+      });
+
+      const session: WhatsAppSession = {
+        socket: sock,
+        channelId,
+        status: 'connecting',
+        retryCount: 0,
+        connectionMethod: method,
+        phoneNumber,
+      };
+
+      this.sessions.set(channelId, session);
+
+      // ✅ v10: حفظ مزدوج — ملفات + DB
+      sock.ev.on('creds.update', async () => {
+        await saveCreds();
+        await this.saveSessionToDB(channelId, sessionPath);
+      });
+
+      sock.ev.on('connection.update', async (update: Partial<ConnectionState>) => {
+        await this.handleConnectionUpdate(channelId, update);
+      });
+
+      sock.ev.on('messages.upsert', async (messageUpdate: MessageUpsert) => {
+        await this.handleIncomingMessages(channelId, messageUpdate);
+      });
+
+      // ✅ التقاط جهات الاتصال لربط @lid بأرقام الهاتف الحقيقية
+      sock.ev.on('contacts.upsert', (contacts: any[]) => {
+        this.handleContactsUpsert(channelId, contacts);
+      });
+
+      // ✅ تاريخ المحادثات — يحتوي على ربط @lid بأرقام الهاتف
+      sock.ev.on('messaging-history.set', (data: any) => {
+        this.handleHistorySet(channelId, data);
+      });
+
+      // ✅ تحديث جهات الاتصال
+      sock.ev.on('contacts.update', (updates: any[]) => {
+        this.handleContactsUpsert(channelId, updates);
+      });
+
+      // ✅ v10: Phone Pairing Code — مع إصلاح التأخير والتنظيف
+      if (method === 'phone_code' && phoneNumber) {
+        // ✅ v10: انتظار 5 ثواني بدل 3 — Socket يحتاج وقت أكثر للاتصال الأولي
+        await this.delay(5000);
+
+        // ✅ v10: تحقق إن الـ socket جاهز — Baileys WebSocket مختلف عن المعتاد
+        if (!sock.user) {
+          this.logger.warn('⏳ Socket not registered yet, waiting additional 3s...');
+          await this.delay(3000);
+        }
+
+        try {
+          const cleanPhone = phoneNumber.replace(/[^0-9]/g, '');
+          this.logger.log(`📱 Requesting pairing code for: ${cleanPhone}`);
+
+          const code = await sock.requestPairingCode(cleanPhone);
+          session.pairingCode = code;
+          session.status = 'pairing_code';
+
+          this.logger.log(`✅ Pairing code: ${code} for ${channelId}`);
+
+          this.eventEmitter.emit('whatsapp.pairing_code.generated', {
+            channelId,
+            pairingCode: code,
+          });
+
+          return {
+            sessionId: channelId,
+            qrCode: '',
+            pairingCode: code,
+            expiresAt: new Date(Date.now() + QR_TIMEOUT_MS),
+            status: 'pending' as const,
+            phoneNumber,
+          };
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          this.logger.error(`❌ Pairing code failed: ${msg}`, error);
+          throw new Error(`فشل في إنشاء رمز الربط: ${msg}`);
+        }
+      }
+
+      // ✅ QR Method - انتظار QR أو الاتصال
+      return new Promise<QRSessionResult>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          clearInterval(checker);
+          const s = this.sessions.get(channelId);
+          if (s && s.status !== 'connected') s.status = 'disconnected';
+          reject(new Error('انتهت مهلة الاتصال. يرجى المحاولة مرة أخرى.'));
+        }, INIT_TIMEOUT_MS);
+
+        const checker = setInterval(() => {
+          const current = this.sessions.get(channelId);
+          if (!current) {
+            clearInterval(checker);
+            clearTimeout(timeout);
+            reject(new Error('تم إنهاء الجلسة'));
+            return;
+          }
+
+          if (current.status === 'qr_ready' && current.qrCode) {
+            clearInterval(checker);
+            clearTimeout(timeout);
+            resolve({
+              sessionId: channelId,
+              qrCode: current.qrCode,
+              expiresAt: current.qrExpiresAt || new Date(Date.now() + QR_TIMEOUT_MS),
+              status: 'pending',
+            });
+          } else if (current.status === 'connected') {
+            clearInterval(checker);
+            clearTimeout(timeout);
+            resolve({
+              sessionId: channelId,
+              qrCode: '',
+              expiresAt: new Date(),
+              status: 'connected',
+              phoneNumber: current.phoneNumber,
+            });
+          } else if (current.status === 'disconnected') {
+            clearInterval(checker);
+            clearTimeout(timeout);
+            reject(new Error('فشل الاتصال. يرجى المحاولة مرة أخرى.'));
+          }
+        }, 500);
+      });
+    } catch (error) {
+      this.logger.error(`❌ Fatal: ${channelId}`, error instanceof Error ? error.message : error);
+      this.sessions.delete(channelId);
+      throw error;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 📊 Status
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async getSessionStatus(channelId: string): Promise<QRSessionResult | null> {
+    const session = this.sessions.get(channelId);
+    if (!session) return null;
+
+    return {
+      sessionId: channelId,
+      qrCode: session.qrCode || '',
+      pairingCode: session.pairingCode,
+      expiresAt: session.qrExpiresAt || new Date(),
+      status: this.mapStatus(session.status),
+      phoneNumber: session.phoneNumber,
+    };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🧹 Cleanup
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * ✅ v10: تنظيف الذاكرة فقط (بدون حذف الملفات)
+   * يُستخدم عند إعادة الاتصال
+   */
+  private async cleanupSession(channelId: string): Promise<void> {
+    const existing = this.sessions.get(channelId);
+    if (existing) {
+      try {
+        if (existing.socket) {
+          existing.socket.ev.removeAllListeners('connection.update');
+          existing.socket.ev.removeAllListeners('creds.update');
+          existing.socket.ev.removeAllListeners('messages.upsert');
+          existing.socket.ev.removeAllListeners('contacts.upsert');
+          existing.socket.ev.removeAllListeners('contacts.update');
+          existing.socket.ev.removeAllListeners('messaging-history.set');
+          existing.socket.end(undefined);
+        }
+      } catch {}
+      this.sessions.delete(channelId);
+      this.lidToPhone.delete(channelId);
+      await this.delay(1000);
+    }
+  }
+
+  /**
+   * ✅ v10: تنظيف كامل — الذاكرة + الملفات
+   * يُستخدم عند إنشاء جلسة جديدة (QR أو Phone Code)
+   * حذف الملفات القديمة مهم عشان Phone Pairing Code يشتغل
+   */
+  private async fullCleanupSession(channelId: string): Promise<void> {
+    // 1. تنظيف الذاكرة
+    await this.cleanupSession(channelId);
+
+    // 2. حذف ملفات الجلسة القديمة
+    const sessionPath = path.join(this.sessionsPath, `wa_${channelId}`);
+    try {
+      if (fs.existsSync(sessionPath)) {
+        fs.rmSync(sessionPath, { recursive: true, force: true });
+        this.logger.debug(`🗑️ Deleted old session files: ${sessionPath}`);
+      }
+    } catch (error) {
+      this.logger.warn(`Failed to delete session files: ${error instanceof Error ? error.message : 'Unknown'}`);
+    }
+
+    // 3. ✅ v10: مسح session_data من DB أيضاً
+    try {
+      await this.channelRepository.update(channelId, {
+        sessionData: null as any,
+      });
+    } catch {}
+
+    await this.delay(500);
+  }
+
+  async closeSession(channelId: string): Promise<void> {
+    await this.cleanupSession(channelId);
+    this.logger.log(`Session closed: ${channelId}`);
+  }
+
+  async deleteSession(channelId: string): Promise<void> {
+    await this.fullCleanupSession(channelId);
+    this.logger.log(`Session fully deleted: ${channelId}`);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 📨 Messaging
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async sendTextMessage(channelId: string, to: string, text: string): Promise<{ messageId: string }> {
+    const session = this.getConnectedSession(channelId);
+    const resolvedJid = this.resolveJidForSending(channelId, to);
+    this.logger.debug(`📤 Sending message: ${to} → resolved: ${resolvedJid}`);
+    const result = await session.socket!.sendMessage(resolvedJid, { text });
+    return { messageId: result?.key?.id || '' };
+  }
+
+  async sendImageMessage(channelId: string, to: string, imageUrl: string, caption?: string): Promise<{ messageId: string }> {
+    const session = this.getConnectedSession(channelId);
+    const resolvedJid = this.resolveJidForSending(channelId, to);
+    const result = await session.socket!.sendMessage(resolvedJid, { image: { url: imageUrl }, caption });
+    return { messageId: result?.key?.id || '' };
+  }
+
+  async sendDocumentMessage(channelId: string, to: string, documentUrl: string, fileName: string, mimeType: string): Promise<{ messageId: string }> {
+    const session = this.getConnectedSession(channelId);
+    const resolvedJid = this.resolveJidForSending(channelId, to);
+    const result = await session.socket!.sendMessage(resolvedJid, { document: { url: documentUrl }, fileName, mimetype: mimeType });
+    return { messageId: result?.key?.id || '' };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔧 Connection Update Handler
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  private async handleConnectionUpdate(channelId: string, update: Partial<ConnectionState>): Promise<void> {
+    const { connection, lastDisconnect, qr } = update;
+    const session = this.sessions.get(channelId);
+    if (!session) return;
+
+    if (qr && session.connectionMethod === 'qr') {
+      try {
+        const qrDataUrl = await QRCode.toDataURL(qr, {
+          width: 400,
+          margin: 2,
+          color: { dark: '#000000', light: '#FFFFFF' },
+        });
+        session.qrCode = qrDataUrl;
+        session.qrExpiresAt = new Date(Date.now() + QR_TIMEOUT_MS);
+        session.status = 'qr_ready';
+        this.logger.log(`📱 QR ready: ${channelId}`);
+        this.eventEmitter.emit('whatsapp.qr.generated', { channelId, qrCode: qrDataUrl, expiresAt: session.qrExpiresAt });
+      } catch (error) {
+        this.logger.error(`QR generation error: ${channelId}`, error);
+      }
+    }
+
+    if (connection === 'open') {
+      session.status = 'connected';
+      session.qrCode = undefined;
+      session.pairingCode = undefined;
+      session.retryCount = 0;
+      const user = session.socket?.user;
+      if (user?.id) session.phoneNumber = user.id.split(':')[0].split('@')[0];
+      this.logger.log(`✅ Connected: ${channelId}, phone: ${session.phoneNumber}`);
+      this.eventEmitter.emit('whatsapp.connected', { channelId, phoneNumber: session.phoneNumber });
+
+      // ✅ مزامنة الحالة مع DB
+      try {
+        await this.channelRepository.update(channelId, {
+          status: ChannelStatus.CONNECTED,
+          whatsappPhoneNumber: session.phoneNumber || undefined,
+          connectedAt: new Date(),
+          lastError: undefined as any,
+          errorCount: 0,
+        });
+      } catch (e) {
+        this.logger.warn(`Failed to update channel DB status on connect: ${e instanceof Error ? e.message : 'Unknown'}`);
+      }
+
+      // ✅ v10: حفظ الجلسة في DB فوراً عند الاتصال بنجاح
+      const sessionPath = path.join(this.sessionsPath, `wa_${channelId}`);
+      await this.saveSessionToDB(channelId, sessionPath);
+    }
+
+    if (connection === 'close') {
+      const error = lastDisconnect?.error;
+      let statusCode: number | undefined;
+      if (error && 'output' in error) statusCode = (error as Boom).output?.statusCode;
+
+      this.logger.warn(`⚠️ Disconnected: ${channelId}, code: ${statusCode}`);
+
+      if (statusCode === DisconnectReason.loggedOut) {
+        session.status = 'disconnected';
+        await this.deleteSession(channelId);
+        await this.markChannelDisconnected(channelId);
+        this.eventEmitter.emit('whatsapp.logged_out', { channelId });
+        return;
+      }
+
+      // ✅ v10: حفظ الجلسة في DB قبل المحاولة التالية
+      const sessionPath = path.join(this.sessionsPath, `wa_${channelId}`);
+      await this.saveSessionToDB(channelId, sessionPath);
+
+      if (session.retryCount < MAX_RETRIES) {
+        session.retryCount++;
+        const retryDelay = Math.min(RECONNECT_BASE_DELAY_MS * session.retryCount, 15000);
+        this.logger.log(`🔄 Retry ${session.retryCount}/${MAX_RETRIES} in ${retryDelay}ms`);
+        setTimeout(async () => {
+          try {
+            // ✅ v10: عند الـ retry — تنظيف ذاكرة فقط (بدون حذف ملفات)
+            await this.cleanupSession(channelId);
+            await this.restoreSession(channelId);
+          } catch {
+            const s = this.sessions.get(channelId);
+            if (s) s.status = 'disconnected';
+          }
+        }, retryDelay);
+      } else {
+        session.status = 'disconnected';
+        await this.markChannelDisconnected(channelId);
+        this.eventEmitter.emit('whatsapp.max_retries', { channelId });
+      }
+    }
+  }
+
+  private async handleIncomingMessages(channelId: string, messageUpdate: MessageUpsert): Promise<void> {
+    const { messages, type } = messageUpdate;
+    if (type !== 'notify') return;
+
+    for (const msg of messages) {
+      if (msg.key.fromMe) continue;
+
+      const jid = msg.key.remoteJid || '';
+
+      // ✅ تخطي المجموعات و broadcast (مثل status@broadcast)
+      if (jid.includes('@g.us') || jid.includes('@broadcast') || jid === 'status@broadcast') {
+        continue;
+      }
+
+      // ✅ إزالة كل JID suffixes للتحقق فقط
+      const fromPhone = jid.split('@')[0].replace(/\D/g, '');
+
+      if (!fromPhone) continue; // تخطي إذا لم يبقَ رقم
+
+      // ✅ تحديد نوع الـ JID: هل هو رقم حقيقي أم @lid داخلي
+      const isLidJid = jid.includes('@lid');
+      let realPhone = isLidJid ? undefined : fromPhone;
+
+      // ✅ استخراج الرقم الحقيقي من @lid — 3 مصادر بالترتيب:
+      if (isLidJid) {
+        const key = msg.key as any;
+
+        // 1️⃣ remoteJidAlt (v6.8.0+) — الأفضل والأدق
+        if (key.remoteJidAlt && !String(key.remoteJidAlt).includes('@lid')) {
+          const altJid = String(key.remoteJidAlt);
+          realPhone = altJid.split('@')[0].replace(/\D/g, '');
+          if (realPhone) {
+            this.logger.log(`📱 Phone from remoteJidAlt: ${jid} → ${realPhone}`);
+          }
+        }
+        // 2️⃣ senderPn (v6.7.x) — متوفر في بعض الإصدارات
+        if (!realPhone && key.senderPn) {
+          const pn = String(key.senderPn);
+          if (!pn.includes('@lid')) {
+            realPhone = pn.split('@')[0].replace(/\D/g, '');
+            if (realPhone) {
+              this.logger.log(`📱 Phone from senderPn: ${jid} → ${realPhone}`);
+            }
+          }
+        }
+        // 3️⃣ خريطة contacts.upsert المحلية
+        else {
+          const channelMap = this.lidToPhone.get(channelId);
+          if (channelMap?.has(jid)) {
+            realPhone = channelMap.get(jid);
+            this.logger.log(`📱 Phone from lidToPhone map: ${jid} → ${realPhone}`);
+          }
+        }
+
+        // ✅ حفظ الربط في الخريطة للاستخدام المستقبلي
+        if (realPhone) {
+          if (!this.lidToPhone.has(channelId)) {
+            this.lidToPhone.set(channelId, new Map());
+          }
+          this.lidToPhone.get(channelId)!.set(jid, realPhone);
+        } else {
+          // 🔍 LOG: تشخيص — عرض كل حقول الـ key لإيجاد الرقم
+          this.logger.warn(`⚠️ @lid phone NOT found: ${jid}`);
+          this.logger.log(`🔍 msg.key fields: ${JSON.stringify(Object.keys(key))}`);
+          this.logger.log(`🔍 msg.key full: ${JSON.stringify({
+            remoteJid: key.remoteJid,
+            remoteJidAlt: key.remoteJidAlt,
+            senderPn: key.senderPn,
+            participant: key.participant,
+            participantAlt: key.participantAlt,
+            addressingMode: key.addressingMode,
+            id: key.id,
+          })}`);
+        }
+      }
+
+      // ✅ استخراج اسم العميل من pushName (اسم واتساب الظاهر)
+      const pushName = (msg as any).pushName || undefined;
+
+      const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
+      const timestamp = msg.messageTimestamp ? new Date(Number(msg.messageTimestamp) * 1000) : new Date();
+
+      this.eventEmitter.emit('whatsapp.message.received', {
+        channelId,
+        from: jid,          // ✅ JID الكامل للإرسال الصحيح (يشمل @lid و @s.whatsapp.net)
+        fromPhone: realPhone, // ✅ رقم الهاتف الحقيقي فقط (undefined لـ @lid)
+        pushName,             // ✅ اسم العميل من واتساب
+        messageId: msg.key.id || '',
+        text,
+        timestamp,
+        rawMessage: msg,
+      });
+    }
+  }
+
+  /**
+   * ✅ التقاط جهات الاتصال وبناء خريطة @lid → رقم هاتف حقيقي
+   * Baileys يُطلق هذا الحدث عند مزامنة جهات الاتصال
+   */
+  private handleContactsUpsert(channelId: string, contacts: any[]): void {
+    if (!this.lidToPhone.has(channelId)) {
+      this.lidToPhone.set(channelId, new Map());
+    }
+    const map = this.lidToPhone.get(channelId)!;
+    let newMappings = 0;
+
+    // 🔍 LOG: عرض أول 5 جهات اتصال كاملة للتشخيص
+    this.logger.log(`📇 contacts.upsert fired for channel ${channelId}: ${contacts.length} contacts`);
+    for (let i = 0; i < Math.min(contacts.length, 5); i++) {
+      const c = contacts[i];
+      this.logger.log(`📇 Contact[${i}]: ${JSON.stringify({
+        id: c.id, lid: c.lid, name: c.name, notify: c.notify, 
+        verifiedName: c.verifiedName, imgUrl: c.imgUrl,
+        // عرض كل المفاتيح المتوفرة
+        allKeys: Object.keys(c),
+      })}`);
+    }
+
+    for (const contact of contacts) {
+      try {
+        const id = contact.id || '';
+        const lid = contact.lid || '';
+
+        // حالة 1: id = @s.whatsapp.net و lid = @lid
+        if (id.includes('@s.whatsapp.net') && lid.includes('@lid')) {
+          const phone = id.split('@')[0].replace(/\D/g, '');
+          if (phone) {
+            map.set(lid, phone);
+            newMappings++;
+            this.logger.debug(`📱 Mapped: ${lid} → ${phone}`);
+          }
+        }
+
+        // حالة 2: id = @lid و lid = @s.whatsapp.net
+        if (id.includes('@lid') && lid.includes('@s.whatsapp.net')) {
+          const phone = lid.split('@')[0].replace(/\D/g, '');
+          if (phone) {
+            map.set(id, phone);
+            newMappings++;
+            this.logger.debug(`📱 Mapped: ${id} → ${phone}`);
+          }
+        }
+
+        // حالة 3: id = @s.whatsapp.net (نحفظ الرقم بدون lid)
+        if (id.includes('@s.whatsapp.net') && !lid) {
+          const phone = id.split('@')[0].replace(/\D/g, '');
+          if (phone) {
+            map.set(id, phone);
+          }
+        }
+
+        // حالة 4: أي حقل يحتوي @s.whatsapp.net
+        for (const key of Object.keys(contact)) {
+          const val = contact[key];
+          if (typeof val === 'string' && val.includes('@s.whatsapp.net') && id.includes('@lid')) {
+            const phone = val.split('@')[0].replace(/\D/g, '');
+            if (phone && !map.has(id)) {
+              map.set(id, phone);
+              newMappings++;
+              this.logger.debug(`📱 Mapped via ${key}: ${id} → ${phone}`);
+            }
+          }
+        }
+      } catch {
+        // تخطي جهات الاتصال المعطوبة
+      }
+    }
+
+    this.logger.log(`📇 Channel ${channelId}: ${newMappings} new mappings (total: ${map.size})`);
+  }
+
+  /**
+   * ✅ استخراج ربط @lid → phone من تاريخ المحادثات
+   * messaging-history.set يحتوي على chats و contacts مع metadata
+   */
+  private handleHistorySet(channelId: string, data: any): void {
+    if (!this.lidToPhone.has(channelId)) {
+      this.lidToPhone.set(channelId, new Map());
+    }
+    const map = this.lidToPhone.get(channelId)!;
+    let newMappings = 0;
+
+    try {
+      // 🔍 LOG: عرض بنية البيانات
+      this.logger.log(`📜 messaging-history.set fired for channel ${channelId}: keys=${Object.keys(data || {}).join(', ')}`);
+
+      // استخراج من chats
+      const chats = data?.chats || [];
+      this.logger.log(`📜 Chats received: ${chats.length}`);
+      for (const chat of chats) {
+        const chatId = chat.id || '';
+        const lidJid = chat.lidJid || chat.lid || '';
+
+        // 🔍 LOG: أول 5 chats
+        if (chats.indexOf(chat) < 5) {
+          this.logger.log(`📜 Chat: ${JSON.stringify({ id: chatId, lidJid, allKeys: Object.keys(chat) })}`);
+        }
+
+        // ربط: chatId = @s.whatsapp.net و lidJid = @lid
+        if (chatId.includes('@s.whatsapp.net') && lidJid.includes('@lid')) {
+          const phone = chatId.split('@')[0].replace(/\D/g, '');
+          if (phone) {
+            map.set(lidJid, phone);
+            newMappings++;
+          }
+        }
+
+        // ربط: chatId = @lid و lidJid = @s.whatsapp.net
+        if (chatId.includes('@lid') && lidJid.includes('@s.whatsapp.net')) {
+          const phone = lidJid.split('@')[0].replace(/\D/g, '');
+          if (phone) {
+            map.set(chatId, phone);
+            newMappings++;
+          }
+        }
+      }
+
+      // استخراج من contacts
+      const contacts = data?.contacts || [];
+      if (contacts.length > 0) {
+        this.logger.log(`📜 Contacts from history: ${contacts.length}`);
+        this.handleContactsUpsert(channelId, contacts);
+      }
+
+    } catch (error) {
+      this.logger.error(`Error processing messaging-history.set: ${error instanceof Error ? error.message : 'Unknown'}`);
+    }
+
+    if (newMappings > 0) {
+      this.logger.log(`📜 Channel ${channelId}: ${newMappings} new mappings from history (total: ${map.size})`);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🛠️ Helpers
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  private getConnectedSession(channelId: string): WhatsAppSession {
+    const session = this.sessions.get(channelId);
+    if (!session || session.status !== 'connected' || !session.socket) {
+      throw new Error('جلسة واتساب غير متصلة');
+    }
+    return session;
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * ✅ تحويل JID للإرسال
+   * الإرسال لـ @lid يعمل مباشرة (مؤكد من Baileys maintainers)
+   * لكن @s.whatsapp.net أكثر موثوقية → نفضله إذا عندنا الرقم
+   */
+  private resolveJidForSending(channelId: string, jid: string): string {
+    // إذا كان @lid → حاول إيجاد الرقم الحقيقي (أفضل) وإلا أرسل لـ @lid مباشرة
+    if (jid.includes('@lid')) {
+      const channelMap = this.lidToPhone.get(channelId);
+      if (channelMap?.has(jid)) {
+        const phone = channelMap.get(jid)!;
+        this.logger.log(`📤 SEND: Using phone instead of @lid: ${jid} → ${phone}@s.whatsapp.net`);
+        return `${phone}@s.whatsapp.net`;
+      }
+
+      // @lid مباشرة — يعمل حسب Baileys docs
+      this.logger.log(`📤 SEND: Sending to @lid directly: ${jid}`);
+      return jid;
+    }
+
+    return this.formatJid(jid);
+  }
+
+  private formatJid(phoneNumber: string): string {
+    // ✅ إذا كان JID كامل (يحتوي @) → إرجاعه كما هو
+    if (phoneNumber.includes('@')) {
+      return phoneNumber;
+    }
+    // أرقام عادية → تحويل لصيغة WhatsApp
+    let cleaned = phoneNumber.replace(/^\+|^00/, '').replace(/\D/g, '');
+    return `${cleaned}@s.whatsapp.net`;
+  }
+
+  private mapStatus(status: WhatsAppSession['status']): 'pending' | 'scanning' | 'connected' | 'expired' {
+    switch (status) {
+      case 'qr_ready':
+      case 'pairing_code':
+        return 'pending';
+      case 'connecting':
+        return 'scanning';
+      case 'connected':
+        return 'connected';
+      default:
+        return 'expired';
+    }
+  }
+
+  isConnected(channelId: string): boolean {
+    return this.sessions.get(channelId)?.status === 'connected';
+  }
+
+  getConnectedSessions(): string[] {
+    return Array.from(this.sessions.entries())
+      .filter(([, s]) => s.status === 'connected')
+      .map(([id]) => id);
+  }
+
+  getDiagnostics(): Record<string, any> {
+    return {
+      sessionsPath: this.sessionsPath,
+      activeSessions: this.sessions.size,
+      sessions: Array.from(this.sessions.entries()).map(([id, s]) => ({
+        id, status: s.status, method: s.connectionMethod,
+        hasQR: !!s.qrCode, hasPairingCode: !!s.pairingCode,
+        phoneNumber: s.phoneNumber, retryCount: s.retryCount,
+      })),
+    };
   }
 }
