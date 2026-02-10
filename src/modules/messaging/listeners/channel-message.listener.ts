@@ -117,6 +117,8 @@ export class ChannelMessageListener {
       const messageType = this.mapMessageType(payload.type);
 
       // 3️⃣ معالجة الرسالة عبر MessageService
+      const cleanPhone = this.cleanPhoneNumber(payload.from);
+
       const message = await this.messageService.processIncomingMessage({
         channelId: channel.id,
         channelType: channel.type,
@@ -125,9 +127,9 @@ export class ChannelMessageListener {
         type: messageType,
         content: payload.content || '',
         timestamp: payload.timestamp || new Date(),
-        senderExternalId: payload.from,
+        senderExternalId: cleanPhone,
         senderName: payload.customerName,
-        senderPhone: payload.from,
+        senderPhone: cleanPhone,
         interactiveReply: payload.interactiveReply,
         metadata: {
           raw: payload.raw ? 'present' : undefined,
@@ -191,6 +193,8 @@ export class ChannelMessageListener {
       }
 
       // 2️⃣ معالجة الرسالة
+      const cleanPhone = this.cleanPhoneNumber(payload.from);
+
       const message = await this.messageService.processIncomingMessage({
         channelId: channel.id,
         channelType: ChannelType.WHATSAPP_QR,
@@ -199,8 +203,8 @@ export class ChannelMessageListener {
         type: MessageType.TEXT,
         content: payload.text || '',
         timestamp: payload.timestamp || new Date(),
-        senderExternalId: payload.from,
-        senderPhone: payload.from,
+        senderExternalId: cleanPhone,
+        senderPhone: cleanPhone,
       });
 
       // 3️⃣ تحديث عداد الرسائل فقط (lastActivityAt يُحدّث داخل transaction في message.service)
@@ -293,5 +297,19 @@ export class ChannelMessageListener {
     };
 
     return typeMap[type] || MessageType.TEXT;
+  }
+
+  /**
+   * ✅ تنظيف رقم الهاتف من صيغة JID
+   * Baileys يرسل: 67173456302225@s.whatsapp.net أو 67173456302225@lid
+   * WhatsApp Official يرسل: 67173456302225
+   * نحتاج: 67173456302225 (أرقام فقط)
+   */
+  private cleanPhoneNumber(raw: string): string {
+    if (!raw) return '';
+    // إزالة أي suffix بعد @ (مثل @s.whatsapp.net, @lid, @c.us)
+    const withoutSuffix = raw.split('@')[0];
+    // إزالة أي رموز غير رقمية (مثل + أو -)
+    return withoutSuffix.replace(/\D/g, '');
   }
 }
