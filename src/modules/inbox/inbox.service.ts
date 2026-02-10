@@ -191,10 +191,10 @@ export class InboxService {
       return {
         id: conv.id,
         customerId: conv.customerId || conv.customerExternalId || '',
-        // ✅ الرقم أولاً إذا متوفر، وإلا الاسم
-        customerName: phone || name || (this.isLidIdentifier(conv.customerExternalId) ? 'عميل واتساب' : 'عميل'),
-        // ✅ الاسم الحقيقي (يظهر تحت الرقم فقط إذا كلاهما متوفر)
-        customerPhone: (name && phone) ? name : '',
+        // ✅ الاسم للعرض: الاسم الحقيقي أو "عميل واتساب" كـ fallback
+        customerName: name || 'عميل واتساب',
+        // ✅ الرقم دائماً: يظهر تحت الاسم
+        customerPhone: phone,
         channel: this.mapChannelType(conv.channel?.type),
         status: conv.status,
         lastMessage: lastMessages[conv.id] || '',
@@ -358,10 +358,10 @@ export class InboxService {
 
     return {
       ...conversation,
-      // ✅ الرقم أولاً إذا متوفر، وإلا الاسم
-      customerName: detailPhone || detailName || (this.isLidIdentifier(conversation.customerExternalId) ? 'عميل واتساب' : 'عميل'),
-      // ✅ الاسم الحقيقي (يظهر تحت الرقم فقط إذا كلاهما متوفر)
-      customerPhone: (detailName && detailPhone) ? detailName : '',
+      // ✅ الاسم للعرض: الاسم الحقيقي أو "عميل واتساب" كـ fallback
+      customerName: detailName || 'عميل واتساب',
+      // ✅ الرقم دائماً: يظهر تحت الاسم
+      customerPhone: detailPhone,
       customerExternalId: conversation.customerExternalId || '',
       messages: messages.map(m => this.mapMessage(m)),
     };
