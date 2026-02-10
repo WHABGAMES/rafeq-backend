@@ -640,19 +640,23 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
 
   async sendTextMessage(channelId: string, to: string, text: string): Promise<{ messageId: string }> {
     const session = this.getConnectedSession(channelId);
-    const result = await session.socket!.sendMessage(this.formatJid(to), { text });
+    const resolvedJid = this.resolveJidForSending(channelId, to);
+    this.logger.debug(`📤 Sending message: ${to} → resolved: ${resolvedJid}`);
+    const result = await session.socket!.sendMessage(resolvedJid, { text });
     return { messageId: result?.key?.id || '' };
   }
 
   async sendImageMessage(channelId: string, to: string, imageUrl: string, caption?: string): Promise<{ messageId: string }> {
     const session = this.getConnectedSession(channelId);
-    const result = await session.socket!.sendMessage(this.formatJid(to), { image: { url: imageUrl }, caption });
+    const resolvedJid = this.resolveJidForSending(channelId, to);
+    const result = await session.socket!.sendMessage(resolvedJid, { image: { url: imageUrl }, caption });
     return { messageId: result?.key?.id || '' };
   }
 
   async sendDocumentMessage(channelId: string, to: string, documentUrl: string, fileName: string, mimeType: string): Promise<{ messageId: string }> {
     const session = this.getConnectedSession(channelId);
-    const result = await session.socket!.sendMessage(this.formatJid(to), { document: { url: documentUrl }, fileName, mimetype: mimeType });
+    const resolvedJid = this.resolveJidForSending(channelId, to);
+    const result = await session.socket!.sendMessage(resolvedJid, { document: { url: documentUrl }, fileName, mimetype: mimeType });
     return { messageId: result?.key?.id || '' };
   }
 
@@ -870,6 +874,30 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
 
   private delay(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * ✅ تحويل @lid إلى @s.whatsapp.net للإرسال
+   * @lid هو معرّف داخلي لواتساب — الإرسال إليه ينشئ محادثة جديدة
+   * يجب استخدام @s.whatsapp.net (الرقم الحقيقي) للرد في نفس المحادثة
+   */
+  private resolveJidForSending(channelId: string, jid: string): string {
+    // إذا كان @lid → حاول إيجاد الرقم الحقيقي
+    if (jid.includes('@lid')) {
+      const channelMap = this.lidToPhone.get(channelId);
+      if (channelMap?.has(jid)) {
+        const phone = channelMap.get(jid)!;
+        this.logger.log(`📱 Resolved @lid for sending: ${jid} → ${phone}@s.whatsapp.net`);
+        return `${phone}@s.whatsapp.net`;
+      }
+
+      // ⚠️ لم نتمكن من إيجاد الرقم — نرسل لـ @lid كآخر حل
+      this.logger.warn(`⚠️ Cannot resolve @lid to phone: ${jid} — sending to @lid directly`);
+      return jid;
+    }
+
+    // تنسيق عادي للأرقام
+    return this.formatJid(jid);
   }
 
   private formatJid(phoneNumber: string): string {
