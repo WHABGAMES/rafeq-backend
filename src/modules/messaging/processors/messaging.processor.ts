@@ -3,10 +3,11 @@
  * ║              RAFIQ PLATFORM - Messaging Queue Processor                        ║
  * ║                                                                                ║
  * ║  ✅ يعالج jobs من queue 'messaging':                                           ║
- * ║     - send-message: إرسال فعلي عبر WhatsApp/Discord                           ║
+ * ║     - send-message: إرسال فعلي عبر WhatsApp (safety net فقط)                 ║
  * ║     - process-incoming: معالجة إضافية للرسائل الواردة                          ║
  * ║                                                                                ║
- * ║  ✅ يتبع نفس نمط notification.processor.ts (BullMQ + WorkerHost)              ║
+ * ║  📌 ملاحظة: الإرسال الأساسي يتم مباشرة في MessageService.createOutgoingMessage ║
+ * ║     هذا الـ processor يُستخدم كـ fallback فقط                                  ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -165,8 +166,12 @@ export class MessagingProcessor extends WorkerHost {
           message.content || '',
         );
         externalId = result?.messageId;
+
+        // ✅ واتساب لازم يرجع messageId حقيقي
+        if (!externalId) {
+          throw new Error(`WhatsApp returned no messageId for ${recipient}`);
+        }
       } else {
-        // قنوات أخرى — event لحين بناء الإرسال المباشر
         this.eventEmitter.emit(`channel.${channel.type}.send`, {
           message,
           channel,
@@ -175,29 +180,29 @@ export class MessagingProcessor extends WorkerHost {
         });
       }
 
-      // 4️⃣ تحديث حالة الرسالة
+      // 4️⃣ تحديث حالة الرسالة — فقط بعد التأكيد
       await this.messageRepo.update(messageId, {
         status: MessageStatus.SENT,
         sentAt: new Date(),
         ...(externalId ? { externalId } : {}),
       });
 
-      this.logger.log(`✅ Message ${messageId} sent to ${recipient} via ${channel.type}`);
+      this.logger.log(`✅ Message ${messageId} CONFIRMED sent | externalId: ${externalId}`);
 
       return { status: 'sent', externalId };
 
     } catch (error) {
       this.logger.error(`❌ Failed to send message: ${messageId}`, {
         error: error instanceof Error ? error.message : 'Unknown',
-        stack: error instanceof Error ? error.stack : undefined,
       });
 
+      // ✅ تحديث الحالة إلى FAILED
       await this.messageRepo.update(messageId, {
         status: MessageStatus.FAILED,
         errorMessage: error instanceof Error ? error.message : 'Send failed',
       });
 
-      throw error; // BullMQ will retry
+      throw error; // BullMQ will retry if attempts remain
     }
   }
 
