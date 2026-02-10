@@ -100,6 +100,8 @@ const RECONNECT_BASE_DELAY_MS = 5000;
 export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
   private readonly logger = new Logger(WhatsAppBaileysService.name);
   private readonly sessions = new Map<string, WhatsAppSession>();
+  // ✅ خريطة تربط معرّفات @lid بأرقام الهاتف الحقيقية لكل قناة
+  private readonly lidToPhone = new Map<string, Map<string, string>>();
   private sessionsPath: string;
 
   constructor(
@@ -294,6 +296,11 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
     sock.ev.on('messages.upsert', async (messageUpdate: MessageUpsert) => {
       await this.handleIncomingMessages(channelId, messageUpdate);
     });
+
+    // ✅ التقاط جهات الاتصال لربط @lid بأرقام الهاتف الحقيقية
+    sock.ev.on('contacts.upsert', (contacts: any[]) => {
+      this.handleContactsUpsert(channelId, contacts);
+    });
   }
 
   /**
@@ -446,6 +453,11 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
         await this.handleIncomingMessages(channelId, messageUpdate);
       });
 
+      // ✅ التقاط جهات الاتصال لربط @lid بأرقام الهاتف الحقيقية
+      sock.ev.on('contacts.upsert', (contacts: any[]) => {
+        this.handleContactsUpsert(channelId, contacts);
+      });
+
       // ✅ v10: Phone Pairing Code — مع إصلاح التأخير والتنظيف
       if (method === 'phone_code' && phoneNumber) {
         // ✅ v10: انتظار 5 ثواني بدل 3 — Socket يحتاج وقت أكثر للاتصال الأولي
@@ -572,10 +584,12 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
           existing.socket.ev.removeAllListeners('connection.update');
           existing.socket.ev.removeAllListeners('creds.update');
           existing.socket.ev.removeAllListeners('messages.upsert');
+          existing.socket.ev.removeAllListeners('contacts.upsert');
           existing.socket.end(undefined);
         }
       } catch {}
       this.sessions.delete(channelId);
+      this.lidToPhone.delete(channelId);
       await this.delay(1000);
     }
   }
@@ -760,7 +774,16 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
       const isLidJid = jid.includes('@lid');
       // @lid = معرّف داخلي لواتساب وليس رقم هاتف حقيقي
       // @s.whatsapp.net = رقم هاتف حقيقي
-      const realPhone = isLidJid ? undefined : fromPhone;
+      let realPhone = isLidJid ? undefined : fromPhone;
+
+      // ✅ محاولة استخراج الرقم الحقيقي من خريطة @lid → phone
+      if (isLidJid) {
+        const channelMap = this.lidToPhone.get(channelId);
+        if (channelMap?.has(jid)) {
+          realPhone = channelMap.get(jid);
+          this.logger.debug(`📱 Resolved @lid to phone: ${jid} → ${realPhone}`);
+        }
+      }
 
       // ✅ استخراج اسم العميل من pushName (اسم واتساب الظاهر)
       const pushName = (msg as any).pushName || undefined;
@@ -778,6 +801,58 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
         timestamp,
         rawMessage: msg,
       });
+    }
+  }
+
+  /**
+   * ✅ التقاط جهات الاتصال وبناء خريطة @lid → رقم هاتف حقيقي
+   * Baileys يُطلق هذا الحدث عند مزامنة جهات الاتصال
+   */
+  private handleContactsUpsert(channelId: string, contacts: any[]): void {
+    if (!this.lidToPhone.has(channelId)) {
+      this.lidToPhone.set(channelId, new Map());
+    }
+    const map = this.lidToPhone.get(channelId)!;
+    let newMappings = 0;
+
+    for (const contact of contacts) {
+      try {
+        const id = contact.id || '';
+        const lid = contact.lid || '';
+
+        // حالة 1: id = @s.whatsapp.net و lid = @lid
+        if (id.includes('@s.whatsapp.net') && lid.includes('@lid')) {
+          const phone = id.split('@')[0].replace(/\D/g, '');
+          if (phone && !map.has(lid)) {
+            map.set(lid, phone);
+            newMappings++;
+          }
+        }
+
+        // حالة 2: id = @lid و lid = @s.whatsapp.net (بعض إصدارات Baileys)
+        if (id.includes('@lid') && lid.includes('@s.whatsapp.net')) {
+          const phone = lid.split('@')[0].replace(/\D/g, '');
+          if (phone && !map.has(id)) {
+            map.set(id, phone);
+            newMappings++;
+          }
+        }
+
+        // حالة 3: id = @s.whatsapp.net بدون lid — نربطه عكسياً إذا عندنا lid في حقل آخر
+        if (id.includes('@s.whatsapp.net') && !lid) {
+          const phone = id.split('@')[0].replace(/\D/g, '');
+          // نحفظ الرقم مرتبط بالـ id نفسه للاستخدام لاحقاً
+          if (phone) {
+            map.set(id, phone);
+          }
+        }
+      } catch {
+        // تخطي جهات الاتصال المعطوبة
+      }
+    }
+
+    if (newMappings > 0) {
+      this.logger.log(`📇 Channel ${channelId}: ${newMappings} new lid→phone mappings (total: ${map.size})`);
     }
   }
 
