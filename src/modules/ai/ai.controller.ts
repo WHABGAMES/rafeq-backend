@@ -164,6 +164,12 @@ class AddKnowledgeDto {
   content: string;
 
   @IsOptional() @IsString()
+  answer?: string;
+
+  @IsOptional() @IsString()
+  type?: string;
+
+  @IsOptional() @IsString()
   category?: string;
 
   @IsOptional() @IsArray()
@@ -179,6 +185,12 @@ class UpdateKnowledgeDto {
 
   @IsOptional() @IsString()
   content?: string;
+
+  @IsOptional() @IsString()
+  answer?: string;
+
+  @IsOptional() @IsString()
+  type?: string;
 
   @IsOptional() @IsString()
   category?: string;
@@ -263,12 +275,14 @@ export class AiController {
   @ApiOperation({ summary: 'جلب قاعدة المعرفة' })
   @ApiQuery({ name: 'category', required: false })
   @ApiQuery({ name: 'search', required: false })
+  @ApiQuery({ name: 'type', required: false, description: 'article | qna' })
   async getKnowledge(
     @Req() req: any,
     @Query('category') category?: string,
     @Query('search') search?: string,
+    @Query('type') type?: string,
   ) {
-    return this.aiService.getKnowledge(req.user.tenantId, { category, search });
+    return this.aiService.getKnowledge(req.user.tenantId, { category, search, type });
   }
 
   @Post('knowledge')
