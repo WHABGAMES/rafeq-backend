@@ -171,10 +171,11 @@ export class MessageService {
     }
 
     // 2️⃣ VALIDATE CHANNEL
+    // ✅ البحث بـ id فقط — الـ listener تحقق مسبقاً من ملكية القناة
+    // ملاحظة: storeId ≠ tenantId (storeId = Store UUID, tenantId = Tenant UUID)
     const channel = await this.channelRepo.findOne({
       where: {
         id: data.channelId,
-        storeId: data.tenantId,
       },
     });
 
@@ -183,20 +184,45 @@ export class MessageService {
     }
 
     // 3️⃣ FIND OR CREATE CONVERSATION
+    // ✅ البحث بالـ JID الكامل + الرقم المجرّد لتوافق البيانات القديمة
+    const bareNumber = data.senderExternalId.split('@')[0].replace(/\D/g, '');
+    const activeStatuses = In([
+      ConversationStatus.OPEN,
+      ConversationStatus.PENDING,
+      ConversationStatus.ASSIGNED,
+      ConversationStatus.RESOLVED,  // ✅ إعادة فتح المحادثة بدل إنشاء جديدة
+    ]);
+
     let conversation = await this.conversationRepo.findOne({
-      where: {
-        tenantId: data.tenantId,
-        channelId: data.channelId,
-        customerExternalId: data.senderExternalId,
-        status: In([
-          ConversationStatus.OPEN,
-          ConversationStatus.PENDING,
-          ConversationStatus.ASSIGNED,
-        ]),
-      },
+      where: [
+        // البحث بالـ JID الكامل (الصيغة الجديدة)
+        {
+          tenantId: data.tenantId,
+          channelId: data.channelId,
+          customerExternalId: data.senderExternalId,
+          status: activeStatuses,
+        },
+        // البحث بالرقم المجرّد (البيانات القديمة) — backward compatibility
+        ...(bareNumber !== data.senderExternalId ? [{
+          tenantId: data.tenantId,
+          channelId: data.channelId,
+          customerExternalId: bareNumber,
+          status: activeStatuses,
+        }] : []),
+      ],
+      order: { lastMessageAt: 'DESC' },
     });
 
     const isNewConversation = !conversation;
+
+    // ✅ تحديث customerExternalId للصيغة الجديدة إذا وُجدت محادثة قديمة بالرقم المجرّد
+    if (conversation && conversation.customerExternalId !== data.senderExternalId) {
+      conversation.customerExternalId = data.senderExternalId;
+      if (data.senderPhone) {
+        conversation.customerPhone = data.senderPhone;
+      }
+      await this.conversationRepo.save(conversation);
+    }
 
     if (isNewConversation) {
       this.logger.log(`📝 Creating new conversation for ${data.senderExternalId}`);
