@@ -197,9 +197,10 @@ export class ChannelMessageListener {
       // 2️⃣ معالجة الرسالة
       // ✅ استخدام الـ JID الكامل للمطابقة والإرسال، والرقم النظيف للعرض
       const cleanPhone = payload.fromPhone || this.cleanPhoneNumber(payload.from);
-      // ✅ @lid = معرّف داخلي وليس رقم حقيقي → لا نحفظه كرقم هاتف
       const isLid = payload.from.includes('@lid');
-      const displayPhone = isLid ? undefined : cleanPhone;
+      // ✅ إذا عندنا fromPhone (من remoteJidAlt/senderPn) → استخدمه حتى لو @lid
+      // إذا ما عندنا fromPhone و @lid → undefined (أرقام @lid ليست أرقام هاتف)
+      const displayPhone = payload.fromPhone || (isLid ? undefined : cleanPhone);
 
       const message = await this.messageService.processIncomingMessage({
         channelId: channel.id,
