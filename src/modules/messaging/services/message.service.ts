@@ -26,6 +26,9 @@ import {
 } from '../../../database/entities/conversation.entity';
 import { Channel, ChannelType } from '../../../database/entities/channel.entity';
 
+// ✅ ChannelsService — للإرسال المباشر عبر WhatsApp
+import { ChannelsService } from '../../channels/channels.service';
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 📌 INTERFACES & TYPES
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -147,6 +150,9 @@ export class MessageService {
     
     @InjectQueue('messaging')
     private readonly messagingQueue: Queue,
+
+    // ✅ إرسال مباشر — لا نحفظ إلا بعد تأكيد الوصول
+    private readonly channelsService: ChannelsService,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -338,30 +344,133 @@ export class MessageService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // 📤 CREATE OUTGOING MESSAGE
+  // 📤 CREATE OUTGOING MESSAGE — أرسل أولاً، احفظ بعدين
   // ═══════════════════════════════════════════════════════════════════════════
 
   async createOutgoingMessage(data: OutgoingMessageData): Promise<Message> {
     this.logger.log(`📤 Creating outgoing message for conversation: ${data.conversationId}`);
 
+    // 1️⃣ تحميل المحادثة والقناة
     const conversation = await this.conversationRepo.findOne({
       where: { id: data.conversationId },
-      relations: ['channel'],
     });
 
     if (!conversation) {
       throw new NotFoundException(`Conversation not found: ${data.conversationId}`);
     }
 
+    const channel = await this.channelRepo.findOne({
+      where: { id: conversation.channelId },
+    });
+
+    if (!channel) {
+      throw new NotFoundException(`Channel not found: ${conversation.channelId}`);
+    }
+
+    // 2️⃣ تحديد المستقبل
+    const recipient = conversation.customerExternalId || conversation.customerPhone;
+    if (!recipient) {
+      throw new Error(`No recipient for conversation: ${data.conversationId}`);
+    }
+
+    // 3️⃣ ✅ الإرسال أولاً — لا نحفظ شيء قبل تأكيد واتساب
+    const isWhatsApp = channel.type === ChannelType.WHATSAPP_QR || channel.type === ChannelType.WHATSAPP_OFFICIAL;
+    let externalId: string | undefined;
+    let sendStatus: MessageStatus = MessageStatus.SENT;
+    let errorMessage: string | undefined;
+
+    if (isWhatsApp) {
+      if (!data.content) {
+        // ⚠️ واتساب بدون محتوى نصي — لا نرسل
+        sendStatus = MessageStatus.FAILED;
+        errorMessage = 'No text content to send via WhatsApp';
+        this.logger.warn(`⚠️ WhatsApp message with no content — saving as FAILED`);
+      } else {
+        try {
+          this.logger.log(`📤 SEND FIRST → ${recipient} | "${(data.content || '').substring(0, 50)}..."`);
+
+          // ✅ محاولة 1
+          const result = await this.channelsService.sendWhatsAppMessage(
+            channel.id,
+            recipient,
+            data.content,
+          );
+          externalId = result?.messageId;
+
+          // ✅ تحقق من الاستجابة
+          if (!externalId) {
+            this.logger.warn(`⚠️ Attempt 1: no messageId — retrying in 2s...`);
+            await this.delay(2000);
+
+            // ✅ محاولة 2
+            const retry = await this.channelsService.sendWhatsAppMessage(
+              channel.id,
+              recipient,
+              data.content,
+            );
+            externalId = retry?.messageId;
+          }
+
+          if (!externalId) {
+            // ❌ فشل نهائي — واتساب ما أكّد
+            sendStatus = MessageStatus.FAILED;
+            errorMessage = 'WhatsApp returned no messageId after 2 attempts';
+            this.logger.error(`❌ SEND FAILED: no messageId for ${recipient} — will save as FAILED`);
+          } else {
+            this.logger.log(`✅ WhatsApp CONFIRMED: messageId=${externalId} to=${recipient}`);
+          }
+
+        } catch (error) {
+          // ✅ محاولة ثانية بعد خطأ
+          this.logger.warn(`⚠️ Attempt 1 threw error — retrying in 2s... Error: ${error instanceof Error ? error.message : 'Unknown'}`);
+
+          try {
+            await this.delay(2000);
+            const retry = await this.channelsService.sendWhatsAppMessage(
+              channel.id,
+              recipient,
+              data.content,
+            );
+            externalId = retry?.messageId;
+
+            if (externalId) {
+              sendStatus = MessageStatus.SENT;
+              this.logger.log(`✅ Retry SUCCEEDED: messageId=${externalId}`);
+            } else {
+              sendStatus = MessageStatus.FAILED;
+              errorMessage = 'WhatsApp returned no messageId on retry';
+              this.logger.error(`❌ Retry also failed — no messageId`);
+            }
+          } catch (retryError) {
+            sendStatus = MessageStatus.FAILED;
+            errorMessage = retryError instanceof Error ? retryError.message : 'Send failed after 2 attempts';
+            this.logger.error(`❌ BOTH attempts failed: ${errorMessage}`);
+          }
+        }
+      }
+    } else {
+      // قنوات أخرى — event
+      this.eventEmitter.emit(`channel.${channel.type}.send`, {
+        content: data.content,
+        channel,
+        conversation,
+        recipient,
+      });
+    }
+
+    // 4️⃣ ✅ الآن فقط نحفظ — بالحالة الصحيحة
     const message = this.messageRepo.create({
       tenantId: conversation.tenantId,
       conversationId: conversation.id,
       direction: MessageDirection.OUTBOUND,
       type: data.type,
-      status: MessageStatus.PENDING,
+      status: sendStatus,
       sender: data.sender,
       content: data.content,
       media: data.media,
+      externalId: externalId || undefined,
+      sentAt: sendStatus === MessageStatus.SENT ? new Date() : undefined,
+      errorMessage: errorMessage,
       metadata: {
         agentId: data.agentId,
         ...data.aiMetadata,
@@ -372,16 +481,20 @@ export class MessageService {
 
     const savedMessage = await this.messageRepo.save(message);
 
-    await this.messagingQueue.add('send-message', {
-      messageId: savedMessage.id,
-      conversationId: conversation.id,
-      channelId: conversation.channelId,
-    }, {
-      attempts: 3,
-      backoff: { type: 'exponential', delay: 1000 },
-    });
+    // 5️⃣ تحديث المحادثة
+    if (sendStatus === MessageStatus.SENT) {
+      await this.conversationRepo.update(conversation.id, {
+        lastMessageAt: new Date(),
+      });
+    }
+
+    this.logger.log(`💾 Message saved: ${savedMessage.id} | status: ${sendStatus} | externalId: ${externalId || 'NONE'}`);
 
     return savedMessage;
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
