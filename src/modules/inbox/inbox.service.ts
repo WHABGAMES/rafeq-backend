@@ -33,7 +33,7 @@ import {
 import { MessageSender } from '@database/entities/message.entity';
 
 // ✅ MessageService: لإرسال الرسائل من الـ inbox
-import { MessageService, OutgoingMessageData } from '../messaging/services/message.service';
+import { MessageService } from '../messaging/services/message.service';
 
 // Re-export for controller
 export { ConversationStatus, ConversationPriority };
