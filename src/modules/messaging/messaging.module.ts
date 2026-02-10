@@ -4,6 +4,7 @@
  * ║                                                                                ║
  * ║  ✅ v2: يسجل MessagingProcessor لمعالجة queue jobs                            ║
  * ║  ✅ v2: يستورد ChannelsModule للإرسال الفعلي عبر WhatsApp                     ║
+ * ║  ✅ v3: يسجل ChannelMessageListener — الجسر المفقود!                          ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -22,6 +23,9 @@ import { ConversationManagerService } from './services/conversation-manager.serv
 
 // Processor
 import { MessagingProcessor } from './processors/messaging.processor';
+
+// ✅ Listener — الجسر بين أحداث القنوات ونظام الرسائل
+import { ChannelMessageListener } from './listeners/channel-message.listener';
 
 // ChannelsModule — للإرسال الفعلي عبر WhatsApp
 import { ChannelsModule } from '../channels/channels.module';
@@ -60,7 +64,8 @@ import { ChannelsModule } from '../channels/channels.module';
   providers: [
     MessageService,
     ConversationManagerService,
-    MessagingProcessor, // ✅ NEW: يعالج send-message + process-incoming
+    MessagingProcessor,          // ✅ يعالج send-message + process-incoming
+    ChannelMessageListener,      // ✅ يربط أحداث القنوات بنظام الرسائل
   ],
 
   exports: [
