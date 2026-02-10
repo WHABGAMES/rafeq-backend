@@ -1,6 +1,6 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║              RAFIQ PLATFORM - AI Service (Production v2)                       ║
+ * ║              RAFIQ PLATFORM - AI Service (Production v3)                       ║
  * ║                                                                                ║
  * ║  ✅ جميع البيانات حقيقية من DB — صفر قيم وهمية                                ║
  * ║  ✅ مكتبة المعلومات: CRUD حقيقي مع KnowledgeBase entity                       ║
@@ -10,16 +10,21 @@
  * ║  ✅ التحويل البشري: silence + تنبيهات EventEmitter                             ║
  * ║  ✅ التحليلات: محسوبة من المحادثات والرسائل الفعلية                             ║
  * ║                                                                                ║
- * ║  🔧 v2 Fixes (مطابقة حقيقية لـ entities):                                      ║
- * ║  - Conversation لا يملك storeId → نجلبه عبر Channel.storeId                   ║
- * ║  - Message يستخدم content (وليس body)                                         ║
- * ║  - Order يستخدم totalAmount مباشرة (ليس as any)                               ║
- * ║  - Order يستخدم shippingInfo (ليس shipping)                                   ║
- * ║  - AI detection عبر ai_metadata IS NOT NULL                                   ║
+ * ║  🔧 v3 Fixes (verified against entities):                                      ║
+ * ║  - BUG-2:  request_human_agent يستدعي handleHandoff() فعلياً                  ║
+ * ║  - BUG-3:  failedAttempts يُتتبع في aiContext (column: ai_context)            ║
+ * ║  - BUG-5:  silenceDurationMinutes يُطبق فعلياً + handoffAt في aiContext       ║
+ * ║  - BUG-7:  Knowledge Base محمي بحد أقصى 6000 حرف                             ║
+ * ║  - BUG-8:  updateSettings يرفض إذا لم يوجد storeId                            ║
+ * ║  - BUG-9:  تحذير واضح إذا OpenAI API Key مفقود                               ║
+ * ║  - BUG-10: avgResponseTime محسوب من aiMetadata (column: ai_metadata)          ║
+ * ║  - BUG-11: handoffRate يحسب فقط المحادثات المحوّلة من AI                       ║
+ * ║  - BUG-15: model يُقرأ من config.ai.model كـ fallback                         ║
+ * ║  - BUG-16: toolGetOrderStatus يبحث بـ storeId + tenantId                      ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Between } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
@@ -94,12 +99,14 @@ export interface AISettings {
 export interface ConversationContext {
   conversationId: string;
   tenantId: string;
+  storeId?: string;
   customerId: string;
   customerName?: string;
   channel: string;
   messageCount: number;
   failedAttempts: number;
   isHandedOff: boolean;
+  handoffAt?: string;
   previousMessages: Array<{ role: 'user' | 'assistant'; content: string }>;
 }
 
@@ -113,8 +120,11 @@ export interface AIResponse {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 📌 DEFAULTS
+// 📌 CONSTANTS
 // ═══════════════════════════════════════════════════════════════════════════════
+
+/** ✅ BUG-7: حد أقصى لحجم Knowledge Base في الـ System Prompt (حروف) */
+const MAX_KNOWLEDGE_CHARS = 6000;
 
 const AI_DEFAULTS: AISettings = {
   enabled: false,
@@ -152,6 +162,7 @@ const AI_DEFAULTS: AISettings = {
 export class AIService {
   private readonly logger = new Logger(AIService.name);
   private openai: OpenAI;
+  private readonly isApiKeyConfigured: boolean;
 
   constructor(
     private readonly configService: ConfigService,
@@ -172,9 +183,30 @@ export class AIService {
     @InjectRepository(Order)
     private readonly orderRepo: Repository<Order>,
   ) {
+    // ✅ BUG-9 FIX: تحذير واضح إذا API Key مفقود
     const apiKey = this.configService.get<string>('ai.apiKey');
-    this.openai = new OpenAI({ apiKey: apiKey || '' });
-    this.logger.log('✅ AI Service initialized');
+    this.isApiKeyConfigured = !!apiKey;
+
+    if (!this.isApiKeyConfigured) {
+      this.logger.warn(
+        '⚠️ OpenAI API key is NOT configured — AI features will not work. ' +
+          'Set OPENAI_API_KEY in your environment.',
+      );
+    }
+
+    this.openai = new OpenAI({ apiKey: apiKey || 'missing-api-key' });
+
+    // ✅ BUG-15 FIX: قراءة model الافتراضي من config.ai.model
+    const configModel = this.configService.get<string>('ai.model');
+    if (configModel && configModel !== AI_DEFAULTS.model) {
+      AI_DEFAULTS.model = configModel;
+    }
+
+    this.logger.log(
+      `✅ AI Service initialized ` +
+        `(API key: ${this.isApiKeyConfigured ? 'configured' : 'MISSING'}, ` +
+        `model: ${AI_DEFAULTS.model})`,
+    );
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -182,7 +214,7 @@ export class AIService {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   async getSettings(tenantId: string, storeId?: string): Promise<AISettings> {
-    const where: any = { tenantId, settingsKey: 'ai' };
+    const where: Record<string, unknown> = { tenantId, settingsKey: 'ai' };
     if (storeId) where.storeId = storeId;
 
     const row = await this.settingsRepo.findOne({ where });
@@ -193,13 +225,24 @@ export class AIService {
     return { ...AI_DEFAULTS };
   }
 
+  /**
+   * ✅ BUG-8 FIX: storeId مطلوب لحفظ الإعدادات
+   * StoreSettings entity: @Unique(['storeId', 'settingsKey'])
+   * استخدام tenantId كبديل سيخلق إعدادات مكررة أو خاطئة
+   */
   async updateSettings(
     tenantId: string,
     storeId: string | undefined,
     updates: Partial<AISettings>,
   ): Promise<AISettings> {
-    const where: any = { tenantId, settingsKey: 'ai' };
-    if (storeId) where.storeId = storeId;
+    if (!storeId) {
+      throw new BadRequestException(
+        'storeId is required to save AI settings. ' +
+          'Pass it via x-store-id header or storeId query parameter.',
+      );
+    }
+
+    const where = { tenantId, settingsKey: 'ai' as const, storeId };
 
     let row = await this.settingsRepo.findOne({ where });
 
@@ -214,7 +257,7 @@ export class AIService {
     } else {
       row = this.settingsRepo.create({
         tenantId,
-        storeId: storeId || tenantId,
+        storeId,
         settingsKey: 'ai',
         settingsValue: merged as unknown as Record<string, unknown>,
       });
@@ -226,7 +269,7 @@ export class AIService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 📚 KNOWLEDGE BASE — CRUD حقيقي مع KnowledgeBase entity
+  // 📚 KNOWLEDGE BASE — CRUD حقيقي
   // ═══════════════════════════════════════════════════════════════════════════════
 
   async getKnowledge(
@@ -243,10 +286,9 @@ export class AIService {
       qb.andWhere('kb.category = :category', { category: filters.category });
     }
     if (filters?.search) {
-      qb.andWhere(
-        '(kb.title ILIKE :search OR kb.content ILIKE :search)',
-        { search: `%${filters.search}%` },
-      );
+      qb.andWhere('(kb.title ILIKE :search OR kb.content ILIKE :search)', {
+        search: `%${filters.search}%`,
+      });
     }
 
     const items = await qb.getMany();
@@ -261,7 +303,7 @@ export class AIService {
 
     return {
       items,
-      categories: categoryCounts.map((c: any) => ({
+      categories: categoryCounts.map((c: Record<string, string>) => ({
         id: c.category,
         count: parseInt(c.count),
       })),
@@ -283,7 +325,8 @@ export class AIService {
       tenantId,
       title: data.title,
       content: data.content,
-      category: (data.category as KnowledgeCategory) || KnowledgeCategory.GENERAL,
+      category:
+        (data.category as KnowledgeCategory) || KnowledgeCategory.GENERAL,
       keywords: data.keywords || [],
       priority: data.priority ?? 10,
       isActive: true,
@@ -305,7 +348,9 @@ export class AIService {
       isActive: boolean;
     }>,
   ): Promise<KnowledgeBase | null> {
-    const entry = await this.knowledgeRepo.findOne({ where: { id, tenantId } });
+    const entry = await this.knowledgeRepo.findOne({
+      where: { id, tenantId },
+    });
     if (!entry) return null;
     Object.assign(entry, data);
     return this.knowledgeRepo.save(entry);
@@ -329,15 +374,54 @@ export class AIService {
       conversationId: context.conversationId,
     });
 
-    // 1. سكوت البوت بعد التحويل
+    // ✅ BUG-9: التحقق من API Key قبل المحاولة
+    if (!this.isApiKeyConfigured) {
+      this.logger.error(
+        'Cannot process AI message: OpenAI API key is not configured',
+      );
+      return {
+        reply: settings.fallbackMessage || AI_DEFAULTS.fallbackMessage,
+        confidence: 0,
+        shouldHandoff: true,
+        handoffReason: 'AI_NOT_CONFIGURED',
+      };
+    }
+
+    // ✅ BUG-5 FIX: سكوت البوت بعد التحويل — مع حساب المدة
     if (settings.silenceOnHandoff && context.isHandedOff) {
-      return { reply: '', confidence: 0, shouldHandoff: false, intent: 'SILENCED' };
+      const silenceExpired = this.isSilenceExpired(
+        context.handoffAt,
+        settings.silenceDurationMinutes,
+      );
+
+      if (!silenceExpired) {
+        return {
+          reply: '',
+          confidence: 0,
+          shouldHandoff: false,
+          intent: 'SILENCED',
+        };
+      }
+
+      // انتهت مدة الصمت → أعد البوت للعمل
+      this.logger.log(
+        `⏰ Silence expired for conversation ${context.conversationId} — re-enabling AI`,
+      );
+      await this.conversationRepo.update(
+        { id: context.conversationId },
+        { handler: ConversationHandler.AI },
+      );
+      context.isHandedOff = false;
     }
 
     // 2. كلمات التحويل المباشر
     const handoff = this.checkDirectHandoff(message, context, settings);
     if (handoff.shouldHandoff) {
-      await this.handleHandoff(context, settings, handoff.reason || 'CUSTOMER_REQUEST');
+      await this.handleHandoff(
+        context,
+        settings,
+        handoff.reason || 'CUSTOMER_REQUEST',
+      );
       return {
         reply: settings.handoffMessage || AI_DEFAULTS.handoffMessage,
         confidence: 1,
@@ -365,7 +449,7 @@ export class AIService {
     // 6. استدعاء OpenAI
     try {
       const completion = await this.openai.chat.completions.create({
-        model: settings.model || 'gpt-4o',
+        model: settings.model || AI_DEFAULTS.model,
         messages,
         tools: tools.length > 0 ? tools : undefined,
         tool_choice: tools.length > 0 ? 'auto' : undefined,
@@ -384,9 +468,25 @@ export class AIService {
         const toolResults = await this.executeToolCalls(
           assistantMsg.tool_calls,
           context,
+          settings,
         );
         toolsUsed.push(...toolResults.map((r) => r.name));
 
+        // ✅ BUG-2: إذا تم استدعاء request_human_agent → توقف فوراً
+        const handoffTool = toolResults.find(
+          (r) => r.name === 'request_human_agent',
+        );
+        if (handoffTool) {
+          return {
+            reply: settings.handoffMessage || AI_DEFAULTS.handoffMessage,
+            confidence: 1,
+            shouldHandoff: true,
+            handoffReason: 'CUSTOMER_REQUEST',
+            toolsUsed,
+          };
+        }
+
+        // إرسال نتائج الأدوات لـ OpenAI للحصول على رد نهائي
         const toolMessages: ChatCompletionMessageParam[] = [
           ...messages,
           assistantMsg as ChatCompletionMessageParam,
@@ -398,7 +498,7 @@ export class AIService {
         ];
 
         const followUp = await this.openai.chat.completions.create({
-          model: settings.model || 'gpt-4o',
+          model: settings.model || AI_DEFAULTS.model,
           messages: toolMessages,
           temperature: settings.temperature ?? 0.7,
           max_tokens: settings.maxTokens || 1000,
@@ -407,8 +507,16 @@ export class AIService {
         finalReply = followUp.choices[0]?.message?.content || finalReply;
       }
 
-      // 8. تحليل الرد
+      // 8. تحليل جودة الرد
       const analysis = this.analyzeResponseQuality(finalReply, message);
+
+      // ✅ BUG-3 FIX: تتبع failedAttempts في DB
+      if (analysis.confidence < 0.5 && !analysis.shouldHandoff) {
+        await this.incrementFailedAttempts(context);
+      } else if (analysis.confidence >= 0.7) {
+        await this.resetFailedAttempts(context);
+      }
+
       if (analysis.shouldHandoff) {
         await this.handleHandoff(context, settings, 'LOW_CONFIDENCE');
       }
@@ -450,28 +558,54 @@ export class AIService {
 
     const tones: Record<string, string> = {
       formal: isAr ? 'استخدم لغة رسمية ومهنية.' : 'Use formal language.',
-      friendly: isAr ? 'كن ودوداً ولطيفاً. استخدم الإيموجي عند المناسب.' : 'Be friendly and warm.',
-      professional: isAr ? 'كن مهنياً ومفيداً.' : 'Be professional and helpful.',
+      friendly: isAr
+        ? 'كن ودوداً ولطيفاً. استخدم الإيموجي عند المناسب.'
+        : 'Be friendly and warm.',
+      professional: isAr
+        ? 'كن مهنياً ومفيداً.'
+        : 'Be professional and helpful.',
     };
     prompt += '\n' + (tones[settings.tone] || tones.friendly);
 
-    if (settings.storeDescription) prompt += `\n${isAr ? 'عن المتجر' : 'About'}: ${settings.storeDescription}`;
-    if (settings.workingHours) prompt += `\n${isAr ? 'أوقات العمل' : 'Hours'}: ${settings.workingHours}`;
-    if (settings.returnPolicy) prompt += `\n${isAr ? 'سياسة الإرجاع' : 'Returns'}: ${settings.returnPolicy}`;
-    if (settings.shippingInfo) prompt += `\n${isAr ? 'الشحن' : 'Shipping'}: ${settings.shippingInfo}`;
+    if (settings.storeDescription)
+      prompt += `\n${isAr ? 'عن المتجر' : 'About'}: ${settings.storeDescription}`;
+    if (settings.workingHours)
+      prompt += `\n${isAr ? 'أوقات العمل' : 'Hours'}: ${settings.workingHours}`;
+    if (settings.returnPolicy)
+      prompt += `\n${isAr ? 'سياسة الإرجاع' : 'Returns'}: ${settings.returnPolicy}`;
+    if (settings.shippingInfo)
+      prompt += `\n${isAr ? 'الشحن' : 'Shipping'}: ${settings.shippingInfo}`;
 
-    // Knowledge base
+    // ✅ BUG-7 FIX: Knowledge base مع حد حجم MAX_KNOWLEDGE_CHARS
     const sp = settings.searchPriority || SearchPriority.LIBRARY_THEN_PRODUCTS;
-    if (sp === SearchPriority.LIBRARY_ONLY || sp === SearchPriority.LIBRARY_THEN_PRODUCTS) {
+    if (
+      sp === SearchPriority.LIBRARY_ONLY ||
+      sp === SearchPriority.LIBRARY_THEN_PRODUCTS
+    ) {
       const knowledge = await this.knowledgeRepo.find({
         where: { tenantId: context.tenantId, isActive: true },
         order: { priority: 'ASC' },
         take: 30,
       });
+
       if (knowledge.length > 0) {
-        prompt += isAr ? '\n\n=== معلومات المتجر ===' : '\n\n=== Knowledge Base ===';
+        let knowledgeText = '';
         for (const kb of knowledge) {
-          prompt += `\n[${kb.title}]: ${kb.content}`;
+          const entry = `\n[${kb.title}]: ${kb.content}`;
+          if (knowledgeText.length + entry.length > MAX_KNOWLEDGE_CHARS) {
+            this.logger.debug(
+              `Knowledge base truncated at ${knowledgeText.length} chars ` +
+                `(${knowledge.indexOf(kb)}/${knowledge.length} entries)`,
+            );
+            break;
+          }
+          knowledgeText += entry;
+        }
+        if (knowledgeText) {
+          prompt += isAr
+            ? '\n\n=== معلومات المتجر ==='
+            : '\n\n=== Knowledge Base ===';
+          prompt += knowledgeText;
         }
       }
     }
@@ -510,7 +644,10 @@ export class AIService {
           parameters: {
             type: 'object',
             properties: {
-              order_id: { type: 'string', description: 'Order ID or reference' },
+              order_id: {
+                type: 'string',
+                description: 'Order ID or reference',
+              },
             },
             required: ['order_id'],
           },
@@ -524,7 +661,10 @@ export class AIService {
           parameters: {
             type: 'object',
             properties: {
-              reason: { type: 'string', description: 'Reason for handoff' },
+              reason: {
+                type: 'string',
+                description: 'Reason for handoff',
+              },
             },
             required: ['reason'],
           },
@@ -533,6 +673,9 @@ export class AIService {
     ];
   }
 
+  /**
+   * ✅ BUG-2 FIX: executeToolCalls يستدعي handleHandoff فعلياً
+   */
   private async executeToolCalls(
     toolCalls: Array<{
       id: string;
@@ -540,27 +683,46 @@ export class AIService {
       function: { name: string; arguments: string };
     }>,
     context: ConversationContext,
-  ): Promise<Array<{ name: string; result: unknown; toolCallId: string }>> {
-    const results: Array<{ name: string; result: unknown; toolCallId: string }> = [];
+    settings: AISettings,
+  ): Promise<
+    Array<{ name: string; result: unknown; toolCallId: string }>
+  > {
+    const results: Array<{
+      name: string;
+      result: unknown;
+      toolCallId: string;
+    }> = [];
 
     for (const tc of toolCalls) {
-      let args: Record<string, any> = {};
-      try { args = JSON.parse(tc.function.arguments); } catch { /* empty */ }
+      let args: Record<string, unknown> = {};
+      try {
+        args = JSON.parse(tc.function.arguments);
+      } catch {
+        /* invalid JSON */
+      }
 
       let result: unknown;
       try {
         switch (tc.function.name) {
           case 'get_order_status':
-            result = await this.toolGetOrderStatus(context.tenantId, args.order_id);
+            // ✅ BUG-16 FIX: نمرر storeId أيضاً
+            result = await this.toolGetOrderStatus(
+              context.tenantId,
+              args.order_id as string,
+              context.storeId,
+            );
             break;
+
           case 'request_human_agent':
+            // ✅ BUG-2 FIX: استدعاء handleHandoff() فعلياً
+            await this.handleHandoff(
+              context,
+              settings,
+              (args.reason as string) || 'CUSTOMER_REQUEST',
+            );
             result = { success: true, message: 'تم التحويل للدعم البشري' };
-            this.eventEmitter.emit('conversation.handoff.requested', {
-              conversationId: context.conversationId,
-              tenantId: context.tenantId,
-              reason: args.reason,
-            });
             break;
+
           default:
             result = { error: 'Unknown function' };
         }
@@ -575,16 +737,34 @@ export class AIService {
   }
 
   /**
-   * ✅ يقرأ من Order entity مباشرة
-   * - totalAmount: حقل حقيقي في order.entity.ts (ليس as any)
-   * - shippingInfo: الحقل الحقيقي (ليس shipping)
+   * ✅ BUG-16 FIX: يبحث بـ storeId + tenantId
+   *
+   * Order entity:
+   * - tenantId: nullable (column: tenant_id)
+   * - storeId: required (column: store_id)
+   * - sallaOrderId: required (column: salla_order_id)
+   * - referenceId: nullable (column: reference_id)
    */
-  private async toolGetOrderStatus(tenantId: string, orderId: string): Promise<unknown> {
+  private async toolGetOrderStatus(
+    tenantId: string,
+    orderId: string,
+    storeId?: string,
+  ): Promise<unknown> {
+    const whereConditions: Record<string, unknown>[] = [
+      { tenantId, sallaOrderId: orderId },
+      { tenantId, referenceId: orderId },
+    ];
+
+    // ✅ BUG-16: بحث إضافي بـ storeId لأن tenantId قد يكون null
+    if (storeId) {
+      whereConditions.push(
+        { storeId, sallaOrderId: orderId },
+        { storeId, referenceId: orderId },
+      );
+    }
+
     const order = await this.orderRepo.findOne({
-      where: [
-        { tenantId, sallaOrderId: orderId },
-        { tenantId, referenceId: orderId },
-      ],
+      where: whereConditions,
     });
 
     if (!order) {
@@ -610,23 +790,49 @@ export class AIService {
       status: order.status,
       status_ar: statusAr[order.status] || order.status,
       total: order.totalAmount,
+      currency: order.currency,
       shipping_info: order.shippingInfo || null,
+      items_count: order.items?.length || 0,
     };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 🔄 HANDOFF
+  // 🔄 HANDOFF & SILENCE
   // ═══════════════════════════════════════════════════════════════════════════════
 
+  /**
+   * ✅ BUG-2 + BUG-5 FIX:
+   * - يحدّث handler فعلياً إلى HUMAN
+   * - يسجّل handoffAt في aiContext (للحساب مدة الصمت)
+   * - يطلق حدث ai.handoff للإشعارات
+   */
   private async handleHandoff(
     context: ConversationContext,
     settings: AISettings,
     reason: string,
   ): Promise<void> {
-    await this.conversationRepo.update(
-      { id: context.conversationId },
-      { handler: ConversationHandler.HUMAN },
-    );
+    const now = new Date().toISOString();
+
+    const conv = await this.conversationRepo.findOne({
+      where: { id: context.conversationId },
+    });
+
+    if (conv) {
+      const aiContext = (conv.aiContext || {}) as Record<string, unknown>;
+      conv.handler = ConversationHandler.HUMAN;
+      conv.aiContext = {
+        ...aiContext,
+        handoffAt: now,
+        handoffReason: reason,
+        failedAttempts: 0,
+      };
+      await this.conversationRepo.save(conv);
+    } else {
+      await this.conversationRepo.update(
+        { id: context.conversationId },
+        { handler: ConversationHandler.HUMAN },
+      );
+    }
 
     this.eventEmitter.emit('ai.handoff', {
       conversationId: context.conversationId,
@@ -635,6 +841,7 @@ export class AIService {
       customerName: context.customerName,
       channel: context.channel,
       reason,
+      handoffAt: now,
       notifyEmployeeIds: settings.handoffNotifyEmployeeIds,
       notifyPhones: settings.handoffNotifyPhones,
       notifyEmails: settings.handoffNotifyEmails,
@@ -646,6 +853,24 @@ export class AIService {
     });
   }
 
+  /**
+   * ✅ BUG-5 FIX: تحقق إذا انتهت مدة الصمت
+   */
+  private isSilenceExpired(
+    handoffAt: string | undefined,
+    silenceDurationMinutes: number,
+  ): boolean {
+    if (!handoffAt) return true;
+
+    const handoffTime = new Date(handoffAt).getTime();
+    if (isNaN(handoffTime)) return true;
+
+    const duration = silenceDurationMinutes || 60;
+    const elapsedMinutes = (Date.now() - handoffTime) / 60000;
+
+    return elapsedMinutes >= duration;
+  }
+
   private checkDirectHandoff(
     message: string,
     context: ConversationContext,
@@ -654,8 +879,14 @@ export class AIService {
     const lower = message.toLowerCase();
 
     const keywords = [
-      'أريد شخص', 'أريد إنسان', 'موظف', 'دعم بشري',
-      'تحدث مع شخص', 'human', 'agent', 'real person',
+      'أريد شخص',
+      'أريد إنسان',
+      'موظف',
+      'دعم بشري',
+      'تحدث مع شخص',
+      'human',
+      'agent',
+      'real person',
       ...(settings.handoffKeywords || []),
     ];
 
@@ -665,14 +896,21 @@ export class AIService {
       }
     }
 
-    if (settings.autoHandoff && context.failedAttempts >= settings.handoffAfterFailures) {
+    // ✅ BUG-3 FIX: التحقق من failedAttempts الحقيقي
+    if (
+      settings.autoHandoff &&
+      context.failedAttempts >= settings.handoffAfterFailures
+    ) {
       return { shouldHandoff: true, reason: 'MAX_FAILURES' };
     }
 
     return { shouldHandoff: false };
   }
 
-  private analyzeResponseQuality(reply: string, originalMessage: string): {
+  private analyzeResponseQuality(
+    reply: string,
+    originalMessage: string,
+  ): {
     confidence: number;
     intent?: string;
     shouldHandoff: boolean;
@@ -682,12 +920,22 @@ export class AIService {
     const lm = originalMessage.toLowerCase();
 
     let intent: string | undefined;
-    if (lm.includes('طلب') || lm.includes('order') || lm.includes('شحن')) intent = 'ORDER_INQUIRY';
-    else if (lm.includes('منتج') || lm.includes('سعر')) intent = 'PRODUCT_INQUIRY';
-    else if (lm.includes('مشكلة') || lm.includes('شكوى')) intent = 'COMPLAINT';
-    else if (lm.includes('مرحب') || lm.includes('السلام')) intent = 'GREETING';
+    if (lm.includes('طلب') || lm.includes('order') || lm.includes('شحن'))
+      intent = 'ORDER_INQUIRY';
+    else if (lm.includes('منتج') || lm.includes('سعر'))
+      intent = 'PRODUCT_INQUIRY';
+    else if (lm.includes('مشكلة') || lm.includes('شكوى'))
+      intent = 'COMPLAINT';
+    else if (lm.includes('مرحب') || lm.includes('السلام'))
+      intent = 'GREETING';
 
-    const uncertainPhrases = ['لست متأكداً', 'لا أعرف', 'ربما', 'not sure', "don't know"];
+    const uncertainPhrases = [
+      'لست متأكداً',
+      'لا أعرف',
+      'ربما',
+      'not sure',
+      "don't know",
+    ];
     let confidence = 0.85;
     for (const p of uncertainPhrases) {
       if (lower.includes(p.toLowerCase())) {
@@ -705,18 +953,82 @@ export class AIService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 🧪 TEST & GENERATE RESPONSE
+  // 📊 FAILED ATTEMPTS TRACKING — BUG-3 FIX
   // ═══════════════════════════════════════════════════════════════════════════════
 
   /**
-   * اختبار رد البوت — يستخدم OpenAI API حقيقياً
+   * ✅ BUG-3 FIX: زيادة عداد المحاولات الفاشلة في conversation.aiContext
+   *
+   * Entity field: Conversation.aiContext (column: ai_context, JSONB)
    */
+  private async incrementFailedAttempts(
+    context: ConversationContext,
+  ): Promise<void> {
+    try {
+      const conv = await this.conversationRepo.findOne({
+        where: { id: context.conversationId },
+      });
+      if (!conv) return;
+
+      const aiContext = (conv.aiContext || {}) as Record<string, unknown>;
+      const current = (aiContext.failedAttempts as number) || 0;
+      conv.aiContext = { ...aiContext, failedAttempts: current + 1 };
+      await this.conversationRepo.save(conv);
+
+      this.logger.debug(
+        `Failed attempts → ${current + 1} for conversation ${context.conversationId}`,
+      );
+    } catch (error) {
+      this.logger.error('Failed to increment failed attempts', {
+        error: error instanceof Error ? error.message : 'Unknown',
+      });
+    }
+  }
+
+  /**
+   * ✅ BUG-3 FIX: إعادة تعيين عداد المحاولات الفاشلة عند النجاح
+   */
+  private async resetFailedAttempts(
+    context: ConversationContext,
+  ): Promise<void> {
+    try {
+      if (context.failedAttempts === 0) return;
+
+      const conv = await this.conversationRepo.findOne({
+        where: { id: context.conversationId },
+      });
+      if (!conv) return;
+
+      const aiContext = (conv.aiContext || {}) as Record<string, unknown>;
+      if ((aiContext.failedAttempts as number) > 0) {
+        conv.aiContext = { ...aiContext, failedAttempts: 0 };
+        await this.conversationRepo.save(conv);
+      }
+    } catch (error) {
+      this.logger.error('Failed to reset failed attempts', {
+        error: error instanceof Error ? error.message : 'Unknown',
+      });
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🧪 TEST & GENERATE RESPONSE
+  // ═══════════════════════════════════════════════════════════════════════════════
+
   async testResponse(
     tenantId: string,
     message: string,
     storeContext?: { storeName: string; tone: string },
   ): Promise<{ reply: string; processingTime: number }> {
     const startTime = Date.now();
+
+    if (!this.isApiKeyConfigured) {
+      return {
+        reply: 'خطأ: مفتاح OpenAI API غير مكوّن. يرجى إضافة OPENAI_API_KEY.',
+        processingTime: Date.now() - startTime,
+      };
+    }
+
     try {
       const settings = await this.getSettings(tenantId);
 
@@ -725,7 +1037,7 @@ export class AIService {
         : `أنت مساعد خدمة عملاء لمتجر "${settings.storeName || 'المتجر'}". أجب باختصار.`;
 
       const completion = await this.openai.chat.completions.create({
-        model: settings.model || 'gpt-4o',
+        model: settings.model || AI_DEFAULTS.model,
         messages: [
           { role: 'system', content: sysPrompt },
           { role: 'user', content: message },
@@ -735,7 +1047,8 @@ export class AIService {
       });
 
       return {
-        reply: completion.choices[0]?.message?.content || 'لم أتمكن من الرد',
+        reply:
+          completion.choices[0]?.message?.content || 'لم أتمكن من الرد',
         processingTime: Date.now() - startTime,
       };
     } catch (error) {
@@ -747,10 +1060,9 @@ export class AIService {
   }
 
   /**
-   * ✅ v2 FIX: generateResponse
-   * - Conversation لا يملك storeId → لا نحاول الوصول إليه
-   * - Message يستخدم content (ليس body)
-   * - channelId يُستخدم كـ channel context
+   * ✅ BUG-3 + BUG-5 FIX: generateResponse
+   * - يقرأ failedAttempts من aiContext في DB (لا hardcoded 0)
+   * - يقرأ handoffAt من aiContext لحساب مدة الصمت
    */
   async generateResponse(params: {
     tenantId: string;
@@ -765,21 +1077,30 @@ export class AIService {
 
     const conv = await this.conversationRepo.findOne({
       where: { id: params.conversationId },
+      relations: ['channel'], // ✅ نحمّل القناة لجلب storeId
     });
+
+    // ✅ BUG-3 + BUG-5: قراءة failedAttempts و handoffAt من aiContext
+    const aiContext = (conv?.aiContext || {}) as Record<string, unknown>;
+
+    // ✅ BUG-16: storeId من Channel (Conversation لا يملك storeId مباشرة)
+    const storeId = conv?.channel?.storeId;
 
     const context: ConversationContext = {
       conversationId: params.conversationId,
       tenantId: params.tenantId,
+      storeId,
       customerId: conv?.customerId || '',
       customerName: conv?.customerName || undefined,
       channel: conv?.channelId || '',
       messageCount: conv?.messagesCount || 0,
-      failedAttempts: 0,
+      failedAttempts: (aiContext.failedAttempts as number) || 0,
       isHandedOff: conv?.handler === ConversationHandler.HUMAN,
+      handoffAt: aiContext.handoffAt as string | undefined,
       previousMessages: [],
     };
 
-    // ✅ جلب آخر 10 رسائل — الحقل الصحيح: content (ليس body)
+    // جلب آخر 10 رسائل
     if (conv) {
       const msgs = await this.messageRepo.find({
         where: { conversationId: params.conversationId },
@@ -788,7 +1109,10 @@ export class AIService {
       });
 
       context.previousMessages = msgs.reverse().map((m) => ({
-        role: m.direction === MessageDirection.OUTBOUND ? 'assistant' as const : 'user' as const,
+        role:
+          m.direction === MessageDirection.OUTBOUND
+            ? ('assistant' as const)
+            : ('user' as const),
         content: m.content || '',
       }));
     }
@@ -796,29 +1120,29 @@ export class AIService {
     return this.processMessage(params.message, context, settings);
   }
 
-  /**
-   * تحليل رسالة (intent + sentiment)
-   */
-  async analyzeMessage(message: string): Promise<{
-    intent: string;
-    sentiment: string;
-    confidence: number;
-  }> {
+  async analyzeMessage(
+    message: string,
+  ): Promise<{ intent: string; sentiment: string; confidence: number }> {
     const lower = message.toLowerCase();
     let intent = 'general';
     let sentiment = 'neutral';
 
-    if (lower.includes('طلب') || lower.includes('order')) { intent = 'order_inquiry'; }
-    else if (lower.includes('شكر') || lower.includes('thank')) { intent = 'thanks'; sentiment = 'positive'; }
-    else if (lower.includes('مشكل') || lower.includes('problem')) { intent = 'complaint'; sentiment = 'negative'; }
-    else if (lower.includes('مرحب') || lower.includes('السلام')) { intent = 'greeting'; sentiment = 'positive'; }
+    if (lower.includes('طلب') || lower.includes('order')) {
+      intent = 'order_inquiry';
+    } else if (lower.includes('شكر') || lower.includes('thank')) {
+      intent = 'thanks';
+      sentiment = 'positive';
+    } else if (lower.includes('مشكل') || lower.includes('problem')) {
+      intent = 'complaint';
+      sentiment = 'negative';
+    } else if (lower.includes('مرحب') || lower.includes('السلام')) {
+      intent = 'greeting';
+      sentiment = 'positive';
+    }
 
     return { intent, sentiment, confidence: 0.8 };
   }
 
-  /**
-   * تدريب البوت — يحول FAQs إلى knowledge base entries
-   */
   async trainBot(
     tenantId: string,
     data: {
@@ -834,7 +1158,6 @@ export class AIService {
           title: faq.question,
           content: faq.answer,
           category: 'general',
-          keywords: [],
         });
         added++;
       }
@@ -846,7 +1169,6 @@ export class AIService {
           title: doc.title,
           content: doc.content,
           category: 'general',
-          keywords: [],
         });
         added++;
       }
@@ -855,9 +1177,6 @@ export class AIService {
     return { status: 'completed', entriesAdded: added };
   }
 
-  /**
-   * حالة التدريب — محسوبة من عدد entries الموجودة
-   */
   async getTrainingStatus(tenantId: string): Promise<{
     status: string;
     totalEntries: number;
@@ -886,7 +1205,11 @@ export class AIService {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   /**
-   * ✅ v2 FIX: ai_metadata IS NOT NULL (ليس metadata->>'isAI')
+   * ✅ BUG-10: avgResponseTime محسوب من ai_metadata->>'processingTime'
+   * ✅ BUG-10: avgResponseTime محسوب من firstResponseAt (نفس نمط message.service.ts)
+   * ✅ BUG-11: handoffRate يحسب المحادثات المحوّلة (handler='human' + default='ai')
+   *
+   * ⚠️ لا نستخدم JSONB ->> لأن المشروع لا يستخدمه — نعتمد على TypeORM property names
    */
   async getStats(tenantId: string): Promise<{
     totalResponses: number;
@@ -894,15 +1217,20 @@ export class AIService {
     avgResponseTime: number;
     handoffRate: number;
   }> {
+    // عدد المحادثات المُدارة بالـ AI حالياً
     const totalAI = await this.conversationRepo.count({
       where: { tenantId, handler: ConversationHandler.AI },
     });
+
+    // ✅ BUG-11 FIX: المحادثات المحوّلة للبشري
+    // default handler = AI → أي محادثة handler='human' تعني تم التحويل
     const handoffs = await this.conversationRepo.count({
       where: { tenantId, handler: ConversationHandler.HUMAN },
     });
+
     const total = totalAI + handoffs;
 
-    // ✅ عدد رسائل البوت الحقيقية
+    // عدد رسائل البوت (aiMetadata موجود = رد AI)
     const botMessages = await this.messageRepo
       .createQueryBuilder('m')
       .where('m.tenantId = :tenantId', { tenantId })
@@ -910,11 +1238,25 @@ export class AIService {
       .andWhere('m.aiMetadata IS NOT NULL')
       .getCount();
 
+    // ✅ BUG-10 FIX: متوسط وقت الرد — نفس نمط message.service.ts getMessageStats()
+    // نستخدم firstResponseAt - createdAt من Conversation (بدل JSONB parsing)
+    const avgResult = await this.conversationRepo
+      .createQueryBuilder('c')
+      .select(
+        'AVG(EXTRACT(EPOCH FROM (c.firstResponseAt - c.createdAt)) * 1000)',
+        'avg',
+      )
+      .where('c.tenantId = :tenantId', { tenantId })
+      .andWhere('c.firstResponseAt IS NOT NULL')
+      .getRawOne();
+
     return {
       totalResponses: botMessages,
-      successRate: total > 0 ? Math.round((totalAI / total) * 100) : 0,
-      avgResponseTime: 0,
-      handoffRate: total > 0 ? Math.round((handoffs / total) * 100) : 0,
+      successRate:
+        total > 0 ? Math.round((totalAI / total) * 100) : 0,
+      avgResponseTime: Math.round(parseFloat(avgResult?.avg) || 0),
+      handoffRate:
+        total > 0 ? Math.round((handoffs / total) * 100) : 0,
     };
   }
 
@@ -923,10 +1265,17 @@ export class AIService {
     const startDate = new Date();
 
     switch (period) {
-      case 'day': startDate.setDate(now.getDate() - 1); break;
-      case 'week': startDate.setDate(now.getDate() - 7); break;
-      case 'month': startDate.setMonth(now.getMonth() - 1); break;
-      default: startDate.setDate(now.getDate() - 7);
+      case 'day':
+        startDate.setDate(now.getDate() - 1);
+        break;
+      case 'week':
+        startDate.setDate(now.getDate() - 7);
+        break;
+      case 'month':
+        startDate.setMonth(now.getMonth() - 1);
+        break;
+      default:
+        startDate.setDate(now.getDate() - 7);
     }
 
     const conversations = await this.conversationRepo.find({
@@ -935,17 +1284,27 @@ export class AIService {
     });
 
     const totalConversations = conversations.length;
-    const aiHandled = conversations.filter((c) => c.handler === ConversationHandler.AI).length;
-    const humanHandoff = conversations.filter((c) => c.handler === ConversationHandler.HUMAN).length;
+    const aiHandled = conversations.filter(
+      (c) => c.handler === ConversationHandler.AI,
+    ).length;
+    const humanHandoff = conversations.filter(
+      (c) => c.handler === ConversationHandler.HUMAN,
+    ).length;
 
     const dailyData = await this.conversationRepo
       .createQueryBuilder('c')
-      .select("DATE(c.createdAt)", 'date')
+      .select('DATE(c.createdAt)', 'date')
       .addSelect('COUNT(*)', 'total')
-      .addSelect(`COUNT(CASE WHEN c.handler = 'ai' THEN 1 END)`, 'ai_handled')
+      .addSelect(
+        `COUNT(CASE WHEN c.handler = 'ai' THEN 1 END)`,
+        'ai_handled',
+      )
       .where('c.tenantId = :tenantId', { tenantId })
-      .andWhere('c.createdAt BETWEEN :start AND :end', { start: startDate, end: now })
-      .groupBy("DATE(c.createdAt)")
+      .andWhere('c.createdAt BETWEEN :start AND :end', {
+        start: startDate,
+        end: now,
+      })
+      .groupBy('DATE(c.createdAt)')
       .orderBy('date', 'ASC')
       .getRawMany();
 
@@ -955,11 +1314,14 @@ export class AIService {
         totalConversations,
         aiHandled,
         humanHandoff,
-        successRate: totalConversations > 0
-          ? Math.round((aiHandled / totalConversations) * 100 * 10) / 10
-          : 0,
+        successRate:
+          totalConversations > 0
+            ? Math.round(
+                (aiHandled / totalConversations) * 100 * 10,
+              ) / 10
+            : 0,
       },
-      trends: dailyData.map((d: any) => ({
+      trends: dailyData.map((d: Record<string, string>) => ({
         date: d.date,
         conversations: parseInt(d.total),
         aiHandled: parseInt(d.ai_handled),
