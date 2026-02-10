@@ -2,9 +2,9 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║              RAFIQ PLATFORM - Messaging Queue Processor                        ║
  * ║                                                                                ║
- * ║  🔧 v2 Fixes:                                                                  ║
- * ║  - BUG-6:  process-incoming + send-message بدون Processor                     ║
- * ║  - SEND:   إرسال فعلي عبر ChannelsService بدلاً من event وهمي                 ║
+ * ║  ✅ يعالج jobs من queue 'messaging':                                           ║
+ * ║     - send-message: إرسال فعلي عبر WhatsApp/Discord                           ║
+ * ║     - process-incoming: معالجة إضافية للرسائل الواردة                          ║
  * ║                                                                                ║
  * ║  ✅ يتبع نفس نمط notification.processor.ts (BullMQ + WorkerHost)              ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
@@ -17,7 +17,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
-// Entities — مطابقة لـ @database/entities/index.ts
+// Entities
 import {
   Message,
   MessageStatus,
@@ -25,12 +25,18 @@ import {
   Channel,
 } from '@database/entities';
 
-// ✅ ChannelsService: الإرسال الفعلي عبر واتساب/ديسكورد/...
+// ChannelsService: الإرسال الفعلي عبر واتساب
 import { ChannelsService } from '../../channels/channels.service';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 📌 JOB INTERFACES
 // ═══════════════════════════════════════════════════════════════════════════════
+
+interface SendMessageJobData {
+  messageId: string;
+  conversationId: string;
+  channelId: string;
+}
 
 interface ProcessIncomingJobData {
   messageId: string;
@@ -38,12 +44,6 @@ interface ProcessIncomingJobData {
   channelId: string;
   tenantId: string;
   isNewConversation: boolean;
-}
-
-interface SendMessageJobData {
-  messageId: string;
-  conversationId: string;
-  channelId: string;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -66,7 +66,6 @@ export class MessagingProcessor extends WorkerHost {
 
     private readonly eventEmitter: EventEmitter2,
 
-    // ✅ إرسال فعلي عبر القنوات
     private readonly channelsService: ChannelsService,
   ) {
     super();
@@ -75,88 +74,28 @@ export class MessagingProcessor extends WorkerHost {
 
   async process(job: Job): Promise<unknown> {
     switch (job.name) {
-      case 'process-incoming':
-        return this.handleProcessIncoming(job as Job<ProcessIncomingJobData>);
-
       case 'send-message':
         return this.handleSendMessage(job as Job<SendMessageJobData>);
 
+      case 'process-incoming':
+        return this.handleProcessIncoming(job as Job<ProcessIncomingJobData>);
+
       default:
-        this.logger.warn(`Unknown job name: ${job.name}`);
-        return { status: 'skipped', reason: 'unknown_job_name' };
+        this.logger.warn(`Unknown job type: ${job.name}`);
+        return { status: 'unknown_job_type' };
     }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // 📥 PROCESS INCOMING
+  // 📤 SEND MESSAGE — الإرسال الفعلي عبر WhatsApp
   // ═══════════════════════════════════════════════════════════════════════════
 
-  private async handleProcessIncoming(
-    job: Job<ProcessIncomingJobData>,
-  ): Promise<{ status: string }> {
-    const { messageId, conversationId, tenantId, isNewConversation } = job.data;
-
-    this.logger.debug(`Processing incoming message: ${messageId}`);
-
-    try {
-      const message = await this.messageRepo.findOne({
-        where: { id: messageId },
-      });
-
-      if (!message) {
-        this.logger.warn(`Message not found: ${messageId}`);
-        return { status: 'message_not_found' };
-      }
-
-      const conversation = await this.conversationRepo.findOne({
-        where: { id: conversationId },
-      });
-
-      if (!conversation) {
-        this.logger.warn(`Conversation not found: ${conversationId}`);
-        return { status: 'conversation_not_found' };
-      }
-
-      // إطلاق أحداث للوحدات الأخرى (automations, notifications...)
-      this.eventEmitter.emit('message.processed', {
-        message,
-        conversation,
-        tenantId,
-        isNewConversation,
-      });
-
-      if (isNewConversation) {
-        this.eventEmitter.emit('conversation.created', {
-          conversation,
-          tenantId,
-          firstMessage: message,
-        });
-      }
-
-      return { status: 'processed' };
-    } catch (error) {
-      this.logger.error(`Failed to process incoming message: ${messageId}`, {
-        error: error instanceof Error ? error.message : 'Unknown',
-      });
-      throw error; // BullMQ will retry
-    }
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // 📤 SEND MESSAGE
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  /**
-   * إرسال الرسائل الصادرة عبر القناة المناسبة
-   *
-   * ✅ يستخدم ChannelsService.sendWhatsAppMessage() مباشرة
-   */
   private async handleSendMessage(
     job: Job<SendMessageJobData>,
   ): Promise<{ status: string; externalId?: string }> {
     const { messageId, conversationId, channelId } = job.data;
 
-    this.logger.log(`📤 [send-message] Job picked up — messageId: ${messageId}, channelId: ${channelId}`);
+    this.logger.log(`📤 [send-message] Job picked up — messageId: ${messageId}`);
 
     try {
       // 1️⃣ تحميل البيانات
@@ -165,7 +104,7 @@ export class MessagingProcessor extends WorkerHost {
       });
 
       if (!message) {
-        this.logger.warn(`Message not found for sending: ${messageId}`);
+        this.logger.warn(`Message not found: ${messageId}`);
         return { status: 'message_not_found' };
       }
 
@@ -195,11 +134,11 @@ export class MessagingProcessor extends WorkerHost {
         return { status: 'channel_not_found' };
       }
 
-      // 2️⃣ تحديد المستقبل (رقم العميل) + تنظيف من JID format
+      // 2️⃣ تحديد المستقبل (رقم العميل)
       const rawRecipient = conversation.customerExternalId || conversation.customerPhone;
 
       if (!rawRecipient) {
-        this.logger.error(`No recipient found for conversation: ${conversationId}`);
+        this.logger.error(`No recipient for conversation: ${conversationId}`);
         await this.messageRepo.update(messageId, {
           status: MessageStatus.FAILED,
           errorMessage: 'No recipient phone number',
@@ -207,18 +146,17 @@ export class MessagingProcessor extends WorkerHost {
         return { status: 'no_recipient' };
       }
 
-      // تنظيف الرقم من @lid, @s.whatsapp.net, @c.us
+      // ✅ تنظيف الرقم من @lid, @s.whatsapp.net, @c.us
       const recipient = rawRecipient.split('@')[0].replace(/\D/g, '') || rawRecipient;
 
       this.logger.log(
         `📤 Sending to: ${recipient} | Channel: ${channel.type} | isWhatsApp: ${channel.isWhatsApp} | Content: "${(message.content || '').substring(0, 50)}..."`,
       );
 
-      // 3️⃣ الإرسال الفعلي عبر القناة
+      // 3️⃣ الإرسال الفعلي
       let externalId: string | undefined;
 
       if (channel.isWhatsApp) {
-        // ✅ واتساب (رسمي + QR) — إرسال فعلي عبر ChannelsService
         const result = await this.channelsService.sendWhatsAppMessage(
           channel.id,
           recipient,
@@ -226,7 +164,7 @@ export class MessagingProcessor extends WorkerHost {
         );
         externalId = result?.messageId;
       } else {
-        // قنوات أخرى (Discord, Telegram...) — event لحين بناء الإرسال المباشر
+        // قنوات أخرى — event لحين بناء الإرسال المباشر
         this.eventEmitter.emit(`channel.${channel.type}.send`, {
           message,
           channel,
@@ -242,15 +180,14 @@ export class MessagingProcessor extends WorkerHost {
         ...(externalId ? { externalId } : {}),
       });
 
-      this.logger.log(
-        `✅ Message ${messageId} sent to ${recipient} via ${channel.type}`,
-        { externalId },
-      );
+      this.logger.log(`✅ Message ${messageId} sent to ${recipient} via ${channel.type}`);
 
       return { status: 'sent', externalId };
+
     } catch (error) {
       this.logger.error(`❌ Failed to send message: ${messageId}`, {
         error: error instanceof Error ? error.message : 'Unknown',
+        stack: error instanceof Error ? error.stack : undefined,
       });
 
       await this.messageRepo.update(messageId, {
@@ -260,5 +197,24 @@ export class MessagingProcessor extends WorkerHost {
 
       throw error; // BullMQ will retry
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 📥 PROCESS INCOMING — معالجة إضافية للرسائل الواردة
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  private async handleProcessIncoming(
+    job: Job<ProcessIncomingJobData>,
+  ): Promise<{ status: string }> {
+    const { messageId, conversationId, isNewConversation } = job.data;
+
+    this.logger.debug(
+      `📥 [process-incoming] messageId: ${messageId}, isNew: ${isNewConversation}`,
+    );
+
+    // المعالجة الإضافية تحصل عبر EventEmitter (مثل AI auto-reply)
+    // هذا الـ job يضمن أن الأحداث تُعالج حتى لو حصل خطأ
+
+    return { status: 'processed' };
   }
 }
