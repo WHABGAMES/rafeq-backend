@@ -215,13 +215,29 @@ export class MessageService {
 
     const isNewConversation = !conversation;
 
-    // ✅ تحديث customerExternalId للصيغة الجديدة إذا وُجدت محادثة قديمة بالرقم المجرّد
-    if (conversation && conversation.customerExternalId !== data.senderExternalId) {
-      conversation.customerExternalId = data.senderExternalId;
-      if (data.senderPhone) {
-        conversation.customerPhone = data.senderPhone;
+    // ✅ تحديث بيانات العميل في المحادثة الموجودة:
+    // - تحديث JID إذا تغيّر (ترحيل من رقم مجرّد لـ JID كامل)
+    // - تحديث الاسم إذا كان فارغاً وتوفّر pushName جديد
+    // - تحديث الرقم إذا كان فارغاً وتوفّر رقم حقيقي
+    if (conversation) {
+      let needsUpdate = false;
+
+      if (conversation.customerExternalId !== data.senderExternalId) {
+        conversation.customerExternalId = data.senderExternalId;
+        needsUpdate = true;
       }
-      await this.conversationRepo.save(conversation);
+      if (data.senderName && !conversation.customerName) {
+        conversation.customerName = data.senderName;
+        needsUpdate = true;
+      }
+      if (data.senderPhone && !conversation.customerPhone) {
+        conversation.customerPhone = data.senderPhone;
+        needsUpdate = true;
+      }
+
+      if (needsUpdate) {
+        await this.conversationRepo.save(conversation);
+      }
     }
 
     if (isNewConversation) {
