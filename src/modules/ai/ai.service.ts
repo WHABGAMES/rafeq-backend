@@ -91,6 +91,13 @@ export interface AISettings {
   welcomeMessage: string;
   fallbackMessage: string;
   handoffMessage: string;
+
+  // ✅ MVP Level 2: Strict Grounding & Confidence Thresholds
+  enableUnifiedRanking: boolean; // Enable unified ranking for library_then_products
+  answerConfidenceThreshold: number; // Min confidence to answer directly (0.75)
+  clarifyConfidenceThreshold: number; // Min confidence to ask for clarification (0.50)
+  // Below clarify threshold → handoff
+  enableStrictGrounding: boolean; // Enforce citation verification
 }
 
 export interface ConversationContext {
@@ -117,6 +124,16 @@ export interface AIResponse {
   toolsUsed?: string[];
   /** ✅ RAG: مخرجات التدقيق الداخلي */
   ragAudit?: RagAudit;
+  /** ✅ MVP Level 2: Confidence breakdown */
+  confidenceBreakdown?: {
+    similarityScore: number;
+    intentConfidence: number;
+    verifierScore: number;
+    chunkCoverage: number;
+    finalConfidence: number;
+  };
+  /** ✅ MVP Level 2: Citation map (which chunks were cited) */
+  citations?: Array<{ chunkIndex: number; chunkTitle: string }>;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -193,13 +210,23 @@ const THANKS_PATTERNS = [
 
 /** مخرجات التدقيق الداخلي لكل رد */
 export interface RagAudit {
-  answer_source: 'library' | 'product' | 'tool' | 'greeting' | 'none';
+  answer_source: 'library' | 'product' | 'tool' | 'greeting' | 'none' | 'unified';
   similarity_score: number;
   verifier_result: 'YES' | 'NO' | 'SKIPPED';
-  final_decision: 'ANSWER' | 'BLOCKED';
+  final_decision: 'ANSWER' | 'BLOCKED' | 'CLARIFY' | 'HANDOFF';
   retrieved_chunks: number;
   gate_a_passed: boolean;
   gate_b_passed: boolean;
+  /** ✅ MVP Level 2: Confidence score */
+  confidence?: number;
+  /** ✅ MVP Level 2: Grounding rejection reason */
+  rejection_reason?: string;
+  /** ✅ MVP Level 2: Intent used for routing */
+  intent?: string;
+  /** ✅ MVP Level 2: Strategy selected */
+  strategy?: string;
+  /** ✅ MVP Level 2: Whether unified ranking was used */
+  unified_ranking_used?: boolean;
 }
 
 const AI_DEFAULTS: AISettings = {
@@ -229,6 +256,11 @@ const AI_DEFAULTS: AISettings = {
   welcomeMessage: 'أهلاً وسهلاً! كيف يمكنني مساعدتك؟ 😊',
   fallbackMessage: 'عذراً، لم أتمكن من فهم طلبك. هل ترغب بتحويلك لأحد موظفينا؟',
   handoffMessage: 'سأحولك الآن لأحد أفراد فريقنا. سيتواصل معك قريباً! 🙋‍♂️',
+  // ✅ MVP Level 2: Strict Grounding defaults
+  enableUnifiedRanking: true,
+  answerConfidenceThreshold: 0.75,
+  clarifyConfidenceThreshold: 0.50,
+  enableStrictGrounding: true,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════

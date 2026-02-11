@@ -158,6 +158,19 @@ class UpdateAISettingsDto {
 
   @IsOptional() @IsString()
   handoffMessage?: string;
+
+  // ✅ MVP Level 2: Strict Grounding & Confidence Settings
+  @IsOptional() @IsBoolean()
+  enableUnifiedRanking?: boolean;
+
+  @IsOptional() @IsNumber()
+  answerConfidenceThreshold?: number;
+
+  @IsOptional() @IsNumber()
+  clarifyConfidenceThreshold?: number;
+
+  @IsOptional() @IsBoolean()
+  enableStrictGrounding?: boolean;
 }
 
 class AddKnowledgeDto {
