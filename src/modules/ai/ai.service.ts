@@ -156,6 +156,22 @@ const RAG_TOP_K = 5;
 /** نموذج الـ Embedding من OpenAI */
 const EMBEDDING_MODEL = 'text-embedding-3-small';
 
+// ✅ MVP Level 2: Confidence & Grounding Constants
+/** Confidence score when verifier fails (0.3 = low but not zero) */
+const VERIFIER_FAIL_SCORE = 0.3;
+
+/** Citation detection: minimum keyword matches required */
+const CITATION_MIN_MATCHES = 2;
+
+/** Citation detection: minimum percentage of keywords that must match (20%) */
+const CITATION_MATCH_THRESHOLD = 0.2;
+
+/** Confidence score for grounding failures */
+const GROUNDING_FAILURE_CONFIDENCE = 0.3;
+
+/** Unified ranking: score decay per position (1.0 → 0.95 → 0.90 ...) */
+const UNIFIED_RANKING_SCORE_DECAY = 0.05;
+
 /** رسالة عدم التطابق — إلزامية بدون تعديل */
 const NO_MATCH_MESSAGE = 'عذرًا، هذا السؤال خارج نطاق المعلومات المتوفرة لدي حاليًا.\nإذا رغبت، أستطيع تحويلك إلى الدعم البشري لمساعدتك.';
 
@@ -566,8 +582,8 @@ export class AIService {
     chunkCoverage: number;
     finalConfidence: number;
   } {
-    // Verifier score: 1.0 if passed, 0.3 if failed
-    const verifierScore = verifierPassed ? 1.0 : 0.3;
+    // Verifier score: 1.0 if passed, low score if failed
+    const verifierScore = verifierPassed ? 1.0 : VERIFIER_FAIL_SCORE;
     
     // Chunk coverage: more chunks = better coverage (capped at 1.0)
     const chunkCoverage = Math.min(chunkCount / RAG_TOP_K, 1.0);
@@ -637,8 +653,8 @@ export class AIService {
         answer.includes(keyword) || answer.toLowerCase().includes(keyword.toLowerCase())
       );
       
-      // If significant overlap, consider it cited (threshold: 20% of keywords)
-      if (matches.length >= Math.max(2, allKeywords.length * 0.2)) {
+      // If significant overlap, consider it cited
+      if (matches.length >= Math.max(CITATION_MIN_MATCHES, allKeywords.length * CITATION_MATCH_THRESHOLD)) {
         citations.push({
           chunkIndex: index,
           chunkTitle: chunk.title,
@@ -1015,11 +1031,14 @@ ${chunksText}
 
       let finalReply = assistantMsg.content || '';
       const toolsUsed: string[] = [];
+      
       // ✅ تتبع المصدر: من المكتبة أو المنتجات أو أداة أو unified
-      let finalSource: RagAudit['answer_source'] = 
-        ragResult.source === 'product' ? 'product' : 
-        ragResult.source === 'unified' ? 'unified' :
-        'library';
+      let finalSource: RagAudit['answer_source'] = 'library';
+      if (ragResult.source === 'product') {
+        finalSource = 'product';
+      } else if (ragResult.source === 'unified') {
+        finalSource = 'unified';
+      }
 
       // تنفيذ الأدوات
       if (assistantMsg.tool_calls?.length) {
@@ -1091,7 +1110,7 @@ ${chunksText}
           // Reject the answer and return clarify/handoff
           return {
             reply: settings.fallbackMessage || AI_DEFAULTS.fallbackMessage,
-            confidence: 0.3,
+            confidence: GROUNDING_FAILURE_CONFIDENCE,
             shouldHandoff: settings.autoHandoff,
             handoffReason: 'GROUNDING_FAILED',
             confidenceBreakdown,
@@ -1785,7 +1804,7 @@ ${chunksText}
       // Assign new scores based on position (1.0 for first, decreasing)
       return final.map((chunk, idx) => ({
         ...chunk,
-        score: 1.0 - (idx * 0.05), // 1.0, 0.95, 0.90, ...
+        score: 1.0 - (idx * UNIFIED_RANKING_SCORE_DECAY), // 1.0, 0.95, 0.90, ...
       }));
 
     } catch (error) {
