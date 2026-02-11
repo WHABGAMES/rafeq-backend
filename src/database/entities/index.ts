@@ -26,7 +26,7 @@ export { Channel, ChannelType, ChannelStatus } from '../../modules/channels/enti
 // MESSAGING ENTITIES
 // ═══════════════════════════════════════════════════════════════════════════════
 export { Conversation, ConversationStatus, ConversationPriority, ConversationHandler } from './conversation.entity';
-export { Message, MessageDirection, MessageStatus, MessageType } from './message.entity';
+export { Message, MessageDirection, MessageStatus, MessageType, MessageSender } from './message.entity';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CUSTOMER & ORDER ENTITIES
@@ -64,7 +64,7 @@ export { Subscription, SubscriptionStatus, BillingInterval, PaymentProvider, Usa
 // ═══════════════════════════════════════════════════════════════════════════════
 // AI ENTITIES
 // ═══════════════════════════════════════════════════════════════════════════════
-export { KnowledgeBase, KnowledgeCategory } from '../../modules/ai/entities/knowledge-base.entity';
+export { KnowledgeBase, KnowledgeCategory, KnowledgeType } from '../../modules/ai/entities/knowledge-base.entity';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ALL ENTITIES ARRAY
