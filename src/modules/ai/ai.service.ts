@@ -317,11 +317,14 @@ export class AIService {
   private openai: OpenAI;
   private readonly isApiKeyConfigured: boolean;
   
-  // ✅ Level 2: In-memory cache for product search results
+  // ✅ Level 2: In-memory cache for product search results with insertion order tracking
   private readonly productCache = new Map<string, {
     result: { chunks: Array<{ title: string; content: string; score: number }>; topScore: number; gateAPassed: boolean };
     timestamp: number;
   }>();
+  private readonly MAX_CACHE_SIZE = 1000;
+  private lastCacheCleanup = 0;
+  private readonly CACHE_CLEANUP_INTERVAL = 60000; // Cleanup at most once per minute
 
   constructor(
     private readonly configService: ConfigService,
@@ -406,7 +409,8 @@ export class AIService {
         lastError = error instanceof Error ? error : new Error('Unknown error');
         
         if (attempt < maxRetries) {
-          const delay = retryDelay * Math.pow(2, attempt); // Exponential backoff
+          // Exponential backoff with max cap of 30 seconds
+          const delay = Math.min(retryDelay * Math.pow(2, attempt), 30000);
           this.logger.warn(`${operation} failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying in ${delay}ms...`);
           await new Promise(resolve => setTimeout(resolve, delay));
         }
@@ -1323,7 +1327,7 @@ export class AIService {
       message: context.previousMessages[context.previousMessages.length - 1]?.content || '',
       attempt: currentAttempts,
       maxAttempts,
-      intent: typeof intentType === 'string' ? intentType : intentType,
+      intent: intentType,
       timestamp: new Date(),
     });
 
@@ -1363,7 +1367,7 @@ export class AIService {
         conversationId: context.conversationId,
         message: context.previousMessages[context.previousMessages.length - 1]?.content || '',
         reason: 'NO_MATCH_AFTER_MAX_ATTEMPTS',
-        intent: typeof intentType === 'string' ? intentType : intentType,
+        intent: intentType,
         timestamp: new Date(),
       });
       
@@ -2097,14 +2101,28 @@ ${chunksText}
         this.productCache.set(cacheKey, { result, timestamp: Date.now() });
         this.logger.log(`💾 Product result cached for key "${cacheKey}"`);
         
-        // Clean up old cache entries (simple LRU-like cleanup)
-        if (this.productCache.size > 1000) {
-          const now = Date.now();
-          for (const [key, entry] of this.productCache.entries()) {
-            if ((now - entry.timestamp) > cacheTTL) {
-              this.productCache.delete(key);
-            }
+        // ✅ Improved: Efficient cache cleanup with throttling
+        // Clean up old cache entries periodically (at most once per minute)
+        const now = Date.now();
+        if (this.productCache.size > this.MAX_CACHE_SIZE && 
+            (now - this.lastCacheCleanup) > this.CACHE_CLEANUP_INTERVAL) {
+          this.lastCacheCleanup = now;
+          
+          // Remove oldest 20% of entries to reduce cleanup frequency
+          const entriesToRemove = Math.floor(this.MAX_CACHE_SIZE * 0.2);
+          const keysToRemove: string[] = [];
+          
+          // Map maintains insertion order, so first entries are oldest
+          for (const key of this.productCache.keys()) {
+            keysToRemove.push(key);
+            if (keysToRemove.length >= entriesToRemove) break;
           }
+          
+          for (const key of keysToRemove) {
+            this.productCache.delete(key);
+          }
+          
+          this.logger.log(`🧹 Cache cleanup: removed ${keysToRemove.length} oldest entries, size: ${this.productCache.size}`);
         }
       }
 
