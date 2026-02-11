@@ -1444,22 +1444,28 @@ ${chunksText}
     try {
       const lang = settings.language !== 'en' ? 'ar' : 'en';
       const systemPrompt = lang === 'ar'
-        ? `أنت محلل نوايا. صنّف رسالة العميل إلى واحد فقط من الأنواع التالية.
+        ? `أنت محلل نوايا لمتجر إلكتروني. صنّف رسالة العميل إلى واحد فقط من الأنواع التالية.
 أجب فقط بـ JSON بدون أي نص آخر.
+
 الأنواع:
-- SMALLTALK: تحية، سؤال عام عن الحال، مجاملة، كلام اجتماعي
-- SUPPORT_QUERY: سؤال يحتاج معلومة عن منتج أو خدمة أو سياسة المتجر
-- ORDER_QUERY: استفسار عن حالة طلب أو شحنة أو تتبع
+- SMALLTALK: تحية فقط بدون سؤال (مثل: هلا، مرحبا، السلام عليكم، كيفك، اخبارك). ⚠️ إذا الرسالة تحتوي سؤال عن أي شيء (اسم، منتج، سعر، سياسة) فهي ليست SMALLTALK حتى لو بدأت بتحية.
+- SUPPORT_QUERY: أي سؤال يطلب معلومة — عن المتجر أو منتجاته أو خدماته أو أسعاره أو سياساته. أمثلة: "وش اسم المتجر"، "كم سعر المنتج"، "هل عندكم توصيل"، "وش اسم متجرك"، "ايش تبيعون"
+- ORDER_QUERY: استفسار عن حالة طلب أو شحنة أو تتبع (مثل: وين طلبي، رقم الشحنة)
 - HUMAN_REQUEST: طلب صريح للتحدث مع موظف أو شخص بشري
-- UNKNOWN: لا يمكن تحديد النوع`
-        : `You are an intent classifier. Classify the customer message into exactly one type.
+- UNKNOWN: لا يمكن تحديد النوع
+
+⚠️ قاعدة مهمة: إذا الرسالة تسأل عن اسم أو معلومة عن المتجر = SUPPORT_QUERY وليس SMALLTALK`
+        : `You are an intent classifier for an online store. Classify the customer message into exactly one type.
 Respond ONLY with JSON, no other text.
+
 Types:
-- SMALLTALK: greeting, how are you, compliment, social talk
-- SUPPORT_QUERY: question needing product/service/policy info
-- ORDER_QUERY: order status, shipping, tracking inquiry
-- HUMAN_REQUEST: explicit request to speak to a human agent
-- UNKNOWN: cannot determine`;
+- SMALLTALK: Pure greeting with NO question (e.g., hi, hello, how are you). ⚠️ If the message asks about ANYTHING (name, product, price, policy), it is NOT SMALLTALK.
+- SUPPORT_QUERY: Any question requesting information — about the store, products, services, prices, or policies. Examples: "what's the store name", "what do you sell", "do you deliver"
+- ORDER_QUERY: Order status, shipping, tracking inquiry (e.g., where is my order, tracking number)
+- HUMAN_REQUEST: Explicit request to speak to a human agent
+- UNKNOWN: Cannot determine
+
+⚠️ Important rule: If the message asks about a name, info, or anything about the store = SUPPORT_QUERY, never SMALLTALK`;
 
       const response = await this.openai.chat.completions.create({
         model: 'gpt-4o-mini',
@@ -1502,7 +1508,36 @@ Types:
   ): IntentResult | null {
     const lower = message.trim().toLowerCase();
 
-    // تحية فقط إذا الرسالة قصيرة (أقل من 30 حرف)
+    // ✅ FIX: كلمات استفهام تعني إن الرسالة سؤال وليست تحية
+    const QUESTION_INDICATORS = [
+      'وش', 'ايش', 'ويش', 'إيش', 'ليش', 'ليه', 'كم', 'متى', 'وين', 'كيف',
+      'هل', 'عندكم', 'عندك', 'فيه', 'اسم', 'سعر', 'منتج', 'توصيل', 'شحن',
+      'ارجاع', 'إرجاع', 'استبدال', 'ضمان', 'دفع', 'تخفيض', 'عرض',
+      'what', 'how', 'where', 'when', 'which', 'do you', 'can i', 'is there',
+    ];
+    const hasQuestion = QUESTION_INDICATORS.some((q) => lower.includes(q));
+
+    // ✅ FIX: إذا في كلمة استفهام → ليست SMALLTALK أبداً (حتى لو فيها تحية)
+    // مثال: "هلا وش اسم المتجر" → SUPPORT_QUERY مش SMALLTALK
+    if (hasQuestion) {
+      // طلب بشري واضح (أولوية أعلى)
+      const humanKeywords = settings.handoffKeywords || AI_DEFAULTS.handoffKeywords;
+      for (const kw of humanKeywords) {
+        if (lower.includes(kw.toLowerCase())) {
+          return { intent: 'HUMAN_REQUEST', confidence: 0.95 };
+        }
+      }
+
+      // استفسار طلب
+      if (this.isOrderInquiry(message)) {
+        return { intent: 'ORDER_QUERY', confidence: 0.90 };
+      }
+
+      // فيه سؤال → لا نصنّف كـ SMALLTALK — نترك التصنيف للـ LLM
+      return null;
+    }
+
+    // تحية فقط إذا الرسالة قصيرة (أقل من 30 حرف) وبدون سؤال
     if (lower.length < 30) {
       for (const p of GREETING_PATTERNS) {
         if (lower.includes(p.toLowerCase())) {
@@ -1538,12 +1573,23 @@ Types:
   private fallbackIntentClassification(message: string): IntentResult {
     const lower = message.toLowerCase();
 
-    if (lower.length < 15) return { intent: 'SMALLTALK', confidence: 0.6 };
+    // ✅ FIX: فحص كلمات الاستفهام أولاً — قبل فحص الطول
+    const questionWords = ['وش', 'ايش', 'كم', 'هل', 'وين', 'متى', 'كيف', 'ليش', 'اسم', 'سعر',
+      'what', 'how', 'where', 'when', 'which', 'price', 'name'];
+    const hasQuestion = questionWords.some((q) => lower.includes(q));
+
+    if (hasQuestion) {
+      // فيه سؤال → SUPPORT_QUERY حتى لو الرسالة قصيرة
+      return { intent: 'SUPPORT_QUERY', confidence: 0.7 };
+    }
 
     const orderPatterns = ['طلب', 'طلبي', 'شحن', 'تتبع', 'order', 'track', 'shipping', '#'];
     if (orderPatterns.some((p) => lower.includes(p))) {
       return { intent: 'ORDER_QUERY', confidence: 0.7 };
     }
+
+    // فقط إذا الرسالة قصيرة جداً وبدون أي سؤال → SMALLTALK
+    if (lower.length < 15) return { intent: 'SMALLTALK', confidence: 0.6 };
 
     // افتراضي: سؤال دعم
     return { intent: 'SUPPORT_QUERY', confidence: 0.6 };
