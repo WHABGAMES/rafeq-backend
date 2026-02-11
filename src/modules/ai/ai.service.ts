@@ -774,8 +774,11 @@ export class AIService {
 
       let finalReply = assistantMsg.content || '';
       const toolsUsed: string[] = [];
-      // ✅ تتبع المصدر: من المكتبة أو المنتجات أو أداة
-      let finalSource: RagAudit['answer_source'] = ragResult.source === 'product' ? 'product' : 'library';
+      // ✅ تتبع المصدر: من المكتبة أو المنتجات أو أداة أو unified
+      let finalSource: RagAudit['answer_source'] = 
+        ragResult.source === 'product' ? 'product' : 
+        ragResult.source === 'unified' ? 'unified' :
+        'library';
 
       // تنفيذ الأدوات
       if (assistantMsg.tool_calls?.length) {
@@ -828,6 +831,8 @@ export class AIService {
           retrieved_chunks: ragResult.chunks.length,
           gate_a_passed: ragResult.gateAPassed,
           gate_b_passed: gateBPassed,
+          unified_ranking_used: ragResult.unifiedRankingUsed || false,
+          strategy: settings.searchPriority || SearchPriority.LIBRARY_THEN_PRODUCTS,
         },
       };
     } catch (error) {
@@ -1378,6 +1383,97 @@ ${chunksText}
   }
 
   /**
+   * ✅ MVP Level 2: Unified Ranking
+   * Merges top-K from library and products, then uses LLM to rerank based on relevance
+   */
+  private async unifiedRanking(
+    question: string,
+    libraryChunks: Array<{ title: string; content: string; score: number; answer?: string; source?: string }>,
+    productChunks: Array<{ title: string; content: string; score: number; answer?: string; source?: string }>,
+    topK: number = RAG_TOP_K,
+  ): Promise<Array<{ title: string; content: string; score: number; answer?: string; source?: string }>> {
+    try {
+      // Merge both sources
+      const allChunks = [
+        ...libraryChunks.map(c => ({ ...c, source: 'library' as const })),
+        ...productChunks.map(c => ({ ...c, source: 'product' as const, answer: c.answer })),
+      ];
+
+      if (allChunks.length === 0) return [];
+
+      // If we have few chunks, just return them sorted by original score
+      if (allChunks.length <= topK) {
+        return allChunks.sort((a, b) => b.score - a.score);
+      }
+
+      // Use LLM to rerank based on relevance to the question
+      const chunksWithIndex = allChunks.map((chunk, idx) => ({
+        idx,
+        text: `[${idx}] (${chunk.source}) ${chunk.title}: ${chunk.content}${chunk.answer ? `\nالجواب: ${chunk.answer}` : ''}`,
+      }));
+
+      const chunksText = chunksWithIndex.map(c => c.text).join('\n\n');
+
+      const response = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: 'أنت نظام ترتيب. رتّب المقاطع حسب ارتباطها بسؤال المستخدم. أجب فقط بقائمة الأرقام من الأكثر ارتباطاً للأقل، مفصولة بفواصل.',
+          },
+          {
+            role: 'user',
+            content: `سؤال المستخدم: "${question}"
+
+المقاطع:
+${chunksText}
+
+رتّب المقاطع من الأكثر ارتباطاً بالسؤال للأقل. أجب فقط بالأرقام مفصولة بفواصل (مثال: 2,0,4,1,3)`,
+          },
+        ],
+        temperature: 0,
+        max_tokens: 50,
+      });
+
+      const rankingText = (response.choices[0]?.message?.content || '').trim();
+      const rankedIndices = rankingText
+        .split(',')
+        .map(s => parseInt(s.trim()))
+        .filter(n => !isNaN(n) && n >= 0 && n < allChunks.length);
+
+      // Reorder chunks based on LLM ranking
+      const reranked = rankedIndices
+        .map(idx => allChunks[idx])
+        .filter(Boolean)
+        .slice(0, topK);
+
+      // Add any chunks that weren't ranked by the LLM (fallback)
+      const rankedSet = new Set(rankedIndices);
+      const unranked = allChunks
+        .map((chunk, idx) => ({ chunk, idx }))
+        .filter(({ idx }) => !rankedSet.has(idx))
+        .sort((a, b) => b.chunk.score - a.chunk.score)
+        .map(({ chunk }) => chunk);
+
+      const final = [...reranked, ...unranked].slice(0, topK);
+
+      // Assign new scores based on position (1.0 for first, decreasing)
+      return final.map((chunk, idx) => ({
+        ...chunk,
+        score: 1.0 - (idx * 0.05), // 1.0, 0.95, 0.90, ...
+      }));
+
+    } catch (error) {
+      this.logger.warn('Unified ranking failed — using original scores', {
+        error: error instanceof Error ? error.message : 'Unknown',
+      });
+      // Fallback: just merge and sort by original scores
+      const allChunks = [...libraryChunks, ...productChunks];
+      return allChunks.sort((a, b) => b.score - a.score).slice(0, topK);
+    }
+  }
+
+  /**
    * ✅ RAG Retrieve: يدير كامل عملية البحث الدلالي مع دعم multi-source
    * 1. يحدد search priority (library_only, products_only, library_then_products)
    * 2. يبحث في المصدر/المصادر المطلوبة
@@ -1392,7 +1488,8 @@ ${chunksText}
     chunks: Array<{ title: string; content: string; score: number; answer?: string }>;
     topScore: number;
     gateAPassed: boolean;
-    source: 'library' | 'product' | 'mixed';
+    source: 'library' | 'product' | 'mixed' | 'unified';
+    unifiedRankingUsed?: boolean;
   }> {
     const sp = settings.searchPriority || SearchPriority.LIBRARY_THEN_PRODUCTS;
     this.logger.log(`🔍 RAG Retrieve: searchPriority=${sp}, storeId=${context.storeId || 'none'}`);
@@ -1452,6 +1549,9 @@ ${chunksText}
     // ═══════════════════════════════════════════════════════════════════════════
     this.logger.log('📚🛒 Search mode: LIBRARY_THEN_PRODUCTS');
 
+    // ✅ MVP Level 2: Check if unified ranking is enabled
+    const useUnifiedRanking = settings.enableUnifiedRanking ?? AI_DEFAULTS.enableUnifiedRanking;
+
     // 1. محاولة البحث في المكتبة أولاً
     const queryEmbedding = await this.generateEmbedding(message);
     let libraryResults: Array<{ title: string; content: string; score: number; answer?: string }> = [];
@@ -1464,6 +1564,57 @@ ${chunksText}
       libraryResults = fallback.chunks;
     }
 
+    // ✅ MVP Level 2: Unified Ranking Mode
+    if (useUnifiedRanking && context.storeId) {
+      this.logger.log('🔀 Unified ranking enabled — searching both sources');
+      
+      // Search products regardless of library results
+      const productResult = await this.searchProducts(message, context.storeId);
+      
+      // If we have results from both sources, use unified ranking
+      if (libraryResults.length > 0 && productResult.chunks.length > 0) {
+        this.logger.log(`🔀 Merging ${libraryResults.length} library + ${productResult.chunks.length} product results`);
+        
+        const reranked = await this.unifiedRanking(
+          message,
+          libraryResults,
+          productResult.chunks,
+          RAG_TOP_K,
+        );
+        
+        const topScore = reranked.length > 0 ? reranked[0].score : 0;
+        const gateAPassed = topScore >= SIMILARITY_THRESHOLD;
+        
+        this.logger.log(`🔀 Unified ranking complete: topScore=${topScore.toFixed(3)}, gateA=${gateAPassed ? 'PASS' : 'FAIL'}`);
+        
+        return {
+          chunks: reranked,
+          topScore,
+          gateAPassed,
+          source: 'unified',
+          unifiedRankingUsed: true,
+        };
+      }
+      
+      // If only one source has results, use it
+      if (libraryResults.length > 0) {
+        const topScore = libraryResults[0].score;
+        const gateAPassed = topScore >= SIMILARITY_THRESHOLD;
+        this.logger.log(`📚 Only library results available: topScore=${topScore.toFixed(3)}`);
+        return { chunks: libraryResults, topScore, gateAPassed, source: 'library', unifiedRankingUsed: false };
+      }
+      
+      if (productResult.chunks.length > 0) {
+        this.logger.log(`🛒 Only product results available`);
+        return { ...productResult, source: 'product', unifiedRankingUsed: false };
+      }
+      
+      // No results from either source
+      this.logger.log('🚫 No results in unified ranking mode');
+      return { chunks: [], topScore: 0, gateAPassed: false, source: 'unified', unifiedRankingUsed: false };
+    }
+
+    // ✅ Original sequential logic (when unified ranking is disabled)
     // 2. إذا وجدنا نتائج جيدة في المكتبة → نستخدمها
     if (libraryResults.length > 0) {
       const topScore = libraryResults[0].score;
@@ -1476,6 +1627,7 @@ ${chunksText}
           topScore,
           gateAPassed: true,
           source: 'library',
+          unifiedRankingUsed: false,
         };
       } else {
         this.logger.log(`📚 Library score too low (${topScore.toFixed(3)} < ${SIMILARITY_THRESHOLD}), trying products...`);
@@ -1492,6 +1644,7 @@ ${chunksText}
         topScore: libraryResults.length > 0 ? libraryResults[0].score : 0,
         gateAPassed: false,
         source: 'library',
+        unifiedRankingUsed: false,
       };
     }
 
@@ -1499,7 +1652,7 @@ ${chunksText}
     
     if (productResult.gateAPassed) {
       this.logger.log(`🛒 Product match found: ${productResult.chunks.length} products`);
-      return { ...productResult, source: 'product' };
+      return { ...productResult, source: 'product', unifiedRankingUsed: false };
     }
 
     // 4. كلا المصدرين فشلا → نرجع أفضل ما لدينا
@@ -1509,6 +1662,7 @@ ${chunksText}
       topScore: libraryResults.length > 0 ? libraryResults[0].score : productResult.topScore,
       gateAPassed: false,
       source: libraryResults.length > 0 ? 'library' : 'product',
+      unifiedRankingUsed: false,
     };
   }
 
