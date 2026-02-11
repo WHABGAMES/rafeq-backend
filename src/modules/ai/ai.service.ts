@@ -98,11 +98,16 @@ export interface AISettings {
   fallbackMessage: string;
   handoffMessage: string;
 
-  // MVP Level 2: Strict Grounding Thresholds
+  // MVP Level 2: Strict Grounding Thresholds (0.0 - 1.0)
+  /** Minimum similarity score for Gate A passage (default: 0.72) */
   similarityThreshold?: number;
+  /** Minimum intent classification confidence (default: 0.7) */
   intentConfidenceThreshold?: number;
+  /** Minimum confidence to answer directly (default: 0.75) */
   answerConfidenceThreshold?: number;
+  /** Minimum confidence to ask for clarification (default: 0.5) */
   clarifyConfidenceThreshold?: number;
+  /** Below this confidence, suggest handoff (default: 0.3) */
   handoffConfidenceThreshold?: number;
 }
 
@@ -173,6 +178,27 @@ const HANDOFF_OFFER_MESSAGES: Record<string, string> = {
   en: 'It seems your question is outside the information I have available. Would you like me to connect you with our support team?',
 };
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// 📌 MVP LEVEL 2 CONSTANTS — Confidence Scoring & Grounding
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Confidence calculation weights (must sum to 1.0) */
+const CONFIDENCE_WEIGHTS = {
+  SIMILARITY: 0.4,    // 40% weight for similarity score
+  INTENT: 0.2,        // 20% weight for intent confidence
+  VERIFIER: 0.3,      // 30% weight for verifier result
+  COVERAGE: 0.1,      // 10% weight for chunk coverage
+};
+
+/** Optimal number of chunks for full coverage (used for normalization) */
+const OPTIMAL_CHUNK_COUNT = 3;
+
+/** Model to use for grounding verification */
+const GROUNDING_VERIFIER_MODEL = 'gpt-4o-mini';
+
+/** Max tokens for grounding verification response */
+const GROUNDING_VERIFICATION_MAX_TOKENS = 50;
+
 /** ✅ Intent Classification: نتيجة تصنيف نية الرسالة */
 interface IntentResult {
   intent: 'SMALLTALK' | 'SUPPORT_QUERY' | 'ORDER_QUERY' | 'HUMAN_REQUEST' | 'UNKNOWN';
@@ -206,6 +232,7 @@ const THANKS_PATTERNS = [
 
 /** مخرجات التدقيق الداخلي لكل رد */
 export interface RagAudit {
+  /** المصدر: library, product, mixed (unified ranking), tool, greeting, none */
   answer_source: 'library' | 'product' | 'tool' | 'greeting' | 'none' | 'mixed';
   similarity_score: number;
   verifier_result: 'YES' | 'NO' | 'SKIPPED';
@@ -822,9 +849,21 @@ export class AIService {
       );
 
       // ✅ MVP Level 2: Strict Grounding - Decision based on confidence thresholds
-      const answerThreshold = settings.answerConfidenceThreshold || AI_DEFAULTS.answerConfidenceThreshold || 0.75;
-      const clarifyThreshold = settings.clarifyConfidenceThreshold || AI_DEFAULTS.clarifyConfidenceThreshold || 0.5;
-      const handoffThreshold = settings.handoffConfidenceThreshold || AI_DEFAULTS.handoffConfidenceThreshold || 0.3;
+      const answerThreshold = this.getThreshold(
+        settings.answerConfidenceThreshold,
+        AI_DEFAULTS.answerConfidenceThreshold,
+        0.75,
+      );
+      const clarifyThreshold = this.getThreshold(
+        settings.clarifyConfidenceThreshold,
+        AI_DEFAULTS.clarifyConfidenceThreshold,
+        0.5,
+      );
+      const handoffThreshold = this.getThreshold(
+        settings.handoffConfidenceThreshold,
+        AI_DEFAULTS.handoffConfidenceThreshold,
+        0.3,
+      );
 
       this.logger.log(`🎯 Confidence: ${confidenceScore.toFixed(3)}, thresholds: answer=${answerThreshold}, clarify=${clarifyThreshold}, handoff=${handoffThreshold}`);
 
@@ -931,12 +970,10 @@ export class AIService {
         };
       }
     } catch (error) {
-      this.logger.error('OpenAI API error', {
-        error: error instanceof Error ? error.message : 'Unknown',
-      });
+      this.logger.error('OpenAI API error', { error: this.getErrorMessage(error) });
       this.eventEmitter.emit('ai.error', {
         conversationId: context.conversationId,
-        error: error instanceof Error ? error.message : 'Unknown',
+        error: this.getErrorMessage(error),
       });
       return {
         reply: settings.fallbackMessage || AI_DEFAULTS.fallbackMessage,
@@ -1475,7 +1512,7 @@ ${chunksText}
       return answer.includes('YES');
     } catch (error) {
       this.logger.error('Verifier failed — defaulting to FAIL', {
-        error: error instanceof Error ? error.message : 'Unknown',
+        error: this.getErrorMessage(error),
       });
       return false; // فشل التحقق = لا نسمح بالرد (أمان)
     }
@@ -1484,6 +1521,7 @@ ${chunksText}
   /**
    * ✅ MVP Level 2: Calculate unified confidence score
    * Combines similarity score, intent confidence, verifier result, and chunk coverage
+   * Using weighted average with configurable weights
    */
   private calculateConfidence(
     similarityScore: number,
@@ -1491,19 +1529,20 @@ ${chunksText}
     verifierPassed: boolean,
     chunkCoverage: number,
   ): number {
-    // Weighted average: similarity (40%), intent (20%), verifier (30%), coverage (10%)
+    // Weighted average using defined weights
     const verifierScore = verifierPassed ? 1.0 : 0.0;
     const confidence =
-      similarityScore * 0.4 +
-      intentConfidence * 0.2 +
-      verifierScore * 0.3 +
-      chunkCoverage * 0.1;
+      similarityScore * CONFIDENCE_WEIGHTS.SIMILARITY +
+      intentConfidence * CONFIDENCE_WEIGHTS.INTENT +
+      verifierScore * CONFIDENCE_WEIGHTS.VERIFIER +
+      chunkCoverage * CONFIDENCE_WEIGHTS.COVERAGE;
     return Math.min(1.0, Math.max(0.0, confidence));
   }
 
   /**
    * ✅ MVP Level 2: Calculate chunk coverage
    * Estimates how well the chunks cover the user's question
+   * Normalized to OPTIMAL_CHUNK_COUNT for consistency
    */
   private calculateChunkCoverage(
     chunks: Array<{ title: string; content: string; score: number }>,
@@ -1513,7 +1552,7 @@ ${chunksText}
     
     // Coverage based on number of chunks and their scores
     const avgScore = chunks.reduce((sum, c) => sum + c.score, 0) / chunks.length;
-    const coverageFactor = Math.min(chunks.length / 3, 1.0); // normalize to 3 chunks
+    const coverageFactor = Math.min(chunks.length / OPTIMAL_CHUNK_COUNT, 1.0);
     return (topScore * 0.6 + avgScore * 0.4) * coverageFactor;
   }
 
@@ -1559,7 +1598,7 @@ ${chunksText}
         .join('\n\n');
 
       const response = await this.openai.chat.completions.create({
-        model: 'gpt-4o-mini',
+        model: GROUNDING_VERIFIER_MODEL,
         messages: [
           {
             role: 'system',
@@ -1584,7 +1623,7 @@ ${chunksText}
           },
         ],
         temperature: 0,
-        max_tokens: 50,
+        max_tokens: GROUNDING_VERIFICATION_MAX_TOKENS,
       });
 
       const result = (response.choices[0]?.message?.content || '').trim();
@@ -1593,12 +1632,29 @@ ${chunksText}
 
       return { isGrounded, reason };
     } catch (error) {
-      this.logger.error('Grounding verification failed', {
-        error: error instanceof Error ? error.message : 'Unknown',
-      });
+      const errorMsg = this.getErrorMessage(error);
+      this.logger.error('Grounding verification failed', { error: errorMsg });
       // Fail-safe: if verification fails, reject the answer (strict grounding)
       return { isGrounded: false, reason: 'Verification failed' };
     }
+  }
+
+  /**
+   * Helper: Extract error message from Error object or return 'Unknown'
+   */
+  private getErrorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : 'Unknown';
+  }
+
+  /**
+   * Helper: Get threshold value with fallbacks (setting → default → hardcoded)
+   */
+  private getThreshold(
+    settingValue: number | undefined,
+    defaultValue: number | undefined,
+    hardcodedFallback: number,
+  ): number {
+    return settingValue ?? defaultValue ?? hardcodedFallback;
   }
 
   /**
@@ -1734,7 +1790,9 @@ ${chunksText}
       this.logger.log(`🔀 Unified ranking: ${mergedChunks.length} chunks, topScore=${topScore.toFixed(3)}, gateA=${gateAPassed ? 'PASS' : 'FAIL'}`);
       
       return {
-        chunks: mergedChunks.map(({ source, ...chunk }) => chunk), // remove source tag for compatibility
+        // Remove source tag for compatibility with downstream consumers
+        // that expect chunks without source metadata (e.g., buildStrictSystemPrompt)
+        chunks: mergedChunks.map(({ source, ...chunk }) => chunk),
         topScore,
         gateAPassed,
         source: 'mixed',
