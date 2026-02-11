@@ -158,6 +158,22 @@ class UpdateAISettingsDto {
 
   @IsOptional() @IsString()
   handoffMessage?: string;
+
+  // MVP Level 2: Strict Grounding Thresholds
+  @IsOptional() @IsNumber()
+  similarityThreshold?: number;
+
+  @IsOptional() @IsNumber()
+  intentConfidenceThreshold?: number;
+
+  @IsOptional() @IsNumber()
+  answerConfidenceThreshold?: number;
+
+  @IsOptional() @IsNumber()
+  clarifyConfidenceThreshold?: number;
+
+  @IsOptional() @IsNumber()
+  handoffConfidenceThreshold?: number;
 }
 
 class AddKnowledgeDto {
