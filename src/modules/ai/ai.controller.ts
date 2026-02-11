@@ -12,6 +12,7 @@
  * ║  POST /ai/knowledge          → إضافة معرفة                                     ║
  * ║  PUT  /ai/knowledge/:id      → تحديث معرفة                                     ║
  * ║  DELETE /ai/knowledge/:id    → حذف معرفة                                       ║
+ * ║  POST /ai/knowledge/reindex  → إعادة توليد Embeddings                          ║
  * ║  POST /ai/respond            → إنشاء رد على رسالة                             ║
  * ║  POST /ai/analyze            → تحليل رسالة                                     ║
  * ║  GET  /ai/stats              → إحصائيات                                        ║
@@ -164,12 +165,6 @@ class AddKnowledgeDto {
   content: string;
 
   @IsOptional() @IsString()
-  answer?: string;
-
-  @IsOptional() @IsString()
-  type?: string;
-
-  @IsOptional() @IsString()
   category?: string;
 
   @IsOptional() @IsArray()
@@ -185,12 +180,6 @@ class UpdateKnowledgeDto {
 
   @IsOptional() @IsString()
   content?: string;
-
-  @IsOptional() @IsString()
-  answer?: string;
-
-  @IsOptional() @IsString()
-  type?: string;
 
   @IsOptional() @IsString()
   category?: string;
@@ -275,14 +264,12 @@ export class AiController {
   @ApiOperation({ summary: 'جلب قاعدة المعرفة' })
   @ApiQuery({ name: 'category', required: false })
   @ApiQuery({ name: 'search', required: false })
-  @ApiQuery({ name: 'type', required: false, description: 'article | qna' })
   async getKnowledge(
     @Req() req: any,
     @Query('category') category?: string,
     @Query('search') search?: string,
-    @Query('type') type?: string,
   ) {
-    return this.aiService.getKnowledge(req.user.tenantId, { category, search, type });
+    return this.aiService.getKnowledge(req.user.tenantId, { category, search });
   }
 
   @Post('knowledge')
@@ -312,6 +299,13 @@ export class AiController {
     @Param('id') id: string,
   ) {
     return this.aiService.deleteKnowledge(req.user.tenantId, id);
+  }
+
+  @Post('knowledge/reindex')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'إعادة توليد Embeddings لكل المكتبة (RAG)' })
+  async reindexEmbeddings(@Req() req: any) {
+    return this.aiService.reindexEmbeddings(req.user.tenantId);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
