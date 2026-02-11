@@ -1004,6 +1004,29 @@ export class AIService {
         return this.handleNoMatch(context, settings, lang, intentResult.intent);
       }
 
+      // ✅ Step 5: Lightweight Grounding — كشف الهلوسة بدون API call
+      // الفكرة: إذا الرد يحتوي معلومات (أرقام، أسعار، مواعيد) وما فيه أي تقاطع مع المكتبة
+      // → على الأغلب GPT يهلوس من معرفته العامة
+      const groundingCheck = this.lightweightGroundingCheck(finalReply, knowledgeChunks);
+      
+      if (!groundingCheck.passed) {
+        this.logger.warn(`🛡️ Lightweight grounding FAILED: ${groundingCheck.reason}`);
+        
+        this.eventEmitter.emit('ai.grounding_failed', {
+          tenantId: context.tenantId,
+          storeId: context.storeId,
+          conversationId: context.conversationId,
+          message,
+          answer: finalReply,
+          reason: groundingCheck.reason,
+          intent: intentResult.intent,
+          timestamp: new Date(),
+        });
+
+        // بدل ما نمنع الرد بالكامل → نطلب توضيح
+        return this.handleNoMatch(context, settings, lang, intentResult.intent);
+      }
+
       // ✅ نجح الرد
       await this.resetFailedAttempts(context);
 
@@ -1397,6 +1420,82 @@ export class AIService {
         handoffReason: 'AI_ERROR',
       };
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🛡️ LIGHTWEIGHT GROUNDING — كشف الهلوسة بدون API call
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * ✅ فحص خفيف لكشف الهلوسة — بدون استدعاء API
+   * 
+   * الفكرة: إذا GPT جاوب بمعلومات محددة (أرقام، أسعار، مواعيد)
+   * ولكن ما فيه أي تقاطع مع محتوى المكتبة → على الأغلب هلوسة
+   * 
+   * مثال هلوسة: العميل يسأل "كم سعر آيفون 15" والمكتبة ما فيها آيفون
+   *   → GPT يرد "سعر آيفون 15 هو 3999 ريال" ← هلوسة من معرفته العامة!
+   *   → الفحص: "آيفون" و "3999" مش موجودين في أي مقال → FAIL
+   * 
+   * مثال صحيح: العميل يسأل "متى تدخلوني" والمكتبة فيها "يوصل خلال 3-5 ايام"
+   *   → GPT يرد "يوصلك خلال 3 إلى 5 أيام" ← صحيح
+   *   → الفحص: "3" و "5" و "أيام" موجودين في المكتبة → PASS
+   */
+  private lightweightGroundingCheck(
+    answer: string,
+    knowledgeChunks: Array<{ title: string; content: string; answer?: string }>,
+  ): { passed: boolean; reason?: string } {
+    // إذا ما فيه مقالات أصلاً — ما نقدر نحكم
+    if (knowledgeChunks.length === 0) {
+      return { passed: false, reason: 'No knowledge entries to ground against' };
+    }
+
+    // نجمع كل محتوى المكتبة في نص واحد
+    const allKBContent = knowledgeChunks
+      .map((c) => `${c.title} ${c.content} ${c.answer || ''}`)
+      .join(' ')
+      .toLowerCase();
+
+    // ✅ فحص 1: استخراج الأرقام والأسعار من الرد
+    // إذا GPT ذكر رقم (سعر، مدة، نسبة) وهذا الرقم مش موجود بالمكتبة → مشبوه
+    const numbersInAnswer = answer.match(/\d+/g) || [];
+    const suspiciousNumbers = numbersInAnswer.filter((n) => {
+      // تجاهل أرقام صغيرة شائعة (1، 2، مقاطع تنسيق)
+      const num = parseInt(n);
+      if (num <= 2) return false;
+      return !allKBContent.includes(n);
+    });
+
+    // إذا أكثر من 2 أرقام مشبوهة → غالباً هلوسة
+    if (suspiciousNumbers.length > 2) {
+      return {
+        passed: false,
+        reason: `Answer contains ${suspiciousNumbers.length} numbers not found in KB: ${suspiciousNumbers.slice(0, 3).join(', ')}`,
+      };
+    }
+
+    // ✅ فحص 2: كلمات محتوى مهمة
+    // نستخرج كلمات من الرد (> 3 أحرف) ونشيك كم منها موجود بالمكتبة
+    const answerWords = answer
+      .replace(/[^\u0600-\u06FFa-zA-Z0-9\s]/g, '') // أزل الرموز
+      .split(/\s+/)
+      .filter((w) => w.length > 3);
+
+    if (answerWords.length === 0) {
+      return { passed: true }; // رد قصير جداً — ما فيه شي نفحصه
+    }
+
+    const matchedWords = answerWords.filter((w) => allKBContent.includes(w.toLowerCase()));
+    const matchRatio = matchedWords.length / answerWords.length;
+
+    // إذا أقل من 15% من كلمات الرد موجودة بالمكتبة → مشبوه جداً
+    if (matchRatio < 0.15 && answerWords.length > 5) {
+      return {
+        passed: false,
+        reason: `Only ${Math.round(matchRatio * 100)}% of answer words found in KB (${matchedWords.length}/${answerWords.length})`,
+      };
+    }
+
+    return { passed: true };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
