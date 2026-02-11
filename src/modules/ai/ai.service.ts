@@ -1815,7 +1815,7 @@ Types:
   private async tryAnswerFromSettings(
     message: string,
     settings: AISettings,
-    context: ConversationContext,
+    _context: ConversationContext,
   ): Promise<AIResponse | null> {
     const lower = message.toLowerCase();
     const isAr = settings.language !== 'en';
