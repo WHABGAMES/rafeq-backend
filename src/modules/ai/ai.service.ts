@@ -1,6 +1,6 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║              RAFIQ PLATFORM - AI Service (Production v4 — Orchestrator)        ║
+ * ║       RAFIQ PLATFORM - AI Service (Production v5 — MVP Level 2 Strict)        ║
  * ║                                                                                ║
  * ║  ✅ المهمة 1: Intent Classification (LLM-based) — تصنيف النية قبل البحث       ║
  * ║  ✅ المهمة 2: Search Priority Enforcement — فرض search_mode صارم              ║
@@ -8,8 +8,14 @@
  * ║  ✅ المهمة 4: Retry Logic — توضيح قبل التحويل حسب عداد المحاولات             ║
  * ║  ✅ المهمة 5: Tone & Language — فرض تقني وليس نصي                             ║
  * ║  ✅ المهمة 6: Handoff + Notifications — تحويل بشري مع إشعارات                 ║
+ * ║  ✅ MVP Level 2: Dynamic Thresholds — عتبات قابلة للتخصيص حسب المتجر          ║
+ * ║  ✅ MVP Level 2: Unified Ranking — دمج وإعادة ترتيب المكتبة والمنتجات        ║
+ * ║  ✅ MVP Level 2: Confidence Scoring — حساب الثقة من التشابه والنية والتحقق    ║
+ * ║  ✅ MVP Level 2: Strict Grounding Guard — التحقق من دعم الإجابة بالمصادر      ║
+ * ║  ✅ MVP Level 2: Enhanced Audit — حقول تدقيق محسّنة مع الثقة والاقتباسات      ║
  * ║                                                                                ║
- * ║  التسلسل: Message → Intent → Route → Search/Tool → Answer/Clarify/Handoff    ║
+ * ║  التسلسل: Message → Intent → Route → Search/Tool → Confidence → Grounding    ║
+ * ║          → Answer/Clarify/Handoff with full audit trail                       ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -824,7 +830,42 @@ export class AIService {
 
       // Strict Grounding: Check if answer is well-grounded
       if (confidenceScore >= answerThreshold) {
-        // High confidence - answer directly
+        // ✅ MVP Level 2: Strict Grounding Verification
+        // Before answering, verify that the answer is properly grounded in the chunks
+        const groundingCheck = await this.verifyGrounding(finalReply, ragResult.chunks);
+        
+        if (!groundingCheck.isGrounded) {
+          // Answer is not properly grounded - reject and ask for clarification
+          this.logger.log(`🚫 Grounding verification FAILED: ${groundingCheck.reason}`);
+          this.eventEmitter.emit('ai.grounding.failed', {
+            conversationId: context.conversationId,
+            reason: groundingCheck.reason,
+            confidence: confidenceScore,
+          });
+
+          return {
+            reply: settings.fallbackMessage || AI_DEFAULTS.fallbackMessage,
+            confidence: confidenceScore,
+            shouldHandoff: settings.autoHandoff,
+            handoffReason: 'GROUNDING_FAILED',
+            ragAudit: {
+              answer_source: finalSource,
+              similarity_score: ragResult.topScore,
+              verifier_result: gateBPassed ? 'YES' : 'SKIPPED',
+              final_decision: 'BLOCKED',
+              retrieved_chunks: ragResult.chunks.length,
+              gate_a_passed: ragResult.gateAPassed,
+              gate_b_passed: gateBPassed,
+              confidence_score: confidenceScore,
+              intent_confidence: intentResult.confidence,
+              chunk_coverage: chunkCoverage,
+              rejection_reason: `Grounding verification failed: ${groundingCheck.reason}`,
+            },
+          };
+        }
+
+        // High confidence AND properly grounded - answer directly
+        this.logger.log(`✅ Answer approved: confidence=${confidenceScore.toFixed(3)}, grounded=YES`);
         this.eventEmitter.emit('ai.response.success', {
           conversationId: context.conversationId,
           confidence: confidenceScore,
@@ -1495,6 +1536,69 @@ ${chunksText}
     return combined
       .sort((a, b) => b.score - a.score)
       .slice(0, topK);
+  }
+
+  /**
+   * ✅ MVP Level 2: Verify grounding - Check if answer is properly supported by chunks
+   * Uses LLM to verify that the answer doesn't contain information not in the chunks
+   */
+  private async verifyGrounding(
+    answer: string,
+    chunks: Array<{ title: string; content: string; score: number; answer?: string }>,
+  ): Promise<{ isGrounded: boolean; reason?: string }> {
+    if (chunks.length === 0) {
+      return { isGrounded: false, reason: 'No chunks available' };
+    }
+
+    try {
+      const chunksText = chunks
+        .map((c) => {
+          const answerPart = c.answer ? `\nالجواب: ${c.answer}` : '';
+          return `[${c.title}]: ${c.content}${answerPart}`;
+        })
+        .join('\n\n');
+
+      const response = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: 'أنت محقق دقيق. مهمتك التحقق من أن الإجابة المقدمة مدعومة بالكامل بالمصادر المتاحة. أجب فقط بـ YES أو NO متبوعة بسبب قصير إذا كانت NO.',
+          },
+          {
+            role: 'user',
+            content: `هل الإجابة التالية مدعومة بالكامل بالمصادر المتاحة؟ لا تقبل أي معلومة غير موجودة في المصادر.
+
+الإجابة المقترحة:
+"""
+${answer}
+"""
+
+المصادر المتاحة:
+"""
+${chunksText}
+"""
+
+أجب YES إذا كل معلومة في الإجابة موجودة في المصادر.
+أجب NO: [سبب] إذا الإجابة تحتوي معلومات غير موجودة في المصادر.`,
+          },
+        ],
+        temperature: 0,
+        max_tokens: 50,
+      });
+
+      const result = (response.choices[0]?.message?.content || '').trim();
+      const isGrounded = result.toUpperCase().startsWith('YES');
+      const reason = isGrounded ? undefined : result.replace(/^NO:?\s*/i, '').trim();
+
+      return { isGrounded, reason };
+    } catch (error) {
+      this.logger.error('Grounding verification failed', {
+        error: error instanceof Error ? error.message : 'Unknown',
+      });
+      // Fail-safe: if verification fails, reject the answer (strict grounding)
+      return { isGrounded: false, reason: 'Verification failed' };
+    }
   }
 
   /**
