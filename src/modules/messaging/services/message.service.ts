@@ -101,6 +101,15 @@ export interface OutgoingMessageData {
     confidence?: number;
     toolsCalled?: string[];
     processingTime?: number;
+    ragAudit?: {
+      answer_source: string;
+      similarity_score: number;
+      verifier_result: string;
+      final_decision: string;
+      retrieved_chunks: number;
+      gate_a_passed: boolean;
+      gate_b_passed: boolean;
+    };
   };
 }
 
