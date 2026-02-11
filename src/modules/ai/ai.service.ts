@@ -995,14 +995,28 @@ export class AIService {
     const tools = this.getAvailableTools();
 
     try {
-      const completion = await this.openai.chat.completions.create({
-        model: settings.model || AI_DEFAULTS.model,
-        messages,
-        tools: tools.length > 0 ? tools : undefined,
-        tool_choice: tools.length > 0 ? 'auto' : undefined,
-        temperature: 0.3,
-        max_tokens: settings.maxTokens || 1000,
-      });
+      // ✅ Level 2: Apply timeout and retry to OpenAI call
+      const timeout = settings.openaiTimeout ?? 30000;
+      const maxRetries = settings.maxRetries ?? 2;
+      const retryDelay = settings.retryDelay ?? 1000;
+      
+      const completion = await this.withTimeout(
+        this.withRetry(
+          () => this.openai.chat.completions.create({
+            model: settings.model || AI_DEFAULTS.model,
+            messages,
+            tools: tools.length > 0 ? tools : undefined,
+            tool_choice: tools.length > 0 ? 'auto' : undefined,
+            temperature: 0.3,
+            max_tokens: settings.maxTokens || 1000,
+          }),
+          maxRetries,
+          retryDelay,
+          'OpenAI chat completion'
+        ),
+        timeout,
+        'OpenAI chat completion'
+      );
 
       const assistantMsg = completion.choices[0]?.message;
       if (!assistantMsg) throw new Error('No response from OpenAI');
@@ -1037,12 +1051,21 @@ export class AIService {
           })),
         ];
 
-        const followUp = await this.openai.chat.completions.create({
-          model: settings.model || AI_DEFAULTS.model,
-          messages: toolMessages,
-          temperature: 0.3,
-          max_tokens: settings.maxTokens || 1000,
-        });
+        const followUp = await this.withTimeout(
+          this.withRetry(
+            () => this.openai.chat.completions.create({
+              model: settings.model || AI_DEFAULTS.model,
+              messages: toolMessages,
+              temperature: 0.3,
+              max_tokens: settings.maxTokens || 1000,
+            }),
+            maxRetries,
+            retryDelay,
+            'OpenAI follow-up completion'
+          ),
+          timeout,
+          'OpenAI follow-up completion'
+        );
 
         finalReply = followUp.choices[0]?.message?.content || finalReply;
         finalSource = 'tool';
@@ -1588,13 +1611,18 @@ export class AIService {
   /**
    * ✅ توليد Embedding عبر OpenAI
    * يستخدم text-embedding-3-small (1536 dims)
+   * ✅ Level 2: Applies timeout to embedding generation
    */
-  private async generateEmbedding(text: string): Promise<number[] | null> {
+  private async generateEmbedding(text: string, timeout: number = 15000): Promise<number[] | null> {
     try {
-      const response = await this.openai.embeddings.create({
-        model: EMBEDDING_MODEL,
-        input: text.substring(0, 8000), // حد أقصى
-      });
+      const response = await this.withTimeout(
+        this.openai.embeddings.create({
+          model: EMBEDDING_MODEL,
+          input: text.substring(0, 8000), // حد أقصى
+        }),
+        timeout,
+        'Embedding generation'
+      );
       return response.data[0]?.embedding || null;
     } catch (error) {
       this.logger.error('Failed to generate embedding', {
@@ -1665,6 +1693,7 @@ export class AIService {
   private async verifyRelevance(
     question: string,
     chunks: Array<{ title: string; content: string; score: number; answer?: string }>,
+    timeout: number = 10000,
   ): Promise<boolean> {
     try {
       const chunksText = chunks
@@ -1674,16 +1703,18 @@ export class AIService {
         })
         .join('\n');
 
-      const response = await this.openai.chat.completions.create({
-        model: 'gpt-4o-mini', // نموذج خفيف للتحقق
-        messages: [
-          {
-            role: 'system',
-            content: 'أنت محكّم. أجب فقط بـ YES أو NO. لا تشرح.',
-          },
-          {
-            role: 'user',
-            content: `هل المقاطع التالية تحتوي إجابة مباشرة وواضحة على سؤال المستخدم؟
+      // ✅ Level 2: Apply timeout to verifier
+      const response = await this.withTimeout(
+        this.openai.chat.completions.create({
+          model: 'gpt-4o-mini', // نموذج خفيف للتحقق
+          messages: [
+            {
+              role: 'system',
+              content: 'أنت محكّم. أجب فقط بـ YES أو NO. لا تشرح.',
+            },
+            {
+              role: 'user',
+              content: `هل المقاطع التالية تحتوي إجابة مباشرة وواضحة على سؤال المستخدم؟
 
 سؤال المستخدم: "${question}"
 
@@ -1692,11 +1723,14 @@ ${chunksText}
 
 أجب YES إذا المقاطع تحتوي إجابة واضحة ومباشرة.
 أجب NO إذا المقاطع لا تحتوي إجابة أو الإجابة غير مباشرة.`,
-          },
-        ],
-        temperature: 0,
-        max_tokens: 5,
-      });
+            },
+          ],
+          temperature: 0,
+          max_tokens: 5,
+        }),
+        timeout,
+        'Verifier'
+      );
 
       const answer = (response.choices[0]?.message?.content || '').trim().toUpperCase();
       return answer.includes('YES');
@@ -2007,12 +2041,17 @@ ${chunksText}
 
       this.logger.log(`🛒 Searching products: "${keyword}" in store ${storeId}`);
 
-      // البحث في منتجات سلة
-      const response = await this.sallaApiService.getProducts(accessToken, {
-        keyword,
-        perPage: RAG_TOP_K,
-        status: 'active',
-      });
+      // ✅ Level 2: Apply timeout to product search
+      const searchTimeout = settings?.productSearchTimeout ?? 10000;
+      const response = await this.withTimeout(
+        this.sallaApiService.getProducts(accessToken, {
+          keyword,
+          perPage: RAG_TOP_K,
+          status: 'active',
+        }),
+        searchTimeout,
+        'Product search'
+      );
 
       if (!response.data || response.data.length === 0) {
         this.logger.log(`🛒 No products found for keyword "${keyword}"`);
@@ -2142,6 +2181,7 @@ ${chunksText}
   private async validateAnswerGrounding(
     answer: string,
     chunks: Array<{ title: string; content: string; answer?: string }>,
+    timeout: number = 15000,
   ): Promise<{ isGrounded: boolean; citations: Array<{ chunkId: string; claim: string }> }> {
     if (!this.isApiKeyConfigured || chunks.length === 0) {
       return { isGrounded: true, citations: [] }; // Skip if no API or no chunks
@@ -2168,12 +2208,17 @@ ${answer}
 رد بـ JSON فقط:
 {"grounded": true/false, "citations": [{"chunkId": "0", "claim": "النص المدعوم"}]}`;
 
-      const response = await this.openai.chat.completions.create({
-        model: 'gpt-4o-mini',
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0,
-        max_tokens: 300,
-      });
+      // ✅ Level 2: Apply timeout to grounding validator
+      const response = await this.withTimeout(
+        this.openai.chat.completions.create({
+          model: 'gpt-4o-mini',
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0,
+          max_tokens: 300,
+        }),
+        timeout,
+        'Grounding validation'
+      );
 
       const raw = (response.choices[0]?.message?.content || '').trim();
       const cleaned = raw.replace(/```json|```/g, '').trim();
@@ -2421,15 +2466,19 @@ Types:
 - Specific product questions = PRODUCT_QUESTION
 - General policy questions = POLICY_SUPPORT_FAQ`;
 
-      const response = await this.openai.chat.completions.create({
-        model: 'gpt-4o-mini',
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: `رسالة العميل: "${message}"\n\nأجب بـ JSON:\n{"intent":"...","confidence":0.00}` },
-        ],
-        temperature: 0,
-        max_tokens: 50,
-      });
+      const response = await this.withTimeout(
+        this.openai.chat.completions.create({
+          model: 'gpt-4o-mini',
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: `رسالة العميل: "${message}"\n\nأجب بـ JSON:\n{"intent":"...","confidence":0.00}` },
+          ],
+          temperature: 0,
+          max_tokens: 50,
+        }),
+        10000, // 10 second timeout for intent classification
+        'Intent classification'
+      );
 
       const raw = (response.choices[0]?.message?.content || '').trim();
       const cleaned = raw.replace(/```json|```/g, '').trim();
