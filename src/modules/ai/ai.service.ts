@@ -871,6 +871,15 @@ ${chunksText}
     if (!ragResult.gateAPassed) {
       this.logger.log(`🚫 Gate A FAILED: score=${ragResult.topScore.toFixed(3)} < ${SIMILARITY_THRESHOLD}, source=${ragResult.source}`);
 
+      // ✅ MVP Level 2: Emit low similarity event
+      this.eventEmitter.emit('ai.low_similarity', {
+        conversationId: context.conversationId,
+        score: ragResult.topScore,
+        threshold: SIMILARITY_THRESHOLD,
+        source: ragResult.source,
+        chunks: ragResult.chunks.length,
+      });
+
       // ✅ FIX-B: قبل إرجاع NO_MATCH — جرّب الإجابة من إعدادات المتجر
       // أسئلة مثل "وش اسم المتجر" و"وش ساعات العمل" يمكن الرد عليها من الإعدادات مباشرة
       const settingsAnswer = await this.tryAnswerFromSettings(message, settings, context);
@@ -905,6 +914,16 @@ ${chunksText}
     // ═══════════════════════════════════════════════════════════════════════════
     // 3.5 ✅ MVP Level 2: Confidence Scoring & Decision
     // ═══════════════════════════════════════════════════════════════════════════
+    
+    // ✅ MVP Level 2: Emit unified ranking event if used
+    if (ragResult.unifiedRankingUsed) {
+      this.eventEmitter.emit('ai.unified_ranking_used', {
+        conversationId: context.conversationId,
+        topScore: ragResult.topScore,
+        chunks: ragResult.chunks.length,
+        source: ragResult.source,
+      });
+    }
     
     const confidenceBreakdown = this.calculateConfidence(
       ragResult.topScore,
