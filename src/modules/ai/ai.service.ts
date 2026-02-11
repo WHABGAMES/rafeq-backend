@@ -547,6 +547,72 @@ export class AIService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
+  // 🎯 MVP LEVEL 2: CONFIDENCE SCORING & THRESHOLDS
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * ✅ MVP Level 2: Calculate confidence score from multiple factors
+   * Combines: similarity score, intent confidence, verifier result, and chunk coverage
+   */
+  private calculateConfidence(
+    similarityScore: number,
+    intentConfidence: number,
+    verifierPassed: boolean,
+    chunkCount: number,
+  ): {
+    similarityScore: number;
+    intentConfidence: number;
+    verifierScore: number;
+    chunkCoverage: number;
+    finalConfidence: number;
+  } {
+    // Verifier score: 1.0 if passed, 0.3 if failed
+    const verifierScore = verifierPassed ? 1.0 : 0.3;
+    
+    // Chunk coverage: more chunks = better coverage (capped at 1.0)
+    const chunkCoverage = Math.min(chunkCount / RAG_TOP_K, 1.0);
+    
+    // Weighted combination:
+    // - Similarity: 35% weight (most important)
+    // - Intent: 25% weight
+    // - Verifier: 30% weight (critical for grounding)
+    // - Coverage: 10% weight
+    const finalConfidence = 
+      (similarityScore * 0.35) +
+      (intentConfidence * 0.25) +
+      (verifierScore * 0.30) +
+      (chunkCoverage * 0.10);
+
+    return {
+      similarityScore,
+      intentConfidence,
+      verifierScore,
+      chunkCoverage,
+      finalConfidence: Math.min(finalConfidence, 1.0),
+    };
+  }
+
+  /**
+   * ✅ MVP Level 2: Make decision based on confidence thresholds
+   * Returns: 'ANSWER' | 'CLARIFY' | 'HANDOFF'
+   */
+  private makeConfidenceDecision(
+    confidence: number,
+    settings: AISettings,
+  ): 'ANSWER' | 'CLARIFY' | 'HANDOFF' {
+    const answerThreshold = settings.answerConfidenceThreshold ?? AI_DEFAULTS.answerConfidenceThreshold;
+    const clarifyThreshold = settings.clarifyConfidenceThreshold ?? AI_DEFAULTS.clarifyConfidenceThreshold;
+
+    if (confidence >= answerThreshold) {
+      return 'ANSWER';
+    } else if (confidence >= clarifyThreshold) {
+      return 'CLARIFY';
+    } else {
+      return 'HANDOFF';
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
   // 🤖 MAIN AI PROCESSING — OpenAI GPT-4o
   // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -740,6 +806,65 @@ export class AIService {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // 3.5 ✅ MVP Level 2: Confidence Scoring & Decision
+    // ═══════════════════════════════════════════════════════════════════════════
+    
+    const confidenceBreakdown = this.calculateConfidence(
+      ragResult.topScore,
+      intentResult.confidence,
+      gateBPassed,
+      ragResult.chunks.length,
+    );
+    
+    const decision = this.makeConfidenceDecision(confidenceBreakdown.finalConfidence, settings);
+    
+    this.logger.log(`🎯 Confidence: ${(confidenceBreakdown.finalConfidence * 100).toFixed(1)}% → Decision: ${decision}`, {
+      breakdown: confidenceBreakdown,
+    });
+
+    // Handle low confidence cases
+    if (decision === 'HANDOFF') {
+      this.logger.log('⚠️ Confidence below handoff threshold — triggering handoff');
+      this.eventEmitter.emit('ai.confidence_handoff', {
+        conversationId: context.conversationId,
+        confidence: confidenceBreakdown.finalConfidence,
+        threshold: settings.clarifyConfidenceThreshold,
+      });
+      
+      if (settings.autoHandoff) {
+        await this.handleHandoff(context, settings, 'LOW_CONFIDENCE');
+        return {
+          reply: settings.handoffMessage || AI_DEFAULTS.handoffMessage,
+          confidence: confidenceBreakdown.finalConfidence,
+          shouldHandoff: true,
+          handoffReason: 'LOW_CONFIDENCE',
+          confidenceBreakdown,
+          ragAudit: {
+            answer_source: ragResult.source === 'product' ? 'product' : ragResult.source === 'unified' ? 'unified' : 'library',
+            similarity_score: ragResult.topScore,
+            verifier_result: gateBPassed ? 'YES' : 'NO',
+            final_decision: 'HANDOFF',
+            retrieved_chunks: ragResult.chunks.length,
+            gate_a_passed: ragResult.gateAPassed,
+            gate_b_passed: gateBPassed,
+            confidence: confidenceBreakdown.finalConfidence,
+            rejection_reason: 'LOW_CONFIDENCE',
+            intent: intentResult.intent,
+            strategy: settings.searchPriority || SearchPriority.LIBRARY_THEN_PRODUCTS,
+            unified_ranking_used: ragResult.unifiedRankingUsed || false,
+          },
+        };
+      }
+      
+      return this.handleNoMatch(context, settings, lang, 'SUPPORT_QUERY');
+    }
+    
+    if (decision === 'CLARIFY') {
+      this.logger.log('⚠️ Confidence below answer threshold — requesting clarification');
+      return this.handleNoMatch(context, settings, lang, 'SUPPORT_QUERY');
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // 4. ✅ توليد الرد — من المقاطع المسترجعة فقط
     // ═══════════════════════════════════════════════════════════════════════════
 
@@ -819,10 +944,11 @@ export class AIService {
 
       return {
         reply: finalReply,
-        confidence: 0.9,
+        confidence: confidenceBreakdown.finalConfidence,
         intent: 'SUPPORT_QUERY',
         shouldHandoff: false,
         toolsUsed,
+        confidenceBreakdown,
         ragAudit: {
           answer_source: finalSource,
           similarity_score: ragResult.topScore,
@@ -831,8 +957,10 @@ export class AIService {
           retrieved_chunks: ragResult.chunks.length,
           gate_a_passed: ragResult.gateAPassed,
           gate_b_passed: gateBPassed,
-          unified_ranking_used: ragResult.unifiedRankingUsed || false,
+          confidence: confidenceBreakdown.finalConfidence,
+          intent: intentResult.intent,
           strategy: settings.searchPriority || SearchPriority.LIBRARY_THEN_PRODUCTS,
+          unified_ranking_used: ragResult.unifiedRankingUsed || false,
         },
       };
     } catch (error) {
