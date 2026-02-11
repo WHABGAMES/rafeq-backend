@@ -1825,7 +1825,7 @@ ${chunksText}
    */
   private async rewriteQueryForSearch(
     message: string,
-    settings: AISettings,
+    _settings: AISettings,
   ): Promise<string | null> {
     try {
       const response = await this.withTimeout(
