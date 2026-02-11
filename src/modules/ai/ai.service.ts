@@ -924,9 +924,11 @@ export class AIService {
       return this.handleNoMatch(context, settings, lang, intentResult.intent);
     }
     
-    // ✅ Level 2: Between low and medium threshold → force clarification (no answer generation)
+    // ✅ FIX: Between low and medium threshold → run verifier (NOT force clarification)
+    // المشكلة السابقة: كان يرفض مباشرة بدون محاولة
+    // الحل: نشغّل المحقق — GPT يقدر يفهم إن "تدخلوني" و "يوصل" نفس السياق حتى لو الـ embedding ما فهم
     if (ragResult.topScore >= lowThreshold && ragResult.topScore < mediumThreshold) {
-      this.logger.log(`⚠️ Score between low and medium: ${ragResult.topScore.toFixed(3)} (${lowThreshold}-${mediumThreshold}) — forcing clarification`);
+      this.logger.log(`⚠️ Score between low and medium: ${ragResult.topScore.toFixed(3)} (${lowThreshold}-${mediumThreshold}) — running verifier before deciding`);
       
       // Emit analytics event for medium-low confidence
       this.eventEmitter.emit('ai.medium_low_confidence', {
@@ -940,7 +942,33 @@ export class AIService {
         timestamp: new Date(),
       });
       
-      return this.handleNoMatch(context, settings, lang, intentResult.intent);
+      // ✅ FIX: شغّل المحقق — إذا قال YES نكمل، إذا NO نطلب توضيح
+      if (ragResult.chunks.length > 0) {
+        const verifierResult = await this.verifyRelevance(message, ragResult.chunks);
+        this.logger.log(`🔎 Medium-low verifier: ${verifierResult ? 'PASS' : 'FAIL'}`);
+        
+        if (verifierResult) {
+          // المحقق أكد إن المقاطع تجاوب السؤال — نكمل لإنشاء الرد
+          this.logger.log(`✅ Verifier PASSED for medium-low score — proceeding to answer generation`);
+          // نكمل التدفق العادي (ما نرجع هنا، نتركه يكمل للأسفل)
+        } else {
+          // المحقق أكد إن المقاطع ما تجاوب — نطلب توضيح
+          const settingsAnswer = await this.tryAnswerFromSettings(message, settings, context);
+          if (settingsAnswer) {
+            await this.resetFailedAttempts(context);
+            return settingsAnswer;
+          }
+          return this.handleNoMatch(context, settings, lang, intentResult.intent);
+        }
+      } else {
+        // ما فيه chunks أصلاً
+        const settingsAnswer = await this.tryAnswerFromSettings(message, settings, context);
+        if (settingsAnswer) {
+          await this.resetFailedAttempts(context);
+          return settingsAnswer;
+        }
+        return this.handleNoMatch(context, settings, lang, intentResult.intent);
+      }
     }
 
     // ✅ Level 2: Determine if we should skip verifier (score >= high threshold)
@@ -1821,7 +1849,7 @@ ${chunksText}
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // MODE 2: LIBRARY_ONLY — البحث فقط في المكتبة
+    // MODE 2: LIBRARY_ONLY — البحث فقط في المكتبة (هجين: semantic + keyword)
     // ═══════════════════════════════════════════════════════════════════════════
     if (sp === SearchPriority.LIBRARY_ONLY && canSearchLibrary) {
       this.logger.log('📚 Search mode: LIBRARY_ONLY');
@@ -1834,16 +1862,42 @@ ${chunksText}
         return { ...fallback, source: 'library' };
       }
 
-      // بحث دلالي في المكتبة فقط
+      // بحث دلالي في المكتبة
       const results = await this.semanticSearch(queryEmbedding, context.tenantId);
 
       if (results.length === 0) {
-        this.logger.log('📚 No matches in library');
+        // ✅ FIX: لا نتائج من semantic → جرب keyword search
+        this.logger.log('📚 No semantic matches — trying keyword fallback');
+        const keywordResult = await this.fallbackKeywordSearch(message, context.tenantId);
+        if (keywordResult.chunks.length > 0) {
+          this.logger.log(`📚 Keyword fallback found ${keywordResult.chunks.length} chunks, topScore=${keywordResult.topScore.toFixed(3)}`);
+          return { ...keywordResult, source: 'library' };
+        }
         return { chunks: [], topScore: 0, gateAPassed: false, source: 'library' };
       }
 
       const topScore = results[0].score;
       const gateAPassed = topScore >= SIMILARITY_THRESHOLD;
+
+      // ✅ FIX: إذا semantic score ضعيف → ادمج مع keyword search لتحسين النتائج
+      if (!gateAPassed) {
+        this.logger.log(`📚 Semantic score low (${topScore.toFixed(3)}) — trying hybrid with keyword search`);
+        const keywordResult = await this.fallbackKeywordSearch(message, context.tenantId);
+        
+        if (keywordResult.chunks.length > 0) {
+          // ادمج النتائج: إذا keyword لقى نفس المقال = boost score
+          const mergedChunks = this.mergeSearchResults(results, keywordResult.chunks);
+          const mergedTop = mergedChunks[0]?.score || topScore;
+          this.logger.log(`📚 Hybrid search: merged ${mergedChunks.length} chunks, boostedTopScore=${mergedTop.toFixed(3)}`);
+          
+          return {
+            chunks: mergedChunks,
+            topScore: mergedTop,
+            gateAPassed: mergedTop >= SIMILARITY_THRESHOLD,
+            source: 'library',
+          };
+        }
+      }
 
       this.logger.log(`📚 Library search: ${results.length} chunks, topScore=${topScore.toFixed(3)}, gateA=${gateAPassed ? 'PASS' : 'FAIL'}`);
 
@@ -1866,16 +1920,27 @@ ${chunksText}
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // MODE 3: LIBRARY_THEN_PRODUCTS — البحث في المكتبة أولاً، ثم المنتجات
+    // MODE 3: LIBRARY_THEN_PRODUCTS — بحث هجين في المكتبة أولاً، ثم المنتجات
     // ═══════════════════════════════════════════════════════════════════════════
     this.logger.log('📚🛒 Search mode: LIBRARY_THEN_PRODUCTS');
 
-    // 1. محاولة البحث في المكتبة أولاً
+    // 1. محاولة البحث في المكتبة (semantic + keyword hybrid)
     const queryEmbedding = await this.generateEmbedding(message);
     let libraryResults: Array<{ title: string; content: string; score: number; answer?: string }> = [];
     
     if (canSearchLibrary && queryEmbedding) {
       libraryResults = await this.semanticSearch(queryEmbedding, context.tenantId);
+      
+      // ✅ FIX: إذا semantic score ضعيف أو صفر → جرب keyword وادمج
+      const semanticTop = libraryResults[0]?.score || 0;
+      if (semanticTop < SIMILARITY_THRESHOLD) {
+        this.logger.log(`📚 Semantic score low (${semanticTop.toFixed(3)}) — trying hybrid with keyword search`);
+        const keywordResult = await this.fallbackKeywordSearch(message, context.tenantId);
+        if (keywordResult.chunks.length > 0) {
+          libraryResults = this.mergeSearchResults(libraryResults, keywordResult.chunks);
+          this.logger.log(`📚 Hybrid: merged to ${libraryResults.length} chunks, topScore=${libraryResults[0]?.score.toFixed(3)}`);
+        }
+      }
     } else if (canSearchLibrary) {
       this.logger.warn('Failed to generate query embedding — trying keyword search');
       const fallback = await this.fallbackKeywordSearch(message, context.tenantId);
@@ -1941,8 +2006,12 @@ ${chunksText}
   }
 
   /**
-   * ✅ Fallback: بحث كلمات مفتاحية (إذا فشل الـ Embedding)
-   * يبحث بـ ILIKE في العنوان والمحتوى
+   * ✅ FIX: بحث كلمات مفتاحية محسّن (يشمل keywords و answer)
+   * 
+   * المشكلة السابقة: كان يبحث فقط في title و content
+   * حقل keywords موجود بالـ entity بس ما يُستخدم أبداً!
+   * 
+   * الحل: يبحث في title + content + answer + keywords array
    */
   private async fallbackKeywordSearch(
     message: string,
@@ -1963,8 +2032,10 @@ ${chunksText}
       .where('kb.tenantId = :tenantId', { tenantId })
       .andWhere('kb.isActive = true');
 
-    // بحث OR على كل كلمة
-    const conditions = words.map((_, i) => `(kb.title ILIKE :w${i} OR kb.content ILIKE :w${i})`);
+    // ✅ FIX: بحث OR في كل الحقول المهمة (title + content + answer + keywords)
+    const conditions = words.map((_, i) => 
+      `(kb.title ILIKE :w${i} OR kb.content ILIKE :w${i} OR kb.answer ILIKE :w${i} OR kb.keywords::text ILIKE :w${i})`
+    );
     const params: Record<string, string> = {};
     words.forEach((w, i) => { params[`w${i}`] = `%${w}%`; });
 
@@ -1977,19 +2048,70 @@ ${chunksText}
       return { chunks: [], topScore: 0, gateAPassed: false };
     }
 
-    // Keyword match = score 0.75 (أقل من threshold = يحتاج تحقق)
-    const chunks = entries.map((e) => ({
-      title: e.title,
-      content: e.content,
-      answer: e.answer || undefined,
-      score: 0.75,
-    }));
+    // ✅ FIX: حساب score حسب عدد الكلمات المطابقة (أدق من score ثابت)
+    const chunks = entries.map((e) => {
+      const fullText = `${e.title} ${e.content} ${e.answer || ''} ${(e.keywords || []).join(' ')}`.toLowerCase();
+      const matchCount = words.filter(w => fullText.includes(w.toLowerCase())).length;
+      const matchRatio = matchCount / words.length;
+      // Score بين 0.65 و 0.80 حسب نسبة التطابق
+      const score = 0.65 + (matchRatio * 0.15);
+      
+      return {
+        title: e.title,
+        content: e.content,
+        answer: e.answer || undefined,
+        score,
+      };
+    }).sort((a, b) => b.score - a.score);
 
     return {
       chunks,
-      topScore: 0.75,
-      gateAPassed: true, // keyword match يعبر البوابة A بشرط بوابة B
+      topScore: chunks[0]?.score || 0,
+      gateAPassed: chunks[0]?.score >= 0.72,
     };
+  }
+
+  /**
+   * ✅ دمج نتائج البحث الدلالي والكلمات المفتاحية
+   * 
+   * إذا نفس المقال ظهر في كلا البحثين → boost score بـ 15%
+   * هذا يحل مشكلة: semantic يلقى المقال بـ 0.60، keyword يلقاه بـ 0.70
+   * → المدمج يعطيه 0.75+ فيعبر العتبة
+   */
+  private mergeSearchResults(
+    semanticResults: Array<{ title: string; content: string; score: number; answer?: string }>,
+    keywordResults: Array<{ title: string; content: string; score: number; answer?: string }>,
+  ): Array<{ title: string; content: string; score: number; answer?: string }> {
+    const merged = new Map<string, { title: string; content: string; score: number; answer?: string; sources: number }>();
+
+    // أضف نتائج semantic
+    for (const r of semanticResults) {
+      const key = r.title.trim().toLowerCase();
+      merged.set(key, { ...r, sources: 1 });
+    }
+
+    // ادمج نتائج keyword
+    for (const r of keywordResults) {
+      const key = r.title.trim().toLowerCase();
+      const existing = merged.get(key);
+      
+      if (existing) {
+        // ✅ نفس المقال في كلا البحثين → boost 15%
+        existing.score = Math.min(existing.score * 1.15, 0.95);
+        existing.sources = 2;
+      } else {
+        merged.set(key, { ...r, sources: 1 });
+      }
+    }
+
+    // رتّب حسب score ثم عدد المصادر
+    return Array.from(merged.values())
+      .sort((a, b) => {
+        if (b.sources !== a.sources) return b.sources - a.sources;
+        return b.score - a.score;
+      })
+      .slice(0, RAG_TOP_K)
+      .map(({ title, content, score, answer }) => ({ title, content, score, answer }));
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
