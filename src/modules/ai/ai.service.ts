@@ -613,6 +613,103 @@ export class AIService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
+  // 🛡️ MVP LEVEL 2: STRICT GROUNDING GUARD
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * ✅ MVP Level 2: Extract citations from LLM response
+   * Identifies which chunks were used in the answer
+   */
+  private extractCitations(
+    answer: string,
+    chunks: Array<{ title: string; content: string; score: number; answer?: string }>,
+  ): Array<{ chunkIndex: number; chunkTitle: string }> {
+    const citations: Array<{ chunkIndex: number; chunkTitle: string }> = [];
+    
+    // Check if answer mentions chunk titles or key content
+    chunks.forEach((chunk, index) => {
+      const titleWords = chunk.title.split(/\s+/).filter(w => w.length > 3);
+      const contentWords = chunk.content.split(/\s+/).filter(w => w.length > 4).slice(0, 10);
+      const allKeywords = [...titleWords, ...contentWords];
+      
+      // Count how many keywords from this chunk appear in the answer
+      const matches = allKeywords.filter(keyword => 
+        answer.includes(keyword) || answer.toLowerCase().includes(keyword.toLowerCase())
+      );
+      
+      // If significant overlap, consider it cited (threshold: 20% of keywords)
+      if (matches.length >= Math.max(2, allKeywords.length * 0.2)) {
+        citations.push({
+          chunkIndex: index,
+          chunkTitle: chunk.title,
+        });
+      }
+    });
+
+    return citations;
+  }
+
+  /**
+   * ✅ MVP Level 2: Verify answer is grounded in chunks
+   * Uses LLM to check if the answer is supported by the retrieved chunks
+   */
+  private async verifyGrounding(
+    question: string,
+    answer: string,
+    chunks: Array<{ title: string; content: string; score: number; answer?: string }>,
+  ): Promise<{ isGrounded: boolean; reason?: string }> {
+    try {
+      const chunksText = chunks
+        .map((c, idx) => {
+          const answerPart = c.answer ? `\nالجواب: ${c.answer}` : '';
+          return `[${idx}] ${c.title}: ${c.content}${answerPart}`;
+        })
+        .join('\n\n');
+
+      const response = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: `أنت نظام تدقيق. حدد إذا كانت الإجابة مبنية فقط على المعلومات المقدمة.
+أجب بـ JSON فقط: {"grounded": true/false, "reason": "..."}`,
+          },
+          {
+            role: 'user',
+            content: `سؤال: "${question}"
+
+المعلومات المتاحة:
+${chunksText}
+
+الإجابة المقدمة: "${answer}"
+
+هل الإجابة مبنية بالكامل على المعلومات المتاحة فقط؟
+- إذا كانت الإجابة تحتوي معلومات من خارج المقاطع أو تخمينات → {"grounded": false, "reason": "..."}
+- إذا كانت الإجابة مبنية فقط على المقاطع → {"grounded": true, "reason": ""}`,
+          },
+        ],
+        temperature: 0,
+        max_tokens: 100,
+      });
+
+      const raw = (response.choices[0]?.message?.content || '').trim();
+      const cleaned = raw.replace(/```json|```/g, '').trim();
+      const result = JSON.parse(cleaned) as { grounded: boolean; reason?: string };
+
+      return {
+        isGrounded: result.grounded,
+        reason: result.reason,
+      };
+    } catch (error) {
+      this.logger.warn('Grounding verification failed — defaulting to ACCEPT', {
+        error: error instanceof Error ? error.message : 'Unknown',
+      });
+      // On error, accept the answer (avoid blocking legitimate responses)
+      return { isGrounded: true };
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
   // 🤖 MAIN AI PROCESSING — OpenAI GPT-4o
   // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -940,6 +1037,87 @@ export class AIService {
 
         finalReply = followUp.choices[0]?.message?.content || finalReply;
         finalSource = 'tool';
+      }
+
+      // ═══════════════════════════════════════════════════════════════════════════
+      // 4.5 ✅ MVP Level 2: Strict Grounding Guard
+      // ═══════════════════════════════════════════════════════════════════════════
+      
+      const strictGroundingEnabled = settings.enableStrictGrounding ?? AI_DEFAULTS.enableStrictGrounding;
+      
+      if (strictGroundingEnabled && finalSource !== 'tool') {
+        this.logger.log('🛡️ Running strict grounding verification...');
+        
+        // Extract citations
+        const citations = this.extractCitations(finalReply, ragResult.chunks);
+        this.logger.log(`🛡️ Found ${citations.length} citations in response`);
+        
+        // Verify grounding
+        const groundingResult = await this.verifyGrounding(message, finalReply, ragResult.chunks);
+        
+        if (!groundingResult.isGrounded) {
+          this.logger.warn('🚫 Grounding verification FAILED — answer not supported by chunks', {
+            reason: groundingResult.reason,
+          });
+          
+          // Emit grounding rejection event
+          this.eventEmitter.emit('ai.grounding_rejection', {
+            conversationId: context.conversationId,
+            question: message,
+            answer: finalReply,
+            reason: groundingResult.reason,
+            chunks: ragResult.chunks.length,
+          });
+          
+          // Reject the answer and return clarify/handoff
+          return {
+            reply: settings.fallbackMessage || AI_DEFAULTS.fallbackMessage,
+            confidence: 0.3,
+            shouldHandoff: settings.autoHandoff,
+            handoffReason: 'GROUNDING_FAILED',
+            confidenceBreakdown,
+            ragAudit: {
+              answer_source: finalSource,
+              similarity_score: ragResult.topScore,
+              verifier_result: gateBPassed ? 'YES' : 'SKIPPED',
+              final_decision: 'BLOCKED',
+              retrieved_chunks: ragResult.chunks.length,
+              gate_a_passed: ragResult.gateAPassed,
+              gate_b_passed: gateBPassed,
+              confidence: confidenceBreakdown.finalConfidence,
+              rejection_reason: `GROUNDING_FAILED: ${groundingResult.reason}`,
+              intent: intentResult.intent,
+              strategy: settings.searchPriority || SearchPriority.LIBRARY_THEN_PRODUCTS,
+              unified_ranking_used: ragResult.unifiedRankingUsed || false,
+            },
+          };
+        }
+        
+        this.logger.log('✅ Grounding verification PASSED');
+        
+        // Return response with citations
+        return {
+          reply: finalReply,
+          confidence: confidenceBreakdown.finalConfidence,
+          intent: 'SUPPORT_QUERY',
+          shouldHandoff: false,
+          toolsUsed,
+          confidenceBreakdown,
+          citations,
+          ragAudit: {
+            answer_source: finalSource,
+            similarity_score: ragResult.topScore,
+            verifier_result: gateBPassed ? 'YES' : 'SKIPPED',
+            final_decision: 'ANSWER',
+            retrieved_chunks: ragResult.chunks.length,
+            gate_a_passed: ragResult.gateAPassed,
+            gate_b_passed: gateBPassed,
+            confidence: confidenceBreakdown.finalConfidence,
+            intent: intentResult.intent,
+            strategy: settings.searchPriority || SearchPriority.LIBRARY_THEN_PRODUCTS,
+            unified_ranking_used: ragResult.unifiedRankingUsed || false,
+          },
+        };
       }
 
       return {
