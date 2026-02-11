@@ -1,26 +1,15 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║              RAFIQ PLATFORM - AI Service (Production v3)                       ║
+ * ║              RAFIQ PLATFORM - AI Service (Production v4 — Orchestrator)        ║
  * ║                                                                                ║
- * ║  ✅ جميع البيانات حقيقية من DB — صفر قيم وهمية                                ║
- * ║  ✅ مكتبة المعلومات: CRUD حقيقي مع KnowledgeBase entity                       ║
- * ║  ✅ إعدادات البوت: محفوظة في store_settings بمفتاح 'ai'                        ║
- * ║  ✅ System Prompt: يُبنى من المكتبة حسب أولوية البحث                           ║
- * ║  ✅ أدوات البوت: تقرأ من Order entity الحقيقي                                  ║
- * ║  ✅ التحويل البشري: silence + تنبيهات EventEmitter                             ║
- * ║  ✅ التحليلات: محسوبة من المحادثات والرسائل الفعلية                             ║
+ * ║  ✅ المهمة 1: Intent Classification (LLM-based) — تصنيف النية قبل البحث       ║
+ * ║  ✅ المهمة 2: Search Priority Enforcement — فرض search_mode صارم              ║
+ * ║  ✅ المهمة 3: Strict RAG Retrieval — بحث دلالي + بوابات تحقق                  ║
+ * ║  ✅ المهمة 4: Retry Logic — توضيح قبل التحويل حسب عداد المحاولات             ║
+ * ║  ✅ المهمة 5: Tone & Language — فرض تقني وليس نصي                             ║
+ * ║  ✅ المهمة 6: Handoff + Notifications — تحويل بشري مع إشعارات                 ║
  * ║                                                                                ║
- * ║  🔧 v3 Fixes (verified against entities):                                      ║
- * ║  - BUG-2:  request_human_agent يستدعي handleHandoff() فعلياً                  ║
- * ║  - BUG-3:  failedAttempts يُتتبع في aiContext (column: ai_context)            ║
- * ║  - BUG-5:  silenceDurationMinutes يُطبق فعلياً + handoffAt في aiContext       ║
- * ║  - BUG-7:  Knowledge Base محمي بحد أقصى 6000 حرف                             ║
- * ║  - BUG-8:  updateSettings يرفض إذا لم يوجد storeId                            ║
- * ║  - BUG-9:  تحذير واضح إذا OpenAI API Key مفقود                               ║
- * ║  - BUG-10: avgResponseTime محسوب من aiMetadata (column: ai_metadata)          ║
- * ║  - BUG-11: handoffRate يحسب فقط المحادثات المحوّلة من AI                       ║
- * ║  - BUG-15: model يُقرأ من config.ai.model كـ fallback                         ║
- * ║  - BUG-16: toolGetOrderStatus يبحث بـ storeId + tenantId                      ║
+ * ║  التسلسل: Message → Intent → Route → Search/Tool → Answer/Clarify/Handoff    ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -144,10 +133,36 @@ const EMBEDDING_MODEL = 'text-embedding-3-small';
 /** رسالة عدم التطابق — إلزامية بدون تعديل */
 const NO_MATCH_MESSAGE = 'عذرًا، هذا السؤال خارج نطاق المعلومات المتوفرة لدي حاليًا.\nإذا رغبت، أستطيع تحويلك إلى الدعم البشري لمساعدتك.';
 
+/** رسائل طلب التوضيح (حسب اللغة) — تُستخدم قبل الوصول للحد الأقصى */
+const CLARIFICATION_MESSAGES: Record<string, string[]> = {
+  ar: [
+    'ممكن توضح سؤالك أكثر لو تكرمت؟ أبي أساعدك بشكل أفضل 🙏',
+    'عذرًا، ما قدرت أفهم طلبك بالضبط. ممكن تعيد صياغته بطريقة ثانية؟',
+  ],
+  en: [
+    'Could you clarify your question a bit more? I want to help you better 🙏',
+    'Sorry, I couldn\'t quite understand your request. Could you rephrase it?',
+  ],
+};
+
+/** رسالة عرض التحويل البشري — عند الوصول للحد الأقصى */
+const HANDOFF_OFFER_MESSAGES: Record<string, string> = {
+  ar: 'يبدو إن سؤالك خارج نطاق المعلومات المتوفرة لدي. هل تحب أحوّلك للدعم البشري لمساعدتك؟',
+  en: 'It seems your question is outside the information I have available. Would you like me to connect you with our support team?',
+};
+
+/** ✅ Intent Classification: نتيجة تصنيف نية الرسالة */
+interface IntentResult {
+  intent: 'SMALLTALK' | 'SUPPORT_QUERY' | 'ORDER_QUERY' | 'HUMAN_REQUEST' | 'UNKNOWN';
+  confidence: number;
+}
+
 /** أنماط الأسئلة البسيطة التي لا تحتاج RAG */
 const GREETING_PATTERNS = [
   'مرحبا', 'السلام عليكم', 'أهلا', 'هلا', 'هاي', 'صباح', 'مساء',
-  'hello', 'hi', 'hey', 'good morning', 'good evening',
+  'اخبارك', 'أخبارك', 'كيفك', 'كيف حالك', 'حياك', 'يا هلا', 'الو',
+  'سلام', 'هلو', 'كيف الحال', 'شخبارك', 'شلونك', 'وش أخبارك',
+  'hello', 'hi', 'hey', 'good morning', 'good evening', 'howdy',
 ];
 const THANKS_PATTERNS = [
   'شكرا', 'شكراً', 'مشكور', 'يعطيك العافية', 'الله يعافيك', 'تسلم',
@@ -511,7 +526,7 @@ export class AIService {
     }
 
     // 2. كلمات التحويل المباشر
-    const handoff = this.checkDirectHandoff(message, context, settings);
+    const handoff = this.checkDirectHandoff(message, settings);
     if (handoff.shouldHandoff) {
       await this.handleHandoff(
         context,
@@ -527,18 +542,27 @@ export class AIService {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // 3. ✅ RAG PIPELINE — بحث دلالي + بوابات تحقق
+    // 3. ✅ ORCHESTRATOR — تصنيف النية → قرار → تنفيذ
     // ═══════════════════════════════════════════════════════════════════════════
 
-    // 3a. فحص التحيات والشكر (لا تحتاج RAG)
-    const simpleIntent = this.detectSimpleIntent(message);
-    if (simpleIntent === 'GREETING') {
-      this.logger.log(`👋 Greeting detected — responding with welcome`);
+    const lang = settings.language !== 'en' ? 'ar' : 'en';
+
+    // 3a. ✅ المهمة 1: تصنيف النية (Intent Classification)
+    const intentResult = await this.classifyIntent(message, settings);
+    this.logger.log(`🧠 Intent: ${intentResult.intent} (${intentResult.confidence})`);
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // 3b. ✅ المهمة 4: SMALLTALK → رد اجتماعي بدون بحث
+    // ──────────────────────────────────────────────────────────────────────────
+    if (intentResult.intent === 'SMALLTALK') {
+      // ✅ تحديد نوع SMALLTALK (تحية / شكر / كلام عام)
+      const socialReply = this.generateSocialReply(message, settings);
+      await this.resetFailedAttempts(context);
       return {
-        reply: settings.welcomeMessage || AI_DEFAULTS.welcomeMessage,
-        confidence: 1,
+        reply: socialReply,
+        confidence: intentResult.confidence,
         shouldHandoff: false,
-        intent: 'GREETING',
+        intent: 'SMALLTALK',
         ragAudit: {
           answer_source: 'greeting',
           similarity_score: 0,
@@ -551,15 +575,19 @@ export class AIService {
       };
     }
 
-    if (simpleIntent === 'THANKS') {
-      const isAr = settings.language !== 'en';
+    // ──────────────────────────────────────────────────────────────────────────
+    // 3c. ✅ HUMAN_REQUEST → تحقق من العداد ثم تحويل
+    // ──────────────────────────────────────────────────────────────────────────
+    if (intentResult.intent === 'HUMAN_REQUEST') {
+      await this.handleHandoff(context, settings, 'CUSTOMER_REQUEST');
       return {
-        reply: isAr ? 'العفو! هل هناك شيء آخر يمكنني مساعدتك به؟ 😊' : "You're welcome! Anything else I can help with?",
+        reply: settings.handoffMessage || AI_DEFAULTS.handoffMessage,
         confidence: 1,
-        shouldHandoff: false,
-        intent: 'THANKS',
+        shouldHandoff: true,
+        handoffReason: 'CUSTOMER_REQUEST',
+        intent: 'HUMAN_REQUEST',
         ragAudit: {
-          answer_source: 'greeting',
+          answer_source: 'none',
           similarity_score: 0,
           verifier_result: 'SKIPPED',
           final_decision: 'ANSWER',
@@ -570,7 +598,28 @@ export class AIService {
       };
     }
 
-    // 3b. ✅ البحث الدلالي (Semantic Retrieval)
+    // ──────────────────────────────────────────────────────────────────────────
+    // 3d. ✅ ORDER_QUERY → أدوات مباشرة (بدون RAG)
+    // ──────────────────────────────────────────────────────────────────────────
+    if (intentResult.intent === 'ORDER_QUERY') {
+      return this.handleOrderQuery(message, context, settings);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // 3e. ✅ UNKNOWN → طلب توضيح (مع عداد)
+    // ──────────────────────────────────────────────────────────────────────────
+    if (intentResult.intent === 'UNKNOWN') {
+      return this.handleNoMatch(context, settings, lang, 'UNKNOWN');
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // 3f. ✅ المهمة 2+3: SUPPORT_QUERY → بحث حسب search_mode
+    // ──────────────────────────────────────────────────────────────────────────
+
+    // ✅ المهمة 2: فرض search_mode
+    const searchMode = settings.searchPriority || SearchPriority.LIBRARY_THEN_PRODUCTS;
+    this.logger.log(`🔍 Search mode: ${searchMode}`);
+
     const ragResult = await this.ragRetrieve(message, context, settings);
 
     this.logger.log(`🔍 RAG Result`, {
@@ -580,58 +629,21 @@ export class AIService {
       gateA: ragResult.gateAPassed ? 'PASS' : 'FAIL',
     });
 
-    // 3c. ✅ بوابة A: عتبة التشابه
+    // ✅ بوابة A: عتبة التشابه
     if (!ragResult.gateAPassed) {
-      this.logger.log(`🚫 Gate A FAILED (score=${ragResult.topScore.toFixed(3)} < ${SIMILARITY_THRESHOLD}) — checking if tool-based query`);
-
-      // ✅ استثناء: استفسارات الطلبات تمر لأنها تعتمد على أدوات
-      const isOrderQuery = this.isOrderInquiry(message);
-      if (!isOrderQuery) {
-        // ❌ NO_MATCH — لا يوجد مصدر
-        await this.incrementFailedAttempts(context);
-        return {
-          reply: NO_MATCH_MESSAGE,
-          confidence: 0,
-          shouldHandoff: false,
-          intent: 'NO_MATCH',
-          ragAudit: {
-            answer_source: 'none',
-            similarity_score: ragResult.topScore,
-            verifier_result: 'NO',
-            final_decision: 'BLOCKED',
-            retrieved_chunks: ragResult.chunks.length,
-            gate_a_passed: false,
-            gate_b_passed: false,
-          },
-        };
-      }
-      // إذا استفسار طلب → نتابع مع الأدوات
-      this.logger.log(`📦 Order inquiry detected — bypassing RAG gate for tool use`);
+      this.logger.log(`🚫 Gate A FAILED (score=${ragResult.topScore.toFixed(3)} < ${SIMILARITY_THRESHOLD})`);
+      // ✅ المهمة 4: نظام المحاولات — لا نحظر مباشرة
+      return this.handleNoMatch(context, settings, lang, 'SUPPORT_QUERY');
     }
 
-    // 3d. ✅ بوابة B: التحقق الدلالي (فقط إذا اجتاز البوابة A)
+    // ✅ بوابة B: التحقق الدلالي
     let gateBPassed = false;
-    if (ragResult.gateAPassed && ragResult.chunks.length > 0) {
+    if (ragResult.chunks.length > 0) {
       gateBPassed = await this.verifyRelevance(message, ragResult.chunks);
       this.logger.log(`🔎 Gate B (Verifier): ${gateBPassed ? 'PASS' : 'FAIL'}`);
 
       if (!gateBPassed) {
-        await this.incrementFailedAttempts(context);
-        return {
-          reply: NO_MATCH_MESSAGE,
-          confidence: 0,
-          shouldHandoff: false,
-          intent: 'NO_MATCH',
-          ragAudit: {
-            answer_source: 'none',
-            similarity_score: ragResult.topScore,
-            verifier_result: 'NO',
-            final_decision: 'BLOCKED',
-            retrieved_chunks: ragResult.chunks.length,
-            gate_a_passed: true,
-            gate_b_passed: false,
-          },
-        };
+        return this.handleNoMatch(context, settings, lang, 'SUPPORT_QUERY');
       }
     }
 
@@ -639,16 +651,11 @@ export class AIService {
     // 4. ✅ توليد الرد — من المقاطع المسترجعة فقط
     // ═══════════════════════════════════════════════════════════════════════════
 
-    const answerSource: RagAudit['answer_source'] = ragResult.gateAPassed && gateBPassed ? 'library' : 'none';
+    // ✅ نجح البحث → أعد العداد لصفر
+    await this.resetFailedAttempts(context);
 
-    // بناء System Prompt مع المقاطع المسترجعة فقط
-    const systemPrompt = this.buildStrictSystemPrompt(
-      settings,
-      context,
-      ragResult.gateAPassed && gateBPassed ? ragResult.chunks : [],
-    );
+    const systemPrompt = this.buildStrictSystemPrompt(settings, context, ragResult.chunks);
 
-    // سجل المحادثة
     const messages: ChatCompletionMessageParam[] = [
       { role: 'system', content: systemPrompt },
       ...context.previousMessages.slice(-10).map((m) => ({
@@ -658,7 +665,6 @@ export class AIService {
       { role: 'user', content: message },
     ];
 
-    // الأدوات المتاحة
     const tools = this.getAvailableTools();
 
     try {
@@ -667,7 +673,7 @@ export class AIService {
         messages,
         tools: tools.length > 0 ? tools : undefined,
         tool_choice: tools.length > 0 ? 'auto' : undefined,
-        temperature: 0.3, // ✅ حرارة منخفضة = التزام أكبر بالمقاطع
+        temperature: 0.3,
         max_tokens: settings.maxTokens || 1000,
       });
 
@@ -676,21 +682,14 @@ export class AIService {
 
       let finalReply = assistantMsg.content || '';
       const toolsUsed: string[] = [];
-      let finalSource: RagAudit['answer_source'] = answerSource;
+      let finalSource: RagAudit['answer_source'] = 'library';
 
       // تنفيذ الأدوات
       if (assistantMsg.tool_calls?.length) {
-        const toolResults = await this.executeToolCalls(
-          assistantMsg.tool_calls,
-          context,
-          settings,
-        );
+        const toolResults = await this.executeToolCalls(assistantMsg.tool_calls, context, settings);
         toolsUsed.push(...toolResults.map((r) => r.name));
 
-        // ✅ إذا تم استدعاء request_human_agent → توقف فوراً
-        const handoffTool = toolResults.find(
-          (r) => r.name === 'request_human_agent',
-        );
+        const handoffTool = toolResults.find((r) => r.name === 'request_human_agent');
         if (handoffTool) {
           return {
             reply: settings.handoffMessage || AI_DEFAULTS.handoffMessage,
@@ -701,7 +700,6 @@ export class AIService {
           };
         }
 
-        // إرسال نتائج الأدوات لـ OpenAI للحصول على رد نهائي
         const toolMessages: ChatCompletionMessageParam[] = [
           ...messages,
           assistantMsg as ChatCompletionMessageParam,
@@ -723,30 +721,16 @@ export class AIService {
         finalSource = 'tool';
       }
 
-      // ✅ تحليل جودة الرد + تتبع المحاولات الفاشلة
-      const analysis = this.analyzeResponseQuality(finalReply, message);
-
-      if (analysis.confidence < 0.5 && !analysis.shouldHandoff) {
-        await this.incrementFailedAttempts(context);
-      } else if (analysis.confidence >= 0.7) {
-        await this.resetFailedAttempts(context);
-      }
-
-      if (analysis.shouldHandoff) {
-        await this.handleHandoff(context, settings, 'LOW_CONFIDENCE');
-      }
-
       return {
         reply: finalReply,
-        confidence: analysis.confidence,
-        intent: analysis.intent,
-        shouldHandoff: analysis.shouldHandoff,
-        handoffReason: analysis.handoffReason,
+        confidence: 0.9,
+        intent: 'SUPPORT_QUERY',
+        shouldHandoff: false,
         toolsUsed,
         ragAudit: {
           answer_source: finalSource,
           similarity_score: ragResult.topScore,
-          verifier_result: gateBPassed ? 'YES' : (ragResult.gateAPassed ? 'NO' : 'SKIPPED'),
+          verifier_result: gateBPassed ? 'YES' : 'SKIPPED',
           final_decision: 'ANSWER',
           retrieved_chunks: ragResult.chunks.length,
           gate_a_passed: ragResult.gateAPassed,
@@ -755,6 +739,273 @@ export class AIService {
       };
     } catch (error) {
       this.logger.error('OpenAI API error', {
+        error: error instanceof Error ? error.message : 'Unknown',
+      });
+      return {
+        reply: settings.fallbackMessage || AI_DEFAULTS.fallbackMessage,
+        confidence: 0,
+        shouldHandoff: true,
+        handoffReason: 'AI_ERROR',
+      };
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🎯 ORCHESTRATOR HELPERS — المهام المساندة للتسلسل التنفيذي
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * ✅ المهمة 4 (جزء SMALLTALK): توليد رد اجتماعي حسب النبرة واللغة
+   * ❌ لا يتم أي بحث — رد مباشر
+   */
+  private generateSocialReply(message: string, settings: AISettings): string {
+    const lower = message.trim().toLowerCase();
+    const isAr = settings.language !== 'en';
+    const tone = settings.tone || 'friendly';
+
+    // كشف نوع SMALLTALK
+    const isGreeting = GREETING_PATTERNS.some((p) => lower.includes(p.toLowerCase()));
+    const isThanks = THANKS_PATTERNS.some((p) => lower.includes(p.toLowerCase()));
+
+    if (isGreeting) {
+      // إذا هناك رسالة ترحيب مخصصة → استخدمها
+      if (settings.welcomeMessage) return settings.welcomeMessage;
+
+      // ردود حسب النبرة
+      const greetings: Record<string, Record<string, string>> = {
+        formal: {
+          ar: 'مرحبًا بك. كيف يمكنني مساعدتك اليوم؟',
+          en: 'Welcome. How may I assist you today?',
+        },
+        friendly: {
+          ar: 'أهلاً وسهلاً! كيف أقدر أساعدك؟ 😊',
+          en: 'Hi there! How can I help you? 😊',
+        },
+        professional: {
+          ar: 'مرحبًا بك. أنا هنا لمساعدتك. تفضل بسؤالك.',
+          en: 'Hello. I\'m here to help. Please go ahead with your question.',
+        },
+      };
+      return greetings[tone]?.[isAr ? 'ar' : 'en'] || greetings.friendly[isAr ? 'ar' : 'en'];
+    }
+
+    if (isThanks) {
+      const thanks: Record<string, Record<string, string>> = {
+        formal: {
+          ar: 'على الرحب والسعة. هل هناك شيء آخر يمكنني مساعدتك به؟',
+          en: 'You\'re most welcome. Is there anything else I can assist you with?',
+        },
+        friendly: {
+          ar: 'العفو! هل تحتاج شي ثاني؟ 😊',
+          en: 'You\'re welcome! Need anything else? 😊',
+        },
+        professional: {
+          ar: 'العفو. لا تتردد في السؤال إذا احتجت أي مساعدة.',
+          en: 'You\'re welcome. Don\'t hesitate to ask if you need further assistance.',
+        },
+      };
+      return thanks[tone]?.[isAr ? 'ar' : 'en'] || thanks.friendly[isAr ? 'ar' : 'en'];
+    }
+
+    // كلام عام (كيف حالك، اخبارك، إلخ)
+    const general: Record<string, Record<string, string>> = {
+      formal: {
+        ar: 'شكرًا لتواصلك. كيف يمكنني مساعدتك؟',
+        en: 'Thank you for reaching out. How can I help you?',
+      },
+      friendly: {
+        ar: 'الحمدلله بخير! كيف أقدر أساعدك اليوم؟ 😊',
+        en: 'I\'m doing great! How can I help you today? 😊',
+      },
+      professional: {
+        ar: 'أهلاً بك. كيف أستطيع مساعدتك؟',
+        en: 'Hello. How may I help you?',
+      },
+    };
+    return general[tone]?.[isAr ? 'ar' : 'en'] || general.friendly[isAr ? 'ar' : 'en'];
+  }
+
+  /**
+   * ✅ المهمة 4: نظام المحاولات قبل التحويل (Retry Logic)
+   *
+   * المنطق:
+   * - إذا attempts < max → اطلب توضيح + زِد العداد
+   * - إذا attempts == max → اعرض اقتراح التحويل البشري
+   *
+   * ❌ لا يتم التحويل مباشرة من أول محاولة
+   */
+  private async handleNoMatch(
+    context: ConversationContext,
+    settings: AISettings,
+    lang: string,
+    intentType: string,
+  ): Promise<AIResponse> {
+    const maxAttempts = settings.handoffAfterFailures || AI_DEFAULTS.handoffAfterFailures;
+
+    // زيادة العداد
+    await this.incrementFailedAttempts(context);
+    const currentAttempts = (context.failedAttempts || 0) + 1;
+
+    this.logger.log(`📊 Failed attempts: ${currentAttempts}/${maxAttempts} for conversation ${context.conversationId} (intent: ${intentType})`);
+
+    // ✅ لم يصل للحد → اطلب توضيح
+    if (currentAttempts < maxAttempts) {
+      const clarifyMsgs = CLARIFICATION_MESSAGES[lang] || CLARIFICATION_MESSAGES.ar;
+      const clarifyIndex = Math.min(currentAttempts - 1, clarifyMsgs.length - 1);
+      const clarifyMsg = clarifyMsgs[clarifyIndex];
+
+      return {
+        reply: clarifyMsg,
+        confidence: 0.3,
+        shouldHandoff: false,
+        intent: 'CLARIFICATION_NEEDED',
+        ragAudit: {
+          answer_source: 'none',
+          similarity_score: 0,
+          verifier_result: 'NO',
+          final_decision: 'BLOCKED',
+          retrieved_chunks: 0,
+          gate_a_passed: false,
+          gate_b_passed: false,
+        },
+      };
+    }
+
+    // ✅ وصل للحد الأقصى → اعرض التحويل البشري
+    this.logger.log(`🔄 Max attempts reached (${currentAttempts}/${maxAttempts}) — offering handoff`);
+
+    if (settings.autoHandoff) {
+      // تحويل تلقائي
+      await this.handleHandoff(context, settings, 'NO_MATCH_AFTER_MAX_ATTEMPTS');
+      return {
+        reply: settings.handoffMessage || AI_DEFAULTS.handoffMessage,
+        confidence: 0,
+        shouldHandoff: true,
+        handoffReason: 'NO_MATCH_AFTER_MAX_ATTEMPTS',
+        intent: 'HANDOFF',
+        ragAudit: {
+          answer_source: 'none',
+          similarity_score: 0,
+          verifier_result: 'NO',
+          final_decision: 'BLOCKED',
+          retrieved_chunks: 0,
+          gate_a_passed: false,
+          gate_b_passed: false,
+        },
+      };
+    }
+
+    // اقتراح التحويل (بدون تحويل تلقائي)
+    const offerMsg = HANDOFF_OFFER_MESSAGES[lang] || HANDOFF_OFFER_MESSAGES.ar;
+    return {
+      reply: offerMsg,
+      confidence: 0,
+      shouldHandoff: false,
+      intent: 'HANDOFF_OFFERED',
+      ragAudit: {
+        answer_source: 'none',
+        similarity_score: 0,
+        verifier_result: 'NO',
+        final_decision: 'BLOCKED',
+        retrieved_chunks: 0,
+        gate_a_passed: false,
+        gate_b_passed: false,
+      },
+    };
+  }
+
+  /**
+   * ✅ معالجة استفسارات الطلبات — أدوات مباشرة بدون RAG
+   */
+  private async handleOrderQuery(
+    message: string,
+    context: ConversationContext,
+    settings: AISettings,
+  ): Promise<AIResponse> {
+    const systemPrompt = this.buildStrictSystemPrompt(settings, context, []);
+
+    const messages: ChatCompletionMessageParam[] = [
+      { role: 'system', content: systemPrompt },
+      ...context.previousMessages.slice(-10).map((m) => ({
+        role: m.role as 'user' | 'assistant',
+        content: m.content,
+      })),
+      { role: 'user', content: message },
+    ];
+
+    const tools = this.getAvailableTools();
+
+    try {
+      const completion = await this.openai.chat.completions.create({
+        model: settings.model || AI_DEFAULTS.model,
+        messages,
+        tools: tools.length > 0 ? tools : undefined,
+        tool_choice: tools.length > 0 ? 'auto' : undefined,
+        temperature: 0.3,
+        max_tokens: settings.maxTokens || 1000,
+      });
+
+      const assistantMsg = completion.choices[0]?.message;
+      if (!assistantMsg) throw new Error('No response from OpenAI');
+
+      let finalReply = assistantMsg.content || '';
+      const toolsUsed: string[] = [];
+
+      if (assistantMsg.tool_calls?.length) {
+        const toolResults = await this.executeToolCalls(assistantMsg.tool_calls, context, settings);
+        toolsUsed.push(...toolResults.map((r) => r.name));
+
+        const handoffTool = toolResults.find((r) => r.name === 'request_human_agent');
+        if (handoffTool) {
+          return {
+            reply: settings.handoffMessage || AI_DEFAULTS.handoffMessage,
+            confidence: 1,
+            shouldHandoff: true,
+            handoffReason: 'CUSTOMER_REQUEST',
+            toolsUsed,
+          };
+        }
+
+        const toolMessages: ChatCompletionMessageParam[] = [
+          ...messages,
+          assistantMsg as ChatCompletionMessageParam,
+          ...toolResults.map((r) => ({
+            role: 'tool' as const,
+            tool_call_id: r.toolCallId,
+            content: JSON.stringify(r.result),
+          })),
+        ];
+
+        const followUp = await this.openai.chat.completions.create({
+          model: settings.model || AI_DEFAULTS.model,
+          messages: toolMessages,
+          temperature: 0.3,
+          max_tokens: settings.maxTokens || 1000,
+        });
+
+        finalReply = followUp.choices[0]?.message?.content || finalReply;
+      }
+
+      await this.resetFailedAttempts(context);
+
+      return {
+        reply: finalReply,
+        confidence: 0.9,
+        intent: 'ORDER_QUERY',
+        shouldHandoff: false,
+        toolsUsed,
+        ragAudit: {
+          answer_source: 'tool',
+          similarity_score: 0,
+          verifier_result: 'SKIPPED',
+          final_decision: 'ANSWER',
+          retrieved_chunks: 0,
+          gate_a_passed: true,
+          gate_b_passed: true,
+        },
+      };
+    } catch (error) {
+      this.logger.error('Order query failed', {
         error: error instanceof Error ? error.message : 'Unknown',
       });
       return {
@@ -786,15 +1037,22 @@ export class AIService {
       : `You are a helpful customer service assistant for "${settings.storeName || 'Store'}".`;
 
     const tones: Record<string, string> = {
-      formal: isAr ? 'استخدم لغة رسمية ومهنية.' : 'Use formal language.',
+      formal: isAr
+        ? 'استخدم لغة رسمية ومهنية. لا تستخدم أي رموز تعبيرية (Emoji). خاطب العميل بصيغة الجمع المحترمة.'
+        : 'Use formal, professional language. Do NOT use any emojis. Address the customer formally.',
       friendly: isAr
-        ? 'كن ودوداً ولطيفاً.'
-        : 'Be friendly and warm.',
+        ? 'كن ودوداً ولطيفاً. يمكنك استخدام رموز تعبيرية بشكل معتدل.'
+        : 'Be friendly and warm. You may use emojis moderately.',
       professional: isAr
-        ? 'كن مهنياً ومفيداً.'
-        : 'Be professional and helpful.',
+        ? 'كن مهنياً ومفيداً. ردودك مختصرة ودقيقة.'
+        : 'Be professional and helpful. Keep responses concise and accurate.',
     };
     prompt += '\n' + (tones[settings.tone] || tones.friendly);
+
+    // ✅ المهمة 5: فرض اللغة تقنياً — قاعدة إلزامية
+    prompt += isAr
+      ? '\n\n⚠️ قاعدة اللغة: أجب فقط باللغة العربية. ممنوع المزج بين العربية والإنجليزية في نفس الرد.'
+      : '\n\n⚠️ Language rule: Respond ONLY in English. Do NOT mix English with Arabic in the same response.';
 
     // معلومات المتجر الأساسية
     if (settings.storeDescription)
@@ -1072,20 +1330,124 @@ ${chunksText}
   }
 
   /**
-   * ✅ كشف التحيات والشكر البسيط
+   * ✅ المهمة 1: تصنيف نية الرسالة بالـ LLM (Intent Classification)
+   * يحدد نوع الرسالة قبل أي بحث أو معالجة
+   * يستخدم gpt-4o-mini للسرعة والتكلفة المنخفضة
    */
-  private detectSimpleIntent(message: string): 'GREETING' | 'THANKS' | null {
+  private async classifyIntent(
+    message: string,
+    settings: AISettings,
+  ): Promise<IntentResult> {
+    // ✅ فحص سريع بـ Pattern أولاً (لتجنب API call غير ضروري)
+    const patternResult = this.detectSimpleIntentPattern(message, settings);
+    if (patternResult) return patternResult;
+
+    try {
+      const lang = settings.language !== 'en' ? 'ar' : 'en';
+      const systemPrompt = lang === 'ar'
+        ? `أنت محلل نوايا. صنّف رسالة العميل إلى واحد فقط من الأنواع التالية.
+أجب فقط بـ JSON بدون أي نص آخر.
+الأنواع:
+- SMALLTALK: تحية، سؤال عام عن الحال، مجاملة، كلام اجتماعي
+- SUPPORT_QUERY: سؤال يحتاج معلومة عن منتج أو خدمة أو سياسة المتجر
+- ORDER_QUERY: استفسار عن حالة طلب أو شحنة أو تتبع
+- HUMAN_REQUEST: طلب صريح للتحدث مع موظف أو شخص بشري
+- UNKNOWN: لا يمكن تحديد النوع`
+        : `You are an intent classifier. Classify the customer message into exactly one type.
+Respond ONLY with JSON, no other text.
+Types:
+- SMALLTALK: greeting, how are you, compliment, social talk
+- SUPPORT_QUERY: question needing product/service/policy info
+- ORDER_QUERY: order status, shipping, tracking inquiry
+- HUMAN_REQUEST: explicit request to speak to a human agent
+- UNKNOWN: cannot determine`;
+
+      const response = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: `رسالة العميل: "${message}"\n\nأجب بـ JSON:\n{"intent":"...","confidence":0.00}` },
+        ],
+        temperature: 0,
+        max_tokens: 50,
+      });
+
+      const raw = (response.choices[0]?.message?.content || '').trim();
+      const cleaned = raw.replace(/```json|```/g, '').trim();
+      const parsed = JSON.parse(cleaned) as IntentResult;
+
+      // التحقق من صحة النتيجة
+      const validIntents = ['SMALLTALK', 'SUPPORT_QUERY', 'ORDER_QUERY', 'HUMAN_REQUEST', 'UNKNOWN'];
+      if (!validIntents.includes(parsed.intent)) {
+        return { intent: 'UNKNOWN', confidence: 0.5 };
+      }
+
+      this.logger.log(`🧠 Intent: ${parsed.intent} (${parsed.confidence}) for: "${message.substring(0, 50)}"`);
+      return parsed;
+
+    } catch (error) {
+      this.logger.warn('Intent classification failed — using pattern fallback', {
+        error: error instanceof Error ? error.message : 'Unknown',
+      });
+      // Fallback: محاولة تصنيف بدائي
+      return this.fallbackIntentClassification(message);
+    }
+  }
+
+  /**
+   * ✅ فحص سريع بـ Pattern — لتجنب API call على التحيات الواضحة
+   */
+  private detectSimpleIntentPattern(
+    message: string,
+    settings: AISettings,
+  ): IntentResult | null {
     const lower = message.trim().toLowerCase();
+
     // تحية فقط إذا الرسالة قصيرة (أقل من 30 حرف)
     if (lower.length < 30) {
       for (const p of GREETING_PATTERNS) {
-        if (lower.includes(p.toLowerCase())) return 'GREETING';
+        if (lower.includes(p.toLowerCase())) {
+          return { intent: 'SMALLTALK', confidence: 0.95 };
+        }
       }
       for (const p of THANKS_PATTERNS) {
-        if (lower.includes(p.toLowerCase())) return 'THANKS';
+        if (lower.includes(p.toLowerCase())) {
+          return { intent: 'SMALLTALK', confidence: 0.95 };
+        }
       }
     }
-    return null;
+
+    // طلب بشري واضح
+    const humanKeywords = settings.handoffKeywords || AI_DEFAULTS.handoffKeywords;
+    for (const kw of humanKeywords) {
+      if (lower.includes(kw.toLowerCase())) {
+        return { intent: 'HUMAN_REQUEST', confidence: 0.95 };
+      }
+    }
+
+    // استفسار طلب واضح
+    if (this.isOrderInquiry(message)) {
+      return { intent: 'ORDER_QUERY', confidence: 0.90 };
+    }
+
+    return null; // لا يمكن التحديد بـ pattern → يحتاج LLM
+  }
+
+  /**
+   * ✅ Fallback: تصنيف بدائي بدون LLM (إذا فشل API)
+   */
+  private fallbackIntentClassification(message: string): IntentResult {
+    const lower = message.toLowerCase();
+
+    if (lower.length < 15) return { intent: 'SMALLTALK', confidence: 0.6 };
+
+    const orderPatterns = ['طلب', 'طلبي', 'شحن', 'تتبع', 'order', 'track', 'shipping', '#'];
+    if (orderPatterns.some((p) => lower.includes(p))) {
+      return { intent: 'ORDER_QUERY', confidence: 0.7 };
+    }
+
+    // افتراضي: سؤال دعم
+    return { intent: 'SUPPORT_QUERY', confidence: 0.6 };
   }
 
   /**
@@ -1343,11 +1705,12 @@ ${chunksText}
 
   private checkDirectHandoff(
     message: string,
-    context: ConversationContext,
     settings: AISettings,
   ): { shouldHandoff: boolean; reason?: string } {
     const lower = message.toLowerCase();
 
+    // ✅ فقط الكلمات المفتاحية — كمسار سريع بدون LLM
+    // MAX_FAILURES يُعالج الآن في handleNoMatch بعد Intent Classification
     const keywords = [
       'أريد شخص',
       'أريد إنسان',
@@ -1366,63 +1729,9 @@ ${chunksText}
       }
     }
 
-    // ✅ BUG-3 FIX: التحقق من failedAttempts الحقيقي
-    if (
-      settings.autoHandoff &&
-      context.failedAttempts >= settings.handoffAfterFailures
-    ) {
-      return { shouldHandoff: true, reason: 'MAX_FAILURES' };
-    }
-
     return { shouldHandoff: false };
   }
 
-  private analyzeResponseQuality(
-    reply: string,
-    originalMessage: string,
-  ): {
-    confidence: number;
-    intent?: string;
-    shouldHandoff: boolean;
-    handoffReason?: string;
-  } {
-    const lower = reply.toLowerCase();
-    const lm = originalMessage.toLowerCase();
-
-    let intent: string | undefined;
-    if (lm.includes('طلب') || lm.includes('order') || lm.includes('شحن'))
-      intent = 'ORDER_INQUIRY';
-    else if (lm.includes('منتج') || lm.includes('سعر'))
-      intent = 'PRODUCT_INQUIRY';
-    else if (lm.includes('مشكلة') || lm.includes('شكوى'))
-      intent = 'COMPLAINT';
-    else if (lm.includes('مرحب') || lm.includes('السلام'))
-      intent = 'GREETING';
-
-    const uncertainPhrases = [
-      'لست متأكداً',
-      'لا أعرف',
-      'ربما',
-      'not sure',
-      "don't know",
-    ];
-    let confidence = 0.85;
-    for (const p of uncertainPhrases) {
-      if (lower.includes(p.toLowerCase())) {
-        confidence = 0.3;
-        break;
-      }
-    }
-
-    return {
-      confidence,
-      intent,
-      shouldHandoff: confidence < 0.3,
-      handoffReason: confidence < 0.3 ? 'LOW_CONFIDENCE' : undefined,
-    };
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
   // 📊 FAILED ATTEMPTS TRACKING — BUG-3 FIX
   // ═══════════════════════════════════════════════════════════════════════════════
 
