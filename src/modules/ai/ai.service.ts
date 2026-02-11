@@ -25,7 +25,7 @@ import type {
 } from 'openai/resources/chat/completions';
 
 // ✅ Entities — مطابقة لـ @database/entities/index.ts
-import { KnowledgeBase, KnowledgeCategory } from './entities/knowledge-base.entity';
+import { KnowledgeBase, KnowledgeCategory, KnowledgeType } from './entities/knowledge-base.entity';
 import { StoreSettings } from '../settings/entities/store-settings.entity';
 import {
   Conversation,
@@ -373,10 +373,15 @@ export class AIService {
       category?: string;
       keywords?: string[];
       priority?: number;
+      type?: string;
+      answer?: string;
     },
   ): Promise<KnowledgeBase> {
     // ✅ RAG: توليد embedding تلقائياً عند الإضافة
-    const textForEmbedding = `${data.title}\n${data.content}`;
+    // ✅ BUG-KB3 FIX: لنوع QnA نضيف الجواب في نص الـ embedding
+    const textForEmbedding = data.answer
+      ? `${data.title}\n${data.content}\n${data.answer}`
+      : `${data.title}\n${data.content}`;
     const embedding = await this.generateEmbedding(textForEmbedding);
 
     const entry = this.knowledgeRepo.create({
@@ -389,6 +394,9 @@ export class AIService {
       priority: data.priority ?? 10,
       isActive: true,
       embedding: embedding || undefined,
+      // ✅ BUG-KB3 FIX: حفظ نوع المعلومة والجواب
+      type: (data.type as KnowledgeType) || KnowledgeType.ARTICLE,
+      answer: data.answer || undefined,
     });
     const saved = await this.knowledgeRepo.save(entry);
     this.logger.log('✅ Knowledge added', {
@@ -409,6 +417,8 @@ export class AIService {
       keywords: string[];
       priority: number;
       isActive: boolean;
+      type: string;
+      answer: string;
     }>,
   ): Promise<KnowledgeBase | null> {
     const entry = await this.knowledgeRepo.findOne({
@@ -417,9 +427,11 @@ export class AIService {
     if (!entry) return null;
     Object.assign(entry, data);
 
-    // ✅ RAG: إعادة توليد embedding إذا تغيّر العنوان أو المحتوى
-    if (data.title || data.content) {
-      const textForEmbedding = `${entry.title}\n${entry.content}`;
+    // ✅ RAG: إعادة توليد embedding إذا تغيّر العنوان أو المحتوى أو الجواب
+    if (data.title || data.content || data.answer) {
+      const textForEmbedding = entry.answer
+        ? `${entry.title}\n${entry.content}\n${entry.answer}`
+        : `${entry.title}\n${entry.content}`;
       const embedding = await this.generateEmbedding(textForEmbedding);
       if (embedding) {
         entry.embedding = embedding;
@@ -452,7 +464,10 @@ export class AIService {
 
     for (const entry of entries) {
       try {
-        const text = `${entry.title}\n${entry.content}`;
+        // ✅ BUG-KB3 FIX: تضمين الجواب في الـ embedding
+        const text = entry.answer
+          ? `${entry.title}\n${entry.content}\n${entry.answer}`
+          : `${entry.title}\n${entry.content}`;
         const embedding = await this.generateEmbedding(text);
         if (embedding) {
           entry.embedding = embedding;
@@ -1028,7 +1043,7 @@ export class AIService {
   private buildStrictSystemPrompt(
     settings: AISettings,
     context: ConversationContext,
-    retrievedChunks: Array<{ title: string; content: string; score: number }>,
+    retrievedChunks: Array<{ title: string; content: string; score: number; answer?: string }>,
   ): string {
     const isAr = settings.language !== 'en';
 
@@ -1072,7 +1087,9 @@ export class AIService {
 
       let charsUsed = 0;
       for (const chunk of retrievedChunks) {
-        const entry = `\n[${chunk.title}]: ${chunk.content}`;
+        // ✅ BUG-KB3 FIX: تضمين الجواب لنوع QnA
+        const answerPart = chunk.answer ? `\nالجواب: ${chunk.answer}` : '';
+        const entry = `\n[${chunk.title}]: ${chunk.content}${answerPart}`;
         if (charsUsed + entry.length > MAX_KNOWLEDGE_CHARS) break;
         prompt += entry;
         charsUsed += entry.length;
@@ -1157,14 +1174,14 @@ export class AIService {
   private async semanticSearch(
     queryEmbedding: number[],
     tenantId: string,
-  ): Promise<Array<{ title: string; content: string; score: number; id: string }>> {
+  ): Promise<Array<{ title: string; content: string; score: number; id: string; answer?: string }>> {
     // جلب كل مقاطع المعرفة التي لها embedding
     const entries = await this.knowledgeRepo
       .createQueryBuilder('kb')
       .where('kb.tenantId = :tenantId', { tenantId })
       .andWhere('kb.isActive = true')
       .andWhere('kb.embedding IS NOT NULL')
-      .select(['kb.id', 'kb.title', 'kb.content', 'kb.embedding'])
+      .select(['kb.id', 'kb.title', 'kb.content', 'kb.embedding', 'kb.answer'])
       .getMany();
 
     if (entries.length === 0) return [];
@@ -1175,6 +1192,7 @@ export class AIService {
         id: entry.id,
         title: entry.title,
         content: entry.content,
+        answer: entry.answer || undefined,
         score: this.cosineSimilarity(queryEmbedding, entry.embedding || []),
       }))
       .sort((a, b) => b.score - a.score)
@@ -1190,11 +1208,14 @@ export class AIService {
    */
   private async verifyRelevance(
     question: string,
-    chunks: Array<{ title: string; content: string; score: number }>,
+    chunks: Array<{ title: string; content: string; score: number; answer?: string }>,
   ): Promise<boolean> {
     try {
       const chunksText = chunks
-        .map((c) => `[${c.title}]: ${c.content}`)
+        .map((c) => {
+          const answerPart = c.answer ? `\nالجواب: ${c.answer}` : '';
+          return `[${c.title}]: ${c.content}${answerPart}`;
+        })
         .join('\n');
 
       const response = await this.openai.chat.completions.create({
@@ -1243,7 +1264,7 @@ ${chunksText}
     context: ConversationContext,
     settings: AISettings,
   ): Promise<{
-    chunks: Array<{ title: string; content: string; score: number }>;
+    chunks: Array<{ title: string; content: string; score: number; answer?: string }>;
     topScore: number;
     gateAPassed: boolean;
   }> {
@@ -1286,7 +1307,7 @@ ${chunksText}
     message: string,
     tenantId: string,
   ): Promise<{
-    chunks: Array<{ title: string; content: string; score: number }>;
+    chunks: Array<{ title: string; content: string; score: number; answer?: string }>;
     topScore: number;
     gateAPassed: boolean;
   }> {
@@ -1319,6 +1340,7 @@ ${chunksText}
     const chunks = entries.map((e) => ({
       title: e.title,
       content: e.content,
+      answer: e.answer || undefined,
       score: 0.75,
     }));
 
