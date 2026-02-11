@@ -1,6 +1,6 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║              RAFIQ PLATFORM - AI Service (Production v4 — Orchestrator)        ║
+ * ║       RAFIQ PLATFORM - AI Service (Production v5 — MVP Level 2 Strict)        ║
  * ║                                                                                ║
  * ║  ✅ المهمة 1: Intent Classification (LLM-based) — تصنيف النية قبل البحث       ║
  * ║  ✅ المهمة 2: Search Priority Enforcement — فرض search_mode صارم              ║
@@ -8,8 +8,14 @@
  * ║  ✅ المهمة 4: Retry Logic — توضيح قبل التحويل حسب عداد المحاولات             ║
  * ║  ✅ المهمة 5: Tone & Language — فرض تقني وليس نصي                             ║
  * ║  ✅ المهمة 6: Handoff + Notifications — تحويل بشري مع إشعارات                 ║
+ * ║  ✅ MVP Level 2: Dynamic Thresholds — عتبات قابلة للتخصيص حسب المتجر          ║
+ * ║  ✅ MVP Level 2: Unified Ranking — دمج وإعادة ترتيب المكتبة والمنتجات        ║
+ * ║  ✅ MVP Level 2: Confidence Scoring — حساب الثقة من التشابه والنية والتحقق    ║
+ * ║  ✅ MVP Level 2: Strict Grounding Guard — التحقق من دعم الإجابة بالمصادر      ║
+ * ║  ✅ MVP Level 2: Enhanced Audit — حقول تدقيق محسّنة مع الثقة والاقتباسات      ║
  * ║                                                                                ║
- * ║  التسلسل: Message → Intent → Route → Search/Tool → Answer/Clarify/Handoff    ║
+ * ║  التسلسل: Message → Intent → Route → Search/Tool → Confidence → Grounding    ║
+ * ║          → Answer/Clarify/Handoff with full audit trail                       ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -91,6 +97,18 @@ export interface AISettings {
   welcomeMessage: string;
   fallbackMessage: string;
   handoffMessage: string;
+
+  // MVP Level 2: Strict Grounding Thresholds (0.0 - 1.0)
+  /** Minimum similarity score for Gate A passage (default: 0.72) */
+  similarityThreshold?: number;
+  /** Minimum intent classification confidence (default: 0.7) */
+  intentConfidenceThreshold?: number;
+  /** Minimum confidence to answer directly (default: 0.75) */
+  answerConfidenceThreshold?: number;
+  /** Minimum confidence to ask for clarification (default: 0.5) */
+  clarifyConfidenceThreshold?: number;
+  /** Below this confidence, suggest handoff (default: 0.3) */
+  handoffConfidenceThreshold?: number;
 }
 
 export interface ConversationContext {
@@ -160,6 +178,53 @@ const HANDOFF_OFFER_MESSAGES: Record<string, string> = {
   en: 'It seems your question is outside the information I have available. Would you like me to connect you with our support team?',
 };
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// 📌 MVP LEVEL 2 CONSTANTS — Confidence Scoring & Grounding
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Confidence calculation weights (must sum to 1.0) */
+const CONFIDENCE_WEIGHTS = {
+  SIMILARITY: 0.4,    // 40% weight for similarity score
+  INTENT: 0.2,        // 20% weight for intent confidence
+  VERIFIER: 0.3,      // 30% weight for verifier result
+  COVERAGE: 0.1,      // 10% weight for chunk coverage
+};
+
+/** Optimal number of chunks for full coverage (used for normalization) */
+const OPTIMAL_CHUNK_COUNT = 3;
+
+/** Model to use for grounding verification */
+const GROUNDING_VERIFIER_MODEL = 'gpt-4o-mini';
+
+/** Max tokens for grounding verification response */
+const GROUNDING_VERIFICATION_MAX_TOKENS = 50;
+
+/** Chunk coverage score weights (top score vs average score) */
+const COVERAGE_SCORE_WEIGHTS = {
+  TOP_SCORE: 0.6,   // 60% weight for top matching chunk
+  AVG_SCORE: 0.4,   // 40% weight for average of all chunks
+};
+
+/** Grounding verification system prompt (Arabic) */
+const GROUNDING_VERIFICATION_SYSTEM_PROMPT = 
+  'أنت محقق دقيق. مهمتك التحقق من أن الإجابة المقدمة مدعومة بالكامل بالمصادر المتاحة. أجب فقط بـ YES أو NO متبوعة بسبب قصير إذا كانت NO.';
+
+/** Grounding verification user prompt template */
+const GROUNDING_VERIFICATION_USER_PROMPT = (answer: string, sources: string) => `هل الإجابة التالية مدعومة بالكامل بالمصادر المتاحة؟ لا تقبل أي معلومة غير موجودة في المصادر.
+
+الإجابة المقترحة:
+"""
+${answer}
+"""
+
+المصادر المتاحة:
+"""
+${sources}
+"""
+
+أجب YES إذا كل معلومة في الإجابة موجودة في المصادر.
+أجب NO: [سبب] إذا الإجابة تحتوي معلومات غير موجودة في المصادر.`;
+
 /** ✅ Intent Classification: نتيجة تصنيف نية الرسالة */
 interface IntentResult {
   intent: 'SMALLTALK' | 'SUPPORT_QUERY' | 'ORDER_QUERY' | 'HUMAN_REQUEST' | 'UNKNOWN';
@@ -193,13 +258,20 @@ const THANKS_PATTERNS = [
 
 /** مخرجات التدقيق الداخلي لكل رد */
 export interface RagAudit {
-  answer_source: 'library' | 'product' | 'tool' | 'greeting' | 'none';
+  /** المصدر: library, product, mixed (unified ranking), tool, greeting, none */
+  answer_source: 'library' | 'product' | 'tool' | 'greeting' | 'none' | 'mixed';
   similarity_score: number;
   verifier_result: 'YES' | 'NO' | 'SKIPPED';
-  final_decision: 'ANSWER' | 'BLOCKED';
+  final_decision: 'ANSWER' | 'BLOCKED' | 'CLARIFY' | 'HANDOFF';
   retrieved_chunks: number;
   gate_a_passed: boolean;
   gate_b_passed: boolean;
+  // MVP Level 2 additions
+  confidence_score?: number;
+  intent_confidence?: number;
+  chunk_coverage?: number;
+  cite_map?: Record<string, string[]>; // map of answer sections to source chunks
+  rejection_reason?: string;
 }
 
 const AI_DEFAULTS: AISettings = {
@@ -229,6 +301,12 @@ const AI_DEFAULTS: AISettings = {
   welcomeMessage: 'أهلاً وسهلاً! كيف يمكنني مساعدتك؟ 😊',
   fallbackMessage: 'عذراً، لم أتمكن من فهم طلبك. هل ترغب بتحويلك لأحد موظفينا؟',
   handoffMessage: 'سأحولك الآن لأحد أفراد فريقنا. سيتواصل معك قريباً! 🙋‍♂️',
+  // MVP Level 2: Strict Grounding Thresholds
+  similarityThreshold: 0.72,
+  intentConfidenceThreshold: 0.7,
+  answerConfidenceThreshold: 0.75,
+  clarifyConfidenceThreshold: 0.5,
+  handoffConfidenceThreshold: 0.3,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -673,8 +751,13 @@ export class AIService {
     });
 
     // ✅ بوابة A: عتبة التشابه
+    const similarityThreshold = this.getThreshold(
+      settings.similarityThreshold,
+      AI_DEFAULTS.similarityThreshold,
+      SIMILARITY_THRESHOLD,
+    );
     if (!ragResult.gateAPassed) {
-      this.logger.log(`🚫 Gate A FAILED: score=${ragResult.topScore.toFixed(3)} < ${SIMILARITY_THRESHOLD}, source=${ragResult.source}`);
+      this.logger.log(`🚫 Gate A FAILED: score=${ragResult.topScore.toFixed(3)} < ${similarityThreshold}, source=${ragResult.source}`);
 
       // ✅ FIX-B: قبل إرجاع NO_MATCH — جرّب الإجابة من إعدادات المتجر
       // أسئلة مثل "وش اسم المتجر" و"وش ساعات العمل" يمكن الرد عليها من الإعدادات مباشرة
@@ -708,12 +791,15 @@ export class AIService {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // 4. ✅ توليد الرد — من المقاطع المسترجعة فقط
+    // 4. ✅ توليد الرد — من المقاطع المسترجعة فقط + MVP Level 2 Confidence & Grounding
     // ═══════════════════════════════════════════════════════════════════════════
 
     // ✅ نجح البحث → أعد العداد لصفر
     await this.resetFailedAttempts(context);
 
+    // ✅ MVP Level 2: Calculate chunk coverage and initial confidence
+    const chunkCoverage = this.calculateChunkCoverage(ragResult.chunks, ragResult.topScore);
+    
     const systemPrompt = this.buildStrictSystemPrompt(settings, context, ragResult.chunks);
 
     const messages: ChatCompletionMessageParam[] = [
@@ -743,7 +829,9 @@ export class AIService {
       let finalReply = assistantMsg.content || '';
       const toolsUsed: string[] = [];
       // ✅ تتبع المصدر: من المكتبة أو المنتجات أو أداة
-      let finalSource: RagAudit['answer_source'] = ragResult.source === 'product' ? 'product' : 'library';
+      let finalSource: RagAudit['answer_source'] = 
+        ragResult.source === 'mixed' ? 'mixed' :
+        ragResult.source === 'product' ? 'product' : 'library';
 
       // تنفيذ الأدوات
       if (assistantMsg.tool_calls?.length) {
@@ -782,25 +870,140 @@ export class AIService {
         finalSource = 'tool';
       }
 
-      return {
-        reply: finalReply,
-        confidence: 0.9,
-        intent: 'SUPPORT_QUERY',
-        shouldHandoff: false,
-        toolsUsed,
-        ragAudit: {
-          answer_source: finalSource,
-          similarity_score: ragResult.topScore,
-          verifier_result: gateBPassed ? 'YES' : 'SKIPPED',
-          final_decision: 'ANSWER',
-          retrieved_chunks: ragResult.chunks.length,
-          gate_a_passed: ragResult.gateAPassed,
-          gate_b_passed: gateBPassed,
-        },
-      };
+      // ✅ MVP Level 2: Calculate unified confidence score
+      const confidenceScore = this.calculateConfidence(
+        ragResult.topScore,
+        intentResult.confidence,
+        gateBPassed,
+        chunkCoverage,
+      );
+
+      // ✅ MVP Level 2: Strict Grounding - Decision based on confidence thresholds
+      const answerThreshold = this.getThreshold(
+        settings.answerConfidenceThreshold,
+        AI_DEFAULTS.answerConfidenceThreshold,
+        0.75,
+      );
+      const clarifyThreshold = this.getThreshold(
+        settings.clarifyConfidenceThreshold,
+        AI_DEFAULTS.clarifyConfidenceThreshold,
+        0.5,
+      );
+      const handoffThreshold = this.getThreshold(
+        settings.handoffConfidenceThreshold,
+        AI_DEFAULTS.handoffConfidenceThreshold,
+        0.3,
+      );
+
+      this.logger.log(`🎯 Confidence: ${confidenceScore.toFixed(3)}, thresholds: answer=${answerThreshold}, clarify=${clarifyThreshold}, handoff=${handoffThreshold}`);
+
+      // Strict Grounding: Check if answer is well-grounded
+      if (confidenceScore >= answerThreshold) {
+        // ✅ MVP Level 2: Strict Grounding Verification
+        // Before answering, verify that the answer is properly grounded in the chunks
+        const groundingCheck = await this.verifyGrounding(finalReply, ragResult.chunks);
+        
+        if (!groundingCheck.isGrounded) {
+          // Answer is not properly grounded - reject and ask for clarification
+          this.logger.log(`🚫 Grounding verification FAILED: ${groundingCheck.reason}`);
+          this.eventEmitter.emit('ai.grounding.failed', {
+            conversationId: context.conversationId,
+            reason: groundingCheck.reason,
+            confidence: confidenceScore,
+          });
+
+          return {
+            reply: settings.fallbackMessage || AI_DEFAULTS.fallbackMessage,
+            confidence: confidenceScore,
+            shouldHandoff: settings.autoHandoff,
+            handoffReason: 'GROUNDING_FAILED',
+            ragAudit: {
+              answer_source: finalSource,
+              similarity_score: ragResult.topScore,
+              verifier_result: gateBPassed ? 'YES' : 'SKIPPED',
+              final_decision: 'BLOCKED',
+              retrieved_chunks: ragResult.chunks.length,
+              gate_a_passed: ragResult.gateAPassed,
+              gate_b_passed: gateBPassed,
+              confidence_score: confidenceScore,
+              intent_confidence: intentResult.confidence,
+              chunk_coverage: chunkCoverage,
+              rejection_reason: `Grounding verification failed: ${groundingCheck.reason}`,
+            },
+          };
+        }
+
+        // High confidence AND properly grounded - answer directly
+        this.logger.log(`✅ Answer approved: confidence=${confidenceScore.toFixed(3)}, grounded=YES`);
+        this.eventEmitter.emit('ai.response.success', {
+          conversationId: context.conversationId,
+          confidence: confidenceScore,
+          source: finalSource,
+        });
+
+        return {
+          reply: finalReply,
+          confidence: confidenceScore,
+          intent: 'SUPPORT_QUERY',
+          shouldHandoff: false,
+          toolsUsed,
+          ragAudit: {
+            answer_source: finalSource,
+            similarity_score: ragResult.topScore,
+            verifier_result: gateBPassed ? 'YES' : 'SKIPPED',
+            final_decision: 'ANSWER',
+            retrieved_chunks: ragResult.chunks.length,
+            gate_a_passed: ragResult.gateAPassed,
+            gate_b_passed: gateBPassed,
+            confidence_score: confidenceScore,
+            intent_confidence: intentResult.confidence,
+            chunk_coverage: chunkCoverage,
+          },
+        };
+      } else if (confidenceScore >= clarifyThreshold) {
+        // Medium confidence - ask for clarification
+        this.logger.log(`⚠️ Medium confidence (${confidenceScore.toFixed(3)}) - requesting clarification`);
+        this.eventEmitter.emit('ai.confidence.clarify', {
+          conversationId: context.conversationId,
+          confidence: confidenceScore,
+          reason: 'CONFIDENCE_BELOW_ANSWER_THRESHOLD',
+        });
+
+        return this.handleNoMatch(context, settings, lang, 'SUPPORT_QUERY');
+      } else {
+        // Low confidence - suggest handoff
+        this.logger.log(`🚫 Low confidence (${confidenceScore.toFixed(3)}) - suggesting handoff`);
+        this.eventEmitter.emit('ai.confidence.handoff', {
+          conversationId: context.conversationId,
+          confidence: confidenceScore,
+          reason: 'CONFIDENCE_BELOW_CLARIFY_THRESHOLD',
+        });
+
+        return {
+          reply: settings.fallbackMessage || AI_DEFAULTS.fallbackMessage,
+          confidence: confidenceScore,
+          shouldHandoff: settings.autoHandoff,
+          handoffReason: 'LOW_CONFIDENCE',
+          ragAudit: {
+            answer_source: finalSource,
+            similarity_score: ragResult.topScore,
+            verifier_result: gateBPassed ? 'YES' : 'SKIPPED',
+            final_decision: 'HANDOFF',
+            retrieved_chunks: ragResult.chunks.length,
+            gate_a_passed: ragResult.gateAPassed,
+            gate_b_passed: gateBPassed,
+            confidence_score: confidenceScore,
+            intent_confidence: intentResult.confidence,
+            chunk_coverage: chunkCoverage,
+            rejection_reason: `Low confidence: ${confidenceScore.toFixed(3)} < ${clarifyThreshold}`,
+          },
+        };
+      }
     } catch (error) {
-      this.logger.error('OpenAI API error', {
-        error: error instanceof Error ? error.message : 'Unknown',
+      this.logger.error('OpenAI API error', { error: this.getErrorMessage(error) });
+      this.eventEmitter.emit('ai.error', {
+        conversationId: context.conversationId,
+        error: this.getErrorMessage(error),
       });
       return {
         reply: settings.fallbackMessage || AI_DEFAULTS.fallbackMessage,
@@ -1339,10 +1542,139 @@ ${chunksText}
       return answer.includes('YES');
     } catch (error) {
       this.logger.error('Verifier failed — defaulting to FAIL', {
-        error: error instanceof Error ? error.message : 'Unknown',
+        error: this.getErrorMessage(error),
       });
       return false; // فشل التحقق = لا نسمح بالرد (أمان)
     }
+  }
+
+  /**
+   * ✅ MVP Level 2: Calculate unified confidence score
+   * Combines similarity score, intent confidence, verifier result, and chunk coverage
+   * Using weighted average with configurable weights
+   */
+  private calculateConfidence(
+    similarityScore: number,
+    intentConfidence: number,
+    verifierPassed: boolean,
+    chunkCoverage: number,
+  ): number {
+    // Weighted average using defined weights
+    const verifierScore = verifierPassed ? 1.0 : 0.0;
+    const confidence =
+      similarityScore * CONFIDENCE_WEIGHTS.SIMILARITY +
+      intentConfidence * CONFIDENCE_WEIGHTS.INTENT +
+      verifierScore * CONFIDENCE_WEIGHTS.VERIFIER +
+      chunkCoverage * CONFIDENCE_WEIGHTS.COVERAGE;
+    return Math.min(1.0, Math.max(0.0, confidence));
+  }
+
+  /**
+   * ✅ MVP Level 2: Calculate chunk coverage
+   * Estimates how well the chunks cover the user's question
+   * Normalized to OPTIMAL_CHUNK_COUNT for consistency
+   */
+  private calculateChunkCoverage(
+    chunks: Array<{ title: string; content: string; score: number }>,
+    topScore: number,
+  ): number {
+    if (chunks.length === 0) return 0;
+    
+    // Coverage based on number of chunks and their scores
+    const avgScore = chunks.reduce((sum, c) => sum + c.score, 0) / chunks.length;
+    const coverageFactor = Math.min(chunks.length / OPTIMAL_CHUNK_COUNT, 1.0);
+    return (
+      topScore * COVERAGE_SCORE_WEIGHTS.TOP_SCORE +
+      avgScore * COVERAGE_SCORE_WEIGHTS.AVG_SCORE
+    ) * coverageFactor;
+  }
+
+  /**
+   * ✅ MVP Level 2: Unified ranking for mixed library + product results
+   * Merges top-K from both sources and reranks by score
+   */
+  private unifiedRanking(
+    libraryChunks: Array<{ title: string; content: string; score: number; answer?: string }>,
+    productChunks: Array<{ title: string; content: string; score: number }>,
+    topK: number = RAG_TOP_K,
+  ): Array<{ title: string; content: string; score: number; answer?: string; source: 'library' | 'product' }> {
+    // Combine and tag by source
+    const combined = [
+      ...libraryChunks.map((c) => ({ ...c, source: 'library' as const })),
+      ...productChunks.map((c) => ({ ...c, source: 'product' as const })),
+    ];
+
+    // Sort by score descending and take top-K
+    return combined
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topK);
+  }
+
+  /**
+   * ✅ MVP Level 2: Verify grounding - Check if answer is properly supported by chunks
+   * Uses LLM to verify that the answer doesn't contain information not in the chunks
+   */
+  private async verifyGrounding(
+    answer: string,
+    chunks: Array<{ title: string; content: string; score: number; answer?: string }>,
+  ): Promise<{ isGrounded: boolean; reason?: string }> {
+    if (chunks.length === 0) {
+      return { isGrounded: false, reason: 'No chunks available' };
+    }
+
+    try {
+      const chunksText = chunks
+        .map((c) => {
+          const answerPart = c.answer ? `\nالجواب: ${c.answer}` : '';
+          return `[${c.title}]: ${c.content}${answerPart}`;
+        })
+        .join('\n\n');
+
+      const response = await this.openai.chat.completions.create({
+        model: GROUNDING_VERIFIER_MODEL,
+        messages: [
+          {
+            role: 'system',
+            content: GROUNDING_VERIFICATION_SYSTEM_PROMPT,
+          },
+          {
+            role: 'user',
+            content: GROUNDING_VERIFICATION_USER_PROMPT(answer, chunksText),
+          },
+        ],
+        temperature: 0,
+        max_tokens: GROUNDING_VERIFICATION_MAX_TOKENS,
+      });
+
+      const result = (response.choices[0]?.message?.content || '').trim();
+      const isGrounded = result.toUpperCase().startsWith('YES');
+      const reason = isGrounded ? undefined : result.replace(/^NO:?\s*/i, '').trim();
+
+      return { isGrounded, reason };
+    } catch (error) {
+      const errorMsg = this.getErrorMessage(error);
+      this.logger.error('Grounding verification failed', { error: errorMsg });
+      // Fail-safe: if verification fails, reject the answer (strict grounding)
+      return { isGrounded: false, reason: 'Verification failed' };
+    }
+  }
+
+  /**
+   * Helper: Extract error message from Error object or return 'Unknown'
+   */
+  private getErrorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : 'Unknown';
+  }
+
+  /**
+   * Helper: Get threshold value with fallbacks (setting → default → hardcoded)
+   */
+  private getThreshold(
+    settingValue: number | undefined,
+    defaultValue: number | undefined,
+    hardcodedFallback: number,
+  ): number {
+    return settingValue ?? defaultValue ?? hardcodedFallback;
   }
 
   /**
@@ -1403,7 +1735,12 @@ ${chunksText}
       }
 
       const topScore = results[0].score;
-      const gateAPassed = topScore >= SIMILARITY_THRESHOLD;
+      const threshold = this.getThreshold(
+        settings.similarityThreshold,
+        AI_DEFAULTS.similarityThreshold,
+        SIMILARITY_THRESHOLD,
+      );
+      const gateAPassed = topScore >= threshold;
 
       this.logger.log(`📚 Library search: ${results.length} chunks, topScore=${topScore.toFixed(3)}, gateA=${gateAPassed ? 'PASS' : 'FAIL'}`);
 
@@ -1435,7 +1772,12 @@ ${chunksText}
     // 2. إذا وجدنا نتائج جيدة في المكتبة → نستخدمها
     if (libraryResults.length > 0) {
       const topScore = libraryResults[0].score;
-      const gateAPassed = topScore >= SIMILARITY_THRESHOLD;
+      const threshold = this.getThreshold(
+        settings.similarityThreshold,
+        AI_DEFAULTS.similarityThreshold,
+        SIMILARITY_THRESHOLD,
+      );
+      const gateAPassed = topScore >= threshold;
 
       if (gateAPassed) {
         this.logger.log(`📚 Library match found: topScore=${topScore.toFixed(3)}`);
@@ -1446,13 +1788,13 @@ ${chunksText}
           source: 'library',
         };
       } else {
-        this.logger.log(`📚 Library score too low (${topScore.toFixed(3)} < ${SIMILARITY_THRESHOLD}), trying products...`);
+        this.logger.log(`📚 Library score too low (${topScore.toFixed(3)} < ${threshold}), trying products...`);
       }
     } else {
       this.logger.log('📚 No results in library, trying products...');
     }
 
-    // 3. المكتبة لم تنجح → نبحث في المنتجات
+    // 3. المكتبة لم تنجح → نبحث في المنتجات ونجمع النتائج للتصنيف الموحد
     if (!context.storeId) {
       this.logger.warn('🚫 No storeId available for product search — returning library results (if any)');
       return {
@@ -1465,6 +1807,32 @@ ${chunksText}
 
     const productResult = await this.searchProducts(message, context.storeId);
     
+    // ✅ MVP Level 2: Unified ranking when both sources have results
+    // Merge top-K from library and products, then rerank by score
+    if (libraryResults.length > 0 && productResult.chunks.length > 0) {
+      this.logger.log('🔀 Applying unified ranking for mixed results');
+      const mergedChunks = this.unifiedRanking(libraryResults, productResult.chunks, RAG_TOP_K);
+      const topScore = mergedChunks.length > 0 ? mergedChunks[0].score : 0;
+      const gateAPassed = topScore >= this.getThreshold(
+        settings.similarityThreshold,
+        AI_DEFAULTS.similarityThreshold,
+        SIMILARITY_THRESHOLD,
+      );
+      
+      this.logger.log(`🔀 Unified ranking: ${mergedChunks.length} chunks, topScore=${topScore.toFixed(3)}, gateA=${gateAPassed ? 'PASS' : 'FAIL'}`);
+      
+      return {
+        // Remove source tag for compatibility with downstream consumers
+        // that expect chunks without source metadata (e.g., buildStrictSystemPrompt)
+        // This maintains the standard chunk interface structure used throughout the codebase
+        chunks: mergedChunks.map(({ source, ...chunk }) => chunk),
+        topScore,
+        gateAPassed,
+        source: 'mixed',
+      };
+    }
+    
+    // Only product results available
     if (productResult.gateAPassed) {
       this.logger.log(`🛒 Product match found: ${productResult.chunks.length} products`);
       return { ...productResult, source: 'product' };
