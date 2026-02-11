@@ -725,7 +725,11 @@ export class AIService {
     });
 
     // ✅ بوابة A: عتبة التشابه
-    const similarityThreshold = settings.similarityThreshold || SIMILARITY_THRESHOLD;
+    const similarityThreshold = this.getThreshold(
+      settings.similarityThreshold,
+      AI_DEFAULTS.similarityThreshold,
+      SIMILARITY_THRESHOLD,
+    );
     if (!ragResult.gateAPassed) {
       this.logger.log(`🚫 Gate A FAILED: score=${ragResult.topScore.toFixed(3)} < ${similarityThreshold}, source=${ragResult.source}`);
 
@@ -1715,7 +1719,11 @@ ${chunksText}
       }
 
       const topScore = results[0].score;
-      const threshold = settings.similarityThreshold || SIMILARITY_THRESHOLD;
+      const threshold = this.getThreshold(
+        settings.similarityThreshold,
+        AI_DEFAULTS.similarityThreshold,
+        SIMILARITY_THRESHOLD,
+      );
       const gateAPassed = topScore >= threshold;
 
       this.logger.log(`📚 Library search: ${results.length} chunks, topScore=${topScore.toFixed(3)}, gateA=${gateAPassed ? 'PASS' : 'FAIL'}`);
@@ -1748,7 +1756,11 @@ ${chunksText}
     // 2. إذا وجدنا نتائج جيدة في المكتبة → نستخدمها
     if (libraryResults.length > 0) {
       const topScore = libraryResults[0].score;
-      const threshold = settings.similarityThreshold || SIMILARITY_THRESHOLD;
+      const threshold = this.getThreshold(
+        settings.similarityThreshold,
+        AI_DEFAULTS.similarityThreshold,
+        SIMILARITY_THRESHOLD,
+      );
       const gateAPassed = topScore >= threshold;
 
       if (gateAPassed) {
@@ -1785,13 +1797,18 @@ ${chunksText}
       this.logger.log('🔀 Applying unified ranking for mixed results');
       const mergedChunks = this.unifiedRanking(libraryResults, productResult.chunks, RAG_TOP_K);
       const topScore = mergedChunks.length > 0 ? mergedChunks[0].score : 0;
-      const gateAPassed = topScore >= (settings.similarityThreshold || SIMILARITY_THRESHOLD);
+      const gateAPassed = topScore >= this.getThreshold(
+        settings.similarityThreshold,
+        AI_DEFAULTS.similarityThreshold,
+        SIMILARITY_THRESHOLD,
+      );
       
       this.logger.log(`🔀 Unified ranking: ${mergedChunks.length} chunks, topScore=${topScore.toFixed(3)}, gateA=${gateAPassed ? 'PASS' : 'FAIL'}`);
       
       return {
         // Remove source tag for compatibility with downstream consumers
         // that expect chunks without source metadata (e.g., buildStrictSystemPrompt)
+        // This maintains the standard chunk interface structure used throughout the codebase
         chunks: mergedChunks.map(({ source, ...chunk }) => chunk),
         topScore,
         gateAPassed,
