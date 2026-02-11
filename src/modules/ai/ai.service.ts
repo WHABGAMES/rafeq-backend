@@ -1415,12 +1415,28 @@ export class AIService {
   /**
    * ✅ معالجة استفسارات الطلبات — أدوات مباشرة بدون RAG
    */
+  /**
+   * ✅ FIX-ORDER-QUERY: معالجة استفسارات الطلبات مع fallback لـ RAG
+   * 
+   * المشكلة السابقة: كان يرسل GPT بـ ZERO chunks → GPT يرد بـ NO_MATCH_MESSAGE دائماً
+   * 
+   * الحل: 
+   * 1. أولاً نحاول عبر أدوات (get_order_status)
+   * 2. إذا GPT رد بـ NO_MATCH_MESSAGE أو رد فارغ → نسقط (fallback) لـ RAG العادي
+   * 3. RAG يبحث في المكتبة والمنتجات كالمعتاد
+   */
   private async handleOrderQuery(
     message: string,
     context: ConversationContext,
     settings: AISettings,
   ): Promise<AIResponse> {
-    const systemPrompt = this.buildStrictSystemPrompt(settings, context, []);
+    // ✅ FIX: نبحث في RAG أولاً لجلب chunks (إن وُجدت)
+    const ragResult = settings.searchPriority === SearchPriority.LIBRARY_THEN_PRODUCTS
+      ? await this.unifiedRanking(message, context, settings)
+      : await this.ragRetrieve(message, context, settings);
+
+    // ✅ FIX: نمرر chunks الحقيقية (وليس []) حتى لو كان ORDER_QUERY
+    const systemPrompt = this.buildStrictSystemPrompt(settings, context, ragResult.chunks);
 
     const messages: ChatCompletionMessageParam[] = [
       { role: 'system', content: systemPrompt },
@@ -1484,20 +1500,31 @@ export class AIService {
         finalReply = followUp.choices[0]?.message?.content || finalReply;
       }
 
+      // ✅ FIX: إذا GPT رد بـ NO_MATCH_MESSAGE رغم وجود chunks → المشكلة في التصنيف
+      // نحاول مرة ثانية بدون ORDER_QUERY intent (نعامله كـ FAQ)
+      const isNoMatch = finalReply.includes('خارج نطاق المعلومات') || finalReply.includes('outside the scope');
+      
+      if (isNoMatch && ragResult.chunks.length === 0) {
+        // لا chunks ولا نتيجة أداة → نرجع لـ handleNoMatch
+        this.logger.warn('🔄 ORDER_QUERY: no chunks & no tool result — falling back to handleNoMatch');
+        const lang = settings.language !== 'en' ? 'ar' : 'en';
+        return this.handleNoMatch(context, settings, lang, IntentType.ORDER_QUERY);
+      }
+
       await this.resetFailedAttempts(context);
 
       return {
         reply: finalReply,
-        confidence: 0.9,
+        confidence: ragResult.chunks.length > 0 ? 0.9 : 0.7,
         intent: 'ORDER_QUERY',
         shouldHandoff: false,
         toolsUsed,
         ragAudit: {
-          answer_source: 'tool',
-          similarity_score: 0,
+          answer_source: toolsUsed.length > 0 ? 'tool' : (ragResult.chunks.length > 0 ? 'library' : 'none'),
+          similarity_score: ragResult.topScore,
           verifier_result: 'SKIPPED',
           final_decision: 'ANSWER',
-          retrieved_chunks: 0,
+          retrieved_chunks: ragResult.chunks.length,
           gate_a_passed: true,
           gate_b_passed: true,
         },
@@ -2454,16 +2481,19 @@ ${answer}
 - GREETING: تحية بسيطة فقط (مثل: مرحبا، السلام عليكم، هلا، صباح الخير) بدون أي سؤال
 - SMALLTALK: كلام اجتماعي (مثل: كيفك، اخبارك، شلونك) بدون سؤال محدد
 - PRODUCT_QUESTION: سؤال عن منتج معين، سعر، توفر، مواصفات (مثل: كم سعر المنتج X، هل متوفر، مواصفات)
-- POLICY_SUPPORT_FAQ: سؤال عن سياسات المتجر، التوصيل، الإرجاع، ساعات العمل، معلومات عامة
+- POLICY_SUPPORT_FAQ: سؤال عن سياسات المتجر، التوصيل، الإرجاع، ساعات العمل، معلومات عامة، أو سؤال عن خدمة/منتج بشكل عام (مثل: متى دوري، كم المدة، اذا طلبت/اشتريت)
 - COMPLAINT_ESCALATION: شكوى أو طلب تصعيد أو استياء (مثل: غير راضي، مشكلة، اشتكي)
-- ORDER_QUERY: استفسار عن حالة طلب أو شحنة أو تتبع (مثل: وين طلبي، رقم الشحنة)
+- ORDER_QUERY: استفسار عن حالة طلب موجود فعلياً، بوجود رقم طلب أو طلب تتبع حقيقي (مثل: وين طلبي رقم 1234، حالة الطلب، رقم التتبع)
 - HUMAN_REQUEST: طلب صريح للتحدث مع موظف أو شخص بشري
 - OUT_OF_SCOPE: سؤال خارج نطاق المتجر تماماً (مثل: سياسة، رياضة، طبخ)
 - UNKNOWN: لا يمكن تحديد النوع
 
 ⚠️ قواعد مهمة:
+- ORDER_QUERY فقط عند وجود رقم طلب أو استفسار عن حالة طلب فعلي (وين طلبي، رقم التتبع)
+- "اذا طلبت/اشتريت X متى..." = POLICY_SUPPORT_FAQ (سؤال عام عن الخدمة وليس استفسار طلب)
+- "متى دوري" أو "كم المدة" = POLICY_SUPPORT_FAQ
 - إذا الرسالة تسأل عن معلومة محددة = ليست GREETING/SMALLTALK
-- أسئلة المنتجات المحددة = PRODUCT_QUESTION
+- أسئلة المنتجات المحددة (سعر، مواصفات) = PRODUCT_QUESTION
 - أسئلة السياسات العامة = POLICY_SUPPORT_FAQ`
         : `You are an advanced intent classifier for an online store. Classify the customer message into exactly one type.
 Respond ONLY with JSON, no other text.
@@ -2472,14 +2502,17 @@ Types:
 - GREETING: Simple greeting only (e.g., hi, hello, good morning) without any question
 - SMALLTALK: Social talk (e.g., how are you, what's up) without specific question
 - PRODUCT_QUESTION: Question about a specific product, price, availability, specs
-- POLICY_SUPPORT_FAQ: Question about store policies, shipping, returns, hours, general info
+- POLICY_SUPPORT_FAQ: Question about store policies, shipping, returns, hours, general info, or general service questions (e.g., if I buy X when will it arrive, how long does it take)
 - COMPLAINT_ESCALATION: Complaint, escalation request, dissatisfaction
-- ORDER_QUERY: Order status, shipping, tracking inquiry
+- ORDER_QUERY: ONLY for tracking an existing order with order number or explicit tracking request (e.g., where is my order #1234, tracking number, order status)
 - HUMAN_REQUEST: Explicit request to speak to a human agent
 - OUT_OF_SCOPE: Question completely outside store scope (politics, sports, cooking)
 - UNKNOWN: Cannot determine
 
 ⚠️ Important rules:
+- ORDER_QUERY is ONLY for existing order tracking (order number, "where is my order", tracking)
+- "If I order/buy X when will..." = POLICY_SUPPORT_FAQ (general service question, NOT order query)
+- "When is my turn" or "how long" = POLICY_SUPPORT_FAQ
 - If message asks for specific info = NOT GREETING/SMALLTALK
 - Specific product questions = PRODUCT_QUESTION
 - General policy questions = POLICY_SUPPORT_FAQ`;
@@ -2626,6 +2659,11 @@ Types:
     const hasQuestion = questionWords.some((q) => lower.includes(q));
 
     if (hasQuestion) {
+      // ✅ FIX: استفسار طلب حقيقي فقط (باستخدام isOrderInquiry المحدّث)
+      if (this.isOrderInquiry(message)) {
+        return { intent: IntentType.ORDER_QUERY, confidence: 0.7 };
+      }
+      
       // فيه سؤال → Check if product or policy question
       const productWords = ['منتج', 'سعر', 'product', 'price', 'buy', 'purchase'];
       if (productWords.some(w => lower.includes(w))) {
@@ -2634,8 +2672,8 @@ Types:
       return { intent: IntentType.POLICY_SUPPORT_FAQ, confidence: 0.7 };
     }
 
-    const orderPatterns = ['طلب', 'طلبي', 'شحن', 'تتبع', 'order', 'track', 'shipping', '#'];
-    if (orderPatterns.some((p) => lower.includes(p))) {
+    // ✅ FIX: استفسار طلب حقيقي (بدون كلمة استفهام — مثل "#12345")
+    if (this.isOrderInquiry(message)) {
       return { intent: IntentType.ORDER_QUERY, confidence: 0.7 };
     }
 
@@ -2647,15 +2685,52 @@ Types:
   }
 
   /**
-   * ✅ كشف استفسارات الطلبات (تعتمد على أدوات وليس RAG)
+   * ✅ FIX-ORDER: كشف استفسارات الطلبات بدقة
+   * 
+   * المشكلة السابقة: "طلب" كـ substring يطابق "طلبت"، "اطلب"، "مطلوب" — كلها ليست استفسار طلب!
+   * 
+   * الحل: 
+   * 1. استخدام عبارات دقيقة (exact phrases) بدل كلمات مفردة
+   * 2. التمييز بين "طلبي"/"الطلب" (استفسار) و"طلبت"/"اطلب" (فعل شراء عام)
+   * 3. التحقق من وجود رقم طلب أو سياق تتبع واضح
    */
   private isOrderInquiry(message: string): boolean {
     const lower = message.toLowerCase();
-    const orderPatterns = [
-      'طلب', 'طلبي', 'رقم الطلب', 'حالة الطلب', 'تتبع', 'شحن',
-      'order', 'track', 'shipping', 'delivery', '#',
+
+    // ✅ عبارات تدل على استفسار طلب حقيقي (status inquiry)
+    const exactOrderPatterns = [
+      'طلبي',          // "وين طلبي" — استفسار واضح
+      'رقم الطلب',     // "رقم الطلب 1234"
+      'حالة الطلب',    // "حالة الطلب"
+      'حالة طلبي',     // "حالة طلبي"
+      'تتبع الطلب',    // "تتبع الطلب"
+      'تتبع طلبي',     // "تتبع طلبي"
+      'وين طلبي',      // "وين طلبي"
+      'وين الطلب',     // "وين الطلب"
+      'متى يوصل',      // "متى يوصل طلبي"
+      'متى توصل',      // "متى توصل الشحنة"
+      'أين طلبي',      // فصحى
+      'أين الطلب',     // فصحى
+      'رقم التتبع',    // "اعطني رقم التتبع"
+      'رقم الشحنة',    // "رقم الشحنة"
+      'order status',
+      'track order',
+      'tracking number',
+      'where is my order',
+      'my order',
     ];
-    return orderPatterns.some((p) => lower.includes(p));
+
+    if (exactOrderPatterns.some((p) => lower.includes(p))) {
+      return true;
+    }
+
+    // ✅ وجود رقم طلب (#1234 أو "طلب 1234" أو "order 1234")
+    const hasOrderNumber = /(?:#\d{3,}|طلب\s*(?:رقم\s*)?\d{3,}|order\s*#?\d{3,})/i.test(lower);
+    if (hasOrderNumber) {
+      return true;
+    }
+
+    return false;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -3251,7 +3326,8 @@ Types:
     let intent = 'general';
     let sentiment = 'neutral';
 
-    if (lower.includes('طلب') || lower.includes('order')) {
+    // ✅ FIX: استخدام isOrderInquiry بدل substring match
+    if (this.isOrderInquiry(message)) {
       intent = 'order_inquiry';
     } else if (lower.includes('شكر') || lower.includes('thank')) {
       intent = 'thanks';
