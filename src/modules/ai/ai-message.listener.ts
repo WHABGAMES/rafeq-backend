@@ -106,7 +106,9 @@ export class AIMessageListener {
       // 2. التحقق من إعدادات الـ AI
       // ──────────────────────────────────────────────────────────────────────
 
-      const settings = await this.aiService.getSettings(conversation.tenantId);
+      // ✅ FIX: جلب storeId من القناة لضمان استخدام الإعدادات الصحيحة
+      const storeId = payload.channel?.storeId;
+      const settings = await this.aiService.getSettings(conversation.tenantId, storeId);
 
       if (!settings.enabled) {
         this.logger.debug(

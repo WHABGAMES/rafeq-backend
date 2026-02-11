@@ -27,6 +27,7 @@ import type {
 // ✅ Entities — مطابقة لـ @database/entities/index.ts
 import { KnowledgeBase, KnowledgeCategory, KnowledgeType } from './entities/knowledge-base.entity';
 import { StoreSettings } from '../settings/entities/store-settings.entity';
+import { Store, StorePlatform, StoreStatus } from '../stores/entities/store.entity';
 import {
   Conversation,
   ConversationHandler,
@@ -34,6 +35,12 @@ import {
   MessageDirection,
   Order,
 } from '@database/entities';
+
+// ✅ Services
+import { SallaApiService, SallaProduct } from '../stores/salla-api.service';
+
+// ✅ Utils
+import { decrypt } from '@common/utils/encryption.util';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 📌 ENUMS & INTERFACES
@@ -235,6 +242,7 @@ export class AIService {
   constructor(
     private readonly configService: ConfigService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly sallaApiService: SallaApiService,
 
     @InjectRepository(KnowledgeBase)
     private readonly knowledgeRepo: Repository<KnowledgeBase>,
@@ -250,6 +258,9 @@ export class AIService {
 
     @InjectRepository(Order)
     private readonly orderRepo: Repository<Order>,
+
+    @InjectRepository(Store)
+    private readonly storeRepo: Repository<Store>,
   ) {
     // ✅ BUG-9 FIX: تحذير واضح إذا API Key مفقود
     const apiKey = this.configService.get<string>('ai.apiKey');
@@ -653,6 +664,7 @@ export class AIService {
 
     this.logger.log(`🔍 RAG Result`, {
       conversationId: context.conversationId,
+      source: ragResult.source,
       topScore: ragResult.topScore.toFixed(3),
       chunksFound: ragResult.chunks.length,
       gateA: ragResult.gateAPassed ? 'PASS' : 'FAIL',
@@ -660,7 +672,7 @@ export class AIService {
 
     // ✅ بوابة A: عتبة التشابه
     if (!ragResult.gateAPassed) {
-      this.logger.log(`🚫 Gate A FAILED (score=${ragResult.topScore.toFixed(3)} < ${SIMILARITY_THRESHOLD})`);
+      this.logger.log(`🚫 Gate A FAILED: score=${ragResult.topScore.toFixed(3)} < ${SIMILARITY_THRESHOLD}, source=${ragResult.source}`);
 
       // ✅ FIX-B: قبل إرجاع NO_MATCH — جرّب الإجابة من إعدادات المتجر
       // أسئلة مثل "وش اسم المتجر" و"وش ساعات العمل" يمكن الرد عليها من الإعدادات مباشرة
@@ -678,9 +690,10 @@ export class AIService {
     let gateBPassed = false;
     if (ragResult.chunks.length > 0) {
       gateBPassed = await this.verifyRelevance(message, ragResult.chunks);
-      this.logger.log(`🔎 Gate B (Verifier): ${gateBPassed ? 'PASS' : 'FAIL'}`);
+      this.logger.log(`🔎 Gate B (Verifier): ${gateBPassed ? 'PASS' : 'FAIL'}, source=${ragResult.source}`);
 
       if (!gateBPassed) {
+        this.logger.log(`🚫 Gate B FAILED: verifier rejected chunks from ${ragResult.source}`);
         // ✅ FIX-B: جرّب الإجابة من الإعدادات أيضاً عند فشل Gate B
         const settingsAnswer = await this.tryAnswerFromSettings(message, settings, context);
         if (settingsAnswer) {
@@ -727,7 +740,8 @@ export class AIService {
 
       let finalReply = assistantMsg.content || '';
       const toolsUsed: string[] = [];
-      let finalSource: RagAudit['answer_source'] = 'library';
+      // ✅ تتبع المصدر: من المكتبة أو المنتجات أو أداة
+      let finalSource: RagAudit['answer_source'] = ragResult.source === 'product' ? 'product' : 'library';
 
       // تنفيذ الأدوات
       if (assistantMsg.tool_calls?.length) {
@@ -1330,11 +1344,11 @@ ${chunksText}
   }
 
   /**
-   * ✅ RAG Retrieve: يدير كامل عملية البحث الدلالي
-   * 1. توليد embedding للسؤال
-   * 2. بحث دلالي في المكتبة
+   * ✅ RAG Retrieve: يدير كامل عملية البحث الدلالي مع دعم multi-source
+   * 1. يحدد search priority (library_only, products_only, library_then_products)
+   * 2. يبحث في المصدر/المصادر المطلوبة
    * 3. فحص عتبة التشابه (Gate A)
-   * 4. يرجع النتائج مع حالة البوابات
+   * 4. يرجع النتائج مع حالة البوابات وmetadata عن المصدر
    */
   private async ragRetrieve(
     message: string,
@@ -1344,35 +1358,123 @@ ${chunksText}
     chunks: Array<{ title: string; content: string; score: number; answer?: string }>;
     topScore: number;
     gateAPassed: boolean;
+    source: 'library' | 'product' | 'mixed';
   }> {
-    // إذا المكتبة معطلة
     const sp = settings.searchPriority || SearchPriority.LIBRARY_THEN_PRODUCTS;
+    this.logger.log(`🔍 RAG Retrieve: searchPriority=${sp}, storeId=${context.storeId || 'none'}`);
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MODE 1: PRODUCTS_ONLY — البحث فقط في المنتجات
+    // ═══════════════════════════════════════════════════════════════════════════
     if (sp === SearchPriority.PRODUCTS_ONLY) {
-      return { chunks: [], topScore: 0, gateAPassed: false };
+      this.logger.log('🛒 Search mode: PRODUCTS_ONLY');
+      
+      if (!context.storeId) {
+        this.logger.warn('🚫 PRODUCTS_ONLY mode: no storeId available');
+        return { chunks: [], topScore: 0, gateAPassed: false, source: 'product' };
+      }
+
+      const productResult = await this.searchProducts(message, context.storeId);
+      return { ...productResult, source: 'product' };
     }
 
-    // توليد embedding
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MODE 2: LIBRARY_ONLY — البحث فقط في المكتبة
+    // ═══════════════════════════════════════════════════════════════════════════
+    if (sp === SearchPriority.LIBRARY_ONLY) {
+      this.logger.log('📚 Search mode: LIBRARY_ONLY');
+      
+      // توليد embedding
+      const queryEmbedding = await this.generateEmbedding(message);
+      if (!queryEmbedding) {
+        this.logger.warn('Failed to generate query embedding — falling back to keyword search');
+        const fallback = await this.fallbackKeywordSearch(message, context.tenantId);
+        return { ...fallback, source: 'library' };
+      }
+
+      // بحث دلالي في المكتبة فقط
+      const results = await this.semanticSearch(queryEmbedding, context.tenantId);
+
+      if (results.length === 0) {
+        this.logger.log('📚 No matches in library');
+        return { chunks: [], topScore: 0, gateAPassed: false, source: 'library' };
+      }
+
+      const topScore = results[0].score;
+      const gateAPassed = topScore >= SIMILARITY_THRESHOLD;
+
+      this.logger.log(`📚 Library search: ${results.length} chunks, topScore=${topScore.toFixed(3)}, gateA=${gateAPassed ? 'PASS' : 'FAIL'}`);
+
+      return {
+        chunks: results,
+        topScore,
+        gateAPassed,
+        source: 'library',
+      };
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MODE 3: LIBRARY_THEN_PRODUCTS — البحث في المكتبة أولاً، ثم المنتجات
+    // ═══════════════════════════════════════════════════════════════════════════
+    this.logger.log('📚🛒 Search mode: LIBRARY_THEN_PRODUCTS');
+
+    // 1. محاولة البحث في المكتبة أولاً
     const queryEmbedding = await this.generateEmbedding(message);
-    if (!queryEmbedding) {
-      this.logger.warn('Failed to generate query embedding — falling back to keyword search');
-      // Fallback: بحث كلمات مفتاحية
-      return this.fallbackKeywordSearch(message, context.tenantId);
+    let libraryResults: Array<{ title: string; content: string; score: number; answer?: string }> = [];
+    
+    if (queryEmbedding) {
+      libraryResults = await this.semanticSearch(queryEmbedding, context.tenantId);
+    } else {
+      this.logger.warn('Failed to generate query embedding — trying keyword search');
+      const fallback = await this.fallbackKeywordSearch(message, context.tenantId);
+      libraryResults = fallback.chunks;
     }
 
-    // بحث دلالي
-    const results = await this.semanticSearch(queryEmbedding, context.tenantId);
+    // 2. إذا وجدنا نتائج جيدة في المكتبة → نستخدمها
+    if (libraryResults.length > 0) {
+      const topScore = libraryResults[0].score;
+      const gateAPassed = topScore >= SIMILARITY_THRESHOLD;
 
-    if (results.length === 0) {
-      return { chunks: [], topScore: 0, gateAPassed: false };
+      if (gateAPassed) {
+        this.logger.log(`📚 Library match found: topScore=${topScore.toFixed(3)}`);
+        return {
+          chunks: libraryResults,
+          topScore,
+          gateAPassed: true,
+          source: 'library',
+        };
+      } else {
+        this.logger.log(`📚 Library score too low (${topScore.toFixed(3)} < ${SIMILARITY_THRESHOLD}), trying products...`);
+      }
+    } else {
+      this.logger.log('📚 No results in library, trying products...');
     }
 
-    const topScore = results[0].score;
-    const gateAPassed = topScore >= SIMILARITY_THRESHOLD;
+    // 3. المكتبة لم تنجح → نبحث في المنتجات
+    if (!context.storeId) {
+      this.logger.warn('🚫 No storeId available for product search — returning library results (if any)');
+      return {
+        chunks: libraryResults,
+        topScore: libraryResults.length > 0 ? libraryResults[0].score : 0,
+        gateAPassed: false,
+        source: 'library',
+      };
+    }
 
+    const productResult = await this.searchProducts(message, context.storeId);
+    
+    if (productResult.gateAPassed) {
+      this.logger.log(`🛒 Product match found: ${productResult.chunks.length} products`);
+      return { ...productResult, source: 'product' };
+    }
+
+    // 4. كلا المصدرين فشلا → نرجع أفضل ما لدينا
+    this.logger.log('🚫 No matches in library or products');
     return {
-      chunks: results,
-      topScore,
-      gateAPassed,
+      chunks: libraryResults.length > 0 ? libraryResults : productResult.chunks,
+      topScore: libraryResults.length > 0 ? libraryResults[0].score : productResult.topScore,
+      gateAPassed: false,
+      source: libraryResults.length > 0 ? 'library' : 'product',
     };
   }
 
@@ -1426,6 +1528,109 @@ ${chunksText}
       topScore: 0.75,
       gateAPassed: true, // keyword match يعبر البوابة A بشرط بوابة B
     };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🛒 PRODUCT SEARCH — البحث في منتجات سلة
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * ✅ البحث في منتجات سلة
+   * يستخدم Salla API للبحث عن المنتجات بالكلمات المفتاحية
+   * يرجع نتائج منسقة كـ chunks للـ RAG
+   */
+  private async searchProducts(
+    message: string,
+    storeId: string,
+  ): Promise<{
+    chunks: Array<{ title: string; content: string; score: number }>;
+    topScore: number;
+    gateAPassed: boolean;
+  }> {
+    try {
+      // جلب معلومات المتجر مع access token
+      const store = await this.storeRepo.findOne({
+        where: { id: storeId },
+        select: ['id', 'platform', 'status', 'accessToken'],
+      });
+
+      // التحقق من أن المتجر موجود ومتصل بسلة
+      if (!store) {
+        this.logger.warn(`🛒 Product search: store ${storeId} not found`);
+        return { chunks: [], topScore: 0, gateAPassed: false };
+      }
+
+      if (store.platform !== StorePlatform.SALLA) {
+        this.logger.debug(`🛒 Product search: store ${storeId} is not Salla (platform: ${store.platform})`);
+        return { chunks: [], topScore: 0, gateAPassed: false };
+      }
+
+      if (store.status !== StoreStatus.ACTIVE) {
+        this.logger.warn(`🛒 Product search: store ${storeId} is not active (status: ${store.status})`);
+        return { chunks: [], topScore: 0, gateAPassed: false };
+      }
+
+      if (!store.accessToken) {
+        this.logger.warn(`🛒 Product search: store ${storeId} has no access token`);
+        return { chunks: [], topScore: 0, gateAPassed: false };
+      }
+
+      // فك تشفير الـ access token
+      const accessToken = decrypt(store.accessToken);
+      if (!accessToken) {
+        this.logger.error(`🛒 Product search: failed to decrypt access token for store ${storeId}`);
+        return { chunks: [], topScore: 0, gateAPassed: false };
+      }
+
+      // استخراج كلمات مفتاحية من السؤال
+      const words = message.split(/\s+/).filter((w) => w.length > 2);
+      const keyword = words.slice(0, 3).join(' '); // أخذ أول 3 كلمات كـ keyword
+
+      this.logger.log(`🛒 Searching products: "${keyword}" in store ${storeId}`);
+
+      // البحث في منتجات سلة
+      const response = await this.sallaApiService.getProducts(accessToken, {
+        keyword,
+        perPage: RAG_TOP_K,
+        status: 'active',
+      });
+
+      if (!response.data || response.data.length === 0) {
+        this.logger.log(`🛒 No products found for keyword "${keyword}"`);
+        return { chunks: [], topScore: 0, gateAPassed: false };
+      }
+
+      // تحويل المنتجات إلى chunks
+      const chunks = response.data.map((product: SallaProduct) => {
+        const price = product.sale_price?.amount || product.price?.amount || 0;
+        const currency = product.price?.currency || 'SAR';
+        const inStock = product.quantity > 0 ? 'متوفر' : 'غير متوفر';
+        
+        return {
+          title: product.name,
+          content: `${product.description || 'لا يوجد وصف'}
+
+السعر: ${price} ${currency}
+الحالة: ${inStock}
+رمز المنتج: ${product.sku || 'غير محدد'}`,
+          score: 0.80, // نقاط ثابتة للمنتجات
+        };
+      });
+
+      this.logger.log(`🛒 Found ${chunks.length} products`);
+
+      return {
+        chunks,
+        topScore: chunks.length > 0 ? 0.80 : 0,
+        gateAPassed: chunks.length > 0,
+      };
+    } catch (error) {
+      this.logger.error('🛒 Product search failed', {
+        error: error instanceof Error ? error.message : 'Unknown',
+        storeId,
+      });
+      return { chunks: [], topScore: 0, gateAPassed: false };
+    }
   }
 
   /**
