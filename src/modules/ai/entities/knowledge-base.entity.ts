@@ -19,9 +19,19 @@ export enum KnowledgeCategory {
   CUSTOM = 'custom',
 }
 
+/**
+ * ✅ BUG-KB1 FIX: نوع المعلومة — article (مقال) أو qna (سؤال وجواب)
+ * الواجهة الأمامية ترسل هذا الحقل عند الإضافة
+ */
+export enum KnowledgeType {
+  ARTICLE = 'article',
+  QNA = 'qna',
+}
+
 @Entity('knowledge_base')
 @Index(['tenantId', 'category'])
 @Index(['tenantId', 'isActive'])
+@Index(['tenantId', 'type'])
 export class KnowledgeBase extends BaseEntity {
   @Column({ name: 'tenant_id', type: 'uuid' })
   @Index('idx_knowledge_base_tenant')
@@ -32,6 +42,31 @@ export class KnowledgeBase extends BaseEntity {
 
   @Column({ type: 'text' })
   content: string;
+
+  /**
+   * ✅ BUG-KB1 FIX: نوع المعلومة
+   * article = مقال (عنوان + محتوى)
+   * qna = سؤال وجواب (العنوان = السؤال، answer = الجواب)
+   */
+  @Column({
+    type: 'varchar',
+    length: 20,
+    default: KnowledgeType.ARTICLE,
+    comment: 'article or qna',
+  })
+  type: KnowledgeType;
+
+  /**
+   * ✅ BUG-KB1 FIX: جواب السؤال (فقط لنوع qna)
+   * في نوع article يكون null والمحتوى في content
+   * في نوع qna العنوان = السؤال والجواب هنا
+   */
+  @Column({
+    type: 'text',
+    nullable: true,
+    comment: 'Answer text for QnA type entries',
+  })
+  answer?: string;
 
   @Column({
     type: 'enum',
