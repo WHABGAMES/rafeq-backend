@@ -872,166 +872,40 @@ export class AIService {
     }
 
     // ──────────────────────────────────────────────────────────────────────────
-    // 3h. ✅ Level 2: PRODUCT_QUESTION / POLICY_SUPPORT_FAQ → Enhanced RAG with unified ranking
+    // 3h. ✅ SMART RAG: PRODUCT_QUESTION / POLICY_SUPPORT_FAQ
+    // ──────────────────────────────────────────────────────────────────────────
+    // النظام الجديد: بدل 7 بوابات (embedding → threshold → verifier → ...)
+    // نستخدم نهج ذكي:
+    // 1. نجلب كل المقالات (أو نبحث بالكلمات إذا كثيرة)
+    // 2. نرسل المقالات + السؤال لـ GPT في call واحد
+    // 3. GPT يختار المقال المناسب ويجاوب — أو يقول "ما لقيت"
     // ──────────────────────────────────────────────────────────────────────────
 
-    // ✅ Level 2: Use unified ranking for mixed sources, pass intent to enforce allowed sources
-    const ragResult = settings.searchPriority === SearchPriority.LIBRARY_THEN_PRODUCTS
-      ? await this.unifiedRanking(message, context, settings, intentResult)
-      : await this.ragRetrieve(message, context, settings, intentResult);
-
-    this.logger.log(`🔍 RAG Result`, {
-      conversationId: context.conversationId,
-      source: ragResult.source,
-      topScore: ragResult.topScore.toFixed(3),
-      chunksFound: ragResult.chunks.length,
-    });
-
-    // ✅ Level 2: Dynamic threshold-based decision with medium threshold
-    const highThreshold = settings.highSimilarityThreshold ?? 0.85;
-    const mediumThreshold = settings.mediumSimilarityThreshold ?? 0.72;
-    const lowThreshold = settings.lowSimilarityThreshold ?? 0.5;
-    
-    // ✅ Level 2: Tiered threshold logic:
-    // >= high: skip verifier
-    // between medium and high: run verifier
-    // between low and medium: force clarification (no answer generation)
-    // < low: clarification/handoff
-    
-    // Check if score is too low for any answer
-    if (ragResult.topScore < lowThreshold) {
-      this.logger.log(`🚫 Score too low: ${ragResult.topScore.toFixed(3)} < ${lowThreshold} — direct clarification`);
-      
-      // Emit analytics event for low confidence
-      this.eventEmitter.emit('ai.low_confidence', {
-        tenantId: context.tenantId,
-        storeId: context.storeId,
-        conversationId: context.conversationId,
-        message,
-        score: ragResult.topScore,
-        threshold: lowThreshold,
-        intent: intentResult.intent,
-        timestamp: new Date(),
-      });
-      
-      // Try settings-based answer first
-      const settingsAnswer = await this.tryAnswerFromSettings(message, settings, context);
-      if (settingsAnswer) {
-        await this.resetFailedAttempts(context);
-        return settingsAnswer;
-      }
-      
-      return this.handleNoMatch(context, settings, lang, intentResult.intent);
-    }
-    
-    // ✅ FIX: Between low and medium threshold → run verifier (NOT force clarification)
-    // المشكلة السابقة: كان يرفض مباشرة بدون محاولة
-    // الحل: نشغّل المحقق — GPT يقدر يفهم إن "تدخلوني" و "يوصل" نفس السياق حتى لو الـ embedding ما فهم
-    if (ragResult.topScore >= lowThreshold && ragResult.topScore < mediumThreshold) {
-      this.logger.log(`⚠️ Score between low and medium: ${ragResult.topScore.toFixed(3)} (${lowThreshold}-${mediumThreshold}) — running verifier before deciding`);
-      
-      // Emit analytics event for medium-low confidence
-      this.eventEmitter.emit('ai.medium_low_confidence', {
-        tenantId: context.tenantId,
-        storeId: context.storeId,
-        conversationId: context.conversationId,
-        message,
-        score: ragResult.topScore,
-        thresholds: { low: lowThreshold, medium: mediumThreshold },
-        intent: intentResult.intent,
-        timestamp: new Date(),
-      });
-      
-      // ✅ FIX: شغّل المحقق — إذا قال YES نكمل، إذا NO نطلب توضيح
-      if (ragResult.chunks.length > 0) {
-        const verifierResult = await this.verifyRelevance(message, ragResult.chunks);
-        this.logger.log(`🔎 Medium-low verifier: ${verifierResult ? 'PASS' : 'FAIL'}`);
-        
-        if (verifierResult) {
-          // المحقق أكد إن المقاطع تجاوب السؤال — نكمل لإنشاء الرد
-          this.logger.log(`✅ Verifier PASSED for medium-low score — proceeding to answer generation`);
-          // نكمل التدفق العادي (ما نرجع هنا، نتركه يكمل للأسفل)
-        } else {
-          // المحقق أكد إن المقاطع ما تجاوب — نطلب توضيح
-          const settingsAnswer = await this.tryAnswerFromSettings(message, settings, context);
-          if (settingsAnswer) {
-            await this.resetFailedAttempts(context);
-            return settingsAnswer;
-          }
-          return this.handleNoMatch(context, settings, lang, intentResult.intent);
-        }
-      } else {
-        // ما فيه chunks أصلاً
-        const settingsAnswer = await this.tryAnswerFromSettings(message, settings, context);
-        if (settingsAnswer) {
-          await this.resetFailedAttempts(context);
-          return settingsAnswer;
-        }
-        return this.handleNoMatch(context, settings, lang, intentResult.intent);
-      }
-    }
-
-    // ✅ Level 2: Determine if we should skip verifier (score >= high threshold)
-    const skipVerifier = (settings.skipVerifierOnHighConfidence ?? true) && ragResult.topScore >= highThreshold;
-    
-    let verifierPassed = true; // Default to true if skipped
-    
-    if (!skipVerifier && ragResult.chunks.length > 0) {
-      // Run verifier for medium-high confidence (between medium and high thresholds)
-      verifierPassed = await this.verifyRelevance(message, ragResult.chunks);
-      this.logger.log(`🔎 Verifier: ${verifierPassed ? 'PASS' : 'FAIL'}, score: ${ragResult.topScore.toFixed(3)}`);
-      
-      if (!verifierPassed) {
-        // Emit analytics event for verifier failure (Gate B)
-        this.eventEmitter.emit('ai.gate_b_failed', {
-          tenantId: context.tenantId,
-          storeId: context.storeId,
-          conversationId: context.conversationId,
-          message,
-          score: ragResult.topScore,
-          intent: intentResult.intent,
-          timestamp: new Date(),
-        });
-        
-        // Try settings-based answer
-        const settingsAnswer = await this.tryAnswerFromSettings(message, settings, context);
-        if (settingsAnswer) {
-          await this.resetFailedAttempts(context);
-          return settingsAnswer;
-        }
-        
-        return this.handleNoMatch(context, settings, lang, intentResult.intent);
-      }
-    } else if (skipVerifier) {
-      this.logger.log(`⚡ Skipping verifier for high confidence: ${ragResult.topScore.toFixed(3)} >= ${highThreshold}`);
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // 4. ✅ Level 2: Answer Generation with Strict Grounding
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    // ✅ نجح البحث → أعد العداد لصفر
-    await this.resetFailedAttempts(context);
-
-    const systemPrompt = this.buildStrictSystemPrompt(settings, context, ragResult.chunks);
-
-    const messages: ChatCompletionMessageParam[] = [
-      { role: 'system', content: systemPrompt },
-      ...context.previousMessages.slice(-10).map((m) => ({
-        role: m.role as 'user' | 'assistant',
-        content: m.content,
-      })),
-      { role: 'user', content: message },
-    ];
-
-    const tools = this.getAvailableTools();
-
     try {
-      // ✅ Level 2: Apply timeout and retry to OpenAI call
+      // ✅ Step 1: Smart Retrieve — جلب المقالات المناسبة
+      const knowledgeChunks = await this.smartRetrieve(message, context, settings, intentResult);
+
+      this.logger.log(`📚 Smart Retrieve: ${knowledgeChunks.length} entries loaded for GPT`);
+
+      // ✅ Step 2: بناء System Prompt مع كل المقالات
+      const systemPrompt = this.buildStrictSystemPrompt(settings, context, knowledgeChunks);
+
+      const messages: ChatCompletionMessageParam[] = [
+        { role: 'system', content: systemPrompt },
+        ...context.previousMessages.slice(-10).map((m) => ({
+          role: m.role as 'user' | 'assistant',
+          content: m.content,
+        })),
+        { role: 'user', content: message },
+      ];
+
+      const tools = this.getAvailableTools();
+
+      // ✅ Step 3: GPT يجاوب (call واحد بدل 5-6)
       const timeout = settings.openaiTimeout ?? 30000;
       const maxRetries = settings.maxRetries ?? 2;
       const retryDelay = settings.retryDelay ?? 1000;
-      
+
       const completion = await this.withTimeout(
         this.withRetry(
           () => this.openai.chat.completions.create({
@@ -1055,9 +929,8 @@ export class AIService {
 
       let finalReply = assistantMsg.content || '';
       const toolsUsed: string[] = [];
-      let finalSource: RagAudit['answer_source'] = ragResult.source === 'product' ? 'product' : 'library';
 
-      // تنفيذ الأدوات
+      // تنفيذ الأدوات (request_human_agent, get_order_status)
       if (assistantMsg.tool_calls?.length) {
         const toolResults = await this.executeToolCalls(assistantMsg.tool_calls, context, settings);
         toolsUsed.push(...toolResults.map((r) => r.name));
@@ -1100,97 +973,59 @@ export class AIService {
         );
 
         finalReply = followUp.choices[0]?.message?.content || finalReply;
-        finalSource = 'tool';
       }
 
-      // ✅ Level 2: Post-generation grounding validation
-      const groundingResult = await this.validateAnswerGrounding(finalReply, ragResult.chunks);
-      
-      if (!groundingResult.isGrounded) {
-        this.logger.warn(`🛡️ Grounding validation FAILED — blocking answer`);
-        
-        // Emit analytics event for grounding failure
-        this.eventEmitter.emit('ai.grounding_failed', {
+      // ✅ Step 4: فحص بسيط — هل GPT قال "خارج النطاق"?
+      const isNoMatch = finalReply.includes('خارج نطاق المعلومات') || 
+                         finalReply.includes('outside the scope') ||
+                         finalReply.includes(NO_MATCH_MESSAGE);
+
+      if (isNoMatch) {
+        this.logger.log(`🚫 GPT says no match — checking settings fallback`);
+
+        // Emit analytics event
+        this.eventEmitter.emit('ai.unanswered_question', {
           tenantId: context.tenantId,
           storeId: context.storeId,
           conversationId: context.conversationId,
           message,
-          answer: finalReply,
           intent: intentResult.intent,
-          score: ragResult.topScore,
+          knowledgeEntriesChecked: knowledgeChunks.length,
           timestamp: new Date(),
         });
-        
-        // Return "لا أقدر أجاوب" fallback
-        const noAnswerMessage = lang === 'ar'
-          ? 'لا أقدر أجاوب على هذا السؤال بناءً على المعلومات المتوفرة لدي حالياً.'
-          : 'I cannot answer this question based on the information currently available to me.';
-        
-        return {
-          reply: noAnswerMessage,
-          confidence: 0,
-          shouldHandoff: false,
-          intent: intentResult.intent,
-          ragAudit: {
-            answer_source: 'none',
-            similarity_score: ragResult.topScore,
-            verifier_result: verifierPassed ? 'YES' : 'NO',
-            final_decision: 'BLOCKED',
-            retrieved_chunks: ragResult.chunks.length,
-            gate_a_passed: true,
-            gate_b_passed: verifierPassed,
-            rejection_reason: 'GROUNDING',
-            detected_intent: intentResult.intent,
-          },
-        };
-      }
 
-      // ✅ Level 2: Calculate unified confidence
-      const confidenceCalc = this.calculateUnifiedConfidence({
-        similarityScore: ragResult.topScore,
-        intentConfidence: intentResult.confidence,
-        verifierPassed,
-        retrievedChunks: ragResult.chunks.length,
-      });
+        // جرب الإجابة من إعدادات المتجر
+        const settingsAnswer = await this.tryAnswerFromSettings(message, settings, context);
+        if (settingsAnswer) {
+          await this.resetFailedAttempts(context);
+          return settingsAnswer;
+        }
 
-      this.logger.log(`📊 Unified Confidence: ${confidenceCalc.finalConfidence.toFixed(3)} (sim: ${confidenceCalc.breakdown.similarity_weight.toFixed(2)}, intent: ${confidenceCalc.breakdown.intent_weight.toFixed(2)}, verifier: ${confidenceCalc.breakdown.verifier_weight.toFixed(2)}, coverage: ${confidenceCalc.breakdown.coverage_weight.toFixed(2)})`);
-
-      // ✅ Level 2: Confidence-based decision
-      const answerThreshold = settings.answerConfidenceThreshold ?? 0.75;
-      const clarifyThreshold = settings.clarifyConfidenceThreshold ?? 0.5;
-
-      if (confidenceCalc.finalConfidence < clarifyThreshold) {
-        // Low confidence → handoff or clarify
-        this.logger.log(`⚠️ Low confidence (${confidenceCalc.finalConfidence.toFixed(3)} < ${clarifyThreshold}) — requesting clarification`);
         return this.handleNoMatch(context, settings, lang, intentResult.intent);
-      } else if (confidenceCalc.finalConfidence < answerThreshold) {
-        // Medium confidence → provide answer with clarification offer
-        this.logger.log(`⚠️ Medium confidence (${confidenceCalc.finalConfidence.toFixed(3)} < ${answerThreshold}) — answering with caveat`);
-        const caveat = lang === 'ar' ? '\n\nإذا كنت تحتاج تفاصيل أكثر، تقدر تسألني! 😊' : '\n\nIf you need more details, feel free to ask! 😊';
-        finalReply = finalReply + caveat;
       }
+
+      // ✅ نجح الرد
+      await this.resetFailedAttempts(context);
 
       return {
         reply: finalReply,
-        confidence: confidenceCalc.finalConfidence,
+        confidence: knowledgeChunks.length > 0 ? 0.85 : 0.7,
         intent: intentResult.intent,
         shouldHandoff: false,
         toolsUsed,
         ragAudit: {
-          answer_source: finalSource,
-          similarity_score: ragResult.topScore,
-          verifier_result: skipVerifier ? 'SKIPPED' : (verifierPassed ? 'YES' : 'NO'),
+          answer_source: knowledgeChunks.length > 0 ? 'library' : 'none',
+          similarity_score: 0,
+          verifier_result: 'SKIPPED',
           final_decision: 'ANSWER',
-          retrieved_chunks: ragResult.chunks.length,
+          retrieved_chunks: knowledgeChunks.length,
           gate_a_passed: true,
-          gate_b_passed: verifierPassed,
-          confidence_breakdown: confidenceCalc.breakdown,
-          citations: groundingResult.citations,
+          gate_b_passed: true,
           detected_intent: intentResult.intent,
         },
       };
     } catch (error) {
-      this.logger.error('OpenAI API error', {
+      this.logger.error('Smart RAG failed', {
         error: error instanceof Error ? error.message : 'Unknown',
       });
       return {
@@ -1458,13 +1293,9 @@ export class AIService {
     context: ConversationContext,
     settings: AISettings,
   ): Promise<AIResponse> {
-    // ✅ FIX: نبحث في RAG أولاً لجلب chunks (إن وُجدت)
-    const ragResult = settings.searchPriority === SearchPriority.LIBRARY_THEN_PRODUCTS
-      ? await this.unifiedRanking(message, context, settings)
-      : await this.ragRetrieve(message, context, settings);
-
-    // ✅ FIX: نمرر chunks الحقيقية (وليس []) حتى لو كان ORDER_QUERY
-    const systemPrompt = this.buildStrictSystemPrompt(settings, context, ragResult.chunks);
+    // ✅ Smart Retrieve: نجلب مقالات المكتبة + أداة البحث عن الطلب
+    const knowledgeChunks = await this.smartRetrieve(message, context, settings);
+    const systemPrompt = this.buildStrictSystemPrompt(settings, context, knowledgeChunks);
 
     const messages: ChatCompletionMessageParam[] = [
       { role: 'system', content: systemPrompt },
@@ -1528,12 +1359,10 @@ export class AIService {
         finalReply = followUp.choices[0]?.message?.content || finalReply;
       }
 
-      // ✅ FIX: إذا GPT رد بـ NO_MATCH_MESSAGE رغم وجود chunks → المشكلة في التصنيف
-      // نحاول مرة ثانية بدون ORDER_QUERY intent (نعامله كـ FAQ)
+      // ✅ FIX: إذا GPT رد بـ NO_MATCH_MESSAGE → handleNoMatch
       const isNoMatch = finalReply.includes('خارج نطاق المعلومات') || finalReply.includes('outside the scope');
       
-      if (isNoMatch && ragResult.chunks.length === 0) {
-        // لا chunks ولا نتيجة أداة → نرجع لـ handleNoMatch
+      if (isNoMatch && knowledgeChunks.length === 0) {
         this.logger.warn('🔄 ORDER_QUERY: no chunks & no tool result — falling back to handleNoMatch');
         const lang = settings.language !== 'en' ? 'ar' : 'en';
         return this.handleNoMatch(context, settings, lang, IntentType.ORDER_QUERY);
@@ -1543,16 +1372,16 @@ export class AIService {
 
       return {
         reply: finalReply,
-        confidence: ragResult.chunks.length > 0 ? 0.9 : 0.7,
+        confidence: knowledgeChunks.length > 0 ? 0.9 : 0.7,
         intent: 'ORDER_QUERY',
         shouldHandoff: false,
         toolsUsed,
         ragAudit: {
-          answer_source: toolsUsed.length > 0 ? 'tool' : (ragResult.chunks.length > 0 ? 'library' : 'none'),
-          similarity_score: ragResult.topScore,
+          answer_source: toolsUsed.length > 0 ? 'tool' : (knowledgeChunks.length > 0 ? 'library' : 'none'),
+          similarity_score: 0,
           verifier_result: 'SKIPPED',
           final_decision: 'ANSWER',
-          retrieved_chunks: ragResult.chunks.length,
+          retrieved_chunks: knowledgeChunks.length,
           gate_a_passed: true,
           gate_b_passed: true,
         },
@@ -1568,6 +1397,152 @@ export class AIService {
         handoffReason: 'AI_ERROR',
       };
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🧠 SMART RETRIEVE — جلب المقالات بطريقة ذكية
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * ✅ Smart Retrieve: بديل ذكي عن Embedding + Cosine Similarity
+   * 
+   * الفكرة: بدل ما نحوّل السؤال لـ vector ونقارنه رياضياً — نخلي GPT يفهم السؤال مباشرة
+   * 
+   * الاستراتيجية:
+   * - إذا المكتبة ≤ 50 مقال → نجلب كلهم ونرسلهم لـ GPT (أضمن طريقة)
+   * - إذا المكتبة > 50 → نبحث بالكلمات المفتاحية أولاً ونرسل Top-20
+   * - نضيف منتجات سلة إذا مطلوب
+   * 
+   * الميزة: GPT يفهم "تدخلوني" = "يوصل" بدون أي embedding
+   * التكلفة: 0 API calls إضافية (المقالات تنحط في System Prompt)
+   */
+  private async smartRetrieve(
+    message: string,
+    context: ConversationContext,
+    settings: AISettings,
+    intentResult?: IntentResult,
+  ): Promise<Array<{ title: string; content: string; score: number; answer?: string }>> {
+    
+    const allowedSources = intentResult?.allowedSources || ['library', 'products'];
+    const canSearchLibrary = allowedSources.includes('library');
+    const canSearchProducts = allowedSources.includes('products');
+    
+    let chunks: Array<{ title: string; content: string; score: number; answer?: string }> = [];
+
+    // ═══ 1. جلب مقالات المكتبة ═══
+    if (canSearchLibrary) {
+      try {
+        // كم مقال عند هذا التاجر؟
+        const totalEntries = await this.knowledgeRepo.count({
+          where: { tenantId: context.tenantId, isActive: true },
+        });
+
+        this.logger.log(`📚 Smart Retrieve: tenant has ${totalEntries} active KB entries`);
+
+        const SMALL_KB_LIMIT = 50;
+
+        if (totalEntries <= SMALL_KB_LIMIT) {
+          // ✅ مكتبة صغيرة: جلب الكل — GPT يختار المناسب
+          const allEntries = await this.knowledgeRepo.find({
+            where: { tenantId: context.tenantId, isActive: true },
+            order: { priority: 'ASC' },
+          });
+
+          chunks = allEntries.map((e) => ({
+            title: e.title,
+            content: e.content,
+            answer: e.answer || undefined,
+            score: 1.0, // كل المقالات متاحة — GPT يقرر الأنسب
+          }));
+
+          this.logger.log(`📚 Loaded ALL ${chunks.length} entries (small KB mode)`);
+        } else {
+          // ✅ مكتبة كبيرة: بحث كلمات مفتاحية أولاً
+          this.logger.log(`📚 Large KB (${totalEntries}) — using keyword search`);
+          
+          const words = message.split(/\s+/).filter((w) => w.length > 2);
+          
+          if (words.length > 0) {
+            const qb = this.knowledgeRepo
+              .createQueryBuilder('kb')
+              .where('kb.tenantId = :tenantId', { tenantId: context.tenantId })
+              .andWhere('kb.isActive = true');
+
+            // بحث في كل الحقول
+            const conditions = words.map((_, i) => 
+              `(kb.title ILIKE :w${i} OR kb.content ILIKE :w${i} OR kb.answer ILIKE :w${i} OR kb.keywords::text ILIKE :w${i})`
+            );
+            const params: Record<string, string> = {};
+            words.forEach((w, i) => { params[`w${i}`] = `%${w}%`; });
+            qb.andWhere(`(${conditions.join(' OR ')})`, params);
+            qb.orderBy('kb.priority', 'ASC').take(20);
+
+            const entries = await qb.getMany();
+            
+            chunks = entries.map((e) => ({
+              title: e.title,
+              content: e.content,
+              answer: e.answer || undefined,
+              score: 0.8,
+            }));
+
+            this.logger.log(`📚 Keyword search found ${chunks.length} entries`);
+          }
+
+          // إذا ما لقى الكلمات المفتاحية — جلب آخر 20 مقال (أفضل من لا شيء)
+          if (chunks.length === 0) {
+            const recentEntries = await this.knowledgeRepo.find({
+              where: { tenantId: context.tenantId, isActive: true },
+              order: { priority: 'ASC', createdAt: 'DESC' },
+              take: 20,
+            });
+
+            chunks = recentEntries.map((e) => ({
+              title: e.title,
+              content: e.content,
+              answer: e.answer || undefined,
+              score: 0.5,
+            }));
+            
+            this.logger.log(`📚 No keyword matches — loaded top ${chunks.length} by priority`);
+          }
+        }
+      } catch (error) {
+        this.logger.error('Smart Retrieve: KB fetch failed', {
+          error: error instanceof Error ? error.message : 'Unknown',
+        });
+      }
+    }
+
+    // ═══ 2. جلب منتجات سلة (إذا مطلوب) ═══
+    if (canSearchProducts && context.storeId) {
+      try {
+        const productResult = await this.searchProducts(message, context.storeId, settings);
+        if (productResult.chunks.length > 0) {
+          chunks.push(...productResult.chunks);
+          this.logger.log(`🛒 Added ${productResult.chunks.length} product results`);
+        }
+      } catch (error) {
+        this.logger.warn('Smart Retrieve: Product search failed — continuing with library only');
+      }
+    }
+
+    // ═══ 3. حد أقصى للحجم ═══
+    // نقطع عند MAX_KNOWLEDGE_CHARS عشان ما نتجاوز context window
+    let totalChars = 0;
+    const limitedChunks: typeof chunks = [];
+    for (const chunk of chunks) {
+      const chunkSize = chunk.title.length + chunk.content.length + (chunk.answer?.length || 0);
+      if (totalChars + chunkSize > MAX_KNOWLEDGE_CHARS) break;
+      limitedChunks.push(chunk);
+      totalChars += chunkSize;
+    }
+
+    if (limitedChunks.length < chunks.length) {
+      this.logger.log(`📚 Trimmed from ${chunks.length} to ${limitedChunks.length} entries (MAX_KNOWLEDGE_CHARS=${MAX_KNOWLEDGE_CHARS})`);
+    }
+
+    return limitedChunks;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
