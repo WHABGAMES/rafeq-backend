@@ -1809,6 +1809,75 @@ ${chunksText}
    * 4. يرجع النتائج مع حالة البوابات وmetadata عن المصدر
    * ✅ Level 2: Enforces allowed sources from intent routing
    */
+
+  /**
+   * ✅ FIX: إعادة صياغة السؤال العامي → معياري قبل البحث
+   * 
+   * المشكلة: العميل يتكلم بالعامية ("تدخلوني"، "يجيني"، "ودي") 
+   * والمكتبة مكتوبة بلغة معيارية ("يوصل"، "توصيل"، "شحن")
+   * الـ embedding model ما يربط بينهم لأنهم كلمات مختلفة
+   * 
+   * الحل: GPT-4o-mini يحوّل العامي → معياري قبل توليد الـ embedding
+   * "لو اشتريت بوت لوبي متى تدخلوني" → "متى يوصل البوت بعد الشراء"
+   * 
+   * التكلفة: ~0.001$ لكل استدعاء (رخيص جداً)
+   * الوقت: ~200-400ms إضافية
+   */
+  private async rewriteQueryForSearch(
+    message: string,
+    settings: AISettings,
+  ): Promise<string | null> {
+    try {
+      const response = await this.withTimeout(
+        this.openai.chat.completions.create({
+          model: 'gpt-4o-mini',
+          messages: [
+            {
+              role: 'system',
+              content: `أنت محوّل نصوص. مهمتك الوحيدة: تحويل سؤال العميل إلى صياغة بحث واضحة.
+
+القواعد:
+1. حوّل الكلمات العامية إلى فصحى/معيارية (مثل: تدخلوني→يوصل، يجيني→يصل، ودي→أريد، أبي→أريد، وش→ما هو، حق→خاص بـ)
+2. أزل الكلام الزائد واترك جوهر السؤال فقط
+3. حافظ على اسم المنتج كما هو
+4. أخرج فقط السؤال المعاد صياغته — بدون أي شرح أو تعليق
+5. إذا السؤال واضح ومعياري أصلاً — أعده كما هو
+
+أمثلة:
+"لو اشتريت بوت لوبي متى تدخلوني" → "متى يوصل بوت لوبي بعد الشراء"
+"اذا طلبت بوت متى يجيني" → "متى يوصل البوت بعد الطلب"
+"كم ياخذ وقت ويوصل البوت" → "كم مدة توصيل البوت"
+"ابي ارجع المنتج وش الطريقة" → "كيف أرجع المنتج وما هي الطريقة"
+"هل فيه ضمان" → "هل يوجد ضمان"
+"متى دوري" → "متى يصل دوري"`,
+            },
+            {
+              role: 'user',
+              content: message,
+            },
+          ],
+          temperature: 0,
+          max_tokens: 100,
+        }),
+        5000, // timeout 5 ثواني
+        'QueryRewrite'
+      );
+
+      const rewritten = response.choices[0]?.message?.content?.trim();
+      
+      if (rewritten && rewritten.length > 0 && rewritten.length < 500) {
+        return rewritten;
+      }
+      
+      return null;
+    } catch (error) {
+      // فشل إعادة الصياغة = نستخدم الرسالة الأصلية (لا يمنع التدفق)
+      this.logger.warn('Query rewrite failed — using original message', {
+        error: error instanceof Error ? error.message : 'Unknown',
+      });
+      return null;
+    }
+  }
   private async ragRetrieve(
     message: string,
     context: ConversationContext,
@@ -1820,6 +1889,16 @@ ${chunksText}
     gateAPassed: boolean;
     source: 'library' | 'product' | 'mixed';
   }> {
+    // ✅ FIX: إعادة صياغة السؤال العامي → فصيح/معياري قبل البحث
+    // "لو اشتريت بوت لوبي متى تدخلوني" → "متى يوصل البوت بعد الشراء"
+    // هذا يحل مشكلة: العميل يتكلم عامي والمكتبة مكتوبة بفصحى
+    const rewrittenQuery = await this.rewriteQueryForSearch(message, settings);
+    const searchQuery = rewrittenQuery || message;
+    
+    if (rewrittenQuery && rewrittenQuery !== message) {
+      this.logger.log(`🔄 Query rewritten: "${message}" → "${rewrittenQuery}"`);
+    }
+
     // ✅ Level 2: Respect intent-based allowed sources
     const allowedSources = intentResult?.allowedSources || ['library', 'products'];
     const canSearchLibrary = allowedSources.includes('library');
@@ -1844,7 +1923,7 @@ ${chunksText}
         return { chunks: [], topScore: 0, gateAPassed: false, source: 'product' };
       }
 
-      const productResult = await this.searchProducts(message, context.storeId, settings);
+      const productResult = await this.searchProducts(searchQuery, context.storeId, settings);
       return { ...productResult, source: 'product' };
     }
 
@@ -1855,10 +1934,10 @@ ${chunksText}
       this.logger.log('📚 Search mode: LIBRARY_ONLY');
       
       // توليد embedding
-      const queryEmbedding = await this.generateEmbedding(message);
+      const queryEmbedding = await this.generateEmbedding(searchQuery);
       if (!queryEmbedding) {
         this.logger.warn('Failed to generate query embedding — falling back to keyword search');
-        const fallback = await this.fallbackKeywordSearch(message, context.tenantId);
+        const fallback = await this.fallbackKeywordSearch(searchQuery, context.tenantId);
         return { ...fallback, source: 'library' };
       }
 
@@ -1868,7 +1947,7 @@ ${chunksText}
       if (results.length === 0) {
         // ✅ FIX: لا نتائج من semantic → جرب keyword search
         this.logger.log('📚 No semantic matches — trying keyword fallback');
-        const keywordResult = await this.fallbackKeywordSearch(message, context.tenantId);
+        const keywordResult = await this.fallbackKeywordSearch(searchQuery, context.tenantId);
         if (keywordResult.chunks.length > 0) {
           this.logger.log(`📚 Keyword fallback found ${keywordResult.chunks.length} chunks, topScore=${keywordResult.topScore.toFixed(3)}`);
           return { ...keywordResult, source: 'library' };
@@ -1882,7 +1961,7 @@ ${chunksText}
       // ✅ FIX: إذا semantic score ضعيف → ادمج مع keyword search لتحسين النتائج
       if (!gateAPassed) {
         this.logger.log(`📚 Semantic score low (${topScore.toFixed(3)}) — trying hybrid with keyword search`);
-        const keywordResult = await this.fallbackKeywordSearch(message, context.tenantId);
+        const keywordResult = await this.fallbackKeywordSearch(searchQuery, context.tenantId);
         
         if (keywordResult.chunks.length > 0) {
           // ادمج النتائج: إذا keyword لقى نفس المقال = boost score
@@ -1925,7 +2004,7 @@ ${chunksText}
     this.logger.log('📚🛒 Search mode: LIBRARY_THEN_PRODUCTS');
 
     // 1. محاولة البحث في المكتبة (semantic + keyword hybrid)
-    const queryEmbedding = await this.generateEmbedding(message);
+    const queryEmbedding = await this.generateEmbedding(searchQuery);
     let libraryResults: Array<{ title: string; content: string; score: number; answer?: string }> = [];
     
     if (canSearchLibrary && queryEmbedding) {
@@ -1935,7 +2014,7 @@ ${chunksText}
       const semanticTop = libraryResults[0]?.score || 0;
       if (semanticTop < SIMILARITY_THRESHOLD) {
         this.logger.log(`📚 Semantic score low (${semanticTop.toFixed(3)}) — trying hybrid with keyword search`);
-        const keywordResult = await this.fallbackKeywordSearch(message, context.tenantId);
+        const keywordResult = await this.fallbackKeywordSearch(searchQuery, context.tenantId);
         if (keywordResult.chunks.length > 0) {
           libraryResults = this.mergeSearchResults(libraryResults, keywordResult.chunks);
           this.logger.log(`📚 Hybrid: merged to ${libraryResults.length} chunks, topScore=${libraryResults[0]?.score.toFixed(3)}`);
@@ -1943,7 +2022,7 @@ ${chunksText}
       }
     } else if (canSearchLibrary) {
       this.logger.warn('Failed to generate query embedding — trying keyword search');
-      const fallback = await this.fallbackKeywordSearch(message, context.tenantId);
+      const fallback = await this.fallbackKeywordSearch(searchQuery, context.tenantId);
       libraryResults = fallback.chunks;
     }
 
@@ -1988,7 +2067,7 @@ ${chunksText}
       };
     }
 
-    const productResult = await this.searchProducts(message, context.storeId, settings);
+    const productResult = await this.searchProducts(searchQuery, context.storeId, settings);
     
     if (productResult.gateAPassed) {
       this.logger.log(`🛒 Product match found: ${productResult.chunks.length} products`);
