@@ -187,6 +187,19 @@ class UpdateAISettingsDto {
 
   @IsOptional() @IsBoolean()
   skipVerifierOnHighConfidence?: boolean;
+  
+  // ✅ Level 2: Timeouts and Rate Limits
+  @IsOptional() @IsNumber()
+  openaiTimeout?: number;
+
+  @IsOptional() @IsNumber()
+  productSearchTimeout?: number;
+
+  @IsOptional() @IsNumber()
+  maxRetries?: number;
+
+  @IsOptional() @IsNumber()
+  retryDelay?: number;
 }
 
 class AddKnowledgeDto {
