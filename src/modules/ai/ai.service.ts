@@ -676,7 +676,7 @@ export class AIService {
 
       let finalReply = assistantMsg.content || '';
       const toolsUsed: string[] = [];
-      let finalSource = answerSource;
+      let finalSource: RagAudit['answer_source'] = answerSource;
 
       // تنفيذ الأدوات
       if (assistantMsg.tool_calls?.length) {
@@ -769,16 +769,6 @@ export class AIService {
   // ═══════════════════════════════════════════════════════════════════════════════
   // 📝 SYSTEM PROMPT — الصارم (RAG-based)
   // ═══════════════════════════════════════════════════════════════════════════════
-
-  /**
-   * ✅ النسخة القديمة — تُستخدم فقط لـ fallback إذا لم يكن هناك embeddings
-   */
-  private async buildSystemPrompt(
-    settings: AISettings,
-    context: ConversationContext,
-  ): Promise<string> {
-    return this.buildStrictSystemPrompt(settings, context, []);
-  }
 
   /**
    * ✅ RAG: بناء Prompt صارم — يحتوي فقط على المقاطع المسترجعة
