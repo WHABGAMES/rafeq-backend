@@ -167,6 +167,19 @@ class AddKnowledgeDto {
   @IsOptional() @IsString()
   category?: string;
 
+  /**
+   * ✅ BUG-KB2 FIX: نوع المعلومة — article أو qna
+   * الواجهة ترسل type='article' أو type='qna'
+   */
+  @IsOptional() @IsString()
+  type?: string;
+
+  /**
+   * ✅ BUG-KB2 FIX: جواب السؤال (فقط لنوع qna)
+   */
+  @IsOptional() @IsString()
+  answer?: string;
+
   @IsOptional() @IsArray()
   keywords?: string[];
 
@@ -183,6 +196,18 @@ class UpdateKnowledgeDto {
 
   @IsOptional() @IsString()
   category?: string;
+
+  /**
+   * ✅ BUG-KB2 FIX: تحديث نوع المعلومة
+   */
+  @IsOptional() @IsString()
+  type?: string;
+
+  /**
+   * ✅ BUG-KB2 FIX: تحديث الجواب (qna)
+   */
+  @IsOptional() @IsString()
+  answer?: string;
 
   @IsOptional() @IsArray()
   keywords?: string[];
