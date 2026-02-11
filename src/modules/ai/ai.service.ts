@@ -82,6 +82,7 @@ export interface AISettings {
   // Store Info
   storeName: string;
   storeDescription: string;
+  storeIntroduction: string;
   workingHours: string;
   returnPolicy: string;
   shippingInfo: string;
@@ -221,6 +222,7 @@ const AI_DEFAULTS: AISettings = {
   handoffNotifyEmails: [],
   storeName: '',
   storeDescription: '',
+  storeIntroduction: '',
   workingHours: '',
   returnPolicy: '',
   shippingInfo: '',

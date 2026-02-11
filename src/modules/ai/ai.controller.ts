@@ -139,6 +139,9 @@ class UpdateAISettingsDto {
   storeDescription?: string;
 
   @IsOptional() @IsString()
+  storeIntroduction?: string;
+
+  @IsOptional() @IsString()
   workingHours?: string;
 
   @IsOptional() @IsString()
