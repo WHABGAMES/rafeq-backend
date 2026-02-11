@@ -20,6 +20,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 // ✅ Entities — فقط المستخدمة فعلياً في ai.service.ts
 import { Message, Conversation, Order } from '@database/entities';
 import { StoreSettings } from '../settings/entities/store-settings.entity';
+import { Store } from '../stores/entities/store.entity';
 import { KnowledgeBase } from './entities/knowledge-base.entity';
 
 // Service, Controller & Listeners
@@ -40,6 +41,9 @@ import { GatewayModule } from '../gateway/gateway.module';
 // ✅ المهمة 6: MailModule مطلوب لـ AIHandoffListener → إرسال إيميل
 import { MailModule } from '../mail/mail.module';
 
+// ✅ StoresModule مطلوب للبحث في منتجات سلة
+import { StoresModule } from '../stores/stores.module';
+
 @Module({
   imports: [
     // ═══════════════════════════════════════════════════════════════════════════
@@ -51,6 +55,7 @@ import { MailModule } from '../mail/mail.module';
       Conversation, // المحادثات (handler, aiContext, etc.)
       Message, // الرسائل (direction, aiMetadata, etc.)
       Order, // الطلبات (tool: get_order_status)
+      Store, // المتاجر (للبحث في منتجات سلة)
       // ❌ BUG-14 FIX: حذف Customer — غير مستخدم في ai.service.ts
     ]),
 
@@ -68,6 +73,9 @@ import { MailModule } from '../mail/mail.module';
 
     // ✅ المهمة 6: إشعارات إيميل عند التحويل البشري
     MailModule,
+
+    // ✅ StoresModule: يوفر SallaApiService للبحث في منتجات سلة
+    StoresModule,
 
     ConfigModule,
   ],
