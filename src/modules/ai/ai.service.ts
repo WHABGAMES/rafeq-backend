@@ -27,10 +27,6 @@ import type {
 // ✅ Entities — مطابقة لـ @database/entities/index.ts
 import { KnowledgeBase, KnowledgeCategory, KnowledgeType } from './entities/knowledge-base.entity';
 import { StoreSettings } from '../settings/entities/store-settings.entity';
-import { StoresService } from '../stores/stores.service';
-import { SallaApiService } from '../stores/salla-api.service';
-import { ZidApiService } from '../stores/zid-api.service';
-import { StorePlatform } from '../stores/entities/store.entity';
 import {
   Conversation,
   ConversationHandler,
@@ -254,11 +250,6 @@ export class AIService {
 
     @InjectRepository(Order)
     private readonly orderRepo: Repository<Order>,
-
-    // ✅ Products access (Salla/Zid)
-    private readonly storesService: StoresService,
-    private readonly sallaApi: SallaApiService,
-    private readonly zidApi: ZidApiService,
   ) {
     // ✅ BUG-9 FIX: تحذير واضح إذا API Key مفقود
     const apiKey = this.configService.get<string>('ai.apiKey');
@@ -813,7 +804,7 @@ export class AIService {
    * ❌ لا يتم أي بحث — رد مباشر
    */
   private generateSocialReply(message: string, settings: AISettings): string {
-    const lower = this.normalizeForIntentMatch(message);
+    const lower = message.trim().toLowerCase();
     const isAr = settings.language !== 'en';
     const tone = settings.tone || 'friendly';
 
@@ -944,7 +935,8 @@ export class AIService {
     const maxAttempts = settings.handoffAfterFailures || AI_DEFAULTS.handoffAfterFailures;
 
     // زيادة العداد
-    const currentAttempts = await this.incrementFailedAttempts(context);
+    await this.incrementFailedAttempts(context);
+    const currentAttempts = (context.failedAttempts || 0) + 1;
 
     this.logger.log(`📊 Failed attempts: ${currentAttempts}/${maxAttempts} for conversation ${context.conversationId} (intent: ${intentType})`);
 
@@ -1353,46 +1345,6 @@ ${chunksText}
     topScore: number;
     gateAPassed: boolean;
   }> {
-    const sp = settings.searchPriority || SearchPriority.LIBRARY_THEN_PRODUCTS;
-
-    const pack = (chunks: Array<{ title: string; content: string; score: number; answer?: string }>) => {
-      const topScore = chunks.length ? (chunks[0].score || 0) : 0;
-      const gateAPassed = topScore >= SIMILARITY_THRESHOLD;
-      return { chunks, topScore, gateAPassed };
-    };
-
-    if (sp === SearchPriority.PRODUCTS_ONLY) {
-      const prodChunks = await this.productKeywordSearch(message, context);
-      return pack(prodChunks);
-    }
-
-    const queryEmbedding = await this.generateEmbedding(message);
-    let libChunks: Array<{ title: string; content: string; score: number; answer?: string }> = [];
-
-    if (queryEmbedding) {
-      libChunks = await this.semanticSearch(queryEmbedding, context.tenantId);
-    } else {
-      this.logger.warn('Failed to generate query embedding — falling back to keyword search');
-      const kw = await this.fallbackKeywordSearch(message, context.tenantId);
-      libChunks = kw.chunks;
-    }
-
-    if (libChunks.length && libChunks[0].score >= SIMILARITY_THRESHOLD) {
-      return pack(libChunks);
-    }
-
-    if (sp === SearchPriority.LIBRARY_THEN_PRODUCTS) {
-      const prodChunks = await this.productKeywordSearch(message, context);
-
-      if (prodChunks.length && (!libChunks.length || (prodChunks[0].score || 0) > (libChunks[0].score || 0))) {
-        return pack(prodChunks);
-      }
-
-      return pack(libChunks);
-    }
-
-    return pack(libChunks);
-  }> {
     // إذا المكتبة معطلة
     const sp = settings.searchPriority || SearchPriority.LIBRARY_THEN_PRODUCTS;
     if (sp === SearchPriority.PRODUCTS_ONLY) {
@@ -1422,97 +1374,6 @@ ${chunksText}
       topScore,
       gateAPassed,
     };
-  }
-
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🛍️ PRODUCTS RETRIEVAL (Salla/Zid) — حسب إعدادات التاجر
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  private extractProductKeyword(message: string): string {
-    const cleaned = this.normalizeForIntentMatch(message);
-    const stop = new Set([
-      'وش','ما','هو','هي','كم','سعر','ابي','أبي','عندي','عندكم','هل','في','من','الى','إلى','على','عن','كيف','ايش','اي','وين',
-    ]);
-    const words = cleaned.split(' ').filter((w) => w.length >= 3 && !stop.has(w));
-    return (words.slice(0, 4).join(' ') || cleaned.slice(0, 30)).trim();
-  }
-
-  private scoreTextMatch(query: string, text: string): number {
-    const q = this.normalizeForIntentMatch(query);
-    const t = this.normalizeForIntentMatch(text);
-    if (!q || !t) return 0;
-    if (t.includes(q)) return 0.92;
-    const qWords = new Set(q.split(' '));
-    const tWords = new Set(t.split(' '));
-    let hit = 0;
-    for (const w of qWords) if (tWords.has(w)) hit += 1;
-    const denom = Math.max(1, qWords.size);
-    const ratio = hit / denom;
-    return Math.min(0.88, 0.55 + ratio * 0.4);
-  }
-
-  private async productKeywordSearch(
-    message: string,
-    context: ConversationContext,
-  ): Promise<Array<{ title: string; content: string; score: number; answer?: string }>> {
-    if (!context.storeId) return [];
-
-    const keyword = this.extractProductKeyword(message);
-
-    try {
-      const store = await this.storesService.getStoreById(context.storeId);
-      if (!store) return [];
-
-      const accessToken = this.storesService.getStoreAccessToken(store);
-      if (!accessToken) return [];
-
-      if (store.platform === StorePlatform.SALLA) {
-        const res = await this.sallaApi.getProducts(accessToken, {
-          page: 1,
-          perPage: 20,
-          keyword,
-          status: 'active',
-        });
-
-        const products = (res?.data || []) as any[];
-        return products
-          .map((p) => {
-            const name = p.name || p.title || 'منتج';
-            const desc = (p.description || p.short_description || '').toString();
-            const price = p.price?.amount ? `السعر: ${p.price.amount}` : (p.price ? `السعر: ${p.price}` : '');
-            const url = p.url || p.permalink || '';
-            const content = [desc, price, url].filter(Boolean).join('\n');
-            return { title: name, content, score: this.scoreTextMatch(message, name + ' ' + desc) };
-          })
-          .sort((a, b) => b.score - a.score)
-          .slice(0, 5);
-      }
-
-      if (store.platform === StorePlatform.ZID) {
-        const res = await this.zidApi.getProducts(accessToken, { page: 1, per_page: 50, status: 'active' });
-        const products = (res?.data || []) as any[];
-        return products
-          .map((p) => {
-            const name = p.name || p.title || 'منتج';
-            const desc = (p.description || p.short_description || '').toString();
-            const price = p.price ? `السعر: ${p.price}` : '';
-            const url = p.url || p.permalink || '';
-            const content = [desc, price, url].filter(Boolean).join('\n');
-            return { title: name, content, score: this.scoreTextMatch(message, name + ' ' + desc) };
-          })
-          .filter((x) => x.score >= 0.6)
-          .sort((a, b) => b.score - a.score)
-          .slice(0, 5);
-      }
-
-      return [];
-    } catch (error) {
-      this.logger.warn('Product search failed', {
-        error: error instanceof Error ? error.message : 'Unknown',
-      });
-      return [];
-    }
   }
 
   /**
@@ -1641,8 +1502,8 @@ Types:
   ): IntentResult | null {
     const lower = message.trim().toLowerCase();
 
-    // تحية إذا كانت الرسالة اجتماعية (حتى لو طويلة قليلاً)
-    if (lower.length < 80) {
+    // تحية فقط إذا الرسالة قصيرة (أقل من 30 حرف)
+    if (lower.length < 30) {
       for (const p of GREETING_PATTERNS) {
         if (lower.includes(p.toLowerCase())) {
           return { intent: 'SMALLTALK', confidence: 0.95 };
@@ -1913,6 +1774,7 @@ Types:
       channel: context.channel,
       reason,
       handoffAt: now,
+      dashboardLink: `/dashboard/inbox/${context.conversationId}`,
       notifyEmployeeIds: settings.handoffNotifyEmployeeIds,
       notifyPhones: settings.handoffNotifyPhones,
       notifyEmails: settings.handoffNotifyEmails,
@@ -1956,7 +1818,7 @@ Types:
   private async tryAnswerFromSettings(
     message: string,
     settings: AISettings,
-    context: ConversationContext,
+    _context: ConversationContext,
   ): Promise<AIResponse | null> {
     const lower = message.toLowerCase();
     const isAr = settings.language !== 'en';
@@ -2107,37 +1969,25 @@ Types:
    */
   private async incrementFailedAttempts(
     context: ConversationContext,
-  ): Promise<number> {
+  ): Promise<void> {
     try {
       const conv = await this.conversationRepo.findOne({
         where: { id: context.conversationId },
       });
-      if (!conv) {
-        context.failedAttempts = (context.failedAttempts || 0) + 1;
-        return context.failedAttempts;
-      }
+      if (!conv) return;
 
       const aiContext = (conv.aiContext || {}) as Record<string, unknown>;
       const current = (aiContext.failedAttempts as number) || 0;
-      const next = current + 1;
-
-      conv.aiContext = { ...aiContext, failedAttempts: next };
+      conv.aiContext = { ...aiContext, failedAttempts: current + 1 };
       await this.conversationRepo.save(conv);
 
-      context.failedAttempts = next;
-
       this.logger.debug(
-        `Failed attempts → ${next} for conversation ${context.conversationId}`,
+        `Failed attempts → ${current + 1} for conversation ${context.conversationId}`,
       );
-
-      return next;
     } catch (error) {
       this.logger.error('Failed to increment failed attempts', {
         error: error instanceof Error ? error.message : 'Unknown',
       });
-
-      context.failedAttempts = (context.failedAttempts || 0) + 1;
-      return context.failedAttempts;
     }
   }
 
@@ -2509,18 +2359,4 @@ Types:
   detectLanguage(text: string): 'ar' | 'en' {
     return /[\u0600-\u06FF]/.test(text) ? 'ar' : 'en';
   }
-}  /**
-   * 🧼 Normalize text for intent pattern matching (WhatsApp often adds invisible bidi marks)
-   */
-  private normalizeForIntentMatch(input: string): string {
-    return (input || '')
-      .replace(/[\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, '') // bidi marks
-      .replace(/[ـ]/g, '') // tatweel
-      .replace(/[\u064B-\u065F\u0670\u06D6-\u06ED]/g, '') // harakat
-      .replace(/[\p{P}\p{S}]/gu, ' ') // punctuation/symbols
-      .replace(/\s+/g, ' ')
-      .trim()
-      .toLowerCase();
-  }
-
-
+}
