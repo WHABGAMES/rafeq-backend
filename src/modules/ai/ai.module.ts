@@ -34,6 +34,12 @@ import { MessagingModule } from '../messaging/messaging.module';
 // ✅ ChannelsModule مطلوب لـ AIHandoffListener → إرسال إشعارات واتساب
 import { ChannelsModule } from '../channels/channels.module';
 
+// ✅ المهمة 6: GatewayModule مطلوب لـ AIHandoffListener → WebSocket events
+import { GatewayModule } from '../gateway/gateway.module';
+
+// ✅ المهمة 6: MailModule مطلوب لـ AIHandoffListener → إرسال إيميل
+import { MailModule } from '../mail/mail.module';
+
 @Module({
   imports: [
     // ═══════════════════════════════════════════════════════════════════════════
@@ -56,6 +62,12 @@ import { ChannelsModule } from '../channels/channels.module';
 
     // ✅ ChannelsModule يوفر ChannelsService لإرسال إشعارات التحويل البشري
     ChannelsModule,
+
+    // ✅ المهمة 6: WebSocket events عبر Gateway
+    GatewayModule,
+
+    // ✅ المهمة 6: إشعارات إيميل عند التحويل البشري
+    MailModule,
 
     ConfigModule,
   ],
