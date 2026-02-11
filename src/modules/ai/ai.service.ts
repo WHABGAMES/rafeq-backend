@@ -91,6 +91,13 @@ export interface AISettings {
   welcomeMessage: string;
   fallbackMessage: string;
   handoffMessage: string;
+
+  // ✅ MVP Level 2: Strict Grounding & Confidence Thresholds
+  enableUnifiedRanking: boolean; // Enable unified ranking for library_then_products
+  answerConfidenceThreshold: number; // Min confidence to answer directly (0.75)
+  clarifyConfidenceThreshold: number; // Min confidence to ask for clarification (0.50)
+  // Below clarify threshold → handoff
+  enableStrictGrounding: boolean; // Enforce citation verification
 }
 
 export interface ConversationContext {
@@ -117,6 +124,16 @@ export interface AIResponse {
   toolsUsed?: string[];
   /** ✅ RAG: مخرجات التدقيق الداخلي */
   ragAudit?: RagAudit;
+  /** ✅ MVP Level 2: Confidence breakdown */
+  confidenceBreakdown?: {
+    similarityScore: number;
+    intentConfidence: number;
+    verifierScore: number;
+    chunkCoverage: number;
+    finalConfidence: number;
+  };
+  /** ✅ MVP Level 2: Citation map (which chunks were cited) */
+  citations?: Array<{ chunkIndex: number; chunkTitle: string }>;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -138,6 +155,22 @@ const RAG_TOP_K = 5;
 
 /** نموذج الـ Embedding من OpenAI */
 const EMBEDDING_MODEL = 'text-embedding-3-small';
+
+// ✅ MVP Level 2: Confidence & Grounding Constants
+/** Confidence score when verifier fails (0.3 = low but not zero) */
+const VERIFIER_FAIL_SCORE = 0.3;
+
+/** Citation detection: minimum keyword matches required */
+const CITATION_MIN_MATCHES = 2;
+
+/** Citation detection: minimum percentage of keywords that must match (20%) */
+const CITATION_MATCH_THRESHOLD = 0.2;
+
+/** Confidence score for grounding failures */
+const GROUNDING_FAILURE_CONFIDENCE = 0.3;
+
+/** Unified ranking: score decay per position (1.0 → 0.95 → 0.90 ...) */
+const UNIFIED_RANKING_SCORE_DECAY = 0.05;
 
 /** رسالة عدم التطابق — إلزامية بدون تعديل */
 const NO_MATCH_MESSAGE = 'عذرًا، هذا السؤال خارج نطاق المعلومات المتوفرة لدي حاليًا.\nإذا رغبت، أستطيع تحويلك إلى الدعم البشري لمساعدتك.';
@@ -193,13 +226,23 @@ const THANKS_PATTERNS = [
 
 /** مخرجات التدقيق الداخلي لكل رد */
 export interface RagAudit {
-  answer_source: 'library' | 'product' | 'tool' | 'greeting' | 'none';
+  answer_source: 'library' | 'product' | 'tool' | 'greeting' | 'none' | 'unified';
   similarity_score: number;
   verifier_result: 'YES' | 'NO' | 'SKIPPED';
-  final_decision: 'ANSWER' | 'BLOCKED';
+  final_decision: 'ANSWER' | 'BLOCKED' | 'CLARIFY' | 'HANDOFF';
   retrieved_chunks: number;
   gate_a_passed: boolean;
   gate_b_passed: boolean;
+  /** ✅ MVP Level 2: Confidence score */
+  confidence?: number;
+  /** ✅ MVP Level 2: Grounding rejection reason */
+  rejection_reason?: string;
+  /** ✅ MVP Level 2: Intent used for routing */
+  intent?: string;
+  /** ✅ MVP Level 2: Strategy selected */
+  strategy?: string;
+  /** ✅ MVP Level 2: Whether unified ranking was used */
+  unified_ranking_used?: boolean;
 }
 
 const AI_DEFAULTS: AISettings = {
@@ -229,6 +272,11 @@ const AI_DEFAULTS: AISettings = {
   welcomeMessage: 'أهلاً وسهلاً! كيف يمكنني مساعدتك؟ 😊',
   fallbackMessage: 'عذراً، لم أتمكن من فهم طلبك. هل ترغب بتحويلك لأحد موظفينا؟',
   handoffMessage: 'سأحولك الآن لأحد أفراد فريقنا. سيتواصل معك قريباً! 🙋‍♂️',
+  // ✅ MVP Level 2: Strict Grounding defaults
+  enableUnifiedRanking: true,
+  answerConfidenceThreshold: 0.75,
+  clarifyConfidenceThreshold: 0.50,
+  enableStrictGrounding: true,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -515,6 +563,169 @@ export class AIService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
+  // 🎯 MVP LEVEL 2: CONFIDENCE SCORING & THRESHOLDS
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * ✅ MVP Level 2: Calculate confidence score from multiple factors
+   * Combines: similarity score, intent confidence, verifier result, and chunk coverage
+   */
+  private calculateConfidence(
+    similarityScore: number,
+    intentConfidence: number,
+    verifierPassed: boolean,
+    chunkCount: number,
+  ): {
+    similarityScore: number;
+    intentConfidence: number;
+    verifierScore: number;
+    chunkCoverage: number;
+    finalConfidence: number;
+  } {
+    // Verifier score: 1.0 if passed, low score if failed
+    const verifierScore = verifierPassed ? 1.0 : VERIFIER_FAIL_SCORE;
+    
+    // Chunk coverage: more chunks = better coverage (capped at 1.0)
+    const chunkCoverage = Math.min(chunkCount / RAG_TOP_K, 1.0);
+    
+    // Weighted combination:
+    // - Similarity: 35% weight (most important)
+    // - Intent: 25% weight
+    // - Verifier: 30% weight (critical for grounding)
+    // - Coverage: 10% weight
+    const finalConfidence = 
+      (similarityScore * 0.35) +
+      (intentConfidence * 0.25) +
+      (verifierScore * 0.30) +
+      (chunkCoverage * 0.10);
+
+    return {
+      similarityScore,
+      intentConfidence,
+      verifierScore,
+      chunkCoverage,
+      finalConfidence: Math.min(finalConfidence, 1.0),
+    };
+  }
+
+  /**
+   * ✅ MVP Level 2: Make decision based on confidence thresholds
+   * Returns: 'ANSWER' | 'CLARIFY' | 'HANDOFF'
+   */
+  private makeConfidenceDecision(
+    confidence: number,
+    settings: AISettings,
+  ): 'ANSWER' | 'CLARIFY' | 'HANDOFF' {
+    const answerThreshold = settings.answerConfidenceThreshold ?? AI_DEFAULTS.answerConfidenceThreshold;
+    const clarifyThreshold = settings.clarifyConfidenceThreshold ?? AI_DEFAULTS.clarifyConfidenceThreshold;
+
+    if (confidence >= answerThreshold) {
+      return 'ANSWER';
+    } else if (confidence >= clarifyThreshold) {
+      return 'CLARIFY';
+    } else {
+      return 'HANDOFF';
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🛡️ MVP LEVEL 2: STRICT GROUNDING GUARD
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * ✅ MVP Level 2: Extract citations from LLM response
+   * Identifies which chunks were used in the answer
+   */
+  private extractCitations(
+    answer: string,
+    chunks: Array<{ title: string; content: string; score: number; answer?: string }>,
+  ): Array<{ chunkIndex: number; chunkTitle: string }> {
+    const citations: Array<{ chunkIndex: number; chunkTitle: string }> = [];
+    
+    // Check if answer mentions chunk titles or key content
+    chunks.forEach((chunk, index) => {
+      const titleWords = chunk.title.split(/\s+/).filter(w => w.length > 3);
+      const contentWords = chunk.content.split(/\s+/).filter(w => w.length > 4).slice(0, 10);
+      const allKeywords = [...titleWords, ...contentWords];
+      
+      // Count how many keywords from this chunk appear in the answer
+      const matches = allKeywords.filter(keyword => 
+        answer.includes(keyword) || answer.toLowerCase().includes(keyword.toLowerCase())
+      );
+      
+      // If significant overlap, consider it cited
+      if (matches.length >= Math.max(CITATION_MIN_MATCHES, allKeywords.length * CITATION_MATCH_THRESHOLD)) {
+        citations.push({
+          chunkIndex: index,
+          chunkTitle: chunk.title,
+        });
+      }
+    });
+
+    return citations;
+  }
+
+  /**
+   * ✅ MVP Level 2: Verify answer is grounded in chunks
+   * Uses LLM to check if the answer is supported by the retrieved chunks
+   */
+  private async verifyGrounding(
+    question: string,
+    answer: string,
+    chunks: Array<{ title: string; content: string; score: number; answer?: string }>,
+  ): Promise<{ isGrounded: boolean; reason?: string }> {
+    try {
+      const chunksText = chunks
+        .map((c, idx) => {
+          const answerPart = c.answer ? `\nالجواب: ${c.answer}` : '';
+          return `[${idx}] ${c.title}: ${c.content}${answerPart}`;
+        })
+        .join('\n\n');
+
+      const response = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: `أنت نظام تدقيق. حدد إذا كانت الإجابة مبنية فقط على المعلومات المقدمة.
+أجب بـ JSON فقط: {"grounded": true/false, "reason": "..."}`,
+          },
+          {
+            role: 'user',
+            content: `سؤال: "${question}"
+
+المعلومات المتاحة:
+${chunksText}
+
+الإجابة المقدمة: "${answer}"
+
+هل الإجابة مبنية بالكامل على المعلومات المتاحة فقط؟
+- إذا كانت الإجابة تحتوي معلومات من خارج المقاطع أو تخمينات → {"grounded": false, "reason": "..."}
+- إذا كانت الإجابة مبنية فقط على المقاطع → {"grounded": true, "reason": ""}`,
+          },
+        ],
+        temperature: 0,
+        max_tokens: 100,
+      });
+
+      const raw = (response.choices[0]?.message?.content || '').trim();
+      const cleaned = raw.replace(/```json|```/g, '').trim();
+      const result = JSON.parse(cleaned) as { grounded: boolean; reason?: string };
+
+      return {
+        isGrounded: result.grounded,
+        reason: result.reason,
+      };
+    } catch (error) {
+      this.logger.warn('Grounding verification failed — defaulting to ACCEPT', {
+        error: error instanceof Error ? error.message : 'Unknown',
+      });
+      // On error, accept the answer (avoid blocking legitimate responses)
+      return { isGrounded: true };
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
   // 🤖 MAIN AI PROCESSING — OpenAI GPT-4o
   // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -676,6 +887,15 @@ export class AIService {
     if (!ragResult.gateAPassed) {
       this.logger.log(`🚫 Gate A FAILED: score=${ragResult.topScore.toFixed(3)} < ${SIMILARITY_THRESHOLD}, source=${ragResult.source}`);
 
+      // ✅ MVP Level 2: Emit low similarity event
+      this.eventEmitter.emit('ai.low_similarity', {
+        conversationId: context.conversationId,
+        score: ragResult.topScore,
+        threshold: SIMILARITY_THRESHOLD,
+        source: ragResult.source,
+        chunks: ragResult.chunks.length,
+      });
+
       // ✅ FIX-B: قبل إرجاع NO_MATCH — جرّب الإجابة من إعدادات المتجر
       // أسئلة مثل "وش اسم المتجر" و"وش ساعات العمل" يمكن الرد عليها من الإعدادات مباشرة
       const settingsAnswer = await this.tryAnswerFromSettings(message, settings, context);
@@ -705,6 +925,75 @@ export class AIService {
 
         return this.handleNoMatch(context, settings, lang, 'SUPPORT_QUERY');
       }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 3.5 ✅ MVP Level 2: Confidence Scoring & Decision
+    // ═══════════════════════════════════════════════════════════════════════════
+    
+    // ✅ MVP Level 2: Emit unified ranking event if used
+    if (ragResult.unifiedRankingUsed) {
+      this.eventEmitter.emit('ai.unified_ranking_used', {
+        conversationId: context.conversationId,
+        topScore: ragResult.topScore,
+        chunks: ragResult.chunks.length,
+        source: ragResult.source,
+      });
+    }
+    
+    const confidenceBreakdown = this.calculateConfidence(
+      ragResult.topScore,
+      intentResult.confidence,
+      gateBPassed,
+      ragResult.chunks.length,
+    );
+    
+    const decision = this.makeConfidenceDecision(confidenceBreakdown.finalConfidence, settings);
+    
+    this.logger.log(`🎯 Confidence: ${(confidenceBreakdown.finalConfidence * 100).toFixed(1)}% → Decision: ${decision}`, {
+      breakdown: confidenceBreakdown,
+    });
+
+    // Handle low confidence cases
+    if (decision === 'HANDOFF') {
+      this.logger.log('⚠️ Confidence below handoff threshold — triggering handoff');
+      this.eventEmitter.emit('ai.confidence_handoff', {
+        conversationId: context.conversationId,
+        confidence: confidenceBreakdown.finalConfidence,
+        threshold: settings.clarifyConfidenceThreshold,
+      });
+      
+      if (settings.autoHandoff) {
+        await this.handleHandoff(context, settings, 'LOW_CONFIDENCE');
+        return {
+          reply: settings.handoffMessage || AI_DEFAULTS.handoffMessage,
+          confidence: confidenceBreakdown.finalConfidence,
+          shouldHandoff: true,
+          handoffReason: 'LOW_CONFIDENCE',
+          confidenceBreakdown,
+          ragAudit: {
+            answer_source: ragResult.source === 'product' ? 'product' : ragResult.source === 'unified' ? 'unified' : 'library',
+            similarity_score: ragResult.topScore,
+            verifier_result: gateBPassed ? 'YES' : 'NO',
+            final_decision: 'HANDOFF',
+            retrieved_chunks: ragResult.chunks.length,
+            gate_a_passed: ragResult.gateAPassed,
+            gate_b_passed: gateBPassed,
+            confidence: confidenceBreakdown.finalConfidence,
+            rejection_reason: 'LOW_CONFIDENCE',
+            intent: intentResult.intent,
+            strategy: settings.searchPriority || SearchPriority.LIBRARY_THEN_PRODUCTS,
+            unified_ranking_used: ragResult.unifiedRankingUsed || false,
+          },
+        };
+      }
+      
+      return this.handleNoMatch(context, settings, lang, 'SUPPORT_QUERY');
+    }
+    
+    if (decision === 'CLARIFY') {
+      this.logger.log('⚠️ Confidence below answer threshold — requesting clarification');
+      return this.handleNoMatch(context, settings, lang, 'SUPPORT_QUERY');
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -742,8 +1031,14 @@ export class AIService {
 
       let finalReply = assistantMsg.content || '';
       const toolsUsed: string[] = [];
-      // ✅ تتبع المصدر: من المكتبة أو المنتجات أو أداة
-      let finalSource: RagAudit['answer_source'] = ragResult.source === 'product' ? 'product' : 'library';
+      
+      // ✅ تتبع المصدر: من المكتبة أو المنتجات أو أداة أو unified
+      let finalSource: RagAudit['answer_source'] = 'library';
+      if (ragResult.source === 'product') {
+        finalSource = 'product';
+      } else if (ragResult.source === 'unified') {
+        finalSource = 'unified';
+      }
 
       // تنفيذ الأدوات
       if (assistantMsg.tool_calls?.length) {
@@ -782,12 +1077,94 @@ export class AIService {
         finalSource = 'tool';
       }
 
+      // ═══════════════════════════════════════════════════════════════════════════
+      // 4.5 ✅ MVP Level 2: Strict Grounding Guard
+      // ═══════════════════════════════════════════════════════════════════════════
+      
+      const strictGroundingEnabled = settings.enableStrictGrounding ?? AI_DEFAULTS.enableStrictGrounding;
+      
+      if (strictGroundingEnabled && finalSource !== 'tool') {
+        this.logger.log('🛡️ Running strict grounding verification...');
+        
+        // Extract citations
+        const citations = this.extractCitations(finalReply, ragResult.chunks);
+        this.logger.log(`🛡️ Found ${citations.length} citations in response`);
+        
+        // Verify grounding
+        const groundingResult = await this.verifyGrounding(message, finalReply, ragResult.chunks);
+        
+        if (!groundingResult.isGrounded) {
+          this.logger.warn('🚫 Grounding verification FAILED — answer not supported by chunks', {
+            reason: groundingResult.reason,
+          });
+          
+          // Emit grounding rejection event
+          this.eventEmitter.emit('ai.grounding_rejection', {
+            conversationId: context.conversationId,
+            question: message,
+            answer: finalReply,
+            reason: groundingResult.reason,
+            chunks: ragResult.chunks.length,
+          });
+          
+          // Reject the answer and return clarify/handoff
+          return {
+            reply: settings.fallbackMessage || AI_DEFAULTS.fallbackMessage,
+            confidence: GROUNDING_FAILURE_CONFIDENCE,
+            shouldHandoff: settings.autoHandoff,
+            handoffReason: 'GROUNDING_FAILED',
+            confidenceBreakdown,
+            ragAudit: {
+              answer_source: finalSource,
+              similarity_score: ragResult.topScore,
+              verifier_result: gateBPassed ? 'YES' : 'SKIPPED',
+              final_decision: 'BLOCKED',
+              retrieved_chunks: ragResult.chunks.length,
+              gate_a_passed: ragResult.gateAPassed,
+              gate_b_passed: gateBPassed,
+              confidence: confidenceBreakdown.finalConfidence,
+              rejection_reason: `GROUNDING_FAILED: ${groundingResult.reason}`,
+              intent: intentResult.intent,
+              strategy: settings.searchPriority || SearchPriority.LIBRARY_THEN_PRODUCTS,
+              unified_ranking_used: ragResult.unifiedRankingUsed || false,
+            },
+          };
+        }
+        
+        this.logger.log('✅ Grounding verification PASSED');
+        
+        // Return response with citations
+        return {
+          reply: finalReply,
+          confidence: confidenceBreakdown.finalConfidence,
+          intent: 'SUPPORT_QUERY',
+          shouldHandoff: false,
+          toolsUsed,
+          confidenceBreakdown,
+          citations,
+          ragAudit: {
+            answer_source: finalSource,
+            similarity_score: ragResult.topScore,
+            verifier_result: gateBPassed ? 'YES' : 'SKIPPED',
+            final_decision: 'ANSWER',
+            retrieved_chunks: ragResult.chunks.length,
+            gate_a_passed: ragResult.gateAPassed,
+            gate_b_passed: gateBPassed,
+            confidence: confidenceBreakdown.finalConfidence,
+            intent: intentResult.intent,
+            strategy: settings.searchPriority || SearchPriority.LIBRARY_THEN_PRODUCTS,
+            unified_ranking_used: ragResult.unifiedRankingUsed || false,
+          },
+        };
+      }
+
       return {
         reply: finalReply,
-        confidence: 0.9,
+        confidence: confidenceBreakdown.finalConfidence,
         intent: 'SUPPORT_QUERY',
         shouldHandoff: false,
         toolsUsed,
+        confidenceBreakdown,
         ragAudit: {
           answer_source: finalSource,
           similarity_score: ragResult.topScore,
@@ -796,6 +1173,10 @@ export class AIService {
           retrieved_chunks: ragResult.chunks.length,
           gate_a_passed: ragResult.gateAPassed,
           gate_b_passed: gateBPassed,
+          confidence: confidenceBreakdown.finalConfidence,
+          intent: intentResult.intent,
+          strategy: settings.searchPriority || SearchPriority.LIBRARY_THEN_PRODUCTS,
+          unified_ranking_used: ragResult.unifiedRankingUsed || false,
         },
       };
     } catch (error) {
@@ -1346,6 +1727,97 @@ ${chunksText}
   }
 
   /**
+   * ✅ MVP Level 2: Unified Ranking
+   * Merges top-K from library and products, then uses LLM to rerank based on relevance
+   */
+  private async unifiedRanking(
+    question: string,
+    libraryChunks: Array<{ title: string; content: string; score: number; answer?: string; source?: string }>,
+    productChunks: Array<{ title: string; content: string; score: number; answer?: string; source?: string }>,
+    topK: number = RAG_TOP_K,
+  ): Promise<Array<{ title: string; content: string; score: number; answer?: string; source?: string }>> {
+    try {
+      // Merge both sources
+      const allChunks = [
+        ...libraryChunks.map(c => ({ ...c, source: 'library' as const })),
+        ...productChunks.map(c => ({ ...c, source: 'product' as const, answer: c.answer })),
+      ];
+
+      if (allChunks.length === 0) return [];
+
+      // If we have few chunks, just return them sorted by original score
+      if (allChunks.length <= topK) {
+        return allChunks.sort((a, b) => b.score - a.score);
+      }
+
+      // Use LLM to rerank based on relevance to the question
+      const chunksWithIndex = allChunks.map((chunk, idx) => ({
+        idx,
+        text: `[${idx}] (${chunk.source}) ${chunk.title}: ${chunk.content}${chunk.answer ? `\nالجواب: ${chunk.answer}` : ''}`,
+      }));
+
+      const chunksText = chunksWithIndex.map(c => c.text).join('\n\n');
+
+      const response = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: 'أنت نظام ترتيب. رتّب المقاطع حسب ارتباطها بسؤال المستخدم. أجب فقط بقائمة الأرقام من الأكثر ارتباطاً للأقل، مفصولة بفواصل.',
+          },
+          {
+            role: 'user',
+            content: `سؤال المستخدم: "${question}"
+
+المقاطع:
+${chunksText}
+
+رتّب المقاطع من الأكثر ارتباطاً بالسؤال للأقل. أجب فقط بالأرقام مفصولة بفواصل (مثال: 2,0,4,1,3)`,
+          },
+        ],
+        temperature: 0,
+        max_tokens: 50,
+      });
+
+      const rankingText = (response.choices[0]?.message?.content || '').trim();
+      const rankedIndices = rankingText
+        .split(',')
+        .map(s => parseInt(s.trim()))
+        .filter(n => !isNaN(n) && n >= 0 && n < allChunks.length);
+
+      // Reorder chunks based on LLM ranking
+      const reranked = rankedIndices
+        .map(idx => allChunks[idx])
+        .filter(Boolean)
+        .slice(0, topK);
+
+      // Add any chunks that weren't ranked by the LLM (fallback)
+      const rankedSet = new Set(rankedIndices);
+      const unranked = allChunks
+        .map((chunk, idx) => ({ chunk, idx }))
+        .filter(({ idx }) => !rankedSet.has(idx))
+        .sort((a, b) => b.chunk.score - a.chunk.score)
+        .map(({ chunk }) => chunk);
+
+      const final = [...reranked, ...unranked].slice(0, topK);
+
+      // Assign new scores based on position (1.0 for first, decreasing)
+      return final.map((chunk, idx) => ({
+        ...chunk,
+        score: 1.0 - (idx * UNIFIED_RANKING_SCORE_DECAY), // 1.0, 0.95, 0.90, ...
+      }));
+
+    } catch (error) {
+      this.logger.warn('Unified ranking failed — using original scores', {
+        error: error instanceof Error ? error.message : 'Unknown',
+      });
+      // Fallback: just merge and sort by original scores
+      const allChunks = [...libraryChunks, ...productChunks];
+      return allChunks.sort((a, b) => b.score - a.score).slice(0, topK);
+    }
+  }
+
+  /**
    * ✅ RAG Retrieve: يدير كامل عملية البحث الدلالي مع دعم multi-source
    * 1. يحدد search priority (library_only, products_only, library_then_products)
    * 2. يبحث في المصدر/المصادر المطلوبة
@@ -1360,7 +1832,8 @@ ${chunksText}
     chunks: Array<{ title: string; content: string; score: number; answer?: string }>;
     topScore: number;
     gateAPassed: boolean;
-    source: 'library' | 'product' | 'mixed';
+    source: 'library' | 'product' | 'mixed' | 'unified';
+    unifiedRankingUsed?: boolean;
   }> {
     const sp = settings.searchPriority || SearchPriority.LIBRARY_THEN_PRODUCTS;
     this.logger.log(`🔍 RAG Retrieve: searchPriority=${sp}, storeId=${context.storeId || 'none'}`);
@@ -1420,6 +1893,9 @@ ${chunksText}
     // ═══════════════════════════════════════════════════════════════════════════
     this.logger.log('📚🛒 Search mode: LIBRARY_THEN_PRODUCTS');
 
+    // ✅ MVP Level 2: Check if unified ranking is enabled
+    const useUnifiedRanking = settings.enableUnifiedRanking ?? AI_DEFAULTS.enableUnifiedRanking;
+
     // 1. محاولة البحث في المكتبة أولاً
     const queryEmbedding = await this.generateEmbedding(message);
     let libraryResults: Array<{ title: string; content: string; score: number; answer?: string }> = [];
@@ -1432,6 +1908,57 @@ ${chunksText}
       libraryResults = fallback.chunks;
     }
 
+    // ✅ MVP Level 2: Unified Ranking Mode
+    if (useUnifiedRanking && context.storeId) {
+      this.logger.log('🔀 Unified ranking enabled — searching both sources');
+      
+      // Search products regardless of library results
+      const productResult = await this.searchProducts(message, context.storeId);
+      
+      // If we have results from both sources, use unified ranking
+      if (libraryResults.length > 0 && productResult.chunks.length > 0) {
+        this.logger.log(`🔀 Merging ${libraryResults.length} library + ${productResult.chunks.length} product results`);
+        
+        const reranked = await this.unifiedRanking(
+          message,
+          libraryResults,
+          productResult.chunks,
+          RAG_TOP_K,
+        );
+        
+        const topScore = reranked.length > 0 ? reranked[0].score : 0;
+        const gateAPassed = topScore >= SIMILARITY_THRESHOLD;
+        
+        this.logger.log(`🔀 Unified ranking complete: topScore=${topScore.toFixed(3)}, gateA=${gateAPassed ? 'PASS' : 'FAIL'}`);
+        
+        return {
+          chunks: reranked,
+          topScore,
+          gateAPassed,
+          source: 'unified',
+          unifiedRankingUsed: true,
+        };
+      }
+      
+      // If only one source has results, use it
+      if (libraryResults.length > 0) {
+        const topScore = libraryResults[0].score;
+        const gateAPassed = topScore >= SIMILARITY_THRESHOLD;
+        this.logger.log(`📚 Only library results available: topScore=${topScore.toFixed(3)}`);
+        return { chunks: libraryResults, topScore, gateAPassed, source: 'library', unifiedRankingUsed: false };
+      }
+      
+      if (productResult.chunks.length > 0) {
+        this.logger.log(`🛒 Only product results available`);
+        return { ...productResult, source: 'product', unifiedRankingUsed: false };
+      }
+      
+      // No results from either source
+      this.logger.log('🚫 No results in unified ranking mode');
+      return { chunks: [], topScore: 0, gateAPassed: false, source: 'unified', unifiedRankingUsed: false };
+    }
+
+    // ✅ Original sequential logic (when unified ranking is disabled)
     // 2. إذا وجدنا نتائج جيدة في المكتبة → نستخدمها
     if (libraryResults.length > 0) {
       const topScore = libraryResults[0].score;
@@ -1444,6 +1971,7 @@ ${chunksText}
           topScore,
           gateAPassed: true,
           source: 'library',
+          unifiedRankingUsed: false,
         };
       } else {
         this.logger.log(`📚 Library score too low (${topScore.toFixed(3)} < ${SIMILARITY_THRESHOLD}), trying products...`);
@@ -1460,6 +1988,7 @@ ${chunksText}
         topScore: libraryResults.length > 0 ? libraryResults[0].score : 0,
         gateAPassed: false,
         source: 'library',
+        unifiedRankingUsed: false,
       };
     }
 
@@ -1467,7 +1996,7 @@ ${chunksText}
     
     if (productResult.gateAPassed) {
       this.logger.log(`🛒 Product match found: ${productResult.chunks.length} products`);
-      return { ...productResult, source: 'product' };
+      return { ...productResult, source: 'product', unifiedRankingUsed: false };
     }
 
     // 4. كلا المصدرين فشلا → نرجع أفضل ما لدينا
@@ -1477,6 +2006,7 @@ ${chunksText}
       topScore: libraryResults.length > 0 ? libraryResults[0].score : productResult.topScore,
       gateAPassed: false,
       source: libraryResults.length > 0 ? 'library' : 'product',
+      unifiedRankingUsed: false,
     };
   }
 

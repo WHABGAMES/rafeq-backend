@@ -4,7 +4,7 @@
  * ║                                                                                ║
  * ║  ✅ يمرر storeId من x-store-id header (مثل settings.controller.ts)           ║
  * ║  ✅ جميع الـ endpoints متوافقة مع ai.service.ts v2                             ║
- * ║  ✅ knowledge CRUD كامل (GET, POST, PUT, DELETE)                               ║
+ *  ✅ knowledge CRUD كامل (GET, POST, PUT, DELETE)                               ║
  * ║                                                                                ║
  * ║  GET  /ai/settings           → جلب إعدادات البوت                              ║
  * ║  PUT  /ai/settings           → تحديث إعدادات البوت                            ║
@@ -23,7 +23,7 @@
  * ║  GET  /ai/intents            → قائمة النوايا المدعومة                           ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
-
+ 
 import {
   Controller,
   Get,
@@ -158,6 +158,35 @@ class UpdateAISettingsDto {
 
   @IsOptional() @IsString()
   handoffMessage?: string;
+
+  // ✅ MVP Level 2: Strict Grounding & Confidence Settings
+  @IsOptional() @IsBoolean()
+  enableUnifiedRanking?: boolean;
+
+  @IsOptional() @IsNumber()
+  answerConfidenceThreshold?: number;
+
+  @IsOptional() @IsNumber()
+  clarifyConfidenceThreshold?: number;
+
+  @IsOptional() @IsBoolean()
+  enableStrictGrounding?: boolean;
+
+  // ✅ Merchant-Controlled Failure Policy Engine
+  @IsOptional() @IsString()
+  failureMode?: 'clarify_only' | 'handoff_after_1' | 'handoff_after_2' | 'handoff_after_3' | 'strict_silence' | 'strict_mode' | 'suggest_products_only';
+
+  @IsOptional() @IsNumber()
+  maxClarifications?: number;
+
+  @IsOptional() @IsBoolean()
+  allowFallbackToProducts?: boolean;
+
+  @IsOptional() @IsNumber()
+  minConfidenceThreshold?: number;
+
+  @IsOptional() @IsBoolean()
+  allowSoftAnswer?: boolean;
 }
 
 class AddKnowledgeDto {
@@ -224,10 +253,10 @@ class UpdateKnowledgeDto {
 
 class TrainBotDto {
   @IsOptional() @IsArray()
-  faqs?: Array<{ question: string; answer: string }>;
+  faqs?: Array<{ question: string; answer: string }>;  
 
   @IsOptional() @IsArray()
-  documents?: Array<{ title: string; content: string }>;
+  documents?: Array<{ title: string; content: string }> ;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
