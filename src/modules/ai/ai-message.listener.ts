@@ -164,6 +164,7 @@ export class AIMessageListener {
               confidence: aiResponse.confidence,
               toolsCalled: aiResponse.toolsUsed,
               processingTime,
+              ragAudit: aiResponse.ragAudit || undefined,
             },
           });
         }
@@ -186,6 +187,7 @@ export class AIMessageListener {
             confidence: aiResponse.confidence,
             toolsCalled: aiResponse.toolsUsed,
             processingTime,
+            ragAudit: aiResponse.ragAudit || undefined,
           },
         });
 
