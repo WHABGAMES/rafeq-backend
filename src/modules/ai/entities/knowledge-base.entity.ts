@@ -3,7 +3,6 @@
  * ║              RAFIQ PLATFORM - Knowledge Base Entity                             ║
  * ║                                                                                ║
  * ║  ✅ مكتبة المعلومات التي يستخدمها البوت للرد على العملاء                       ║
- * ║  ✅ يدعم نوعين: معلومات عامة (article) + سؤال وجواب (qna)                     ║
  * ║  ✅ يرث من BaseEntity (id, createdAt, updatedAt, deletedAt)                    ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
@@ -20,20 +19,9 @@ export enum KnowledgeCategory {
   CUSTOM = 'custom',
 }
 
-/**
- * ✅ نوع المعلومة في المكتبة
- * article = معلومات عامة (عنوان + محتوى)
- * qna = سؤال وجواب (سؤال + جواب)
- */
-export enum KnowledgeType {
-  ARTICLE = 'article',
-  QNA = 'qna',
-}
-
 @Entity('knowledge_base')
 @Index(['tenantId', 'category'])
 @Index(['tenantId', 'isActive'])
-@Index(['tenantId', 'type'])
 export class KnowledgeBase extends BaseEntity {
   @Column({ name: 'tenant_id', type: 'uuid' })
   @Index('idx_knowledge_base_tenant')
@@ -44,26 +32,6 @@ export class KnowledgeBase extends BaseEntity {
 
   @Column({ type: 'text' })
   content: string;
-
-  /**
-   * ✅ جواب السؤال — يُستخدم فقط عندما type = 'qna'
-   * في نوع article: يبقى null/فارغ
-   * في نوع qna: title = السؤال، answer = الجواب
-   */
-  @Column({ type: 'text', nullable: true, default: null })
-  answer: string | null;
-
-  /**
-   * ✅ نوع المعلومة
-   * article = معلومات عامة (النظام الحالي)
-   * qna = سؤال وجواب
-   */
-  @Column({
-    type: 'varchar',
-    length: 20,
-    default: 'article',
-  })
-  type: string;
 
   @Column({
     type: 'enum',
@@ -93,4 +61,16 @@ export class KnowledgeBase extends BaseEntity {
     default: true,
   })
   isActive: boolean;
+
+  /**
+   * ✅ RAG: Vector embedding (OpenAI text-embedding-3-small, 1536 dims)
+   * يُولّد تلقائياً عند إضافة/تحديث المعلومة
+   * يُستخدم للبحث الدلالي (Semantic Search)
+   */
+  @Column({
+    type: 'jsonb',
+    nullable: true,
+    comment: 'OpenAI embedding vector for semantic search',
+  })
+  embedding?: number[];
 }
