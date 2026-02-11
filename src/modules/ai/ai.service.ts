@@ -117,6 +117,8 @@ export interface AIResponse {
   shouldHandoff: boolean;
   handoffReason?: string;
   toolsUsed?: string[];
+  /** ✅ RAG: مخرجات التدقيق الداخلي */
+  ragAudit?: RagAudit;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -125,6 +127,43 @@ export interface AIResponse {
 
 /** ✅ BUG-7: حد أقصى لحجم Knowledge Base في الـ System Prompt (حروف) */
 const MAX_KNOWLEDGE_CHARS = 6000;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 📌 RAG CONSTANTS — نظام البحث الدلالي الصارم
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** عتبة التشابه الدلالي — أقل من هذا = لا يوجد تطابق */
+const SIMILARITY_THRESHOLD = 0.72;
+
+/** عدد المقاطع المسترجعة من البحث الدلالي */
+const RAG_TOP_K = 5;
+
+/** نموذج الـ Embedding من OpenAI */
+const EMBEDDING_MODEL = 'text-embedding-3-small';
+
+/** رسالة عدم التطابق — إلزامية بدون تعديل */
+const NO_MATCH_MESSAGE = 'عذرًا، هذا السؤال خارج نطاق المعلومات المتوفرة لدي حاليًا.\nإذا رغبت، أستطيع تحويلك إلى الدعم البشري لمساعدتك.';
+
+/** أنماط الأسئلة البسيطة التي لا تحتاج RAG */
+const GREETING_PATTERNS = [
+  'مرحبا', 'السلام عليكم', 'أهلا', 'هلا', 'هاي', 'صباح', 'مساء',
+  'hello', 'hi', 'hey', 'good morning', 'good evening',
+];
+const THANKS_PATTERNS = [
+  'شكرا', 'شكراً', 'مشكور', 'يعطيك العافية', 'الله يعافيك', 'تسلم',
+  'thank', 'thanks', 'thx',
+];
+
+/** مخرجات التدقيق الداخلي لكل رد */
+export interface RagAudit {
+  answer_source: 'library' | 'product' | 'tool' | 'greeting' | 'none';
+  similarity_score: number;
+  verifier_result: 'YES' | 'NO' | 'SKIPPED';
+  final_decision: 'ANSWER' | 'BLOCKED';
+  retrieved_chunks: number;
+  gate_a_passed: boolean;
+  gate_b_passed: boolean;
+}
 
 const AI_DEFAULTS: AISettings = {
   enabled: false,
@@ -274,7 +313,7 @@ export class AIService {
 
   async getKnowledge(
     tenantId: string,
-    filters?: { category?: string; search?: string; type?: string },
+    filters?: { category?: string; search?: string },
   ) {
     const qb = this.knowledgeRepo
       .createQueryBuilder('kb')
@@ -285,11 +324,8 @@ export class AIService {
     if (filters?.category) {
       qb.andWhere('kb.category = :category', { category: filters.category });
     }
-    if (filters?.type) {
-      qb.andWhere('kb.type = :type', { type: filters.type });
-    }
     if (filters?.search) {
-      qb.andWhere('(kb.title ILIKE :search OR kb.content ILIKE :search OR kb.answer ILIKE :search)', {
+      qb.andWhere('(kb.title ILIKE :search OR kb.content ILIKE :search)', {
         search: `%${filters.search}%`,
       });
     }
@@ -319,29 +355,32 @@ export class AIService {
     data: {
       title: string;
       content: string;
-      answer?: string;
-      type?: string;
       category?: string;
       keywords?: string[];
       priority?: number;
     },
   ): Promise<KnowledgeBase> {
-    const entryType = data.type || 'article';
+    // ✅ RAG: توليد embedding تلقائياً عند الإضافة
+    const textForEmbedding = `${data.title}\n${data.content}`;
+    const embedding = await this.generateEmbedding(textForEmbedding);
 
     const entry = this.knowledgeRepo.create({
       tenantId,
       title: data.title,
-      content: entryType === 'qna' ? (data.content || data.title) : data.content,
-      answer: entryType === 'qna' ? (data.answer || null) : null,
-      type: entryType,
+      content: data.content,
       category:
         (data.category as KnowledgeCategory) || KnowledgeCategory.GENERAL,
       keywords: data.keywords || [],
       priority: data.priority ?? 10,
       isActive: true,
+      embedding: embedding || undefined,
     });
     const saved = await this.knowledgeRepo.save(entry);
-    this.logger.log('✅ Knowledge added', { tenantId, id: saved.id });
+    this.logger.log('✅ Knowledge added', {
+      tenantId,
+      id: saved.id,
+      hasEmbedding: !!embedding,
+    });
     return saved;
   }
 
@@ -351,8 +390,6 @@ export class AIService {
     data: Partial<{
       title: string;
       content: string;
-      answer: string;
-      type: string;
       category: string;
       keywords: string[];
       priority: number;
@@ -364,12 +401,60 @@ export class AIService {
     });
     if (!entry) return null;
     Object.assign(entry, data);
+
+    // ✅ RAG: إعادة توليد embedding إذا تغيّر العنوان أو المحتوى
+    if (data.title || data.content) {
+      const textForEmbedding = `${entry.title}\n${entry.content}`;
+      const embedding = await this.generateEmbedding(textForEmbedding);
+      if (embedding) {
+        entry.embedding = embedding;
+      }
+    }
+
     return this.knowledgeRepo.save(entry);
   }
 
   async deleteKnowledge(tenantId: string, id: string): Promise<boolean> {
     const result = await this.knowledgeRepo.delete({ id, tenantId });
     return (result.affected || 0) > 0;
+  }
+
+  /**
+   * ✅ RAG: إعادة توليد Embeddings لكل مقاطع المعرفة
+   * يُستدعى من الـ controller عند الحاجة لتحديث الفهرس
+   */
+  async reindexEmbeddings(tenantId: string): Promise<{
+    total: number;
+    indexed: number;
+    failed: number;
+  }> {
+    const entries = await this.knowledgeRepo.find({
+      where: { tenantId, isActive: true },
+    });
+
+    let indexed = 0;
+    let failed = 0;
+
+    for (const entry of entries) {
+      try {
+        const text = `${entry.title}\n${entry.content}`;
+        const embedding = await this.generateEmbedding(text);
+        if (embedding) {
+          entry.embedding = embedding;
+          await this.knowledgeRepo.save(entry);
+          indexed++;
+        } else {
+          failed++;
+        }
+      } catch {
+        failed++;
+      }
+      // تأخير بسيط لمنع تجاوز rate limit
+      await new Promise((r) => setTimeout(r, 200));
+    }
+
+    this.logger.log('✅ Reindex complete', { tenantId, total: entries.length, indexed, failed });
+    return { total: entries.length, indexed, failed };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -441,10 +526,129 @@ export class AIService {
       };
     }
 
-    // 3. بناء System Prompt
-    const systemPrompt = await this.buildSystemPrompt(settings, context);
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 3. ✅ RAG PIPELINE — بحث دلالي + بوابات تحقق
+    // ═══════════════════════════════════════════════════════════════════════════
 
-    // 4. سجل المحادثة
+    // 3a. فحص التحيات والشكر (لا تحتاج RAG)
+    const simpleIntent = this.detectSimpleIntent(message);
+    if (simpleIntent === 'GREETING') {
+      this.logger.log(`👋 Greeting detected — responding with welcome`);
+      return {
+        reply: settings.welcomeMessage || AI_DEFAULTS.welcomeMessage,
+        confidence: 1,
+        shouldHandoff: false,
+        intent: 'GREETING',
+        ragAudit: {
+          answer_source: 'greeting',
+          similarity_score: 0,
+          verifier_result: 'SKIPPED',
+          final_decision: 'ANSWER',
+          retrieved_chunks: 0,
+          gate_a_passed: true,
+          gate_b_passed: true,
+        },
+      };
+    }
+
+    if (simpleIntent === 'THANKS') {
+      const isAr = settings.language !== 'en';
+      return {
+        reply: isAr ? 'العفو! هل هناك شيء آخر يمكنني مساعدتك به؟ 😊' : "You're welcome! Anything else I can help with?",
+        confidence: 1,
+        shouldHandoff: false,
+        intent: 'THANKS',
+        ragAudit: {
+          answer_source: 'greeting',
+          similarity_score: 0,
+          verifier_result: 'SKIPPED',
+          final_decision: 'ANSWER',
+          retrieved_chunks: 0,
+          gate_a_passed: true,
+          gate_b_passed: true,
+        },
+      };
+    }
+
+    // 3b. ✅ البحث الدلالي (Semantic Retrieval)
+    const ragResult = await this.ragRetrieve(message, context, settings);
+
+    this.logger.log(`🔍 RAG Result`, {
+      conversationId: context.conversationId,
+      topScore: ragResult.topScore.toFixed(3),
+      chunksFound: ragResult.chunks.length,
+      gateA: ragResult.gateAPassed ? 'PASS' : 'FAIL',
+    });
+
+    // 3c. ✅ بوابة A: عتبة التشابه
+    if (!ragResult.gateAPassed) {
+      this.logger.log(`🚫 Gate A FAILED (score=${ragResult.topScore.toFixed(3)} < ${SIMILARITY_THRESHOLD}) — checking if tool-based query`);
+
+      // ✅ استثناء: استفسارات الطلبات تمر لأنها تعتمد على أدوات
+      const isOrderQuery = this.isOrderInquiry(message);
+      if (!isOrderQuery) {
+        // ❌ NO_MATCH — لا يوجد مصدر
+        await this.incrementFailedAttempts(context);
+        return {
+          reply: NO_MATCH_MESSAGE,
+          confidence: 0,
+          shouldHandoff: false,
+          intent: 'NO_MATCH',
+          ragAudit: {
+            answer_source: 'none',
+            similarity_score: ragResult.topScore,
+            verifier_result: 'NO',
+            final_decision: 'BLOCKED',
+            retrieved_chunks: ragResult.chunks.length,
+            gate_a_passed: false,
+            gate_b_passed: false,
+          },
+        };
+      }
+      // إذا استفسار طلب → نتابع مع الأدوات
+      this.logger.log(`📦 Order inquiry detected — bypassing RAG gate for tool use`);
+    }
+
+    // 3d. ✅ بوابة B: التحقق الدلالي (فقط إذا اجتاز البوابة A)
+    let gateBPassed = false;
+    if (ragResult.gateAPassed && ragResult.chunks.length > 0) {
+      gateBPassed = await this.verifyRelevance(message, ragResult.chunks);
+      this.logger.log(`🔎 Gate B (Verifier): ${gateBPassed ? 'PASS' : 'FAIL'}`);
+
+      if (!gateBPassed) {
+        await this.incrementFailedAttempts(context);
+        return {
+          reply: NO_MATCH_MESSAGE,
+          confidence: 0,
+          shouldHandoff: false,
+          intent: 'NO_MATCH',
+          ragAudit: {
+            answer_source: 'none',
+            similarity_score: ragResult.topScore,
+            verifier_result: 'NO',
+            final_decision: 'BLOCKED',
+            retrieved_chunks: ragResult.chunks.length,
+            gate_a_passed: true,
+            gate_b_passed: false,
+          },
+        };
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 4. ✅ توليد الرد — من المقاطع المسترجعة فقط
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    const answerSource: RagAudit['answer_source'] = ragResult.gateAPassed && gateBPassed ? 'library' : 'none';
+
+    // بناء System Prompt مع المقاطع المسترجعة فقط
+    const systemPrompt = this.buildStrictSystemPrompt(
+      settings,
+      context,
+      ragResult.gateAPassed && gateBPassed ? ragResult.chunks : [],
+    );
+
+    // سجل المحادثة
     const messages: ChatCompletionMessageParam[] = [
       { role: 'system', content: systemPrompt },
       ...context.previousMessages.slice(-10).map((m) => ({
@@ -454,17 +658,16 @@ export class AIService {
       { role: 'user', content: message },
     ];
 
-    // 5. الأدوات المتاحة
+    // الأدوات المتاحة
     const tools = this.getAvailableTools();
 
-    // 6. استدعاء OpenAI
     try {
       const completion = await this.openai.chat.completions.create({
         model: settings.model || AI_DEFAULTS.model,
         messages,
         tools: tools.length > 0 ? tools : undefined,
         tool_choice: tools.length > 0 ? 'auto' : undefined,
-        temperature: settings.temperature ?? 0.7,
+        temperature: 0.3, // ✅ حرارة منخفضة = التزام أكبر بالمقاطع
         max_tokens: settings.maxTokens || 1000,
       });
 
@@ -473,8 +676,9 @@ export class AIService {
 
       let finalReply = assistantMsg.content || '';
       const toolsUsed: string[] = [];
+      let finalSource = answerSource;
 
-      // 7. تنفيذ الأدوات
+      // تنفيذ الأدوات
       if (assistantMsg.tool_calls?.length) {
         const toolResults = await this.executeToolCalls(
           assistantMsg.tool_calls,
@@ -483,7 +687,7 @@ export class AIService {
         );
         toolsUsed.push(...toolResults.map((r) => r.name));
 
-        // ✅ BUG-2: إذا تم استدعاء request_human_agent → توقف فوراً
+        // ✅ إذا تم استدعاء request_human_agent → توقف فوراً
         const handoffTool = toolResults.find(
           (r) => r.name === 'request_human_agent',
         );
@@ -511,17 +715,17 @@ export class AIService {
         const followUp = await this.openai.chat.completions.create({
           model: settings.model || AI_DEFAULTS.model,
           messages: toolMessages,
-          temperature: settings.temperature ?? 0.7,
+          temperature: 0.3,
           max_tokens: settings.maxTokens || 1000,
         });
 
         finalReply = followUp.choices[0]?.message?.content || finalReply;
+        finalSource = 'tool';
       }
 
-      // 8. تحليل جودة الرد
+      // ✅ تحليل جودة الرد + تتبع المحاولات الفاشلة
       const analysis = this.analyzeResponseQuality(finalReply, message);
 
-      // ✅ BUG-3 FIX: تتبع failedAttempts في DB
       if (analysis.confidence < 0.5 && !analysis.shouldHandoff) {
         await this.incrementFailedAttempts(context);
       } else if (analysis.confidence >= 0.7) {
@@ -539,6 +743,15 @@ export class AIService {
         shouldHandoff: analysis.shouldHandoff,
         handoffReason: analysis.handoffReason,
         toolsUsed,
+        ragAudit: {
+          answer_source: finalSource,
+          similarity_score: ragResult.topScore,
+          verifier_result: gateBPassed ? 'YES' : (ragResult.gateAPassed ? 'NO' : 'SKIPPED'),
+          final_decision: 'ANSWER',
+          retrieved_chunks: ragResult.chunks.length,
+          gate_a_passed: ragResult.gateAPassed,
+          gate_b_passed: gateBPassed,
+        },
       };
     } catch (error) {
       this.logger.error('OpenAI API error', {
@@ -554,13 +767,28 @@ export class AIService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 📝 SYSTEM PROMPT BUILDER
+  // 📝 SYSTEM PROMPT — الصارم (RAG-based)
   // ═══════════════════════════════════════════════════════════════════════════════
 
+  /**
+   * ✅ النسخة القديمة — تُستخدم فقط لـ fallback إذا لم يكن هناك embeddings
+   */
   private async buildSystemPrompt(
     settings: AISettings,
     context: ConversationContext,
   ): Promise<string> {
+    return this.buildStrictSystemPrompt(settings, context, []);
+  }
+
+  /**
+   * ✅ RAG: بناء Prompt صارم — يحتوي فقط على المقاطع المسترجعة
+   * ❌ ممنوع الاستنتاج أو الإكمال من المعرفة العامة
+   */
+  private buildStrictSystemPrompt(
+    settings: AISettings,
+    context: ConversationContext,
+    retrievedChunks: Array<{ title: string; content: string; score: number }>,
+  ): string {
     const isAr = settings.language !== 'en';
 
     let prompt = isAr
@@ -570,7 +798,7 @@ export class AIService {
     const tones: Record<string, string> = {
       formal: isAr ? 'استخدم لغة رسمية ومهنية.' : 'Use formal language.',
       friendly: isAr
-        ? 'كن ودوداً ولطيفاً. استخدم الإيموجي عند المناسب.'
+        ? 'كن ودوداً ولطيفاً.'
         : 'Be friendly and warm.',
       professional: isAr
         ? 'كن مهنياً ومفيداً.'
@@ -578,6 +806,7 @@ export class AIService {
     };
     prompt += '\n' + (tones[settings.tone] || tones.friendly);
 
+    // معلومات المتجر الأساسية
     if (settings.storeDescription)
       prompt += `\n${isAr ? 'عن المتجر' : 'About'}: ${settings.storeDescription}`;
     if (settings.workingHours)
@@ -587,86 +816,298 @@ export class AIService {
     if (settings.shippingInfo)
       prompt += `\n${isAr ? 'الشحن' : 'Shipping'}: ${settings.shippingInfo}`;
 
-    // ✅ BUG-7 FIX: Knowledge base مع حد حجم MAX_KNOWLEDGE_CHARS
-    const sp = settings.searchPriority || SearchPriority.LIBRARY_THEN_PRODUCTS;
-    if (
-      sp === SearchPriority.LIBRARY_ONLY ||
-      sp === SearchPriority.LIBRARY_THEN_PRODUCTS
-    ) {
-      const knowledge = await this.knowledgeRepo.find({
-        where: { tenantId: context.tenantId, isActive: true },
-        order: { priority: 'ASC' },
-        take: 30,
-      });
+    // ✅ RAG: المقاطع المسترجعة فقط (وليس كل المكتبة)
+    if (retrievedChunks.length > 0) {
+      prompt += isAr
+        ? '\n\n=== معلومات متوفرة (مصدرك الوحيد للإجابة) ==='
+        : '\n\n=== Available Information (your ONLY source for answers) ===';
 
-      if (knowledge.length > 0) {
-        // ✅ تقسيم إلى معلومات عامة وأسئلة وأجوبة
-        const articles = knowledge.filter((kb) => kb.type !== 'qna');
-        const qnaEntries = knowledge.filter((kb) => kb.type === 'qna');
-
-        let knowledgeText = '';
-
-        // معلومات عامة (articles)
-        if (articles.length > 0) {
-          knowledgeText += isAr
-            ? '\n\n=== معلومات المتجر ==='
-            : '\n\n=== Knowledge Base ===';
-          for (const kb of articles) {
-            const entry = `\n[${kb.title}]: ${kb.content}`;
-            if (knowledgeText.length + entry.length > MAX_KNOWLEDGE_CHARS) {
-              this.logger.debug(
-                `Knowledge base truncated at ${knowledgeText.length} chars`,
-              );
-              break;
-            }
-            knowledgeText += entry;
-          }
-        }
-
-        // أسئلة وأجوبة (Q&A)
-        if (qnaEntries.length > 0) {
-          knowledgeText += isAr
-            ? '\n\n=== أسئلة وأجوبة شائعة ==='
-            : '\n\n=== Frequently Asked Questions ===';
-          knowledgeText += isAr
-            ? '\nعندما يسأل العميل سؤالاً مشابهاً، استخدم الجواب المحدد:'
-            : '\nWhen a customer asks a similar question, use the specified answer:';
-          for (const kb of qnaEntries) {
-            const entry = `\n${isAr ? 'س' : 'Q'}: ${kb.title}\n${isAr ? 'ج' : 'A'}: ${kb.answer || kb.content}`;
-            if (knowledgeText.length + entry.length > MAX_KNOWLEDGE_CHARS) {
-              this.logger.debug(
-                `Q&A truncated at ${knowledgeText.length} chars`,
-              );
-              break;
-            }
-            knowledgeText += entry;
-          }
-        }
-
-        if (knowledgeText) {
-          prompt += knowledgeText;
-        }
+      let charsUsed = 0;
+      for (const chunk of retrievedChunks) {
+        const entry = `\n[${chunk.title}]: ${chunk.content}`;
+        if (charsUsed + entry.length > MAX_KNOWLEDGE_CHARS) break;
+        prompt += entry;
+        charsUsed += entry.length;
       }
     }
 
+    // اسم العميل
     if (context.customerName) {
       prompt += `\n\n${isAr ? 'اسم العميل' : 'Customer'}: ${context.customerName}`;
     }
 
+    // ✅ القواعد الصارمة — منع الهلوسة
     prompt += isAr
-      ? `\n\n=== قواعد ===
-1. أجب فقط بناءً على المعلومات المتوفرة. لا تختلق.
-2. إذا لم تجد الإجابة: "${settings.fallbackMessage || AI_DEFAULTS.fallbackMessage}"
-3. لا تذكر أسعاراً غير موجودة في معلوماتك.
-4. إذا طلب العميل شخصاً، استخدم أداة request_human_agent.
-5. كن موجزاً ومفيداً.`
-      : `\n\n=== Rules ===
-1. Only answer from provided info. Never make up info.
-2. If unsure: "${settings.fallbackMessage || AI_DEFAULTS.fallbackMessage}"
-3. If customer asks for human, use request_human_agent tool.
-4. Be concise and helpful.`;
+      ? `\n\n=== قواعد صارمة (إلزامية) ===
+1. أجب فقط وحصرياً من المعلومات المتوفرة أعلاه. لا تختلق أو تفترض أي معلومة.
+2. إذا لم تجد الإجابة في المعلومات المتوفرة أعلاه، أجب حرفياً بهذا النص فقط:
+"${NO_MATCH_MESSAGE}"
+3. لا تذكر أسعاراً أو منتجات أو تفاصيل غير موجودة في المعلومات المتوفرة.
+4. لا تستخدم معرفتك العامة أبداً. لا تقدم نصائح طبية أو صحية أو ثقافية.
+5. لا تشرح منتجات غير مذكورة أعلاه حتى لو عرفتها.
+6. إذا طلب العميل شخصاً بشرياً، استخدم أداة request_human_agent.
+7. كن موجزاً ومفيداً. لا تتوسع خارج المعلومات المقدمة.`
+      : `\n\n=== Strict Rules (mandatory) ===
+1. ONLY answer from the information provided above. Never make up or assume any information.
+2. If the answer is NOT in the provided information, respond EXACTLY with:
+"${NO_MATCH_MESSAGE}"
+3. Do NOT mention prices, products, or details not in the provided information.
+4. NEVER use general knowledge. No medical, health, or cultural advice.
+5. Do NOT explain products not listed above, even if you know about them.
+6. If customer asks for a human, use request_human_agent tool.
+7. Be concise and helpful. Do not expand beyond provided information.`;
 
     return prompt;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔍 RAG ENGINE — البحث الدلالي والتحقق
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * ✅ توليد Embedding عبر OpenAI
+   * يستخدم text-embedding-3-small (1536 dims)
+   */
+  private async generateEmbedding(text: string): Promise<number[] | null> {
+    try {
+      const response = await this.openai.embeddings.create({
+        model: EMBEDDING_MODEL,
+        input: text.substring(0, 8000), // حد أقصى
+      });
+      return response.data[0]?.embedding || null;
+    } catch (error) {
+      this.logger.error('Failed to generate embedding', {
+        error: error instanceof Error ? error.message : 'Unknown',
+      });
+      return null;
+    }
+  }
+
+  /**
+   * ✅ حساب Cosine Similarity بين متجهين
+   */
+  private cosineSimilarity(a: number[], b: number[]): number {
+    if (a.length !== b.length || a.length === 0) return 0;
+    let dotProduct = 0;
+    let normA = 0;
+    let normB = 0;
+    for (let i = 0; i < a.length; i++) {
+      dotProduct += a[i] * b[i];
+      normA += a[i] * a[i];
+      normB += b[i] * b[i];
+    }
+    const denominator = Math.sqrt(normA) * Math.sqrt(normB);
+    return denominator === 0 ? 0 : dotProduct / denominator;
+  }
+
+  /**
+   * ✅ البحث الدلالي في مكتبة المعلومات
+   * 1. يجلب كل المقاطع التي لها embedding
+   * 2. يحسب cosine similarity مع سؤال المستخدم
+   * 3. يرجع Top-K الأعلى تشابهاً
+   */
+  private async semanticSearch(
+    queryEmbedding: number[],
+    tenantId: string,
+  ): Promise<Array<{ title: string; content: string; score: number; id: string }>> {
+    // جلب كل مقاطع المعرفة التي لها embedding
+    const entries = await this.knowledgeRepo
+      .createQueryBuilder('kb')
+      .where('kb.tenantId = :tenantId', { tenantId })
+      .andWhere('kb.isActive = true')
+      .andWhere('kb.embedding IS NOT NULL')
+      .select(['kb.id', 'kb.title', 'kb.content', 'kb.embedding'])
+      .getMany();
+
+    if (entries.length === 0) return [];
+
+    // حساب التشابه + ترتيب
+    const scored = entries
+      .map((entry) => ({
+        id: entry.id,
+        title: entry.title,
+        content: entry.content,
+        score: this.cosineSimilarity(queryEmbedding, entry.embedding || []),
+      }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, RAG_TOP_K);
+
+    return scored;
+  }
+
+  /**
+   * ✅ بوابة B: التحقق الدلالي
+   * يسأل LLM: "هل هذه المقاطع تحتوي إجابة مباشرة على السؤال؟"
+   * استدعاء خفيف (max_tokens=10, temperature=0)
+   */
+  private async verifyRelevance(
+    question: string,
+    chunks: Array<{ title: string; content: string; score: number }>,
+  ): Promise<boolean> {
+    try {
+      const chunksText = chunks
+        .map((c) => `[${c.title}]: ${c.content}`)
+        .join('\n');
+
+      const response = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini', // نموذج خفيف للتحقق
+        messages: [
+          {
+            role: 'system',
+            content: 'أنت محكّم. أجب فقط بـ YES أو NO. لا تشرح.',
+          },
+          {
+            role: 'user',
+            content: `هل المقاطع التالية تحتوي إجابة مباشرة وواضحة على سؤال المستخدم؟
+
+سؤال المستخدم: "${question}"
+
+المقاطع:
+${chunksText}
+
+أجب YES إذا المقاطع تحتوي إجابة واضحة ومباشرة.
+أجب NO إذا المقاطع لا تحتوي إجابة أو الإجابة غير مباشرة.`,
+          },
+        ],
+        temperature: 0,
+        max_tokens: 5,
+      });
+
+      const answer = (response.choices[0]?.message?.content || '').trim().toUpperCase();
+      return answer.includes('YES');
+    } catch (error) {
+      this.logger.error('Verifier failed — defaulting to FAIL', {
+        error: error instanceof Error ? error.message : 'Unknown',
+      });
+      return false; // فشل التحقق = لا نسمح بالرد (أمان)
+    }
+  }
+
+  /**
+   * ✅ RAG Retrieve: يدير كامل عملية البحث الدلالي
+   * 1. توليد embedding للسؤال
+   * 2. بحث دلالي في المكتبة
+   * 3. فحص عتبة التشابه (Gate A)
+   * 4. يرجع النتائج مع حالة البوابات
+   */
+  private async ragRetrieve(
+    message: string,
+    context: ConversationContext,
+    settings: AISettings,
+  ): Promise<{
+    chunks: Array<{ title: string; content: string; score: number }>;
+    topScore: number;
+    gateAPassed: boolean;
+  }> {
+    // إذا المكتبة معطلة
+    const sp = settings.searchPriority || SearchPriority.LIBRARY_THEN_PRODUCTS;
+    if (sp === SearchPriority.PRODUCTS_ONLY) {
+      return { chunks: [], topScore: 0, gateAPassed: false };
+    }
+
+    // توليد embedding
+    const queryEmbedding = await this.generateEmbedding(message);
+    if (!queryEmbedding) {
+      this.logger.warn('Failed to generate query embedding — falling back to keyword search');
+      // Fallback: بحث كلمات مفتاحية
+      return this.fallbackKeywordSearch(message, context.tenantId);
+    }
+
+    // بحث دلالي
+    const results = await this.semanticSearch(queryEmbedding, context.tenantId);
+
+    if (results.length === 0) {
+      return { chunks: [], topScore: 0, gateAPassed: false };
+    }
+
+    const topScore = results[0].score;
+    const gateAPassed = topScore >= SIMILARITY_THRESHOLD;
+
+    return {
+      chunks: results,
+      topScore,
+      gateAPassed,
+    };
+  }
+
+  /**
+   * ✅ Fallback: بحث كلمات مفتاحية (إذا فشل الـ Embedding)
+   * يبحث بـ ILIKE في العنوان والمحتوى
+   */
+  private async fallbackKeywordSearch(
+    message: string,
+    tenantId: string,
+  ): Promise<{
+    chunks: Array<{ title: string; content: string; score: number }>;
+    topScore: number;
+    gateAPassed: boolean;
+  }> {
+    // استخراج كلمات مفتاحية من السؤال
+    const words = message.split(/\s+/).filter((w) => w.length > 2);
+    if (words.length === 0) {
+      return { chunks: [], topScore: 0, gateAPassed: false };
+    }
+
+    const qb = this.knowledgeRepo
+      .createQueryBuilder('kb')
+      .where('kb.tenantId = :tenantId', { tenantId })
+      .andWhere('kb.isActive = true');
+
+    // بحث OR على كل كلمة
+    const conditions = words.map((_, i) => `(kb.title ILIKE :w${i} OR kb.content ILIKE :w${i})`);
+    const params: Record<string, string> = {};
+    words.forEach((w, i) => { params[`w${i}`] = `%${w}%`; });
+
+    qb.andWhere(`(${conditions.join(' OR ')})`, params);
+    qb.orderBy('kb.priority', 'ASC').take(RAG_TOP_K);
+
+    const entries = await qb.getMany();
+
+    if (entries.length === 0) {
+      return { chunks: [], topScore: 0, gateAPassed: false };
+    }
+
+    // Keyword match = score 0.75 (أقل من threshold = يحتاج تحقق)
+    const chunks = entries.map((e) => ({
+      title: e.title,
+      content: e.content,
+      score: 0.75,
+    }));
+
+    return {
+      chunks,
+      topScore: 0.75,
+      gateAPassed: true, // keyword match يعبر البوابة A بشرط بوابة B
+    };
+  }
+
+  /**
+   * ✅ كشف التحيات والشكر البسيط
+   */
+  private detectSimpleIntent(message: string): 'GREETING' | 'THANKS' | null {
+    const lower = message.trim().toLowerCase();
+    // تحية فقط إذا الرسالة قصيرة (أقل من 30 حرف)
+    if (lower.length < 30) {
+      for (const p of GREETING_PATTERNS) {
+        if (lower.includes(p.toLowerCase())) return 'GREETING';
+      }
+      for (const p of THANKS_PATTERNS) {
+        if (lower.includes(p.toLowerCase())) return 'THANKS';
+      }
+    }
+    return null;
+  }
+
+  /**
+   * ✅ كشف استفسارات الطلبات (تعتمد على أدوات وليس RAG)
+   */
+  private isOrderInquiry(message: string): boolean {
+    const lower = message.toLowerCase();
+    const orderPatterns = [
+      'طلب', 'طلبي', 'رقم الطلب', 'حالة الطلب', 'تتبع', 'شحن',
+      'order', 'track', 'shipping', 'delivery', '#',
+    ];
+    return orderPatterns.some((p) => lower.includes(p));
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -1058,7 +1499,7 @@ export class AIService {
     tenantId: string,
     message: string,
     storeId?: string,
-  ): Promise<{ reply: string; processingTime: number; toolsUsed?: string[] }> {
+  ): Promise<{ reply: string; processingTime: number; toolsUsed?: string[]; ragAudit?: RagAudit }> {
     const startTime = Date.now();
 
     if (!this.isApiKeyConfigured) {
@@ -1071,7 +1512,6 @@ export class AIService {
     try {
       const settings = await this.getSettings(tenantId, storeId);
 
-      // ✅ استخدام نفس buildSystemPrompt الكامل (مع المكتبة + معلومات المتجر)
       const testContext: ConversationContext = {
         conversationId: 'test',
         tenantId,
@@ -1101,77 +1541,14 @@ export class AIService {
         }
       }
 
-      const systemPrompt = await this.buildSystemPrompt(settings, testContext);
-
-      // ✅ استخدام نفس الأدوات المتاحة في generateResponse
-      const tools = this.getAvailableTools();
-
-      const messages: ChatCompletionMessageParam[] = [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: message },
-      ];
-
-      const completion = await this.openai.chat.completions.create({
-        model: settings.model || AI_DEFAULTS.model,
-        messages,
-        tools: tools.length > 0 ? tools : undefined,
-        tool_choice: tools.length > 0 ? 'auto' : undefined,
-        temperature: settings.temperature ?? 0.7,
-        max_tokens: settings.maxTokens || 1000,
-      });
-
-      const assistantMsg = completion.choices[0]?.message;
-      if (!assistantMsg) throw new Error('No response from OpenAI');
-
-      let finalReply = assistantMsg.content || '';
-      const toolsUsed: string[] = [];
-
-      // ✅ تنفيذ الأدوات إذا طلبها OpenAI
-      if (assistantMsg.tool_calls?.length) {
-        const toolResults = await this.executeToolCalls(
-          assistantMsg.tool_calls,
-          testContext,
-          settings,
-        );
-        toolsUsed.push(...toolResults.map((r) => r.name));
-
-        // إذا كان التحويل البشري — نرجع رسالة التحويل
-        const handoffTool = toolResults.find(
-          (r) => r.name === 'request_human_agent',
-        );
-        if (handoffTool) {
-          return {
-            reply: `[تحويل بشري] ${settings.handoffMessage || AI_DEFAULTS.handoffMessage}`,
-            processingTime: Date.now() - startTime,
-            toolsUsed,
-          };
-        }
-
-        // إرسال نتائج الأدوات لـ OpenAI للحصول على رد نهائي
-        const toolMessages: ChatCompletionMessageParam[] = [
-          ...messages,
-          assistantMsg as ChatCompletionMessageParam,
-          ...toolResults.map((r) => ({
-            role: 'tool' as const,
-            tool_call_id: r.toolCallId,
-            content: JSON.stringify(r.result),
-          })),
-        ];
-
-        const followUp = await this.openai.chat.completions.create({
-          model: settings.model || AI_DEFAULTS.model,
-          messages: toolMessages,
-          temperature: settings.temperature ?? 0.7,
-          max_tokens: settings.maxTokens || 1000,
-        });
-
-        finalReply = followUp.choices[0]?.message?.content || finalReply;
-      }
+      // ✅ RAG: يستخدم نفس processMessage الصارم
+      const result = await this.processMessage(message, testContext, settings);
 
       return {
-        reply: finalReply || 'لم أتمكن من الرد',
+        reply: result.reply || 'لم أتمكن من الرد',
         processingTime: Date.now() - startTime,
-        toolsUsed: toolsUsed.length > 0 ? toolsUsed : undefined,
+        toolsUsed: result.toolsUsed?.length ? result.toolsUsed : undefined,
+        ragAudit: result.ragAudit,
       };
     } catch (error) {
       return {
@@ -1279,9 +1656,7 @@ export class AIService {
       for (const faq of data.faqs) {
         await this.addKnowledge(tenantId, {
           title: faq.question,
-          content: faq.question,
-          answer: faq.answer,
-          type: 'qna',
+          content: faq.answer,
           category: 'general',
         });
         added++;
