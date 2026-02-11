@@ -165,9 +165,12 @@ export class AIHandoffListener {
     const reasons: Record<string, string> = {
       'CUSTOMER_REQUEST': 'طلب العميل التحدث مع موظف',
       'MAX_FAILURES': 'تجاوز عدد المحاولات الفاشلة',
+      'NO_MATCH_AFTER_MAX_ATTEMPTS': 'لم يتم العثور على إجابة بعد استنفاد المحاولات',
       'KEYWORD_MATCH': 'كلمة مفتاحية للتحويل',
       'TOOL_FAILURE': 'فشل في تنفيذ الأداة',
       'LOW_CONFIDENCE': 'ثقة منخفضة في الرد',
+      'AI_ERROR': 'خطأ في نظام الذكاء الاصطناعي',
+      'AI_NOT_CONFIGURED': 'نظام الذكاء الاصطناعي غير مُعدّ',
     };
 
     return reasons[reason] || reason || 'تحويل تلقائي';
