@@ -158,12 +158,25 @@ interface IntentResult {
 }
 
 /** أنماط الأسئلة البسيطة التي لا تحتاج RAG */
-const GREETING_PATTERNS = [
-  'مرحبا', 'السلام عليكم', 'أهلا', 'هلا', 'هاي', 'صباح', 'مساء',
-  'اخبارك', 'أخبارك', 'كيفك', 'كيف حالك', 'حياك', 'يا هلا', 'الو',
-  'سلام', 'هلو', 'كيف الحال', 'شخبارك', 'شلونك', 'وش أخبارك',
+/**
+ * ✅ FIX-A: فصل التحيات الحقيقية عن الكلام الاجتماعي
+ * التحيات → رسالة ترحيب
+ * الكلام الاجتماعي → رد اجتماعي مختلف (الحمدلله بخير، إلخ)
+ */
+const PURE_GREETING_PATTERNS = [
+  'مرحبا', 'السلام عليكم', 'أهلا', 'هلا', 'هاي', 'حياك', 'يا هلا', 'الو',
+  'سلام', 'هلو', 'صباح الخير', 'مساء الخير',
   'hello', 'hi', 'hey', 'good morning', 'good evening', 'howdy',
 ];
+
+const SOCIAL_PATTERNS = [
+  'اخبارك', 'أخبارك', 'كيفك', 'كيف حالك', 'كيف الحال',
+  'شخبارك', 'شلونك', 'وش أخبارك', 'وش لونك', 'شحالك',
+  'how are you', 'what\'s up', 'how\'s it going',
+];
+
+/** ✅ FIX-A: كل الأنماط مجتمعة للـ intent detection */
+const GREETING_PATTERNS = [...PURE_GREETING_PATTERNS, ...SOCIAL_PATTERNS];
 const THANKS_PATTERNS = [
   'شكرا', 'شكراً', 'مشكور', 'يعطيك العافية', 'الله يعافيك', 'تسلم',
   'thank', 'thanks', 'thx',
@@ -647,6 +660,15 @@ export class AIService {
     // ✅ بوابة A: عتبة التشابه
     if (!ragResult.gateAPassed) {
       this.logger.log(`🚫 Gate A FAILED (score=${ragResult.topScore.toFixed(3)} < ${SIMILARITY_THRESHOLD})`);
+
+      // ✅ FIX-B: قبل إرجاع NO_MATCH — جرّب الإجابة من إعدادات المتجر
+      // أسئلة مثل "وش اسم المتجر" و"وش ساعات العمل" يمكن الرد عليها من الإعدادات مباشرة
+      const settingsAnswer = await this.tryAnswerFromSettings(message, settings, context);
+      if (settingsAnswer) {
+        await this.resetFailedAttempts(context);
+        return settingsAnswer;
+      }
+
       // ✅ المهمة 4: نظام المحاولات — لا نحظر مباشرة
       return this.handleNoMatch(context, settings, lang, 'SUPPORT_QUERY');
     }
@@ -658,6 +680,13 @@ export class AIService {
       this.logger.log(`🔎 Gate B (Verifier): ${gateBPassed ? 'PASS' : 'FAIL'}`);
 
       if (!gateBPassed) {
+        // ✅ FIX-B: جرّب الإجابة من الإعدادات أيضاً عند فشل Gate B
+        const settingsAnswer = await this.tryAnswerFromSettings(message, settings, context);
+        if (settingsAnswer) {
+          await this.resetFailedAttempts(context);
+          return settingsAnswer;
+        }
+
         return this.handleNoMatch(context, settings, lang, 'SUPPORT_QUERY');
       }
     }
@@ -778,12 +807,59 @@ export class AIService {
     const isAr = settings.language !== 'en';
     const tone = settings.tone || 'friendly';
 
-    // كشف نوع SMALLTALK
-    const isGreeting = GREETING_PATTERNS.some((p) => lower.includes(p.toLowerCase()));
+    /**
+     * ✅ FIX-A: كشف نوع SMALLTALK بدقة
+     * - تحية حقيقية (هلا، مرحبا) → رسالة ترحيب
+     * - كلام اجتماعي (اخبارك، كيفك) → رد اجتماعي مختلف
+     * - شكر → رد شكر
+     */
+    const isPureGreeting = PURE_GREETING_PATTERNS.some((p) => lower.includes(p.toLowerCase()));
+    const isSocial = SOCIAL_PATTERNS.some((p) => lower.includes(p.toLowerCase()));
     const isThanks = THANKS_PATTERNS.some((p) => lower.includes(p.toLowerCase()));
 
-    if (isGreeting) {
-      // إذا هناك رسالة ترحيب مخصصة → استخدمها
+    // ✅ FIX-C: الكلام الاجتماعي يأخذ أولوية على التحية
+    // لأن "هلا اخبارك" يجب أن يُرد عليها "الحمدلله بخير" مش "أهلاً وسهلاً"
+    if (isSocial) {
+      const socialReplies: Record<string, Record<string, string[]>> = {
+        formal: {
+          ar: [
+            'شكرًا لسؤالك. كيف يمكنني مساعدتك؟',
+            'الحمد لله. كيف أستطيع خدمتك؟',
+          ],
+          en: [
+            'Thank you for asking. How can I assist you?',
+            'I appreciate that. How may I help you?',
+          ],
+        },
+        friendly: {
+          ar: [
+            'الحمدلله بخير! كيف أقدر أساعدك اليوم؟ 😊',
+            'الله يسلمك! تفضل كيف أقدر أخدمك؟ 😊',
+            'بخير الحمدلله! وش أقدر أسوي لك؟',
+          ],
+          en: [
+            "I'm doing great, thanks! How can I help you? 😊",
+            "All good, thanks for asking! What can I do for you?",
+          ],
+        },
+        professional: {
+          ar: [
+            'الحمد لله بخير. كيف أستطيع مساعدتك؟',
+            'بخير شكرًا لك. تفضل بسؤالك.',
+          ],
+          en: [
+            "I'm well, thank you. How can I help you?",
+            "Doing well, thanks. Please go ahead with your question.",
+          ],
+        },
+      };
+
+      const replies = socialReplies[tone]?.[isAr ? 'ar' : 'en'] || socialReplies.friendly[isAr ? 'ar' : 'en'];
+      return replies[Math.floor(Math.random() * replies.length)];
+    }
+
+    if (isPureGreeting) {
+      // ✅ FIX-C: رسالة الترحيب المخصصة فقط للتحيات الحقيقية
       if (settings.welcomeMessage) return settings.welcomeMessage;
 
       // ردود حسب النبرة
@@ -1723,6 +1799,132 @@ Types:
     const elapsedMinutes = (Date.now() - handoffTime) / 60000;
 
     return elapsedMinutes >= duration;
+  }
+
+  /**
+   * ✅ FIX-B: محاولة الإجابة من إعدادات المتجر عندما يفشل RAG
+   * 
+   * أسئلة مثل:
+   * - "وش اسم المتجر؟" → storeName
+   * - "وش ساعات العمل؟" → workingHours
+   * - "كيف الشحن؟" → shippingInfo
+   * - "وش سياسة الإرجاع؟" → returnPolicy
+   * 
+   * هذه المعلومات موجودة في الإعدادات ولا تحتاج RAG
+   */
+  private async tryAnswerFromSettings(
+    message: string,
+    settings: AISettings,
+    context: ConversationContext,
+  ): Promise<AIResponse | null> {
+    const lower = message.toLowerCase();
+    const isAr = settings.language !== 'en';
+
+    // مطابقة الأنماط مع إعدادات المتجر
+    const settingsPatterns: Array<{
+      patterns: string[];
+      settingKey: keyof AISettings;
+      labelAr: string;
+      labelEn: string;
+    }> = [
+      {
+        patterns: ['اسم المتجر', 'اسم المحل', 'اسم الشركة', 'وش اسمكم', 'ايش اسمكم', 'store name', 'company name', 'what is your name', 'who are you'],
+        settingKey: 'storeName',
+        labelAr: 'اسم المتجر',
+        labelEn: 'Store name',
+      },
+      {
+        patterns: ['ساعات العمل', 'أوقات العمل', 'الدوام', 'متى تفتحون', 'متى تقفلون', 'وقت الدوام', 'working hours', 'open hours', 'business hours', 'when do you open'],
+        settingKey: 'workingHours',
+        labelAr: 'ساعات العمل',
+        labelEn: 'Working hours',
+      },
+      {
+        patterns: ['الشحن', 'توصيل', 'كم يوم التوصيل', 'رسوم الشحن', 'مجاني', 'shipping', 'delivery', 'how long'],
+        settingKey: 'shippingInfo',
+        labelAr: 'معلومات الشحن',
+        labelEn: 'Shipping info',
+      },
+      {
+        patterns: ['إرجاع', 'ارجاع', 'استرجاع', 'استبدال', 'ترجيع', 'return', 'refund', 'exchange'],
+        settingKey: 'returnPolicy',
+        labelAr: 'سياسة الإرجاع',
+        labelEn: 'Return policy',
+      },
+      {
+        patterns: ['وش تبيعون', 'ايش عندكم', 'وصف المتجر', 'عن المتجر', 'ايش يميزكم', 'about', 'what do you sell', 'describe'],
+        settingKey: 'storeDescription',
+        labelAr: 'عن المتجر',
+        labelEn: 'About the store',
+      },
+    ];
+
+    for (const sp of settingsPatterns) {
+      const matched = sp.patterns.some((p) => lower.includes(p.toLowerCase()));
+      if (!matched) continue;
+
+      const value = settings[sp.settingKey];
+      if (!value || (typeof value === 'string' && !value.trim())) continue;
+
+      this.logger.log(`✅ FIX-B: Answering from settings (${sp.settingKey}) for: "${message.substring(0, 40)}"`);
+
+      // بناء رد طبيعي باستخدام LLM
+      try {
+        const prompt = isAr
+          ? `أنت مساعد متجر "${settings.storeName || ''}". العميل سأل: "${message}"\n\nالمعلومة المتوفرة (${sp.labelAr}): ${value}\n\nاكتب رد طبيعي ومختصر بالعربية يجيب على سؤال العميل. لا تضف معلومات غير موجودة.`
+          : `You're a store assistant for "${settings.storeName || ''}". Customer asked: "${message}"\n\nAvailable info (${sp.labelEn}): ${value}\n\nWrite a natural, concise reply answering the customer's question. Don't add info that isn't provided.`;
+
+        const completion = await this.openai.chat.completions.create({
+          model: settings.model || AI_DEFAULTS.model,
+          messages: [
+            { role: 'system', content: prompt },
+            { role: 'user', content: message },
+          ],
+          temperature: 0.3,
+          max_tokens: 300,
+        });
+
+        const reply = completion.choices[0]?.message?.content || '';
+        if (reply) {
+          return {
+            reply,
+            confidence: 0.85,
+            shouldHandoff: false,
+            intent: 'SUPPORT_QUERY',
+            ragAudit: {
+              answer_source: 'library',
+              similarity_score: 0,
+              verifier_result: 'SKIPPED',
+              final_decision: 'ANSWER',
+              retrieved_chunks: 0,
+              gate_a_passed: false,
+              gate_b_passed: false,
+            },
+          };
+        }
+      } catch (error) {
+        this.logger.warn(`FIX-B: LLM failed for settings answer, using raw value`);
+        // Fallback: إرجاع القيمة مباشرة
+        const label = isAr ? sp.labelAr : sp.labelEn;
+        return {
+          reply: `${label}: ${value}`,
+          confidence: 0.80,
+          shouldHandoff: false,
+          intent: 'SUPPORT_QUERY',
+          ragAudit: {
+            answer_source: 'library',
+            similarity_score: 0,
+            verifier_result: 'SKIPPED',
+            final_decision: 'ANSWER',
+            retrieved_chunks: 0,
+            gate_a_passed: false,
+            gate_b_passed: false,
+          },
+        };
+      }
+    }
+
+    return null; // لا يوجد مطابقة → استمر بالسلوك العادي
   }
 
   private checkDirectHandoff(
