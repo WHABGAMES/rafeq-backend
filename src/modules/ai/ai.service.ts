@@ -199,6 +199,32 @@ const GROUNDING_VERIFIER_MODEL = 'gpt-4o-mini';
 /** Max tokens for grounding verification response */
 const GROUNDING_VERIFICATION_MAX_TOKENS = 50;
 
+/** Chunk coverage score weights (top score vs average score) */
+const COVERAGE_SCORE_WEIGHTS = {
+  TOP_SCORE: 0.6,   // 60% weight for top matching chunk
+  AVG_SCORE: 0.4,   // 40% weight for average of all chunks
+};
+
+/** Grounding verification system prompt (Arabic) */
+const GROUNDING_VERIFICATION_SYSTEM_PROMPT = 
+  'أنت محقق دقيق. مهمتك التحقق من أن الإجابة المقدمة مدعومة بالكامل بالمصادر المتاحة. أجب فقط بـ YES أو NO متبوعة بسبب قصير إذا كانت NO.';
+
+/** Grounding verification user prompt template */
+const GROUNDING_VERIFICATION_USER_PROMPT = (answer: string, sources: string) => `هل الإجابة التالية مدعومة بالكامل بالمصادر المتاحة؟ لا تقبل أي معلومة غير موجودة في المصادر.
+
+الإجابة المقترحة:
+"""
+${answer}
+"""
+
+المصادر المتاحة:
+"""
+${sources}
+"""
+
+أجب YES إذا كل معلومة في الإجابة موجودة في المصادر.
+أجب NO: [سبب] إذا الإجابة تحتوي معلومات غير موجودة في المصادر.`;
+
 /** ✅ Intent Classification: نتيجة تصنيف نية الرسالة */
 interface IntentResult {
   intent: 'SMALLTALK' | 'SUPPORT_QUERY' | 'ORDER_QUERY' | 'HUMAN_REQUEST' | 'UNKNOWN';
@@ -1557,7 +1583,10 @@ ${chunksText}
     // Coverage based on number of chunks and their scores
     const avgScore = chunks.reduce((sum, c) => sum + c.score, 0) / chunks.length;
     const coverageFactor = Math.min(chunks.length / OPTIMAL_CHUNK_COUNT, 1.0);
-    return (topScore * 0.6 + avgScore * 0.4) * coverageFactor;
+    return (
+      topScore * COVERAGE_SCORE_WEIGHTS.TOP_SCORE +
+      avgScore * COVERAGE_SCORE_WEIGHTS.AVG_SCORE
+    ) * coverageFactor;
   }
 
   /**
@@ -1606,24 +1635,11 @@ ${chunksText}
         messages: [
           {
             role: 'system',
-            content: 'أنت محقق دقيق. مهمتك التحقق من أن الإجابة المقدمة مدعومة بالكامل بالمصادر المتاحة. أجب فقط بـ YES أو NO متبوعة بسبب قصير إذا كانت NO.',
+            content: GROUNDING_VERIFICATION_SYSTEM_PROMPT,
           },
           {
             role: 'user',
-            content: `هل الإجابة التالية مدعومة بالكامل بالمصادر المتاحة؟ لا تقبل أي معلومة غير موجودة في المصادر.
-
-الإجابة المقترحة:
-"""
-${answer}
-"""
-
-المصادر المتاحة:
-"""
-${chunksText}
-"""
-
-أجب YES إذا كل معلومة في الإجابة موجودة في المصادر.
-أجب NO: [سبب] إذا الإجابة تحتوي معلومات غير موجودة في المصادر.`,
+            content: GROUNDING_VERIFICATION_USER_PROMPT(answer, chunksText),
           },
         ],
         temperature: 0,
