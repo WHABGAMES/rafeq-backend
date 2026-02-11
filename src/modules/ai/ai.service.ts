@@ -91,6 +91,22 @@ export interface AISettings {
   welcomeMessage: string;
   fallbackMessage: string;
   handoffMessage: string;
+
+  // ✅ Level 2: Dynamic Thresholds
+  highSimilarityThreshold?: number; // Default: 0.85 - skip verifier
+  mediumSimilarityThreshold?: number; // Default: 0.72 - run verifier
+  lowSimilarityThreshold?: number; // Default: 0.5 - direct clarification
+  
+  // ✅ Level 2: Confidence Thresholds
+  answerConfidenceThreshold?: number; // Default: 0.75 - provide answer
+  clarifyConfidenceThreshold?: number; // Default: 0.5 - ask clarification
+  // Below clarifyConfidenceThreshold = handoff
+
+  // ✅ Level 2: Performance Settings
+  enableParallelSearch?: boolean; // Default: true
+  enableProductCache?: boolean; // Default: true
+  productCacheTTL?: number; // Default: 300 seconds
+  skipVerifierOnHighConfidence?: boolean; // Default: true
 }
 
 export interface ConversationContext {
@@ -160,10 +176,25 @@ const HANDOFF_OFFER_MESSAGES: Record<string, string> = {
   en: 'It seems your question is outside the information I have available. Would you like me to connect you with our support team?',
 };
 
-/** ✅ Intent Classification: نتيجة تصنيف نية الرسالة */
+/** ✅ Level 2: Extended Intent Classification with routing strategy */
+export enum IntentType {
+  GREETING = 'GREETING',
+  SMALLTALK = 'SMALLTALK',
+  PRODUCT_QUESTION = 'PRODUCT_QUESTION',
+  POLICY_SUPPORT_FAQ = 'POLICY_SUPPORT_FAQ',
+  COMPLAINT_ESCALATION = 'COMPLAINT_ESCALATION',
+  ORDER_QUERY = 'ORDER_QUERY',
+  HUMAN_REQUEST = 'HUMAN_REQUEST',
+  OUT_OF_SCOPE = 'OUT_OF_SCOPE',
+  UNKNOWN = 'UNKNOWN',
+}
+
+/** ✅ Level 2: Intent Result with routing strategy and allowed sources */
 interface IntentResult {
-  intent: 'SMALLTALK' | 'SUPPORT_QUERY' | 'ORDER_QUERY' | 'HUMAN_REQUEST' | 'UNKNOWN';
+  intent: IntentType;
   confidence: number;
+  strategy?: SearchPriority;
+  allowedSources?: ('library' | 'products')[];
 }
 
 /** أنماط الأسئلة البسيطة التي لا تحتاج RAG */
@@ -191,15 +222,29 @@ const THANKS_PATTERNS = [
   'thank', 'thanks', 'thx',
 ];
 
-/** مخرجات التدقيق الداخلي لكل رد */
+/** ✅ Level 2: Extended audit interface with confidence breakdown and citations */
 export interface RagAudit {
   answer_source: 'library' | 'product' | 'tool' | 'greeting' | 'none';
   similarity_score: number;
   verifier_result: 'YES' | 'NO' | 'SKIPPED';
-  final_decision: 'ANSWER' | 'BLOCKED';
+  final_decision: 'ANSWER' | 'CLARIFY' | 'HANDOFF' | 'BLOCKED';
   retrieved_chunks: number;
   gate_a_passed: boolean;
   gate_b_passed: boolean;
+  // ✅ Level 2: Unified confidence breakdown
+  confidence_breakdown?: {
+    similarity_weight: number;
+    intent_weight: number;
+    verifier_weight: number;
+    coverage_weight: number;
+    final_confidence: number;
+  };
+  // ✅ Level 2: Internal citations (chunkId mapping)
+  citations?: Array<{ chunkId: string; claim: string }>;
+  // ✅ Level 2: Rejection reason for analytics
+  rejection_reason?: 'GATE_A' | 'GATE_B' | 'GROUNDING' | 'LOW_CONFIDENCE' | 'OUT_OF_SCOPE';
+  // ✅ Level 2: Intent tracking
+  detected_intent?: IntentType;
 }
 
 const AI_DEFAULTS: AISettings = {
@@ -229,6 +274,25 @@ const AI_DEFAULTS: AISettings = {
   welcomeMessage: 'أهلاً وسهلاً! كيف يمكنني مساعدتك؟ 😊',
   fallbackMessage: 'عذراً، لم أتمكن من فهم طلبك. هل ترغب بتحويلك لأحد موظفينا؟',
   handoffMessage: 'سأحولك الآن لأحد أفراد فريقنا. سيتواصل معك قريباً! 🙋‍♂️',
+  // ✅ Level 2: Dynamic Thresholds
+  highSimilarityThreshold: 0.85,
+  mediumSimilarityThreshold: 0.72,
+  lowSimilarityThreshold: 0.5,
+  answerConfidenceThreshold: 0.75,
+  clarifyConfidenceThreshold: 0.5,
+  // ✅ Level 2: Performance Settings
+  enableParallelSearch: true,
+  enableProductCache: true,
+  productCacheTTL: 300,
+  skipVerifierOnHighConfidence: true,
+};
+
+/** ✅ Level 2: Confidence weights for unified scoring */
+const CONFIDENCE_WEIGHTS = {
+  SIMILARITY: 0.40,
+  INTENT: 0.20,
+  VERIFIER: 0.30,
+  COVERAGE: 0.10,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -584,27 +648,26 @@ export class AIService {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // 3. ✅ ORCHESTRATOR — تصنيف النية → قرار → تنفيذ
+    // 3. ✅ Level 2: ENHANCED ORCHESTRATOR — Intent Routing → Dynamic Strategy → Unified Confidence
     // ═══════════════════════════════════════════════════════════════════════════
 
     const lang = settings.language !== 'en' ? 'ar' : 'en';
 
-    // 3a. ✅ المهمة 1: تصنيف النية (Intent Classification)
-    const intentResult = await this.classifyIntent(message, settings);
-    this.logger.log(`🧠 Intent: ${intentResult.intent} (${intentResult.confidence})`);
+    // 3a. ✅ Level 2: Enhanced Intent Routing with strategy determination
+    const intentResult = await this.routeIntent(message, settings);
+    this.logger.log(`🧠 Intent: ${intentResult.intent} (confidence: ${intentResult.confidence}, strategy: ${intentResult.strategy || 'none'})`);
 
     // ──────────────────────────────────────────────────────────────────────────
-    // 3b. ✅ المهمة 4: SMALLTALK → رد اجتماعي بدون بحث
+    // 3b. ✅ SMALLTALK/GREETING → رد اجتماعي بدون بحث
     // ──────────────────────────────────────────────────────────────────────────
-    if (intentResult.intent === 'SMALLTALK') {
-      // ✅ تحديد نوع SMALLTALK (تحية / شكر / كلام عام)
+    if (intentResult.intent === IntentType.SMALLTALK || intentResult.intent === IntentType.GREETING) {
       const socialReply = this.generateSocialReply(message, settings);
       await this.resetFailedAttempts(context);
       return {
         reply: socialReply,
         confidence: intentResult.confidence,
         shouldHandoff: false,
-        intent: 'SMALLTALK',
+        intent: intentResult.intent,
         ragAudit: {
           answer_source: 'greeting',
           similarity_score: 0,
@@ -613,6 +676,7 @@ export class AIService {
           retrieved_chunks: 0,
           gate_a_passed: true,
           gate_b_passed: true,
+          detected_intent: intentResult.intent,
         },
       };
     }
@@ -620,95 +684,152 @@ export class AIService {
     // ──────────────────────────────────────────────────────────────────────────
     // 3c. ✅ HUMAN_REQUEST → تحقق من العداد ثم تحويل
     // ──────────────────────────────────────────────────────────────────────────
-    if (intentResult.intent === 'HUMAN_REQUEST') {
+    if (intentResult.intent === IntentType.HUMAN_REQUEST) {
       await this.handleHandoff(context, settings, 'CUSTOMER_REQUEST');
       return {
         reply: settings.handoffMessage || AI_DEFAULTS.handoffMessage,
         confidence: 1,
         shouldHandoff: true,
         handoffReason: 'CUSTOMER_REQUEST',
-        intent: 'HUMAN_REQUEST',
+        intent: intentResult.intent,
+        ragAudit: {
+          answer_source: 'none',
+          similarity_score: 0,
+          verifier_result: 'SKIPPED',
+          final_decision: 'HANDOFF',
+          retrieved_chunks: 0,
+          gate_a_passed: true,
+          gate_b_passed: true,
+          detected_intent: intentResult.intent,
+        },
+      };
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // 3d. ✅ COMPLAINT_ESCALATION → تحويل مباشر
+    // ──────────────────────────────────────────────────────────────────────────
+    if (intentResult.intent === IntentType.COMPLAINT_ESCALATION) {
+      await this.handleHandoff(context, settings, 'COMPLAINT');
+      return {
+        reply: 'أنا آسف لما حصل. سأحولك لأحد مسؤولينا للمساعدة. 🙏',
+        confidence: 1,
+        shouldHandoff: true,
+        handoffReason: 'COMPLAINT',
+        intent: intentResult.intent,
+        ragAudit: {
+          answer_source: 'none',
+          similarity_score: 0,
+          verifier_result: 'SKIPPED',
+          final_decision: 'HANDOFF',
+          retrieved_chunks: 0,
+          gate_a_passed: true,
+          gate_b_passed: true,
+          rejection_reason: 'OUT_OF_SCOPE',
+          detected_intent: intentResult.intent,
+        },
+      };
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // 3e. ✅ OUT_OF_SCOPE → رفض مهذب
+    // ──────────────────────────────────────────────────────────────────────────
+    if (intentResult.intent === IntentType.OUT_OF_SCOPE) {
+      return {
+        reply: lang === 'ar' 
+          ? 'عذراً، هذا السؤال خارج نطاق تخصصي. أنا هنا للمساعدة بأسئلة متعلقة بالمتجر ومنتجاته. 😊'
+          : 'Sorry, this question is outside my scope. I\'m here to help with store and product questions. 😊',
+        confidence: 0.9,
+        shouldHandoff: false,
+        intent: intentResult.intent,
         ragAudit: {
           answer_source: 'none',
           similarity_score: 0,
           verifier_result: 'SKIPPED',
           final_decision: 'ANSWER',
           retrieved_chunks: 0,
-          gate_a_passed: true,
-          gate_b_passed: true,
+          gate_a_passed: false,
+          gate_b_passed: false,
+          rejection_reason: 'OUT_OF_SCOPE',
+          detected_intent: intentResult.intent,
         },
       };
     }
 
     // ──────────────────────────────────────────────────────────────────────────
-    // 3d. ✅ ORDER_QUERY → أدوات مباشرة (بدون RAG)
+    // 3f. ✅ ORDER_QUERY → أدوات مباشرة (بدون RAG)
     // ──────────────────────────────────────────────────────────────────────────
-    if (intentResult.intent === 'ORDER_QUERY') {
+    if (intentResult.intent === IntentType.ORDER_QUERY) {
       return this.handleOrderQuery(message, context, settings);
     }
 
     // ──────────────────────────────────────────────────────────────────────────
-    // 3e. ✅ UNKNOWN → طلب توضيح (مع عداد)
+    // 3g. ✅ UNKNOWN → طلب توضيح (مع عداد)
     // ──────────────────────────────────────────────────────────────────────────
-    if (intentResult.intent === 'UNKNOWN') {
-      return this.handleNoMatch(context, settings, lang, 'UNKNOWN');
+    if (intentResult.intent === IntentType.UNKNOWN) {
+      return this.handleNoMatch(context, settings, lang, intentResult.intent);
     }
 
     // ──────────────────────────────────────────────────────────────────────────
-    // 3f. ✅ المهمة 2+3: SUPPORT_QUERY → بحث حسب search_mode
+    // 3h. ✅ Level 2: PRODUCT_QUESTION / POLICY_SUPPORT_FAQ → Enhanced RAG with unified ranking
     // ──────────────────────────────────────────────────────────────────────────
 
-    // ✅ المهمة 2: فرض search_mode
-    const searchMode = settings.searchPriority || SearchPriority.LIBRARY_THEN_PRODUCTS;
-    this.logger.log(`🔍 Search mode: ${searchMode}`);
-
-    const ragResult = await this.ragRetrieve(message, context, settings);
+    // ✅ Level 2: Use unified ranking for mixed sources
+    const ragResult = settings.searchPriority === SearchPriority.LIBRARY_THEN_PRODUCTS
+      ? await this.unifiedRanking(message, context, settings)
+      : await this.ragRetrieve(message, context, settings);
 
     this.logger.log(`🔍 RAG Result`, {
       conversationId: context.conversationId,
       source: ragResult.source,
       topScore: ragResult.topScore.toFixed(3),
       chunksFound: ragResult.chunks.length,
-      gateA: ragResult.gateAPassed ? 'PASS' : 'FAIL',
     });
 
-    // ✅ بوابة A: عتبة التشابه
-    if (!ragResult.gateAPassed) {
-      this.logger.log(`🚫 Gate A FAILED: score=${ragResult.topScore.toFixed(3)} < ${SIMILARITY_THRESHOLD}, source=${ragResult.source}`);
-
-      // ✅ FIX-B: قبل إرجاع NO_MATCH — جرّب الإجابة من إعدادات المتجر
-      // أسئلة مثل "وش اسم المتجر" و"وش ساعات العمل" يمكن الرد عليها من الإعدادات مباشرة
+    // ✅ Level 2: Dynamic threshold-based decision
+    const highThreshold = settings.highSimilarityThreshold ?? 0.85;
+    // const mediumThreshold = settings.mediumSimilarityThreshold ?? 0.72; // Reserved for future use
+    const lowThreshold = settings.lowSimilarityThreshold ?? 0.5;
+    
+    // Check if score is too low for any answer
+    if (ragResult.topScore < lowThreshold) {
+      this.logger.log(`🚫 Score too low: ${ragResult.topScore.toFixed(3)} < ${lowThreshold} — direct clarification`);
+      
+      // Try settings-based answer first
       const settingsAnswer = await this.tryAnswerFromSettings(message, settings, context);
       if (settingsAnswer) {
         await this.resetFailedAttempts(context);
         return settingsAnswer;
       }
-
-      // ✅ المهمة 4: نظام المحاولات — لا نحظر مباشرة
-      return this.handleNoMatch(context, settings, lang, 'SUPPORT_QUERY');
+      
+      return this.handleNoMatch(context, settings, lang, intentResult.intent);
     }
 
-    // ✅ بوابة B: التحقق الدلالي
-    let gateBPassed = false;
-    if (ragResult.chunks.length > 0) {
-      gateBPassed = await this.verifyRelevance(message, ragResult.chunks);
-      this.logger.log(`🔎 Gate B (Verifier): ${gateBPassed ? 'PASS' : 'FAIL'}, source=${ragResult.source}`);
-
-      if (!gateBPassed) {
-        this.logger.log(`🚫 Gate B FAILED: verifier rejected chunks from ${ragResult.source}`);
-        // ✅ FIX-B: جرّب الإجابة من الإعدادات أيضاً عند فشل Gate B
+    // ✅ Level 2: Determine if we should skip verifier
+    const skipVerifier = (settings.skipVerifierOnHighConfidence ?? true) && ragResult.topScore >= highThreshold;
+    
+    let verifierPassed = true; // Default to true if skipped
+    
+    if (!skipVerifier && ragResult.chunks.length > 0) {
+      // Run verifier for medium confidence
+      verifierPassed = await this.verifyRelevance(message, ragResult.chunks);
+      this.logger.log(`🔎 Verifier: ${verifierPassed ? 'PASS' : 'FAIL'}, score: ${ragResult.topScore.toFixed(3)}`);
+      
+      if (!verifierPassed) {
+        // Try settings-based answer
         const settingsAnswer = await this.tryAnswerFromSettings(message, settings, context);
         if (settingsAnswer) {
           await this.resetFailedAttempts(context);
           return settingsAnswer;
         }
-
-        return this.handleNoMatch(context, settings, lang, 'SUPPORT_QUERY');
+        
+        return this.handleNoMatch(context, settings, lang, intentResult.intent);
       }
+    } else if (skipVerifier) {
+      this.logger.log(`⚡ Skipping verifier for high confidence: ${ragResult.topScore.toFixed(3)} >= ${highThreshold}`);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // 4. ✅ توليد الرد — من المقاطع المسترجعة فقط
+    // 4. ✅ Level 2: Answer Generation with Strict Grounding
     // ═══════════════════════════════════════════════════════════════════════════
 
     // ✅ نجح البحث → أعد العداد لصفر
@@ -742,7 +863,6 @@ export class AIService {
 
       let finalReply = assistantMsg.content || '';
       const toolsUsed: string[] = [];
-      // ✅ تتبع المصدر: من المكتبة أو المنتجات أو أداة
       let finalSource: RagAudit['answer_source'] = ragResult.source === 'product' ? 'product' : 'library';
 
       // تنفيذ الأدوات
@@ -782,20 +902,78 @@ export class AIService {
         finalSource = 'tool';
       }
 
+      // ✅ Level 2: Post-generation grounding validation
+      const groundingResult = await this.validateAnswerGrounding(finalReply, ragResult.chunks);
+      
+      if (!groundingResult.isGrounded) {
+        this.logger.warn(`🛡️ Grounding validation FAILED — blocking answer`);
+        
+        // Return "لا أقدر أجاوب" fallback
+        const noAnswerMessage = lang === 'ar'
+          ? 'لا أقدر أجاوب على هذا السؤال بناءً على المعلومات المتوفرة لدي حالياً.'
+          : 'I cannot answer this question based on the information currently available to me.';
+        
+        return {
+          reply: noAnswerMessage,
+          confidence: 0,
+          shouldHandoff: false,
+          intent: intentResult.intent,
+          ragAudit: {
+            answer_source: 'none',
+            similarity_score: ragResult.topScore,
+            verifier_result: verifierPassed ? 'YES' : 'NO',
+            final_decision: 'BLOCKED',
+            retrieved_chunks: ragResult.chunks.length,
+            gate_a_passed: true,
+            gate_b_passed: verifierPassed,
+            rejection_reason: 'GROUNDING',
+            detected_intent: intentResult.intent,
+          },
+        };
+      }
+
+      // ✅ Level 2: Calculate unified confidence
+      const confidenceCalc = this.calculateUnifiedConfidence({
+        similarityScore: ragResult.topScore,
+        intentConfidence: intentResult.confidence,
+        verifierPassed,
+        retrievedChunks: ragResult.chunks.length,
+      });
+
+      this.logger.log(`📊 Unified Confidence: ${confidenceCalc.finalConfidence.toFixed(3)} (sim: ${confidenceCalc.breakdown.similarity_weight.toFixed(2)}, intent: ${confidenceCalc.breakdown.intent_weight.toFixed(2)}, verifier: ${confidenceCalc.breakdown.verifier_weight.toFixed(2)}, coverage: ${confidenceCalc.breakdown.coverage_weight.toFixed(2)})`);
+
+      // ✅ Level 2: Confidence-based decision
+      const answerThreshold = settings.answerConfidenceThreshold ?? 0.75;
+      const clarifyThreshold = settings.clarifyConfidenceThreshold ?? 0.5;
+
+      if (confidenceCalc.finalConfidence < clarifyThreshold) {
+        // Low confidence → handoff or clarify
+        this.logger.log(`⚠️ Low confidence (${confidenceCalc.finalConfidence.toFixed(3)} < ${clarifyThreshold}) — requesting clarification`);
+        return this.handleNoMatch(context, settings, lang, intentResult.intent);
+      } else if (confidenceCalc.finalConfidence < answerThreshold) {
+        // Medium confidence → provide answer with clarification offer
+        this.logger.log(`⚠️ Medium confidence (${confidenceCalc.finalConfidence.toFixed(3)} < ${answerThreshold}) — answering with caveat`);
+        const caveat = lang === 'ar' ? '\n\nإذا كنت تحتاج تفاصيل أكثر، تقدر تسألني! 😊' : '\n\nIf you need more details, feel free to ask! 😊';
+        finalReply = finalReply + caveat;
+      }
+
       return {
         reply: finalReply,
-        confidence: 0.9,
-        intent: 'SUPPORT_QUERY',
+        confidence: confidenceCalc.finalConfidence,
+        intent: intentResult.intent,
         shouldHandoff: false,
         toolsUsed,
         ragAudit: {
           answer_source: finalSource,
           similarity_score: ragResult.topScore,
-          verifier_result: gateBPassed ? 'YES' : 'SKIPPED',
+          verifier_result: skipVerifier ? 'SKIPPED' : (verifierPassed ? 'YES' : 'NO'),
           final_decision: 'ANSWER',
           retrieved_chunks: ragResult.chunks.length,
-          gate_a_passed: ragResult.gateAPassed,
-          gate_b_passed: gateBPassed,
+          gate_a_passed: true,
+          gate_b_passed: verifierPassed,
+          confidence_breakdown: confidenceCalc.breakdown,
+          citations: groundingResult.citations,
+          detected_intent: intentResult.intent,
         },
       };
     } catch (error) {
@@ -946,7 +1124,7 @@ export class AIService {
     context: ConversationContext,
     settings: AISettings,
     lang: string,
-    intentType: string,
+    intentType: IntentType | string,
   ): Promise<AIResponse> {
     const maxAttempts = settings.handoffAfterFailures || AI_DEFAULTS.handoffAfterFailures;
 
@@ -971,10 +1149,12 @@ export class AIService {
           answer_source: 'none',
           similarity_score: 0,
           verifier_result: 'NO',
-          final_decision: 'BLOCKED',
+          final_decision: 'CLARIFY',
           retrieved_chunks: 0,
           gate_a_passed: false,
           gate_b_passed: false,
+          rejection_reason: 'LOW_CONFIDENCE',
+          detected_intent: typeof intentType === 'string' ? undefined : intentType,
         },
       };
     }
@@ -995,10 +1175,12 @@ export class AIService {
           answer_source: 'none',
           similarity_score: 0,
           verifier_result: 'NO',
-          final_decision: 'BLOCKED',
+          final_decision: 'HANDOFF',
           retrieved_chunks: 0,
           gate_a_passed: false,
           gate_b_passed: false,
+          rejection_reason: 'LOW_CONFIDENCE',
+          detected_intent: typeof intentType === 'string' ? undefined : intentType,
         },
       };
     }
@@ -1635,6 +1817,280 @@ ${chunksText}
     }
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🎯 LEVEL 2: UNIFIED CONFIDENCE & GROUNDING
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * ✅ Level 2: Calculate unified confidence score
+   * Combines: similarity (40%) + intent (20%) + verifier (30%) + coverage (10%)
+   */
+  private calculateUnifiedConfidence(params: {
+    similarityScore: number;
+    intentConfidence: number;
+    verifierPassed: boolean;
+    retrievedChunks: number;
+    targetChunks?: number;
+  }): {
+    finalConfidence: number;
+    breakdown: {
+      similarity_weight: number;
+      intent_weight: number;
+      verifier_weight: number;
+      coverage_weight: number;
+      final_confidence: number;
+    };
+  } {
+    const targetChunks = params.targetChunks || RAG_TOP_K;
+    
+    // Normalize similarity to 0-1 range
+    const normalizedSimilarity = Math.min(1, Math.max(0, params.similarityScore));
+    
+    // Verifier score: 1 if passed, 0 if failed
+    const verifierScore = params.verifierPassed ? 1.0 : 0.0;
+    
+    // Coverage score: ratio of retrieved chunks to target
+    const coverageScore = Math.min(1, params.retrievedChunks / targetChunks);
+    
+    // Calculate weighted confidence
+    const similarityWeight = normalizedSimilarity * CONFIDENCE_WEIGHTS.SIMILARITY;
+    const intentWeight = params.intentConfidence * CONFIDENCE_WEIGHTS.INTENT;
+    const verifierWeight = verifierScore * CONFIDENCE_WEIGHTS.VERIFIER;
+    const coverageWeight = coverageScore * CONFIDENCE_WEIGHTS.COVERAGE;
+    
+    const finalConfidence = similarityWeight + intentWeight + verifierWeight + coverageWeight;
+    
+    return {
+      finalConfidence,
+      breakdown: {
+        similarity_weight: similarityWeight,
+        intent_weight: intentWeight,
+        verifier_weight: verifierWeight,
+        coverage_weight: coverageWeight,
+        final_confidence: finalConfidence,
+      },
+    };
+  }
+
+  /**
+   * ✅ Level 2: Answer Grounding Validator
+   * Post-generation validation to ensure answer is fully supported by sources
+   * Returns true if answer is grounded, false otherwise
+   */
+  private async validateAnswerGrounding(
+    answer: string,
+    chunks: Array<{ title: string; content: string; answer?: string }>,
+  ): Promise<{ isGrounded: boolean; citations: Array<{ chunkId: string; claim: string }> }> {
+    if (!this.isApiKeyConfigured || chunks.length === 0) {
+      return { isGrounded: true, citations: [] }; // Skip if no API or no chunks
+    }
+
+    try {
+      const chunkTexts = chunks.map((c, i) => 
+        `[${i}] ${c.title}\n${c.content}${c.answer ? `\n${c.answer}` : ''}`
+      ).join('\n\n---\n\n');
+
+      const prompt = `أنت مدقق صرامة. هل الجواب التالي مدعوم بالكامل من المصادر؟
+
+المصادر:
+${chunkTexts}
+
+الجواب المقترح:
+${answer}
+
+قواعد:
+- كل ادّعاء يجب أن يكون مدعوم مباشرة من المصادر
+- إذا الجواب يضيف معلومات خارج المصادر = رد NO
+- إذا الجواب صحيح ومدعوم كاملاً = رد YES
+
+رد بـ JSON فقط:
+{"grounded": true/false, "citations": [{"chunkId": "0", "claim": "النص المدعوم"}]}`;
+
+      const response = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0,
+        max_tokens: 300,
+      });
+
+      const raw = (response.choices[0]?.message?.content || '').trim();
+      const cleaned = raw.replace(/```json|```/g, '').trim();
+      const result = JSON.parse(cleaned) as { grounded: boolean; citations: Array<{ chunkId: string; claim: string }> };
+
+      this.logger.log(`🛡️ Grounding validation: ${result.grounded ? 'PASS' : 'FAIL'}, citations: ${result.citations.length}`);
+
+      return {
+        isGrounded: result.grounded,
+        citations: result.citations || [],
+      };
+    } catch (error) {
+      this.logger.error('Grounding validation error', {
+        error: error instanceof Error ? error.message : 'Unknown',
+      });
+      // Conservative: assume not grounded on error
+      return { isGrounded: false, citations: [] };
+    }
+  }
+
+  /**
+   * ✅ Level 2: Enhanced Intent Router
+   * Routes messages to appropriate strategy based on intent and store settings
+   */
+  private async routeIntent(
+    message: string,
+    settings: AISettings,
+  ): Promise<IntentResult> {
+    // First, classify the intent
+    const intentResult = await this.classifyIntent(message, settings);
+    
+    // Determine strategy and allowed sources based on intent
+    let strategy: SearchPriority | undefined;
+    let allowedSources: ('library' | 'products')[] | undefined;
+    
+    switch (intentResult.intent) {
+      case IntentType.PRODUCT_QUESTION:
+        // Product questions should prioritize products
+        strategy = settings.searchPriority === SearchPriority.LIBRARY_ONLY 
+          ? SearchPriority.LIBRARY_ONLY 
+          : SearchPriority.PRODUCTS_ONLY;
+        allowedSources = strategy === SearchPriority.LIBRARY_ONLY ? ['library'] : ['products'];
+        break;
+        
+      case IntentType.POLICY_SUPPORT_FAQ:
+        // Policy/FAQ should prioritize library
+        strategy = settings.searchPriority === SearchPriority.PRODUCTS_ONLY
+          ? SearchPriority.PRODUCTS_ONLY
+          : SearchPriority.LIBRARY_ONLY;
+        allowedSources = strategy === SearchPriority.PRODUCTS_ONLY ? ['products'] : ['library'];
+        break;
+        
+      case IntentType.COMPLAINT_ESCALATION:
+        // Complaints should trigger handoff
+        strategy = undefined;
+        allowedSources = [];
+        break;
+        
+      case IntentType.OUT_OF_SCOPE:
+        // Out of scope - no search needed
+        strategy = undefined;
+        allowedSources = [];
+        break;
+        
+      default:
+        // Use store default for other intents
+        strategy = settings.searchPriority;
+        allowedSources = ['library', 'products'];
+        break;
+    }
+    
+    return {
+      ...intentResult,
+      strategy,
+      allowedSources,
+    };
+  }
+
+  /**
+   * ✅ Level 2: Unified Ranking for Mixed Sources
+   * Fetches top-K from both KB and products, reranks, respects priority
+   */
+  private async unifiedRanking(
+    message: string,
+    context: ConversationContext,
+    settings: AISettings,
+  ): Promise<{
+    chunks: Array<{ title: string; content: string; score: number; answer?: string }>;
+    topScore: number;
+    source: 'library' | 'product' | 'mixed';
+  }> {
+    const storeId = context.storeId;
+    const searchPriority = settings.searchPriority || SearchPriority.LIBRARY_THEN_PRODUCTS;
+
+    // Parallel search if enabled
+    const enableParallel = settings.enableParallelSearch ?? true;
+    
+    // Generate embedding for library search
+    const queryEmbedding = await this.generateEmbedding(message);
+    
+    let libraryResults: Array<{ title: string; content: string; score: number; id: string; answer?: string }> = [];
+    let productResults: { chunks: Array<{ title: string; content: string; score: number }>; topScore: number; gateAPassed: boolean } | null = null;
+
+    if (enableParallel && searchPriority === SearchPriority.LIBRARY_THEN_PRODUCTS && storeId && queryEmbedding) {
+      // Parallel fetch
+      [libraryResults, productResults] = await Promise.all([
+        this.semanticSearch(queryEmbedding, context.tenantId),
+        this.searchProducts(message, storeId),
+      ]);
+    } else {
+      // Sequential fetch
+      if (searchPriority !== SearchPriority.PRODUCTS_ONLY && queryEmbedding) {
+        libraryResults = await this.semanticSearch(queryEmbedding, context.tenantId);
+      }
+      if (searchPriority !== SearchPriority.LIBRARY_ONLY && storeId) {
+        productResults = await this.searchProducts(message, storeId);
+      }
+    }
+
+    // Collect all chunks with source tagging
+    const allChunks: Array<{ title: string; content: string; score: number; source: 'library' | 'product'; answer?: string }> = [];
+    
+    if (libraryResults && libraryResults.length > 0) {
+      allChunks.push(...libraryResults.map(c => ({ 
+        title: c.title, 
+        content: c.content, 
+        score: c.score, 
+        answer: c.answer, 
+        source: 'library' as const 
+      })));
+    }
+    
+    if (productResults && productResults.chunks.length > 0) {
+      allChunks.push(...productResults.chunks.map(c => ({ ...c, source: 'product' as const })));
+    }
+
+    if (allChunks.length === 0) {
+      return { chunks: [], topScore: 0, source: 'library' };
+    }
+
+    // Sort by score descending
+    allChunks.sort((a, b) => b.score - a.score);
+
+    // Respect priority by boosting scores
+    if (searchPriority === SearchPriority.LIBRARY_THEN_PRODUCTS) {
+      // Boost library scores by 10%
+      allChunks.forEach(c => {
+        if (c.source === 'library') c.score *= 1.1;
+      });
+      allChunks.sort((a, b) => b.score - a.score);
+    } else if (searchPriority === SearchPriority.PRODUCTS_ONLY) {
+      // Filter to products only
+      const productChunks = allChunks.filter(c => c.source === 'product');
+      return {
+        chunks: productChunks.slice(0, RAG_TOP_K),
+        topScore: productChunks[0]?.score || 0,
+        source: 'product',
+      };
+    } else if (searchPriority === SearchPriority.LIBRARY_ONLY) {
+      // Filter to library only
+      const libraryChunks = allChunks.filter(c => c.source === 'library');
+      return {
+        chunks: libraryChunks.slice(0, RAG_TOP_K),
+        topScore: libraryChunks[0]?.score || 0,
+        source: 'library',
+      };
+    }
+
+    // Take top K
+    const topChunks = allChunks.slice(0, RAG_TOP_K);
+    const hasBothSources = topChunks.some(c => c.source === 'library') && topChunks.some(c => c.source === 'product');
+
+    return {
+      chunks: topChunks.map(({ source, ...rest }) => rest), // Remove source tag from final output
+      topScore: topChunks[0]?.score || 0,
+      source: hasBothSources ? 'mixed' : topChunks[0]?.source || 'library',
+    };
+  }
+
   /**
    * ✅ المهمة 1: تصنيف نية الرسالة بالـ LLM (Intent Classification)
    * يحدد نوع الرسالة قبل أي بحث أو معالجة
@@ -1651,28 +2107,42 @@ ${chunksText}
     try {
       const lang = settings.language !== 'en' ? 'ar' : 'en';
       const systemPrompt = lang === 'ar'
-        ? `أنت محلل نوايا لمتجر إلكتروني. صنّف رسالة العميل إلى واحد فقط من الأنواع التالية.
+        ? `أنت محلل نوايا متقدم لمتجر إلكتروني. صنّف رسالة العميل إلى واحد فقط من الأنواع التالية.
 أجب فقط بـ JSON بدون أي نص آخر.
 
 الأنواع:
-- SMALLTALK: تحية فقط بدون سؤال (مثل: هلا، مرحبا، السلام عليكم، كيفك، اخبارك). ⚠️ إذا الرسالة تحتوي سؤال عن أي شيء (اسم، منتج، سعر، سياسة) فهي ليست SMALLTALK حتى لو بدأت بتحية.
-- SUPPORT_QUERY: أي سؤال يطلب معلومة — عن المتجر أو منتجاته أو خدماته أو أسعاره أو سياساته. أمثلة: "وش اسم المتجر"، "كم سعر المنتج"، "هل عندكم توصيل"، "وش اسم متجرك"، "ايش تبيعون"
+- GREETING: تحية بسيطة فقط (مثل: مرحبا، السلام عليكم، هلا، صباح الخير) بدون أي سؤال
+- SMALLTALK: كلام اجتماعي (مثل: كيفك، اخبارك، شلونك) بدون سؤال محدد
+- PRODUCT_QUESTION: سؤال عن منتج معين، سعر، توفر، مواصفات (مثل: كم سعر المنتج X، هل متوفر، مواصفات)
+- POLICY_SUPPORT_FAQ: سؤال عن سياسات المتجر، التوصيل، الإرجاع، ساعات العمل، معلومات عامة
+- COMPLAINT_ESCALATION: شكوى أو طلب تصعيد أو استياء (مثل: غير راضي، مشكلة، اشتكي)
 - ORDER_QUERY: استفسار عن حالة طلب أو شحنة أو تتبع (مثل: وين طلبي، رقم الشحنة)
 - HUMAN_REQUEST: طلب صريح للتحدث مع موظف أو شخص بشري
+- OUT_OF_SCOPE: سؤال خارج نطاق المتجر تماماً (مثل: سياسة، رياضة، طبخ)
 - UNKNOWN: لا يمكن تحديد النوع
 
-⚠️ قاعدة مهمة: إذا الرسالة تسأل عن اسم أو معلومة عن المتجر = SUPPORT_QUERY وليس SMALLTALK`
-        : `You are an intent classifier for an online store. Classify the customer message into exactly one type.
+⚠️ قواعد مهمة:
+- إذا الرسالة تسأل عن معلومة محددة = ليست GREETING/SMALLTALK
+- أسئلة المنتجات المحددة = PRODUCT_QUESTION
+- أسئلة السياسات العامة = POLICY_SUPPORT_FAQ`
+        : `You are an advanced intent classifier for an online store. Classify the customer message into exactly one type.
 Respond ONLY with JSON, no other text.
 
 Types:
-- SMALLTALK: Pure greeting with NO question (e.g., hi, hello, how are you). ⚠️ If the message asks about ANYTHING (name, product, price, policy), it is NOT SMALLTALK.
-- SUPPORT_QUERY: Any question requesting information — about the store, products, services, prices, or policies. Examples: "what's the store name", "what do you sell", "do you deliver"
-- ORDER_QUERY: Order status, shipping, tracking inquiry (e.g., where is my order, tracking number)
+- GREETING: Simple greeting only (e.g., hi, hello, good morning) without any question
+- SMALLTALK: Social talk (e.g., how are you, what's up) without specific question
+- PRODUCT_QUESTION: Question about a specific product, price, availability, specs
+- POLICY_SUPPORT_FAQ: Question about store policies, shipping, returns, hours, general info
+- COMPLAINT_ESCALATION: Complaint, escalation request, dissatisfaction
+- ORDER_QUERY: Order status, shipping, tracking inquiry
 - HUMAN_REQUEST: Explicit request to speak to a human agent
+- OUT_OF_SCOPE: Question completely outside store scope (politics, sports, cooking)
 - UNKNOWN: Cannot determine
 
-⚠️ Important rule: If the message asks about a name, info, or anything about the store = SUPPORT_QUERY, never SMALLTALK`;
+⚠️ Important rules:
+- If message asks for specific info = NOT GREETING/SMALLTALK
+- Specific product questions = PRODUCT_QUESTION
+- General policy questions = POLICY_SUPPORT_FAQ`;
 
       const response = await this.openai.chat.completions.create({
         model: 'gpt-4o-mini',
@@ -1686,16 +2156,40 @@ Types:
 
       const raw = (response.choices[0]?.message?.content || '').trim();
       const cleaned = raw.replace(/```json|```/g, '').trim();
-      const parsed = JSON.parse(cleaned) as IntentResult;
+      const parsed = JSON.parse(cleaned) as { intent: string; confidence: number };
 
-      // التحقق من صحة النتيجة
-      const validIntents = ['SMALLTALK', 'SUPPORT_QUERY', 'ORDER_QUERY', 'HUMAN_REQUEST', 'UNKNOWN'];
-      if (!validIntents.includes(parsed.intent)) {
-        return { intent: 'UNKNOWN', confidence: 0.5 };
+      // Map old intent names to new enum if needed
+      let mappedIntent: IntentType;
+      switch (parsed.intent) {
+        case 'GREETING':
+        case 'SMALLTALK':
+          mappedIntent = IntentType.SMALLTALK;
+          break;
+        case 'PRODUCT_QUESTION':
+          mappedIntent = IntentType.PRODUCT_QUESTION;
+          break;
+        case 'POLICY_SUPPORT_FAQ':
+        case 'SUPPORT_QUERY':
+          mappedIntent = IntentType.POLICY_SUPPORT_FAQ;
+          break;
+        case 'COMPLAINT_ESCALATION':
+          mappedIntent = IntentType.COMPLAINT_ESCALATION;
+          break;
+        case 'ORDER_QUERY':
+          mappedIntent = IntentType.ORDER_QUERY;
+          break;
+        case 'HUMAN_REQUEST':
+          mappedIntent = IntentType.HUMAN_REQUEST;
+          break;
+        case 'OUT_OF_SCOPE':
+          mappedIntent = IntentType.OUT_OF_SCOPE;
+          break;
+        default:
+          mappedIntent = IntentType.UNKNOWN;
       }
 
-      this.logger.log(`🧠 Intent: ${parsed.intent} (${parsed.confidence}) for: "${message.substring(0, 50)}"`);
-      return parsed;
+      this.logger.log(`🧠 Intent: ${mappedIntent} (${parsed.confidence}) for: "${message.substring(0, 50)}"`);
+      return { intent: mappedIntent, confidence: parsed.confidence };
 
     } catch (error) {
       this.logger.warn('Intent classification failed — using pattern fallback', {
@@ -1731,13 +2225,13 @@ Types:
       const humanKeywords = settings.handoffKeywords || AI_DEFAULTS.handoffKeywords;
       for (const kw of humanKeywords) {
         if (lower.includes(kw.toLowerCase())) {
-          return { intent: 'HUMAN_REQUEST', confidence: 0.95 };
+          return { intent: IntentType.HUMAN_REQUEST, confidence: 0.95 };
         }
       }
 
       // استفسار طلب
       if (this.isOrderInquiry(message)) {
-        return { intent: 'ORDER_QUERY', confidence: 0.90 };
+        return { intent: IntentType.ORDER_QUERY, confidence: 0.90 };
       }
 
       // فيه سؤال → لا نصنّف كـ SMALLTALK — نترك التصنيف للـ LLM
@@ -1748,12 +2242,12 @@ Types:
     if (lower.length < 30) {
       for (const p of GREETING_PATTERNS) {
         if (lower.includes(p.toLowerCase())) {
-          return { intent: 'SMALLTALK', confidence: 0.95 };
+          return { intent: IntentType.SMALLTALK, confidence: 0.95 };
         }
       }
       for (const p of THANKS_PATTERNS) {
         if (lower.includes(p.toLowerCase())) {
-          return { intent: 'SMALLTALK', confidence: 0.95 };
+          return { intent: IntentType.SMALLTALK, confidence: 0.95 };
         }
       }
     }
@@ -1762,13 +2256,13 @@ Types:
     const humanKeywords = settings.handoffKeywords || AI_DEFAULTS.handoffKeywords;
     for (const kw of humanKeywords) {
       if (lower.includes(kw.toLowerCase())) {
-        return { intent: 'HUMAN_REQUEST', confidence: 0.95 };
+        return { intent: IntentType.HUMAN_REQUEST, confidence: 0.95 };
       }
     }
 
     // استفسار طلب واضح
     if (this.isOrderInquiry(message)) {
-      return { intent: 'ORDER_QUERY', confidence: 0.90 };
+      return { intent: IntentType.ORDER_QUERY, confidence: 0.90 };
     }
 
     return null; // لا يمكن التحديد بـ pattern → يحتاج LLM
@@ -1786,20 +2280,24 @@ Types:
     const hasQuestion = questionWords.some((q) => lower.includes(q));
 
     if (hasQuestion) {
-      // فيه سؤال → SUPPORT_QUERY حتى لو الرسالة قصيرة
-      return { intent: 'SUPPORT_QUERY', confidence: 0.7 };
+      // فيه سؤال → Check if product or policy question
+      const productWords = ['منتج', 'سعر', 'product', 'price', 'buy', 'purchase'];
+      if (productWords.some(w => lower.includes(w))) {
+        return { intent: IntentType.PRODUCT_QUESTION, confidence: 0.7 };
+      }
+      return { intent: IntentType.POLICY_SUPPORT_FAQ, confidence: 0.7 };
     }
 
     const orderPatterns = ['طلب', 'طلبي', 'شحن', 'تتبع', 'order', 'track', 'shipping', '#'];
     if (orderPatterns.some((p) => lower.includes(p))) {
-      return { intent: 'ORDER_QUERY', confidence: 0.7 };
+      return { intent: IntentType.ORDER_QUERY, confidence: 0.7 };
     }
 
     // فقط إذا الرسالة قصيرة جداً وبدون أي سؤال → SMALLTALK
-    if (lower.length < 15) return { intent: 'SMALLTALK', confidence: 0.6 };
+    if (lower.length < 15) return { intent: IntentType.SMALLTALK, confidence: 0.6 };
 
     // افتراضي: سؤال دعم
-    return { intent: 'SUPPORT_QUERY', confidence: 0.6 };
+    return { intent: IntentType.POLICY_SUPPORT_FAQ, confidence: 0.6 };
   }
 
   /**

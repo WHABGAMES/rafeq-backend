@@ -158,6 +158,35 @@ class UpdateAISettingsDto {
 
   @IsOptional() @IsString()
   handoffMessage?: string;
+
+  // ✅ Level 2: Dynamic Thresholds
+  @IsOptional() @IsNumber()
+  highSimilarityThreshold?: number;
+
+  @IsOptional() @IsNumber()
+  mediumSimilarityThreshold?: number;
+
+  @IsOptional() @IsNumber()
+  lowSimilarityThreshold?: number;
+
+  @IsOptional() @IsNumber()
+  answerConfidenceThreshold?: number;
+
+  @IsOptional() @IsNumber()
+  clarifyConfidenceThreshold?: number;
+
+  // ✅ Level 2: Performance Settings
+  @IsOptional() @IsBoolean()
+  enableParallelSearch?: boolean;
+
+  @IsOptional() @IsBoolean()
+  enableProductCache?: boolean;
+
+  @IsOptional() @IsNumber()
+  productCacheTTL?: number;
+
+  @IsOptional() @IsBoolean()
+  skipVerifierOnHighConfidence?: boolean;
 }
 
 class AddKnowledgeDto {
