@@ -107,6 +107,12 @@ export interface AISettings {
   enableProductCache?: boolean; // Default: true
   productCacheTTL?: number; // Default: 300 seconds
   skipVerifierOnHighConfidence?: boolean; // Default: true
+  
+  // ✅ Level 2: Timeouts and Rate Limits
+  openaiTimeout?: number; // Default: 30000 ms (30 seconds)
+  productSearchTimeout?: number; // Default: 10000 ms (10 seconds)
+  maxRetries?: number; // Default: 2
+  retryDelay?: number; // Default: 1000 ms
 }
 
 export interface ConversationContext {
@@ -285,6 +291,11 @@ const AI_DEFAULTS: AISettings = {
   enableProductCache: true,
   productCacheTTL: 300,
   skipVerifierOnHighConfidence: true,
+  // ✅ Level 2: Timeouts and Rate Limits
+  openaiTimeout: 30000,
+  productSearchTimeout: 10000,
+  maxRetries: 2,
+  retryDelay: 1000,
 };
 
 /** ✅ Level 2: Confidence weights for unified scoring */
@@ -305,6 +316,12 @@ export class AIService {
   private readonly logger = new Logger(AIService.name);
   private openai: OpenAI;
   private readonly isApiKeyConfigured: boolean;
+  
+  // ✅ Level 2: In-memory cache for product search results
+  private readonly productCache = new Map<string, {
+    result: { chunks: Array<{ title: string; content: string; score: number }>; topScore: number; gateAPassed: boolean };
+    timestamp: number;
+  }>();
 
   constructor(
     private readonly configService: ConfigService,
@@ -353,6 +370,51 @@ export class AIService {
         `(API key: ${this.isApiKeyConfigured ? 'configured' : 'MISSING'}, ` +
         `model: ${AI_DEFAULTS.model})`,
     );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔧 UTILITY HELPERS — Timeouts and Retries
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * ✅ Level 2: Timeout wrapper for promises
+   */
+  private withTimeout<T>(promise: Promise<T>, timeoutMs: number, operation: string): Promise<T> {
+    return Promise.race([
+      promise,
+      new Promise<T>((_, reject) =>
+        setTimeout(() => reject(new Error(`${operation} timed out after ${timeoutMs}ms`)), timeoutMs)
+      ),
+    ]);
+  }
+
+  /**
+   * ✅ Level 2: Retry wrapper with exponential backoff
+   */
+  private async withRetry<T>(
+    fn: () => Promise<T>,
+    maxRetries: number,
+    retryDelay: number,
+    operation: string
+  ): Promise<T> {
+    let lastError: Error | undefined;
+    
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        return await fn();
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error('Unknown error');
+        
+        if (attempt < maxRetries) {
+          const delay = retryDelay * Math.pow(2, attempt); // Exponential backoff
+          this.logger.warn(`${operation} failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+    }
+    
+    this.logger.error(`${operation} failed after ${maxRetries + 1} attempts`);
+    throw lastError;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -686,6 +748,17 @@ export class AIService {
     // 3c. ✅ HUMAN_REQUEST → تحقق من العداد ثم تحويل
     // ──────────────────────────────────────────────────────────────────────────
     if (intentResult.intent === IntentType.HUMAN_REQUEST) {
+      // Emit analytics event for human request handoff
+      this.eventEmitter.emit('ai.handoff', {
+        tenantId: context.tenantId,
+        storeId: context.storeId,
+        conversationId: context.conversationId,
+        message,
+        reason: 'CUSTOMER_REQUEST',
+        intent: intentResult.intent,
+        timestamp: new Date(),
+      });
+      
       await this.handleHandoff(context, settings, 'CUSTOMER_REQUEST');
       return {
         reply: settings.handoffMessage || AI_DEFAULTS.handoffMessage,
@@ -710,6 +783,17 @@ export class AIService {
     // 3d. ✅ COMPLAINT_ESCALATION → تحويل مباشر
     // ──────────────────────────────────────────────────────────────────────────
     if (intentResult.intent === IntentType.COMPLAINT_ESCALATION) {
+      // Emit analytics event for complaint handoff
+      this.eventEmitter.emit('ai.handoff', {
+        tenantId: context.tenantId,
+        storeId: context.storeId,
+        conversationId: context.conversationId,
+        message,
+        reason: 'COMPLAINT',
+        intent: intentResult.intent,
+        timestamp: new Date(),
+      });
+      
       await this.handleHandoff(context, settings, 'COMPLAINT');
       const complaintMsg = lang === 'ar'
         ? 'أنا آسف لما حصل. سأحولك لأحد مسؤولينا للمساعدة. 🙏'
@@ -738,6 +822,16 @@ export class AIService {
     // 3e. ✅ OUT_OF_SCOPE → رفض مهذب
     // ──────────────────────────────────────────────────────────────────────────
     if (intentResult.intent === IntentType.OUT_OF_SCOPE) {
+      // Emit analytics event for out-of-scope question
+      this.eventEmitter.emit('ai.out_of_scope', {
+        tenantId: context.tenantId,
+        storeId: context.storeId,
+        conversationId: context.conversationId,
+        message,
+        intent: intentResult.intent,
+        timestamp: new Date(),
+      });
+      
       return {
         reply: lang === 'ar' 
           ? 'عذراً، هذا السؤال خارج نطاق تخصصي. أنا هنا للمساعدة بأسئلة متعلقة بالمتجر ومنتجاته. 😊'
@@ -777,10 +871,10 @@ export class AIService {
     // 3h. ✅ Level 2: PRODUCT_QUESTION / POLICY_SUPPORT_FAQ → Enhanced RAG with unified ranking
     // ──────────────────────────────────────────────────────────────────────────
 
-    // ✅ Level 2: Use unified ranking for mixed sources
+    // ✅ Level 2: Use unified ranking for mixed sources, pass intent to enforce allowed sources
     const ragResult = settings.searchPriority === SearchPriority.LIBRARY_THEN_PRODUCTS
-      ? await this.unifiedRanking(message, context, settings)
-      : await this.ragRetrieve(message, context, settings);
+      ? await this.unifiedRanking(message, context, settings, intentResult)
+      : await this.ragRetrieve(message, context, settings, intentResult);
 
     this.logger.log(`🔍 RAG Result`, {
       conversationId: context.conversationId,
@@ -789,14 +883,32 @@ export class AIService {
       chunksFound: ragResult.chunks.length,
     });
 
-    // ✅ Level 2: Dynamic threshold-based decision
+    // ✅ Level 2: Dynamic threshold-based decision with medium threshold
     const highThreshold = settings.highSimilarityThreshold ?? 0.85;
+    const mediumThreshold = settings.mediumSimilarityThreshold ?? 0.72;
     const lowThreshold = settings.lowSimilarityThreshold ?? 0.5;
-    // TODO: Medium threshold (0.72) can be used for future tiered verifier strategy
+    
+    // ✅ Level 2: Tiered threshold logic:
+    // >= high: skip verifier
+    // between medium and high: run verifier
+    // between low and medium: force clarification (no answer generation)
+    // < low: clarification/handoff
     
     // Check if score is too low for any answer
     if (ragResult.topScore < lowThreshold) {
       this.logger.log(`🚫 Score too low: ${ragResult.topScore.toFixed(3)} < ${lowThreshold} — direct clarification`);
+      
+      // Emit analytics event for low confidence
+      this.eventEmitter.emit('ai.low_confidence', {
+        tenantId: context.tenantId,
+        storeId: context.storeId,
+        conversationId: context.conversationId,
+        message,
+        score: ragResult.topScore,
+        threshold: lowThreshold,
+        intent: intentResult.intent,
+        timestamp: new Date(),
+      });
       
       // Try settings-based answer first
       const settingsAnswer = await this.tryAnswerFromSettings(message, settings, context);
@@ -807,18 +919,48 @@ export class AIService {
       
       return this.handleNoMatch(context, settings, lang, intentResult.intent);
     }
+    
+    // ✅ Level 2: Between low and medium threshold → force clarification (no answer generation)
+    if (ragResult.topScore >= lowThreshold && ragResult.topScore < mediumThreshold) {
+      this.logger.log(`⚠️ Score between low and medium: ${ragResult.topScore.toFixed(3)} (${lowThreshold}-${mediumThreshold}) — forcing clarification`);
+      
+      // Emit analytics event for medium-low confidence
+      this.eventEmitter.emit('ai.medium_low_confidence', {
+        tenantId: context.tenantId,
+        storeId: context.storeId,
+        conversationId: context.conversationId,
+        message,
+        score: ragResult.topScore,
+        thresholds: { low: lowThreshold, medium: mediumThreshold },
+        intent: intentResult.intent,
+        timestamp: new Date(),
+      });
+      
+      return this.handleNoMatch(context, settings, lang, intentResult.intent);
+    }
 
-    // ✅ Level 2: Determine if we should skip verifier
+    // ✅ Level 2: Determine if we should skip verifier (score >= high threshold)
     const skipVerifier = (settings.skipVerifierOnHighConfidence ?? true) && ragResult.topScore >= highThreshold;
     
     let verifierPassed = true; // Default to true if skipped
     
     if (!skipVerifier && ragResult.chunks.length > 0) {
-      // Run verifier for medium confidence
+      // Run verifier for medium-high confidence (between medium and high thresholds)
       verifierPassed = await this.verifyRelevance(message, ragResult.chunks);
       this.logger.log(`🔎 Verifier: ${verifierPassed ? 'PASS' : 'FAIL'}, score: ${ragResult.topScore.toFixed(3)}`);
       
       if (!verifierPassed) {
+        // Emit analytics event for verifier failure (Gate B)
+        this.eventEmitter.emit('ai.gate_b_failed', {
+          tenantId: context.tenantId,
+          storeId: context.storeId,
+          conversationId: context.conversationId,
+          message,
+          score: ragResult.topScore,
+          intent: intentResult.intent,
+          timestamp: new Date(),
+        });
+        
         // Try settings-based answer
         const settingsAnswer = await this.tryAnswerFromSettings(message, settings, context);
         if (settingsAnswer) {
@@ -911,6 +1053,18 @@ export class AIService {
       
       if (!groundingResult.isGrounded) {
         this.logger.warn(`🛡️ Grounding validation FAILED — blocking answer`);
+        
+        // Emit analytics event for grounding failure
+        this.eventEmitter.emit('ai.grounding_failed', {
+          tenantId: context.tenantId,
+          storeId: context.storeId,
+          conversationId: context.conversationId,
+          message,
+          answer: finalReply,
+          intent: intentResult.intent,
+          score: ragResult.topScore,
+          timestamp: new Date(),
+        });
         
         // Return "لا أقدر أجاوب" fallback
         const noAnswerMessage = lang === 'ar'
@@ -1138,6 +1292,18 @@ export class AIService {
 
     this.logger.log(`📊 Failed attempts: ${currentAttempts}/${maxAttempts} for conversation ${context.conversationId} (intent: ${intentType})`);
 
+    // ✅ Level 2: Track unanswered question for learning loop
+    this.eventEmitter.emit('ai.unanswered_question', {
+      tenantId: context.tenantId,
+      storeId: context.storeId,
+      conversationId: context.conversationId,
+      message: context.previousMessages[context.previousMessages.length - 1]?.content || '',
+      attempt: currentAttempts,
+      maxAttempts,
+      intent: typeof intentType === 'string' ? intentType : intentType,
+      timestamp: new Date(),
+    });
+
     // ✅ لم يصل للحد → اطلب توضيح
     if (currentAttempts < maxAttempts) {
       const clarifyMsgs = CLARIFICATION_MESSAGES[lang] || CLARIFICATION_MESSAGES.ar;
@@ -1167,6 +1333,17 @@ export class AIService {
     this.logger.log(`🔄 Max attempts reached (${currentAttempts}/${maxAttempts}) — offering handoff`);
 
     if (settings.autoHandoff) {
+      // Emit handoff analytics event
+      this.eventEmitter.emit('ai.handoff', {
+        tenantId: context.tenantId,
+        storeId: context.storeId,
+        conversationId: context.conversationId,
+        message: context.previousMessages[context.previousMessages.length - 1]?.content || '',
+        reason: 'NO_MATCH_AFTER_MAX_ATTEMPTS',
+        intent: typeof intentType === 'string' ? intentType : intentType,
+        timestamp: new Date(),
+      });
+      
       // تحويل تلقائي
       await this.handleHandoff(context, settings, 'NO_MATCH_AFTER_MAX_ATTEMPTS');
       return {
@@ -1537,24 +1714,36 @@ ${chunksText}
    * 2. يبحث في المصدر/المصادر المطلوبة
    * 3. فحص عتبة التشابه (Gate A)
    * 4. يرجع النتائج مع حالة البوابات وmetadata عن المصدر
+   * ✅ Level 2: Enforces allowed sources from intent routing
    */
   private async ragRetrieve(
     message: string,
     context: ConversationContext,
     settings: AISettings,
+    intentResult?: IntentResult,
   ): Promise<{
     chunks: Array<{ title: string; content: string; score: number; answer?: string }>;
     topScore: number;
     gateAPassed: boolean;
     source: 'library' | 'product' | 'mixed';
   }> {
-    const sp = settings.searchPriority || SearchPriority.LIBRARY_THEN_PRODUCTS;
-    this.logger.log(`🔍 RAG Retrieve: searchPriority=${sp}, storeId=${context.storeId || 'none'}`);
+    // ✅ Level 2: Respect intent-based allowed sources
+    const allowedSources = intentResult?.allowedSources || ['library', 'products'];
+    const canSearchLibrary = allowedSources.includes('library');
+    const canSearchProducts = allowedSources.includes('products');
+    
+    if (allowedSources.length === 0) {
+      this.logger.log('🚫 Intent restricts all sources - no search allowed');
+      return { chunks: [], topScore: 0, gateAPassed: false, source: 'library' };
+    }
+    
+    const sp = intentResult?.strategy || settings.searchPriority || SearchPriority.LIBRARY_THEN_PRODUCTS;
+    this.logger.log(`🔍 RAG Retrieve: searchPriority=${sp}, storeId=${context.storeId || 'none'}, allowedSources=${allowedSources.join(', ')}`);
 
     // ═══════════════════════════════════════════════════════════════════════════
     // MODE 1: PRODUCTS_ONLY — البحث فقط في المنتجات
     // ═══════════════════════════════════════════════════════════════════════════
-    if (sp === SearchPriority.PRODUCTS_ONLY) {
+    if (sp === SearchPriority.PRODUCTS_ONLY && canSearchProducts) {
       this.logger.log('🛒 Search mode: PRODUCTS_ONLY');
       
       if (!context.storeId) {
@@ -1562,14 +1751,14 @@ ${chunksText}
         return { chunks: [], topScore: 0, gateAPassed: false, source: 'product' };
       }
 
-      const productResult = await this.searchProducts(message, context.storeId);
+      const productResult = await this.searchProducts(message, context.storeId, settings);
       return { ...productResult, source: 'product' };
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // MODE 2: LIBRARY_ONLY — البحث فقط في المكتبة
     // ═══════════════════════════════════════════════════════════════════════════
-    if (sp === SearchPriority.LIBRARY_ONLY) {
+    if (sp === SearchPriority.LIBRARY_ONLY && canSearchLibrary) {
       this.logger.log('📚 Search mode: LIBRARY_ONLY');
       
       // توليد embedding
@@ -1601,6 +1790,16 @@ ${chunksText}
       };
     }
 
+    // ✅ Level 2: If intent restricts source but mode doesn't match, return empty
+    if (!canSearchLibrary && sp !== SearchPriority.PRODUCTS_ONLY) {
+      this.logger.log('🚫 Intent restricts library search but mode requires it');
+      return { chunks: [], topScore: 0, gateAPassed: false, source: 'library' };
+    }
+    if (!canSearchProducts && sp !== SearchPriority.LIBRARY_ONLY) {
+      this.logger.log('🚫 Intent restricts product search but mode requires it');
+      return { chunks: [], topScore: 0, gateAPassed: false, source: 'library' };
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // MODE 3: LIBRARY_THEN_PRODUCTS — البحث في المكتبة أولاً، ثم المنتجات
     // ═══════════════════════════════════════════════════════════════════════════
@@ -1610,9 +1809,9 @@ ${chunksText}
     const queryEmbedding = await this.generateEmbedding(message);
     let libraryResults: Array<{ title: string; content: string; score: number; answer?: string }> = [];
     
-    if (queryEmbedding) {
+    if (canSearchLibrary && queryEmbedding) {
       libraryResults = await this.semanticSearch(queryEmbedding, context.tenantId);
-    } else {
+    } else if (canSearchLibrary) {
       this.logger.warn('Failed to generate query embedding — trying keyword search');
       const fallback = await this.fallbackKeywordSearch(message, context.tenantId);
       libraryResults = fallback.chunks;
@@ -1639,6 +1838,16 @@ ${chunksText}
     }
 
     // 3. المكتبة لم تنجح → نبحث في المنتجات
+    if (!canSearchProducts) {
+      this.logger.log('🚫 Products search not allowed by intent');
+      return {
+        chunks: libraryResults,
+        topScore: libraryResults.length > 0 ? libraryResults[0].score : 0,
+        gateAPassed: false,
+        source: 'library',
+      };
+    }
+    
     if (!context.storeId) {
       this.logger.warn('🚫 No storeId available for product search — returning library results (if any)');
       return {
@@ -1649,7 +1858,7 @@ ${chunksText}
       };
     }
 
-    const productResult = await this.searchProducts(message, context.storeId);
+    const productResult = await this.searchProducts(message, context.storeId, settings);
     
     if (productResult.gateAPassed) {
       this.logger.log(`🛒 Product match found: ${productResult.chunks.length} products`);
@@ -1730,11 +1939,33 @@ ${chunksText}
   private async searchProducts(
     message: string,
     storeId: string,
+    settings?: AISettings,
   ): Promise<{
     chunks: Array<{ title: string; content: string; score: number }>;
     topScore: number;
     gateAPassed: boolean;
   }> {
+    // ✅ Level 2: Check cache first if enabled
+    const enableCache = settings?.enableProductCache ?? true;
+    const cacheTTL = (settings?.productCacheTTL ?? 300) * 1000; // Convert to ms
+    
+    if (enableCache) {
+      // Generate cache key
+      const words = message.split(/\s+/).filter((w) => w.length > 2);
+      const keyword = words.slice(0, 3).join(' ').toLowerCase();
+      const cacheKey = `${storeId}:${keyword}`;
+      
+      // Check if cache entry exists and is still valid
+      const cached = this.productCache.get(cacheKey);
+      if (cached && (Date.now() - cached.timestamp) < cacheTTL) {
+        this.logger.log(`💾 Product cache HIT for key "${cacheKey}"`);
+        return cached.result;
+      }
+      
+      // Cache miss - fetch from API
+      this.logger.log(`🔍 Product cache MISS for key "${cacheKey}"`);
+    }
+    
     try {
       // جلب معلومات المتجر مع access token
       const store = await this.storeRepo.findOne({
@@ -1785,7 +2016,15 @@ ${chunksText}
 
       if (!response.data || response.data.length === 0) {
         this.logger.log(`🛒 No products found for keyword "${keyword}"`);
-        return { chunks: [], topScore: 0, gateAPassed: false };
+        const emptyResult = { chunks: [], topScore: 0, gateAPassed: false };
+        
+        // Cache empty results too (to avoid repeated API calls)
+        if (enableCache) {
+          const cacheKey = `${storeId}:${keyword.toLowerCase()}`;
+          this.productCache.set(cacheKey, { result: emptyResult, timestamp: Date.now() });
+        }
+        
+        return emptyResult;
       }
 
       // تحويل المنتجات إلى chunks
@@ -1807,11 +2046,30 @@ ${chunksText}
 
       this.logger.log(`🛒 Found ${chunks.length} products`);
 
-      return {
+      const result = {
         chunks,
         topScore: chunks.length > 0 ? 0.80 : 0,
         gateAPassed: chunks.length > 0,
       };
+      
+      // ✅ Level 2: Store result in cache
+      if (enableCache) {
+        const cacheKey = `${storeId}:${keyword.toLowerCase()}`;
+        this.productCache.set(cacheKey, { result, timestamp: Date.now() });
+        this.logger.log(`💾 Product result cached for key "${cacheKey}"`);
+        
+        // Clean up old cache entries (simple LRU-like cleanup)
+        if (this.productCache.size > 1000) {
+          const now = Date.now();
+          for (const [key, entry] of this.productCache.entries()) {
+            if ((now - entry.timestamp) > cacheTTL) {
+              this.productCache.delete(key);
+            }
+          }
+        }
+      }
+
+      return result;
     } catch (error) {
       this.logger.error('🛒 Product search failed', {
         error: error instanceof Error ? error.message : 'Unknown',
@@ -1931,10 +2189,10 @@ ${answer}
       this.logger.error('Grounding validation error', {
         error: error instanceof Error ? error.message : 'Unknown',
       });
-      // On error, be permissive to avoid blocking valid answers
-      // Log the error but assume grounded with no citations
-      this.logger.warn('⚠️ Grounding validator failed - assuming grounded to avoid false negative');
-      return { isGrounded: true, citations: [] };
+      // ✅ Level 2: STRICT grounding - BLOCK on error (no auto-accept)
+      // If validation fails due to error, assume NOT grounded to enforce "Zero خارج المصادر"
+      this.logger.warn('⚠️ Grounding validator failed - BLOCKING answer due to validation error (strict mode)');
+      return { isGrounded: false, citations: [] };
     }
   }
 
@@ -1999,48 +2257,61 @@ ${answer}
   /**
    * ✅ Level 2: Unified Ranking for Mixed Sources
    * Fetches top-K from both KB and products, reranks, respects priority
+   * ✅ Level 2: Enforces allowed sources from intent routing
    */
   private async unifiedRanking(
     message: string,
     context: ConversationContext,
     settings: AISettings,
+    intentResult?: IntentResult,
   ): Promise<{
     chunks: Array<{ title: string; content: string; score: number; answer?: string }>;
     topScore: number;
     source: 'library' | 'product' | 'mixed';
   }> {
     const storeId = context.storeId;
-    const searchPriority = settings.searchPriority || SearchPriority.LIBRARY_THEN_PRODUCTS;
+    const searchPriority = intentResult?.strategy || settings.searchPriority || SearchPriority.LIBRARY_THEN_PRODUCTS;
+
+    // ✅ Level 2: Respect intent-based allowed sources
+    const allowedSources = intentResult?.allowedSources || ['library', 'products'];
+    const canSearchLibrary = allowedSources.includes('library');
+    const canSearchProducts = allowedSources.includes('products');
+    
+    this.logger.log(`🔍 Unified Ranking: allowedSources=${allowedSources.join(', ')}, priority=${searchPriority}`);
+    
+    if (allowedSources.length === 0) {
+      return { chunks: [], topScore: 0, source: 'library' };
+    }
 
     // Parallel search if enabled
     const enableParallel = settings.enableParallelSearch ?? true;
     
     // Generate embedding for library search
-    const queryEmbedding = await this.generateEmbedding(message);
+    const queryEmbedding = canSearchLibrary ? await this.generateEmbedding(message) : null;
     
     let libraryResults: Array<{ title: string; content: string; score: number; id: string; answer?: string }> = [];
     let productResults: { chunks: Array<{ title: string; content: string; score: number }>; topScore: number; gateAPassed: boolean } | null = null;
 
-    if (enableParallel && searchPriority === SearchPriority.LIBRARY_THEN_PRODUCTS && storeId && queryEmbedding) {
+    if (enableParallel && searchPriority === SearchPriority.LIBRARY_THEN_PRODUCTS && storeId && canSearchLibrary && canSearchProducts && queryEmbedding) {
       // Parallel fetch
       [libraryResults, productResults] = await Promise.all([
         this.semanticSearch(queryEmbedding, context.tenantId),
-        this.searchProducts(message, storeId),
+        this.searchProducts(message, storeId, settings),
       ]);
     } else {
       // Sequential fetch
-      if (searchPriority !== SearchPriority.PRODUCTS_ONLY && queryEmbedding) {
+      if (canSearchLibrary && searchPriority !== SearchPriority.PRODUCTS_ONLY && queryEmbedding) {
         libraryResults = await this.semanticSearch(queryEmbedding, context.tenantId);
       }
-      if (searchPriority !== SearchPriority.LIBRARY_ONLY && storeId) {
-        productResults = await this.searchProducts(message, storeId);
+      if (canSearchProducts && searchPriority !== SearchPriority.LIBRARY_ONLY && storeId) {
+        productResults = await this.searchProducts(message, storeId, settings);
       }
     }
 
     // Collect all chunks with source tagging
     const allChunks: Array<{ title: string; content: string; score: number; source: 'library' | 'product'; answer?: string }> = [];
     
-    if (libraryResults && libraryResults.length > 0) {
+    if (canSearchLibrary && libraryResults && libraryResults.length > 0) {
       allChunks.push(...libraryResults.map(c => ({ 
         title: c.title, 
         content: c.content, 
@@ -2050,7 +2321,7 @@ ${answer}
       })));
     }
     
-    if (productResults && productResults.chunks.length > 0) {
+    if (canSearchProducts && productResults && productResults.chunks.length > 0) {
       allChunks.push(...productResults.chunks.map(c => ({ ...c, source: 'product' as const })));
     }
 
