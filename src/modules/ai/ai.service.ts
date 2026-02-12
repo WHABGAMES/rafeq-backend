@@ -715,26 +715,42 @@ export class AIService {
 
     // ──────────────────────────────────────────────────────────────────────────
     // 3b. ✅ SMALLTALK/GREETING → رد اجتماعي بدون بحث
+    //     ⚠️ حماية: إذا LLM قال SMALLTALK بس ما فيه أي pattern اجتماعي حقيقي
+    //     → يروح لـ Smart RAG بدل ما يرد رد عشوائي
     // ──────────────────────────────────────────────────────────────────────────
     if (intentResult.intent === IntentType.SMALLTALK || intentResult.intent === IntentType.GREETING) {
-      const socialReply = this.generateSocialReply(message, settings);
-      await this.resetFailedAttempts(context);
-      return {
-        reply: socialReply,
-        confidence: intentResult.confidence,
-        shouldHandoff: false,
-        intent: intentResult.intent,
-        ragAudit: {
-          answer_source: 'greeting',
-          similarity_score: 0,
-          verifier_result: 'SKIPPED',
-          final_decision: 'ANSWER',
-          retrieved_chunks: 0,
-          gate_a_passed: true,
-          gate_b_passed: true,
-          detected_intent: intentResult.intent,
-        },
-      };
+      const lowerMsg = message.trim().toLowerCase();
+      
+      // ✅ تحقق: هل الرسالة فيها pattern اجتماعي/تحية حقيقي؟
+      const isRealSocial = SOCIAL_PATTERNS.some((p) => lowerMsg.includes(p.toLowerCase()));
+      const isRealGreeting = PURE_GREETING_PATTERNS.some((p) => lowerMsg.includes(p.toLowerCase()));
+      const isRealThanks = THANKS_PATTERNS.some((p) => lowerMsg.includes(p.toLowerCase()));
+      
+      if (isRealSocial || isRealGreeting || isRealThanks) {
+        // ✅ فعلاً كلام اجتماعي → رد اجتماعي
+        const socialReply = this.generateSocialReply(message, settings);
+        await this.resetFailedAttempts(context);
+        return {
+          reply: socialReply,
+          confidence: intentResult.confidence,
+          shouldHandoff: false,
+          intent: intentResult.intent,
+          ragAudit: {
+            answer_source: 'greeting',
+            similarity_score: 0,
+            verifier_result: 'SKIPPED',
+            final_decision: 'ANSWER',
+            retrieved_chunks: 0,
+            gate_a_passed: true,
+            gate_b_passed: true,
+            detected_intent: intentResult.intent,
+          },
+        };
+      } else {
+        // ⚠️ LLM قال SMALLTALK بس ما فيه pattern حقيقي
+        // مثال: "وش اسمك" — مش تحية ولا كلام اجتماعي → نكمل لـ Smart RAG
+        this.logger.log(`⚠️ LLM said ${intentResult.intent} but no social pattern matched "${message}" — forwarding to Smart RAG`);
+      }
     }
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -812,62 +828,25 @@ export class AIService {
     }
 
     // ──────────────────────────────────────────────────────────────────────────
-    // 3e. ✅ OUT_OF_SCOPE → رفض مهذب
+    // 3e. ✅ OUT_OF_SCOPE → يروح لـ Smart RAG — GPT يقرر مع المكتبة الكاملة
+    //     مثال: "وش اسمك" → GPT يشوف المكتبة، ما يلقى شي → يرفض
+    //     مثال: "هل فيه ضمان" → GPT يشوف المكتبة، يلقى الجواب → يجاوب
+    //     السابق: كان يرفض مباشرة بدون ما يشيك المكتبة!
     // ──────────────────────────────────────────────────────────────────────────
-    if (intentResult.intent === IntentType.OUT_OF_SCOPE) {
-      // Emit analytics event for out-of-scope question
-      this.eventEmitter.emit('ai.out_of_scope', {
-        tenantId: context.tenantId,
-        storeId: context.storeId,
-        conversationId: context.conversationId,
-        message,
-        intent: intentResult.intent,
-        timestamp: new Date(),
-      });
-      
-      return {
-        reply: lang === 'ar' 
-          ? 'عذراً، هذا السؤال خارج نطاق تخصصي. أنا هنا للمساعدة بأسئلة متعلقة بالمتجر ومنتجاته. 😊'
-          : 'Sorry, this question is outside my scope. I\'m here to help with store and product questions. 😊',
-        confidence: 0.9,
-        shouldHandoff: false,
-        intent: intentResult.intent,
-        ragAudit: {
-          answer_source: 'none',
-          similarity_score: 0,
-          verifier_result: 'SKIPPED',
-          final_decision: 'ANSWER',
-          retrieved_chunks: 0,
-          gate_a_passed: false,
-          gate_b_passed: false,
-          rejection_reason: 'OUT_OF_SCOPE',
-          detected_intent: intentResult.intent,
-        },
-      };
-    }
 
     // ──────────────────────────────────────────────────────────────────────────
-    // 3f. ✅ ORDER_QUERY → أدوات مباشرة (بدون RAG)
+    // 3f. ✅ ORDER_QUERY → أدوات مباشرة (مع Smart RAG)
     // ──────────────────────────────────────────────────────────────────────────
     if (intentResult.intent === IntentType.ORDER_QUERY) {
       return this.handleOrderQuery(message, context, settings);
     }
 
     // ──────────────────────────────────────────────────────────────────────────
-    // 3g. ✅ UNKNOWN → طلب توضيح (مع عداد)
-    // ──────────────────────────────────────────────────────────────────────────
-    if (intentResult.intent === IntentType.UNKNOWN) {
-      return this.handleNoMatch(context, settings, lang, intentResult.intent);
-    }
-
-    // ──────────────────────────────────────────────────────────────────────────
-    // 3h. ✅ SMART RAG: PRODUCT_QUESTION / POLICY_SUPPORT_FAQ
-    // ──────────────────────────────────────────────────────────────────────────
-    // النظام الجديد: بدل 7 بوابات (embedding → threshold → verifier → ...)
-    // نستخدم نهج ذكي:
-    // 1. نجلب كل المقالات (أو نبحث بالكلمات إذا كثيرة)
-    // 2. نرسل المقالات + السؤال لـ GPT في call واحد
-    // 3. GPT يختار المقال المناسب ويجاوب — أو يقول "ما لقيت"
+    // 3g. ✅ SMART RAG: كل الأسئلة تروح هنا
+    //     GPT يقرأ المكتبة كاملة ويقرر:
+    //     - إذا الجواب موجود → يجاوب
+    //     - إذا مش موجود → يقول "خارج النطاق"
+    //     لا نحتاج OUT_OF_SCOPE أو UNKNOWN يقتلون السؤال قبل ما يوصل لهنا
     // ──────────────────────────────────────────────────────────────────────────
 
     try {
@@ -2021,7 +2000,9 @@ export class AIService {
 - "متى دوري" أو "كم المدة" = POLICY_SUPPORT_FAQ
 - إذا الرسالة تسأل عن معلومة محددة = ليست GREETING/SMALLTALK
 - أسئلة المنتجات المحددة (سعر، مواصفات) = PRODUCT_QUESTION
-- أسئلة السياسات العامة = POLICY_SUPPORT_FAQ`
+- أسئلة السياسات العامة = POLICY_SUPPORT_FAQ
+- SMALLTALK فقط للكلام الاجتماعي الحقيقي (كيفك، اخبارك) — أي سؤال يطلب معلومة (وش اسمك، من أنت، وش تسوي) = POLICY_SUPPORT_FAQ وليس SMALLTALK
+- أي رسالة فيها علامة استفهام أو تبدأ بـ "وش/ايش/شو/هل/كم/متى/وين/ليش/كيف" = ليست SMALLTALK`
         : `You are an advanced intent classifier for an online store. Classify the customer message into exactly one type.
 Respond ONLY with JSON, no other text.
 
