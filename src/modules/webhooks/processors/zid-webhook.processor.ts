@@ -14,7 +14,7 @@ import { Repository } from 'typeorm';
 import { Job } from 'bullmq';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ZidWebhooksService } from '../zid-webhooks.service';
-import { WebhookStatus, ZidEventType } from '@database/entities/webhook-event.entity';
+import { WebhookStatus } from '@database/entities/webhook-event.entity';
 import { WebhookLogAction } from '../entities/webhook-log.entity';
 import { Order, OrderStatus } from '@database/entities/order.entity';
 import { Customer, CustomerStatus } from '@database/entities/customer.entity';
@@ -78,54 +78,74 @@ export class ZidWebhookProcessor extends WorkerHost {
       let result: Record<string, unknown>;
 
       switch (eventType) {
-        // Orders
-        case ZidEventType.ORDER_NEW:
+        // Orders - تدعم كل الصيغ الممكنة من Zid
+        case 'new-order':
+        case 'order.new':
           result = await this.handleNewOrder(data, context);
           break;
-        case ZidEventType.ORDER_UPDATE:
-        case ZidEventType.ORDER_STATUS_UPDATE:
+        case 'order-update':
+        case 'order.update':
+        case 'order-status-update':
+        case 'order.status.update':
           result = await this.handleOrderUpdate(data, context);
           break;
-        case ZidEventType.ORDER_CANCELLED:
+        case 'order-cancelled':
+        case 'order.cancel':
+        case 'order.cancelled':
           result = await this.handleOrderCancelled(data, context);
           break;
-        case ZidEventType.ORDER_REFUNDED:
+        case 'order-refunded':
+        case 'order.refund':
+        case 'order.refunded':
           result = await this.handleOrderRefunded(data, context);
           break;
 
         // Customers
-        case ZidEventType.CUSTOMER_NEW:
+        case 'new-customer':
+        case 'customer.new':
+        case 'customer.create':
           result = await this.handleNewCustomer(data, context);
           break;
-        case ZidEventType.CUSTOMER_UPDATE:
+        case 'customer-update':
+        case 'customer.update':
           result = await this.handleCustomerUpdate(data, context);
           break;
 
         // Products
-        case ZidEventType.PRODUCT_CREATE:
-        case ZidEventType.PRODUCT_UPDATE:
-        case ZidEventType.PRODUCT_DELETE:
+        case 'product-create':
+        case 'product.create':
+        case 'product-update':
+        case 'product.update':
+        case 'product-delete':
+        case 'product.delete':
           result = await this.handleProductEvent(eventType, data, context);
           break;
 
         // Cart
-        case ZidEventType.ABANDONED_CART:
+        case 'abandoned-cart':
+        case 'cart.abandoned':
           result = await this.handleAbandonedCart(data, context);
           break;
 
         // Reviews
-        case ZidEventType.NEW_REVIEW:
+        case 'new-review':
+        case 'review.new':
+        case 'review.added':
           result = await this.handleNewReview(data, context);
           break;
 
         // Inventory
-        case ZidEventType.INVENTORY_LOW:
+        case 'inventory-low':
+        case 'inventory.low':
+        case 'product.quantity.low':
           result = await this.handleInventoryLow(data, context);
           break;
 
         // App
-        case ZidEventType.APP_INSTALLED:
-        case ZidEventType.APP_UNINSTALLED:
+        case 'app-installed':
+        case 'app.installed':
+        case 'app-uninstalled':
+        case 'app.uninstalled':
           result = { handled: true, action: eventType };
           this.eventEmitter.emit(eventType, { tenantId, storeId: internalStoreId, raw: data });
           break;
@@ -349,8 +369,8 @@ export class ZidWebhookProcessor extends WorkerHost {
   ): Promise<Record<string, unknown>> {
     this.logger.log(`Processing Zid ${eventType}`, { productId: data.id });
 
-    const emitEvent = eventType === ZidEventType.PRODUCT_CREATE ? 'product.created'
-      : eventType === ZidEventType.PRODUCT_DELETE ? 'product.deleted'
+    const emitEvent = (eventType === 'product-create' || eventType === 'product.create') ? 'product.created'
+      : (eventType === 'product-delete' || eventType === 'product.delete') ? 'product.deleted'
       : 'product.updated';
 
     this.eventEmitter.emit(emitEvent, {
