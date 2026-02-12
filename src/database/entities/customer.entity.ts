@@ -4,7 +4,8 @@
  * ║                                                                                ║
  * ║  📌 هذا الـ Entity يمثل عملاء المتاجر                                           ║
  * ║  كل عميل (Customer) ينتمي لمتجر (Store) واحد                                   ║
- * ║  العملاء يأتون من منصة سلة عبر الـ Webhooks                                    ║
+ * ║  العملاء يأتون من منصة سلة أو زد عبر الـ Webhooks                              ║
+ * ║  ✅ v4: إضافة zidCustomerId + جعل sallaCustomerId nullable                     ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -63,10 +64,19 @@ export interface CustomerMetadata {
   tags?: string[];
   customFields?: Record<string, any>;
   sallaData?: Record<string, any>;
+  zidData?: Record<string, any>;     // ✅ v4: بيانات زد الخام
 }
 
+/**
+ * ✅ v4: الفهارس الفريدة أصبحت مشروطة (conditional)
+ * لأن كل عميل قد يكون من سلة أو من زد — لكن ليس من كليهما
+ *
+ * ⚠️ ملاحظة: TypeORM لا يدعم where في @Index decorator بشكل كامل لجميع الحالات.
+ * الفهارس المشروطة تُنشأ عبر الـ Migration ولا تُدار بواسطة TypeORM sync.
+ * الـ decorator هنا توثيقي فقط — الفهارس الفعلية في:
+ * migrations/AddZidPlatformSupport1707753600000.ts
+ */
 @Entity('customers')
-@Index(['storeId', 'sallaCustomerId'], { unique: true })
 @Index(['storeId', 'phone'])
 @Index(['storeId', 'email'])
 @Index(['storeId', 'status'])
@@ -78,13 +88,31 @@ export class Customer extends BaseEntity {
   @Column({ name: 'store_id', type: 'uuid' })
   storeId: string;
 
+  /**
+   * ✅ v4: أصبح nullable — العميل قد يكون من زد وليس من سلة
+   * الفهرس الفريد المشروط: IDX_customers_store_salla_customer
+   */
   @Column({
     name: 'salla_customer_id',
     type: 'varchar',
     length: 50,
-    comment: 'معرف العميل في منصة سلة',
+    nullable: true,
+    comment: 'معرف العميل في منصة سلة (nullable — قد يكون عميل زد)',
   })
-  sallaCustomerId: string;
+  sallaCustomerId?: string;
+
+  /**
+   * ✅ v4: معرف العميل في منصة زد
+   * الفهرس الفريد المشروط: IDX_customers_store_zid_customer
+   */
+  @Column({
+    name: 'zid_customer_id',
+    type: 'varchar',
+    length: 50,
+    nullable: true,
+    comment: 'معرف العميل في منصة زد',
+  })
+  zidCustomerId?: string;
 
   @Column({
     name: 'first_name',
