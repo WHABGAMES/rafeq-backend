@@ -3,3 +3,4 @@
  */
 
 export * from './salla-webhook.dto';
+export * from './zid-webhook.dto';     // ✅ v4: إضافة زد
