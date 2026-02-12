@@ -1,221 +1,482 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║                RAFIQ PLATFORM - General Webhooks Service                       ║
+ * ║                RAFIQ PLATFORM - Salla Webhook DTOs                             ║
+ * ║                                                                                ║
+ * ║  تعريف شكل البيانات الواردة من سلة                                              ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsString, IsNumber, IsOptional, IsObject, ValidateNested } from 'class-validator';
+import { Type } from 'class-transformer';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
-// Entities
-import { WebhookEvent, WebhookStatus } from './entities/webhook-event.entity';
-import { WebhookLog, WebhookLogAction } from './entities/webhook-log.entity';
+/**
+ * 📌 ماهو DTO؟
+ * 
+ * DTO = Data Transfer Object
+ * يُعرّف شكل البيانات المتوقعة ويتحقق منها
+ * 
+ * فوائد:
+ * 1. Type Safety: TypeScript يعرف الأنواع
+ * 2. Validation: class-validator يتحقق من البيانات
+ * 3. Documentation: Swagger يولّد docs تلقائياً
+ * 4. Transform: class-transformer يحوّل البيانات
+ */
 
-// Services
-import { SallaWebhooksService } from './salla-webhooks.service';
+// ═══════════════════════════════════════════════════════════════════════════════
+// 📦 Salla Webhook Base DTO
+// ═══════════════════════════════════════════════════════════════════════════════
 
-interface ListWebhooksOptions {
+/**
+ * الشكل الأساسي لكل webhook من سلة
+ * 
+ * {
+ *   "event": "order.created",
+ *   "merchant": 123456,
+ *   "created_at": "2024-01-15T10:30:00.000Z",
+ *   "data": { ... }
+ * }
+ */
+export class SallaWebhookDto {
+  @ApiProperty({
+    description: 'نوع الحدث',
+    example: 'order.created',
+  })
+  @IsString()
+  event: string;
+
+  @ApiProperty({
+    description: 'معرّف المتجر في سلة',
+    example: 123456,
+  })
+  @IsNumber()
+  merchant: number;
+
+  @ApiProperty({
+    description: 'تاريخ إنشاء الحدث',
+    example: '2024-01-15T10:30:00.000Z',
+  })
+  @IsString()
+  created_at: string;
+
+  @ApiProperty({
+    description: 'بيانات الحدث',
+    type: 'object',
+  })
+  @IsObject()
+  data: Record<string, unknown>;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 🛒 Order Events DTOs
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * بيانات عنصر في الطلب
+ */
+export class SallaOrderItemDto {
+  @ApiProperty({ example: 123 })
+  @IsNumber()
+  id: number;
+
+  @ApiProperty({ example: 'SKU123' })
+  @IsString()
+  @IsOptional()
+  sku?: string;
+
+  @ApiProperty({ example: 'اسم المنتج' })
+  @IsString()
+  name: string;
+
+  @ApiProperty({ example: 2 })
+  @IsNumber()
+  quantity: number;
+
+  @ApiProperty({ example: 100.00 })
+  @IsNumber()
+  price: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  thumbnail?: string;
+}
+
+/**
+ * بيانات العميل
+ */
+export class SallaCustomerDto {
+  @ApiProperty({ example: 789 })
+  @IsNumber()
+  id: number;
+
+  @ApiProperty({ example: 'أحمد' })
+  @IsString()
+  first_name: string;
+
+  @ApiProperty({ example: 'محمد' })
+  @IsString()
+  last_name: string;
+
+  @ApiPropertyOptional({ example: 'ahmed@example.com' })
+  @IsString()
+  @IsOptional()
+  email?: string;
+
+  @ApiProperty({ example: '+966501234567' })
+  @IsString()
+  mobile: string;
+}
+
+/**
+ * بيانات عنوان الشحن
+ */
+export class SallaShippingAddressDto {
+  @ApiProperty({ example: 'الرياض' })
+  @IsString()
+  city: string;
+
+  @ApiPropertyOptional({ example: 'حي النخيل' })
+  @IsString()
+  @IsOptional()
+  district?: string;
+
+  @ApiPropertyOptional({ example: 'شارع الملك فهد' })
+  @IsString()
+  @IsOptional()
+  street?: string;
+
+  @ApiProperty({ example: 'SA' })
+  @IsString()
+  country: string;
+
+  @ApiPropertyOptional({ example: '12345' })
+  @IsString()
+  @IsOptional()
+  postal_code?: string;
+}
+
+/**
+ * بيانات الطلب الكاملة
+ */
+export class SallaOrderDataDto {
+  @ApiProperty({ example: 1001 })
+  @IsNumber()
+  id: number;
+
+  @ApiProperty({ example: 'ORD-123456' })
+  @IsString()
+  reference_id: string;
+
+  @ApiProperty({ example: 'created' })
+  @IsString()
+  status: string;
+
+  @ApiProperty({ example: 500.00 })
+  @IsNumber()
+  total: number;
+
+  @ApiProperty({ example: 'SAR' })
+  @IsString()
+  currency: string;
+
+  @ApiProperty({ type: SallaCustomerDto })
+  @ValidateNested()
+  @Type(() => SallaCustomerDto)
+  customer: SallaCustomerDto;
+
+  @ApiProperty({ type: [SallaOrderItemDto] })
+  @ValidateNested({ each: true })
+  @Type(() => SallaOrderItemDto)
+  items: SallaOrderItemDto[];
+
+  @ApiPropertyOptional({ type: SallaShippingAddressDto })
+  @ValidateNested()
+  @Type(() => SallaShippingAddressDto)
+  @IsOptional()
+  shipping_address?: SallaShippingAddressDto;
+
+  @ApiPropertyOptional({ example: 'paid' })
+  @IsString()
+  @IsOptional()
+  payment_status?: string;
+
+  @ApiPropertyOptional({ example: 'mada' })
+  @IsString()
+  @IsOptional()
+  payment_method?: string;
+
+  @ApiPropertyOptional({ example: 'ملاحظات العميل' })
+  @IsString()
+  @IsOptional()
+  notes?: string;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 👤 Customer Events DTOs
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * بيانات العميل الكاملة
+ */
+export class SallaCustomerDataDto {
+  @ApiProperty({ example: 789 })
+  @IsNumber()
+  id: number;
+
+  @ApiProperty({ example: 'أحمد' })
+  @IsString()
+  first_name: string;
+
+  @ApiProperty({ example: 'محمد' })
+  @IsString()
+  last_name: string;
+
+  @ApiPropertyOptional({ example: 'ahmed@example.com' })
+  @IsString()
+  @IsOptional()
+  email?: string;
+
+  @ApiProperty({ example: '+966501234567' })
+  @IsString()
+  mobile: string;
+
+  @ApiPropertyOptional({ example: 'الرياض' })
+  @IsString()
+  @IsOptional()
+  city?: string;
+
+  @ApiPropertyOptional({ example: 'SA' })
+  @IsString()
+  @IsOptional()
+  country?: string;
+
+  @ApiPropertyOptional({ example: 'ar' })
+  @IsString()
+  @IsOptional()
+  locale?: string;
+
+  @ApiPropertyOptional({ example: 'male' })
+  @IsString()
+  @IsOptional()
+  gender?: string;
+
+  @ApiPropertyOptional({ example: '2024-01-15T10:30:00.000Z' })
+  @IsString()
+  @IsOptional()
+  created_at?: string;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 📦 Product Events DTOs
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * بيانات المنتج
+ */
+export class SallaProductDataDto {
+  @ApiProperty({ example: 456 })
+  @IsNumber()
+  id: number;
+
+  @ApiProperty({ example: 'SKU123' })
+  @IsString()
+  @IsOptional()
+  sku?: string;
+
+  @ApiProperty({ example: 'اسم المنتج' })
+  @IsString()
+  name: string;
+
+  @ApiPropertyOptional({ example: 'وصف المنتج' })
+  @IsString()
+  @IsOptional()
+  description?: string;
+
+  @ApiProperty({ example: 100.00 })
+  @IsNumber()
+  price: number;
+
+  @ApiPropertyOptional({ example: 80.00 })
+  @IsNumber()
+  @IsOptional()
+  sale_price?: number;
+
+  @ApiProperty({ example: 50 })
+  @IsNumber()
+  @IsOptional()
+  quantity?: number;
+
+  @ApiPropertyOptional({ example: 'active' })
+  @IsString()
+  @IsOptional()
   status?: string;
-  eventType?: string;
-  page: number;
-  limit: number;
 }
 
-@Injectable()
-export class WebhooksService {
-  constructor(
-    @InjectRepository(WebhookEvent)
-    private readonly webhookEventRepository: Repository<WebhookEvent>,
+// ═══════════════════════════════════════════════════════════════════════════════
+// 🛒 Abandoned Cart DTO
+// ═══════════════════════════════════════════════════════════════════════════════
 
-    @InjectRepository(WebhookLog)
-    private readonly webhookLogRepository: Repository<WebhookLog>,
+/**
+ * بيانات السلة المتروكة
+ */
+export class SallaAbandonedCartDataDto {
+  @ApiProperty({ example: 321 })
+  @IsNumber()
+  id: number;
 
-    private readonly sallaWebhooksService: SallaWebhooksService,
-  ) {}
+  @ApiProperty({ type: SallaCustomerDto })
+  @ValidateNested()
+  @Type(() => SallaCustomerDto)
+  customer: SallaCustomerDto;
 
-  async getStatistics(tenantId: string, days: number = 7) {
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - days);
+  @ApiProperty({ type: [SallaOrderItemDto] })
+  @ValidateNested({ each: true })
+  @Type(() => SallaOrderItemDto)
+  items: SallaOrderItemDto[];
 
-    const totalQuery = this.webhookEventRepository
-      .createQueryBuilder('event')
-      .where('event.tenantId = :tenantId', { tenantId })
-      .andWhere('event.createdAt >= :startDate', { startDate });
+  @ApiProperty({ example: 300.00 })
+  @IsNumber()
+  total: number;
 
-    const total = await totalQuery.getCount();
+  @ApiProperty({ example: 'SAR' })
+  @IsString()
+  currency: string;
 
-    const byStatus = await this.webhookEventRepository
-      .createQueryBuilder('event')
-      .select('event.status', 'status')
-      .addSelect('COUNT(*)', 'count')
-      .where('event.tenantId = :tenantId', { tenantId })
-      .andWhere('event.createdAt >= :startDate', { startDate })
-      .groupBy('event.status')
-      .getRawMany();
+  @ApiPropertyOptional({ example: 'https://store.com/checkout/abc' })
+  @IsString()
+  @IsOptional()
+  checkout_url?: string;
 
-    const byEventType = await this.webhookEventRepository
-      .createQueryBuilder('event')
-      .select('event.eventType', 'eventType')
-      .addSelect('COUNT(*)', 'count')
-      .where('event.tenantId = :tenantId', { tenantId })
-      .andWhere('event.createdAt >= :startDate', { startDate })
-      .groupBy('event.eventType')
-      .orderBy('count', 'DESC')
-      .limit(10)
-      .getRawMany();
-
-    const avgProcessingTime = await this.webhookEventRepository
-      .createQueryBuilder('event')
-      .select('AVG(event.processingDurationMs)', 'avg')
-      .where('event.tenantId = :tenantId', { tenantId })
-      .andWhere('event.createdAt >= :startDate', { startDate })
-      .andWhere('event.processingDurationMs IS NOT NULL')
-      .getRawOne();
-
-    const processedCount = byStatus.find(s => s.status === 'processed')?.count || 0;
-    const successRate = total > 0 ? (processedCount / total) * 100 : 0;
-
-    return {
-      period: `${days} days`,
-      total,
-      byStatus: byStatus.reduce((acc, s) => {
-        acc[s.status] = parseInt(s.count);
-        return acc;
-      }, {} as Record<string, number>),
-      byEventType: byEventType.map(e => ({
-        eventType: e.eventType,
-        count: parseInt(e.count),
-      })),
-      averageProcessingTimeMs: Math.round(avgProcessingTime?.avg || 0),
-      successRate: Math.round(successRate * 100) / 100,
-    };
-  }
-
-  async listWebhooks(tenantId: string, options: ListWebhooksOptions) {
-    const { status, eventType, page, limit } = options;
-
-    const query = this.webhookEventRepository
-      .createQueryBuilder('event')
-      .where('event.tenantId = :tenantId', { tenantId })
-      .orderBy('event.createdAt', 'DESC')
-      .skip((page - 1) * limit)
-      .take(limit);
-
-    if (status) {
-      query.andWhere('event.status = :status', { status });
-    }
-
-    if (eventType) {
-      query.andWhere('event.eventType = :eventType', { eventType });
-    }
-
-    const [items, total] = await query.getManyAndCount();
-
-    return {
-      items,
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-      },
-    };
-  }
-
-  async getWebhookDetails(tenantId: string, webhookId: string) {
-    const webhook = await this.webhookEventRepository.findOne({
-      where: { id: webhookId, tenantId },
-    });
-
-    if (!webhook) {
-      throw new NotFoundException('Webhook not found');
-    }
-
-    return webhook;
-  }
-
-  async getWebhookLogs(tenantId: string, webhookId: string) {
-    const webhook = await this.webhookEventRepository.findOne({
-      where: { id: webhookId, tenantId },
-      select: ['id'],
-    });
-
-    if (!webhook) {
-      throw new NotFoundException('Webhook not found');
-    }
-
-    const logs = await this.webhookLogRepository.find({
-      where: { webhookEventId: webhookId },
-      order: { createdAt: 'ASC' },
-    });
-
-    return logs;
-  }
-
-  async retryWebhook(tenantId: string, webhookId: string) {
-    const webhook = await this.webhookEventRepository.findOne({
-      where: { id: webhookId, tenantId },
-    });
-
-    if (!webhook) {
-      throw new NotFoundException('Webhook not found');
-    }
-
-    if ((webhook.status as WebhookStatus) !== WebhookStatus.FAILED) {
-      return {
-        success: false,
-        message: 'Only failed webhooks can be retried',
-        currentStatus: webhook.status,
-      };
-    }
-
-    const jobId = await this.sallaWebhooksService.retryWebhook(webhookId, tenantId);
-
-    return {
-      success: true,
-      message: 'Webhook queued for retry',
-      jobId,
-    };
-  }
-
-  async cancelWebhook(tenantId: string, webhookId: string) {
-    const webhook = await this.webhookEventRepository.findOne({
-      where: { id: webhookId, tenantId },
-    });
-
-    if (!webhook) {
-      throw new NotFoundException('Webhook not found');
-    }
-
-    const currentStatus = webhook.status as WebhookStatus;
-    if ([WebhookStatus.PROCESSED, WebhookStatus.SKIPPED].includes(currentStatus)) {
-      return {
-        success: false,
-        message: 'Cannot cancel completed webhooks',
-        currentStatus,
-      };
-    }
-
-    await this.webhookEventRepository.update(webhookId, {
-      status: WebhookStatus.SKIPPED,
-    });
-
-    await this.sallaWebhooksService.createLog(webhookId, tenantId, {
-      action: WebhookLogAction.MANUALLY_CANCELLED,
-      previousStatus: currentStatus,
-      newStatus: WebhookStatus.SKIPPED,
-      message: 'Manually cancelled by user',
-      triggeredBy: 'user',
-    });
-
-    return {
-      success: true,
-      message: 'Webhook cancelled',
-    };
-  }
-
-  async getFailedWebhooks(tenantId: string, limit: number = 50) {
-    return this.sallaWebhooksService.getFailedWebhooks(tenantId, limit);
-  }
+  @ApiPropertyOptional({ example: '2024-01-15T10:30:00.000Z' })
+  @IsString()
+  @IsOptional()
+  created_at?: string;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 🚚 Shipment Events DTOs
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * بيانات الشحنة
+ */
+export class SallaShipmentDataDto {
+  @ApiProperty({ example: 555 })
+  @IsNumber()
+  id: number;
+
+  @ApiProperty({ example: 'TRACK123456' })
+  @IsString()
+  @IsOptional()
+  tracking_number?: string;
+
+  @ApiPropertyOptional({ example: 'aramex' })
+  @IsString()
+  @IsOptional()
+  shipping_company?: string;
+
+  @ApiProperty({ example: 'shipped' })
+  @IsString()
+  status: string;
+
+  @ApiProperty({ example: 1001 })
+  @IsNumber()
+  order_id: number;
+
+  @ApiPropertyOptional({ example: 'https://track.aramex.com/...' })
+  @IsString()
+  @IsOptional()
+  tracking_url?: string;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 🔐 App Events DTOs
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * بيانات تثبيت/إلغاء التطبيق
+ */
+export class SallaAppDataDto {
+  @ApiProperty({ example: 123456 })
+  @IsNumber()
+  merchant: number;
+
+  @ApiPropertyOptional({ example: 'access_token_xxx' })
+  @IsString()
+  @IsOptional()
+  access_token?: string;
+
+  @ApiPropertyOptional({ example: 'refresh_token_xxx' })
+  @IsString()
+  @IsOptional()
+  refresh_token?: string;
+
+  @ApiPropertyOptional({ example: 3600 })
+  @IsNumber()
+  @IsOptional()
+  expires_in?: number;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 📊 Internal Queue DTOs
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * بيانات الـ Job في الـ Queue
+ */
+export class SallaWebhookJobDto {
+  eventType: string;
+  merchant: number;
+  data: Record<string, unknown>;
+  createdAt: string;
+  deliveryId?: string;
+  idempotencyKey: string;
+  signature?: string;
+  ipAddress?: string;
+  headers?: Record<string, string>;
+}
+
+/**
+ * 📌 أمثلة على Webhooks من سلة:
+ * 
+ * 1. order.created:
+ * {
+ *   "event": "order.created",
+ *   "merchant": 123456,
+ *   "created_at": "2024-01-15T10:30:00.000Z",
+ *   "data": {
+ *     "id": 1001,
+ *     "reference_id": "ORD-123456",
+ *     "status": "created",
+ *     "total": 500.00,
+ *     "customer": { "id": 789, "first_name": "أحمد", ... },
+ *     "items": [{ "id": 123, "name": "...", "quantity": 2, ... }]
+ *   }
+ * }
+ * 
+ * 2. customer.created:
+ * {
+ *   "event": "customer.created",
+ *   "merchant": 123456,
+ *   "created_at": "2024-01-15T10:30:00.000Z",
+ *   "data": {
+ *     "id": 789,
+ *     "first_name": "أحمد",
+ *     "mobile": "+966501234567",
+ *     ...
+ *   }
+ * }
+ * 
+ * 3. abandoned.cart:
+ * {
+ *   "event": "abandoned.cart",
+ *   "merchant": 123456,
+ *   "created_at": "2024-01-15T10:30:00.000Z",
+ *   "data": {
+ *     "id": 321,
+ *     "customer": { ... },
+ *     "items": [...],
+ *     "checkout_url": "https://..."
+ *   }
+ * }
+ */
