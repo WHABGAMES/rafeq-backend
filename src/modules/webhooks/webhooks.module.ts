@@ -1,8 +1,8 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Webhooks Module                            ║
+ * ║  ✅ v4: إضافة زد webhooks (controller + service + processor + queue)          ║
  * ║  ✅ v3: إضافة Order + Customer repos لجلب رقم العميل                          ║
- * ║  ✅ v4: إضافة دعم زد (Zid) — Controller + Service + Processor + Queue         ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -45,9 +45,9 @@ import { TemplatesModule } from '../templates/templates.module';
     TypeOrmModule.forFeature([
       WebhookEvent,
       WebhookLog,
-      Order,                   // ✅ v3: للبحث عن الطلب بـ sallaOrderId / zidOrderId
-      Customer,                // ✅ v3: لجلب رقم هاتف العميل
-      ScheduledTemplateSend,   // ✅ v13: تتبع الإرسال المجدول
+      Order,
+      Customer,
+      ScheduledTemplateSend,
     ]),
 
     BullModule.registerQueue({
@@ -60,7 +60,7 @@ import { TemplatesModule } from '../templates/templates.module';
       },
     }),
 
-    // ✅ v4: Queue لمعالجة webhooks زد
+    // ✅ v4: Queue زد
     BullModule.registerQueue({
       name: 'zid-webhooks',
       defaultJobOptions: {
@@ -71,7 +71,6 @@ import { TemplatesModule } from '../templates/templates.module';
       },
     }),
 
-    // ✅ v13: Queue للإرسال المؤجل
     BullModule.registerQueue({
       name: 'template-scheduler',
       defaultJobOptions: {
@@ -85,32 +84,32 @@ import { TemplatesModule } from '../templates/templates.module';
     ConfigModule,
     StoresModule,
     MessagingModule,
-    ChannelsModule,   // ✅ يوفر ChannelsService + Channel Repository
-    TemplatesModule,  // ✅ يوفر TemplatesService + MessageTemplate Repository
+    ChannelsModule,
+    TemplatesModule,
   ],
 
   controllers: [
     WebhooksController,
     SallaWebhooksController,
-    ZidWebhooksController,      // ✅ v4: POST /webhooks/zid/:eventType
+    ZidWebhooksController,
   ],
 
   providers: [
     WebhooksService,
     SallaWebhooksService,
-    ZidWebhooksService,           // ✅ v4: زد
+    ZidWebhooksService,
     WebhookVerificationService,
-    TemplateDispatcherService,      // ✅ إرسال رسائل واتساب تلقائية
-    TemplateSchedulerService,       // ✅ v13: جدولة الإرسال المؤجل
-    TemplateSchedulerProcessor,     // ✅ v13: معالج الإرسال المؤجل
+    TemplateDispatcherService,
+    TemplateSchedulerService,
+    TemplateSchedulerProcessor,
     SallaWebhookProcessor,
-    ZidWebhookProcessor,            // ✅ v4: معالج webhooks زد
+    ZidWebhookProcessor,
   ],
 
   exports: [
     WebhooksService,
     SallaWebhooksService,
-    ZidWebhooksService,             // ✅ v4: تصدير خدمة زد
+    ZidWebhooksService,
     TemplateSchedulerService,
   ],
 })
