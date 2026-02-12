@@ -14,7 +14,7 @@ import { Repository } from 'typeorm';
 import { Job } from 'bullmq';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ZidWebhooksService } from '../zid-webhooks.service';
-import { WebhookStatus, ZidEventType } from '@database/entities/webhook-event.entity';
+import { WebhookStatus } from '@database/entities/webhook-event.entity';
 import { WebhookLogAction } from '../entities/webhook-log.entity';
 import { Order, OrderStatus } from '@database/entities/order.entity';
 import { Customer, CustomerStatus } from '@database/entities/customer.entity';
@@ -79,53 +79,53 @@ export class ZidWebhookProcessor extends WorkerHost {
 
       switch (eventType) {
         // Orders
-        case ZidEventType.ORDER_NEW:
+        case 'new-order':
           result = await this.handleNewOrder(data, context);
           break;
-        case ZidEventType.ORDER_UPDATE:
-        case ZidEventType.ORDER_STATUS_UPDATE:
+        case 'order-update':
+        case 'order-status-update':
           result = await this.handleOrderUpdate(data, context);
           break;
-        case ZidEventType.ORDER_CANCELLED:
+        case 'order-cancelled':
           result = await this.handleOrderCancelled(data, context);
           break;
-        case ZidEventType.ORDER_REFUNDED:
+        case 'order-refunded':
           result = await this.handleOrderRefunded(data, context);
           break;
 
         // Customers
-        case ZidEventType.CUSTOMER_NEW:
+        case 'new-customer':
           result = await this.handleNewCustomer(data, context);
           break;
-        case ZidEventType.CUSTOMER_UPDATE:
+        case 'customer-update':
           result = await this.handleCustomerUpdate(data, context);
           break;
 
         // Products
-        case ZidEventType.PRODUCT_CREATE:
-        case ZidEventType.PRODUCT_UPDATE:
-        case ZidEventType.PRODUCT_DELETE:
+        case 'product-create':
+        case 'product-update':
+        case 'product-delete':
           result = await this.handleProductEvent(eventType, data, context);
           break;
 
         // Cart
-        case ZidEventType.ABANDONED_CART:
+        case 'abandoned-cart':
           result = await this.handleAbandonedCart(data, context);
           break;
 
         // Reviews
-        case ZidEventType.NEW_REVIEW:
+        case 'new-review':
           result = await this.handleNewReview(data, context);
           break;
 
         // Inventory
-        case ZidEventType.INVENTORY_LOW:
+        case 'inventory-low':
           result = await this.handleInventoryLow(data, context);
           break;
 
         // App
-        case ZidEventType.APP_INSTALLED:
-        case ZidEventType.APP_UNINSTALLED:
+        case 'app-installed':
+        case 'app-uninstalled':
           result = { handled: true, action: eventType };
           this.eventEmitter.emit(eventType, { tenantId, storeId: internalStoreId, raw: data });
           break;
@@ -348,8 +348,8 @@ export class ZidWebhookProcessor extends WorkerHost {
   ): Promise<Record<string, unknown>> {
     this.logger.log(`Processing Zid ${eventType}`, { productId: data.id });
 
-    const emitEvent = eventType === ZidEventType.PRODUCT_CREATE ? 'product.created'
-      : eventType === ZidEventType.PRODUCT_DELETE ? 'product.deleted'
+    const emitEvent = eventType === 'product-create' ? 'product.created'
+      : eventType === 'product-delete' ? 'product.deleted'
       : 'product.updated';
 
     this.eventEmitter.emit(emitEvent, {
@@ -450,7 +450,6 @@ export class ZidWebhookProcessor extends WorkerHost {
           tenantId: context.tenantId,
           storeId: context.storeId,
           sallaOrderId: orderId,
-          orderNumber: String(data.order_number || data.reference_id || orderId),
           status: this.mapZidOrderStatus(data.status),
           totalAmount: Number(data.total) || 0,
           currency: String(data.currency || 'SAR'),
@@ -458,13 +457,10 @@ export class ZidWebhookProcessor extends WorkerHost {
           customerEmail: customer?.email ? String(customer.email) : undefined,
           customerPhone: customer?.mobile ? String(customer.mobile) : undefined,
           itemsCount: items.length,
-          rawData: data,
-          source: 'zid',
         });
       } else {
         order.status = this.mapZidOrderStatus(data.status);
         order.totalAmount = Number(data.total) || order.totalAmount;
-        order.rawData = data;
       }
 
       return await this.orderRepository.save(order);
@@ -487,7 +483,6 @@ export class ZidWebhookProcessor extends WorkerHost {
         { sallaOrderId: String(data.id), tenantId: context.tenantId },
         {
           status: this.mapZidOrderStatus(data.status),
-          rawData: data,
         },
       );
     } catch (error) {
@@ -526,7 +521,6 @@ export class ZidWebhookProcessor extends WorkerHost {
           phone: data.mobile ? String(data.mobile) : (data.phone ? String(data.phone) : undefined),
           // Note: city/country stored in shipping address, not Customer entity
           status: CustomerStatus.ACTIVE,
-          source: 'zid',
         });
       } else {
         if (firstName) customer.firstName = firstName;
