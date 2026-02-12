@@ -126,6 +126,7 @@ export class AIMessageListener {
       );
 
       // إرسال رسالة ترحيب للمحادثات الجديدة
+      let welcomeSent = false;
       if (isNewConversation && settings.welcomeMessage) {
         await this.messageService.createOutgoingMessage({
           conversationId: conversation.id,
@@ -138,7 +139,24 @@ export class AIMessageListener {
           },
         });
 
+        welcomeSent = true;
         this.logger.log(`👋 Welcome message sent for new conversation ${conversation.id}`);
+      }
+
+      // ✅ FIX: إذا أرسلنا رسالة ترحيب والرسالة مجرد تحية بسيطة → لا نعالجها (يكفي رسالة الترحيب)
+      if (welcomeSent) {
+        const lowerContent = message.content.trim().toLowerCase();
+        const simpleGreetings = [
+          'مرحبا', 'السلام عليكم', 'أهلا', 'هلا', 'هاي', 'حياك', 'يا هلا', 'الو',
+          'سلام', 'هلو', 'صباح الخير', 'مساء الخير', 'هلا والله', 'السلام',
+          'hello', 'hi', 'hey', 'good morning', 'good evening',
+        ];
+        const isSimpleGreeting = simpleGreetings.some((g) => lowerContent.includes(g)) && lowerContent.length < 30;
+        
+        if (isSimpleGreeting) {
+          this.logger.log(`✅ Skipping AI processing — welcome message already covers greeting "${message.content}"`);
+          return;
+        }
       }
 
       const aiResponse = await this.aiService.generateResponse({
