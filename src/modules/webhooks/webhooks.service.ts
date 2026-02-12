@@ -162,7 +162,7 @@ export class WebhooksService {
       throw new NotFoundException('Webhook not found');
     }
 
-    if (webhook.status !== WebhookStatus.FAILED) {
+    if ((webhook.status as WebhookStatus) !== WebhookStatus.FAILED) {
       return {
         success: false,
         message: 'Only failed webhooks can be retried',
@@ -188,11 +188,12 @@ export class WebhooksService {
       throw new NotFoundException('Webhook not found');
     }
 
-    if ([WebhookStatus.PROCESSED, WebhookStatus.SKIPPED].includes(webhook.status)) {
+    const currentStatus = webhook.status as WebhookStatus;
+    if ([WebhookStatus.PROCESSED, WebhookStatus.SKIPPED].includes(currentStatus)) {
       return {
         success: false,
         message: 'Cannot cancel completed webhooks',
-        currentStatus: webhook.status,
+        currentStatus,
       };
     }
 
@@ -202,7 +203,7 @@ export class WebhooksService {
 
     await this.sallaWebhooksService.createLog(webhookId, tenantId, {
       action: WebhookLogAction.MANUALLY_CANCELLED,
-      previousStatus: webhook.status,
+      previousStatus: currentStatus,
       newStatus: WebhookStatus.SKIPPED,
       message: 'Manually cancelled by user',
       triggeredBy: 'user',
