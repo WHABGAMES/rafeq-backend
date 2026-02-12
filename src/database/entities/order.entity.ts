@@ -1,6 +1,7 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Order Entity                               ║
+ * ║  ✅ v4: إضافة zidOrderId + جعل sallaOrderId nullable                         ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -106,10 +107,17 @@ export interface OrderMetadata {
   ipAddress?: string;
   userAgent?: string;
   sallaData?: Record<string, any>;
+  zidData?: Record<string, any>;     // ✅ v4: بيانات زد الخام
 }
 
+/**
+ * ✅ v4: الفهارس الفريدة أصبحت مشروطة (conditional)
+ * لأن كل طلب قد يكون من سلة أو من زد — لكن ليس من كليهما
+ *
+ * ⚠️ ملاحظة: الفهارس المشروطة تُنشأ عبر الـ Migration ولا تُدار بواسطة TypeORM sync.
+ * migrations/AddZidPlatformSupport1707753600000.ts
+ */
 @Entity('orders')
-@Index(['storeId', 'sallaOrderId'], { unique: true })
 @Index(['storeId', 'status'])
 @Index(['storeId', 'customerId'])
 @Index(['storeId', 'createdAt'])
@@ -125,13 +133,31 @@ export class Order extends BaseEntity {
   @Column({ name: 'customer_id', type: 'uuid', nullable: true })
   customerId?: string;
 
+  /**
+   * ✅ v4: أصبح nullable — الطلب قد يكون من زد وليس من سلة
+   * الفهرس الفريد المشروط: IDX_orders_store_salla_order
+   */
   @Column({
     name: 'salla_order_id',
     type: 'varchar',
     length: 50,
-    comment: 'رقم الطلب في سلة',
+    nullable: true,
+    comment: 'رقم الطلب في سلة (nullable — قد يكون طلب زد)',
   })
-  sallaOrderId: string;
+  sallaOrderId?: string;
+
+  /**
+   * ✅ v4: معرف الطلب في منصة زد
+   * الفهرس الفريد المشروط: IDX_orders_store_zid_order
+   */
+  @Column({
+    name: 'zid_order_id',
+    type: 'varchar',
+    length: 50,
+    nullable: true,
+    comment: 'رقم الطلب في زد',
+  })
+  zidOrderId?: string;
 
   @Column({
     name: 'reference_id',
@@ -252,7 +278,7 @@ export class Order extends BaseEntity {
     name: 'ordered_at',
     type: 'timestamptz',
     nullable: true,
-    comment: 'تاريخ إنشاء الطلب في سلة',
+    comment: 'تاريخ إنشاء الطلب في المنصة',
   })
   orderedAt?: Date;
 
