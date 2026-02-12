@@ -15,7 +15,7 @@ import { Queue } from 'bullmq';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
 // Entities
-import { WebhookEvent, WebhookSource, WebhookStatus, ZidEventType } from './entities/webhook-event.entity';
+import { WebhookEvent, WebhookSource, WebhookStatus } from '@database/entities/webhook-event.entity';
 import { WebhookLog, WebhookLogAction } from './entities/webhook-log.entity';
 
 // Services
@@ -274,17 +274,17 @@ export class ZidWebhooksService {
 
   private getEventPriority(eventType: string): number {
     const priorities: Record<string, number> = {
-      [ZidEventType.ORDER_NEW]: 1,
-      [ZidEventType.ORDER_STATUS_UPDATE]: 2,
-      [ZidEventType.CUSTOMER_NEW]: 2,
-      [ZidEventType.ABANDONED_CART]: 2,
-      [ZidEventType.ORDER_UPDATE]: 3,
-      [ZidEventType.ORDER_CANCELLED]: 3,
-      [ZidEventType.ORDER_REFUNDED]: 3,
-      [ZidEventType.CUSTOMER_UPDATE]: 5,
-      [ZidEventType.PRODUCT_CREATE]: 6,
-      [ZidEventType.PRODUCT_UPDATE]: 7,
-      [ZidEventType.NEW_REVIEW]: 8,
+      'new-order': 1,
+      'order-status-update': 2,
+      'new-customer': 2,
+      'abandoned-cart': 2,
+      'order-update': 3,
+      'order-cancelled': 3,
+      'order-refunded': 3,
+      'customer-update': 5,
+      'product-create': 6,
+      'product-update': 7,
+      'new-review': 8,
     };
 
     return priorities[eventType] || 5;
