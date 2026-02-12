@@ -1,17 +1,9 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Webhook Event Entity                       ║
- * ║                    (Webhooks Module Copy — same as @database version)          ║
  * ║                                                                                ║
- * ║  ⚠️ هذا الملف هو نسخة من: src/database/entities/webhook-event.entity.ts       ║
- * ║  الاختلاف الوحيد: مسارات الاستيراد (relative paths)                            ║
- * ║  ✅ v4: إضافة دعم منصة زد (Zid) — ZidEventType + ZID_TO_UNIFIED_EVENT_MAP    ║
+ * ║  جدول لحفظ جميع الـ Webhook Events الواردة                                      ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
- *
- * 📁 الملف الأصلي: src/database/entities/webhook-event.entity.ts
- * 📁 هذا الملف: src/modules/webhooks/entities/webhook-event.entity.ts
- *
- * ⚠️ أي تعديل يجب أن يُطبّق على كلا الملفين
  */
 
 import {
@@ -26,12 +18,9 @@ import { Tenant } from '../../../database/entities/tenant.entity';
 // ✅ تم تصحيح المسار - يشير مباشرة للـ Store entity الجديد
 import { Store } from '../../stores/entities/store.entity';
 
-// ✅ Re-export everything from the database version for convenience
-// If this module copy exists, it must export the same symbols
-
 export enum WebhookSource {
   SALLA = 'salla',
-  ZID = 'zid',             // ✅ v4: منصة زد
+  ZID = 'zid',
   WHATSAPP = 'whatsapp',
   INSTAGRAM = 'instagram',
   DISCORD = 'discord',
@@ -117,46 +106,37 @@ export enum SallaEventType {
 
 export enum ZidEventType {
   // Order Events
-  ORDER_CREATE = 'order.create',
-  ORDER_UPDATE = 'order.update',
-  ORDER_STATUS_UPDATE = 'order.status.update',
-  ORDER_PAYMENT_STATUS_UPDATE = 'order.payment_status.update',
-  ORDER_CANCEL = 'order.cancel',
+  ORDER_NEW = 'new-order',
+  ORDER_UPDATE = 'order-update',
+  ORDER_STATUS_UPDATE = 'order-status-update',
+  ORDER_CANCELLED = 'order-cancelled',
+  ORDER_REFUNDED = 'order-refunded',
 
   // Customer Events
-  CUSTOMER_CREATE = 'customer.create',
-  CUSTOMER_UPDATE = 'customer.update',
-  CUSTOMER_MERCHANT_UPDATE = 'customer.merchant.update',
+  CUSTOMER_NEW = 'new-customer',
+  CUSTOMER_UPDATE = 'customer-update',
 
   // Product Events
-  PRODUCT_CREATE = 'product.create',
-  PRODUCT_UPDATE = 'product.update',
-  PRODUCT_DELETE = 'product.delete',
-  PRODUCT_PUBLISH = 'product.publish',
+  PRODUCT_CREATE = 'product-create',
+  PRODUCT_UPDATE = 'product-update',
+  PRODUCT_DELETE = 'product-delete',
 
   // Cart Events
-  ABANDONED_CART_CREATED = 'abandoned_cart.created',
+  ABANDONED_CART = 'abandoned-cart',
 
   // Review Events
-  REVIEW_CREATE = 'review.create',
-}
+  NEW_REVIEW = 'new-review',
 
-export const ZID_TO_UNIFIED_EVENT_MAP: Record<string, string> = {
-  [ZidEventType.ORDER_CREATE]: 'order.created',
-  [ZidEventType.ORDER_UPDATE]: 'order.updated',
-  [ZidEventType.ORDER_STATUS_UPDATE]: 'order.status.updated',
-  [ZidEventType.ORDER_PAYMENT_STATUS_UPDATE]: 'order.payment.updated',
-  [ZidEventType.ORDER_CANCEL]: 'order.cancelled',
-  [ZidEventType.CUSTOMER_CREATE]: 'customer.created',
-  [ZidEventType.CUSTOMER_UPDATE]: 'customer.updated',
-  [ZidEventType.CUSTOMER_MERCHANT_UPDATE]: 'customer.updated',
-  [ZidEventType.PRODUCT_CREATE]: 'product.created',
-  [ZidEventType.PRODUCT_UPDATE]: 'product.updated',
-  [ZidEventType.PRODUCT_DELETE]: 'product.deleted',
-  [ZidEventType.PRODUCT_PUBLISH]: 'product.available',
-  [ZidEventType.ABANDONED_CART_CREATED]: 'cart.abandoned',
-  [ZidEventType.REVIEW_CREATE]: 'review.added',
-};
+  // Coupon Events
+  COUPON_USED = 'coupon-used',
+
+  // Inventory Events
+  INVENTORY_LOW = 'inventory-low',
+
+  // App Events
+  APP_INSTALLED = 'app-installed',
+  APP_UNINSTALLED = 'app-uninstalled',
+}
 
 @Entity('webhook_events')
 @Index(['tenantId', 'status', 'createdAt'])
@@ -181,7 +161,7 @@ export class WebhookEvent extends BaseEntity {
     name: 'store_id',
     type: 'uuid',
     nullable: true,
-    comment: 'معرّف المتجر',
+    comment: 'معرّف المتجر في سلة',
   })
   storeId?: string;
 
@@ -208,11 +188,11 @@ export class WebhookEvent extends BaseEntity {
   externalId?: string;
 
   @Column({
-    type: 'varchar',
-    length: 50,
-    comment: 'مصدر الـ Webhook (salla, zid, whatsapp, ...)',
+    type: 'enum',
+    enum: WebhookSource,
+    comment: 'مصدر الـ Webhook',
   })
-  source: string;
+  source: WebhookSource;
 
   @Column({
     name: 'event_type',
@@ -237,12 +217,12 @@ export class WebhookEvent extends BaseEntity {
   headers?: Record<string, string>;
 
   @Column({
-    type: 'varchar',
-    length: 50,
-    default: 'pending',
+    type: 'enum',
+    enum: WebhookStatus,
+    default: WebhookStatus.PENDING,
     comment: 'حالة المعالجة',
   })
-  status: string;
+  status: WebhookStatus;
 
   @Column({
     type: 'integer',
