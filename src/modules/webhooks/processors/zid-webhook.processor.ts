@@ -14,7 +14,7 @@ import { Repository } from 'typeorm';
 import { Job } from 'bullmq';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ZidWebhooksService } from '../zid-webhooks.service';
-import { WebhookStatus } from '@database/entities/webhook-event.entity';
+import { WebhookStatus, ZidEventType } from '@database/entities/webhook-event.entity';
 import { WebhookLogAction } from '../entities/webhook-log.entity';
 import { Order, OrderStatus } from '@database/entities/order.entity';
 import { Customer, CustomerStatus } from '@database/entities/customer.entity';
@@ -79,53 +79,53 @@ export class ZidWebhookProcessor extends WorkerHost {
 
       switch (eventType) {
         // Orders
-        case 'new-order':
+        case ZidEventType.ORDER_NEW:
           result = await this.handleNewOrder(data, context);
           break;
-        case 'order-update':
-        case 'order-status-update':
+        case ZidEventType.ORDER_UPDATE:
+        case ZidEventType.ORDER_STATUS_UPDATE:
           result = await this.handleOrderUpdate(data, context);
           break;
-        case 'order-cancelled':
+        case ZidEventType.ORDER_CANCELLED:
           result = await this.handleOrderCancelled(data, context);
           break;
-        case 'order-refunded':
+        case ZidEventType.ORDER_REFUNDED:
           result = await this.handleOrderRefunded(data, context);
           break;
 
         // Customers
-        case 'new-customer':
+        case ZidEventType.CUSTOMER_NEW:
           result = await this.handleNewCustomer(data, context);
           break;
-        case 'customer-update':
+        case ZidEventType.CUSTOMER_UPDATE:
           result = await this.handleCustomerUpdate(data, context);
           break;
 
         // Products
-        case 'product-create':
-        case 'product-update':
-        case 'product-delete':
+        case ZidEventType.PRODUCT_CREATE:
+        case ZidEventType.PRODUCT_UPDATE:
+        case ZidEventType.PRODUCT_DELETE:
           result = await this.handleProductEvent(eventType, data, context);
           break;
 
         // Cart
-        case 'abandoned-cart':
+        case ZidEventType.ABANDONED_CART:
           result = await this.handleAbandonedCart(data, context);
           break;
 
         // Reviews
-        case 'new-review':
+        case ZidEventType.NEW_REVIEW:
           result = await this.handleNewReview(data, context);
           break;
 
         // Inventory
-        case 'inventory-low':
+        case ZidEventType.INVENTORY_LOW:
           result = await this.handleInventoryLow(data, context);
           break;
 
         // App
-        case 'app-installed':
-        case 'app-uninstalled':
+        case ZidEventType.APP_INSTALLED:
+        case ZidEventType.APP_UNINSTALLED:
           result = { handled: true, action: eventType };
           this.eventEmitter.emit(eventType, { tenantId, storeId: internalStoreId, raw: data });
           break;
@@ -192,15 +192,16 @@ export class ZidWebhookProcessor extends WorkerHost {
   ): Promise<Record<string, unknown>> {
     this.logger.log('Processing Zid new-order', { orderId: data.id });
 
-    // حفظ الطلب في قاعدة البيانات
-    if (context.tenantId && data.id) {
-      await this.syncOrderToDatabase(data, context);
+    // حفظ العميل أولاً إذا موجود
+    const customer = data.customer as Record<string, unknown> | undefined;
+    let savedCustomer: Customer | null = null;
+    if (customer?.id) {
+      savedCustomer = await this.syncCustomerToDatabase(customer, context);
     }
 
-    // حفظ العميل إذا موجود
-    const customer = data.customer as Record<string, unknown> | undefined;
-    if (customer?.id) {
-      await this.syncCustomerToDatabase(customer, context);
+    // حفظ الطلب في قاعدة البيانات
+    if (context.storeId && data.id) {
+      await this.syncOrderToDatabase(data, context, savedCustomer?.id);
     }
 
     this.eventEmitter.emit('order.created', {
@@ -348,8 +349,8 @@ export class ZidWebhookProcessor extends WorkerHost {
   ): Promise<Record<string, unknown>> {
     this.logger.log(`Processing Zid ${eventType}`, { productId: data.id });
 
-    const emitEvent = eventType === 'product-create' ? 'product.created'
-      : eventType === 'product-delete' ? 'product.deleted'
+    const emitEvent = eventType === ZidEventType.PRODUCT_CREATE ? 'product.created'
+      : eventType === ZidEventType.PRODUCT_DELETE ? 'product.deleted'
       : 'product.updated';
 
     this.eventEmitter.emit(emitEvent, {
@@ -433,34 +434,46 @@ export class ZidWebhookProcessor extends WorkerHost {
   private async syncOrderToDatabase(
     data: Record<string, unknown>,
     context: { tenantId?: string; storeId?: string },
+    customerId?: string,
   ): Promise<Order | null> {
-    if (!context.tenantId || !data.id) return null;
+    if (!context.storeId || !data.id) return null;
 
     try {
-      const orderId = String(data.id);
+      const sallaOrderId = String(data.id);
       let order = await this.orderRepository.findOne({
-        where: { sallaOrderId: orderId, tenantId: context.tenantId },
+        where: { sallaOrderId, storeId: context.storeId },
       });
 
-      const customer = data.customer as Record<string, unknown> | undefined;
-      const items = (data.items as Record<string, unknown>[] | undefined) || [];
+      const rawItems = (data.items as Record<string, unknown>[] | undefined) || [];
+      const items = rawItems.map(item => ({
+        productId: String(item.product_id || item.id || ''),
+        name: String(item.name || ''),
+        sku: (item.sku as string) || undefined,
+        quantity: Number(item.quantity || 1),
+        unitPrice: Number(item.price || item.unit_price || 0),
+        totalPrice: Number(item.total || 0),
+      }));
 
       if (!order) {
         order = this.orderRepository.create({
           tenantId: context.tenantId,
           storeId: context.storeId,
-          sallaOrderId: orderId,
+          customerId: customerId || undefined,
+          sallaOrderId,
+          referenceId: (data.order_number as string) || (data.reference_id as string) || undefined,
           status: this.mapZidOrderStatus(data.status),
           totalAmount: Number(data.total) || 0,
+          subtotal: Number(data.sub_total || data.total) || 0,
           currency: String(data.currency || 'SAR'),
-          customerName: customer?.name ? String(customer.name) : undefined,
-          customerEmail: customer?.email ? String(customer.email) : undefined,
-          customerPhone: customer?.mobile ? String(customer.mobile) : undefined,
-          itemsCount: items.length,
+          items: items as any,
+          metadata: { source: 'zid', sallaData: data } as any,
         });
       } else {
         order.status = this.mapZidOrderStatus(data.status);
         order.totalAmount = Number(data.total) || order.totalAmount;
+        if (customerId) order.customerId = customerId;
+        if (items.length > 0) order.items = items as any;
+        order.metadata = { ...(order.metadata || {}), source: 'zid', sallaData: data } as any;
       }
 
       return await this.orderRepository.save(order);
@@ -476,15 +489,23 @@ export class ZidWebhookProcessor extends WorkerHost {
     data: Record<string, unknown>,
     context: { tenantId?: string; storeId?: string },
   ): Promise<void> {
-    if (!context.tenantId || !data.id) return;
+    if (!context.storeId || !data.id) return;
 
     try {
-      await this.orderRepository.update(
-        { sallaOrderId: String(data.id), tenantId: context.tenantId },
-        {
-          status: this.mapZidOrderStatus(data.status),
-        },
-      );
+      const sallaOrderId = String(data.id);
+      const order = await this.orderRepository.findOne({
+        where: { sallaOrderId, storeId: context.storeId },
+      });
+
+      if (!order) {
+        this.logger.warn(`⚠️ Zid order ${sallaOrderId} not in DB - creating`);
+        await this.syncOrderToDatabase(data, context);
+        return;
+      }
+
+      order.status = this.mapZidOrderStatus(data.status);
+      order.metadata = { ...(order.metadata || {}), source: 'zid', sallaData: { ...(order.metadata?.sallaData || {}), lastWebhookData: data } } as any;
+      await this.orderRepository.save(order);
     } catch (error) {
       this.logger.error(`Failed to update Zid order status ${data.id}`, {
         error: error instanceof Error ? error.message : 'Unknown',
@@ -496,38 +517,46 @@ export class ZidWebhookProcessor extends WorkerHost {
     data: Record<string, unknown>,
     context: { tenantId?: string; storeId?: string },
   ): Promise<Customer | null> {
-    if (!context.tenantId || !data.id) return null;
+    if (!context.storeId || !data.id) return null;
 
     try {
-      const customerId = String(data.id);
+      const sallaCustomerId = String(data.id);
       let customer = await this.customerRepository.findOne({
-        where: { sallaCustomerId: customerId, tenantId: context.tenantId },
+        where: { sallaCustomerId, storeId: context.storeId },
       });
 
       // Zid sends name as single field, not first_name/last_name
       const fullName = String(data.name || '');
       const nameParts = fullName.split(' ');
-      const firstName = nameParts[0] || '';
-      const lastName = nameParts.slice(1).join(' ') || '';
+      const firstName = nameParts[0] || String(data.first_name || '');
+      const lastName = nameParts.slice(1).join(' ') || String(data.last_name || '');
+      const phone = (data.mobile as string) || (data.phone as string) || undefined;
+      const email = (data.email as string) || undefined;
 
       if (!customer) {
         customer = this.customerRepository.create({
           tenantId: context.tenantId,
           storeId: context.storeId,
-          sallaCustomerId: customerId,
-          firstName: firstName || String(data.first_name || ''),
-          lastName: lastName || String(data.last_name || ''),
-          email: data.email ? String(data.email) : undefined,
-          phone: data.mobile ? String(data.mobile) : (data.phone ? String(data.phone) : undefined),
-          // Note: city/country stored in shipping address, not Customer entity
+          sallaCustomerId,
+          firstName: firstName || undefined,
+          lastName: lastName || undefined,
+          fullName: fullName || (firstName && lastName ? `${firstName} ${lastName}` : firstName || undefined),
+          email,
+          phone,
           status: CustomerStatus.ACTIVE,
+          metadata: { source: 'zid', sallaData: data } as any,
+          address: data.city || data.country ? {
+            city: data.city ? String(data.city) : undefined,
+            country: data.country ? String(data.country) : undefined,
+          } : undefined,
         });
       } else {
         if (firstName) customer.firstName = firstName;
         if (lastName) customer.lastName = lastName;
-        if (data.email) customer.email = String(data.email);
-        if (data.mobile || data.phone) customer.phone = String(data.mobile || data.phone);
-        // Note: city/country stored in shipping address, not Customer entity
+        if (fullName) customer.fullName = fullName;
+        if (email) customer.email = email;
+        if (phone) customer.phone = phone;
+        customer.metadata = { ...(customer.metadata || {}), source: 'zid', sallaData: data } as any;
       }
 
       return await this.customerRepository.save(customer);
