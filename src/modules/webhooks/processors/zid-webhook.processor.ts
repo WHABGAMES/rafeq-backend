@@ -524,8 +524,7 @@ export class ZidWebhookProcessor extends WorkerHost {
           lastName: lastName || String(data.last_name || ''),
           email: data.email ? String(data.email) : undefined,
           phone: data.mobile ? String(data.mobile) : (data.phone ? String(data.phone) : undefined),
-          city: data.city ? String(data.city) : undefined,
-          country: data.country ? String(data.country) : undefined,
+          // Note: city/country stored in shipping address, not Customer entity
           status: CustomerStatus.ACTIVE,
           source: 'zid',
         });
@@ -534,7 +533,7 @@ export class ZidWebhookProcessor extends WorkerHost {
         if (lastName) customer.lastName = lastName;
         if (data.email) customer.email = String(data.email);
         if (data.mobile || data.phone) customer.phone = String(data.mobile || data.phone);
-        if (data.city) customer.city = String(data.city);
+        // Note: city/country stored in shipping address, not Customer entity
       }
 
       return await this.customerRepository.save(customer);
