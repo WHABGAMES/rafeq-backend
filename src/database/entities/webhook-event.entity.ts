@@ -3,6 +3,7 @@
  * ║                    RAFIQ PLATFORM - Webhook Event Entity                       ║
  * ║                                                                                ║
  * ║  جدول لحفظ جميع الـ Webhook Events الواردة                                      ║
+ * ║  ✅ v4: إضافة دعم منصة زد (Zid) — ZidEventType + ZID_TO_UNIFIED_EVENT_MAP    ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -20,6 +21,7 @@ import { Store } from '../../modules/stores/entities/store.entity';
 
 export enum WebhookSource {
   SALLA = 'salla',
+  ZID = 'zid',             // ✅ v4: منصة زد
   WHATSAPP = 'whatsapp',
   INSTAGRAM = 'instagram',
   DISCORD = 'discord',
@@ -103,6 +105,63 @@ export enum SallaEventType {
   SPECIALOFFER_UPDATED = 'specialoffer.updated',
 }
 
+/**
+ * ✅ v4: أنواع أحداث زد
+ * 📖 المرجع: https://docs.zid.sa/webhooks
+ *
+ * زد تستخدم صيغة: resource.action (مثل order.create)
+ * بينما سلة تستخدم: resource.past_tense (مثل order.created)
+ */
+export enum ZidEventType {
+  // Order Events
+  ORDER_CREATE = 'order.create',
+  ORDER_UPDATE = 'order.update',
+  ORDER_STATUS_UPDATE = 'order.status.update',
+  ORDER_PAYMENT_STATUS_UPDATE = 'order.payment_status.update',
+  ORDER_CANCEL = 'order.cancel',
+
+  // Customer Events
+  CUSTOMER_CREATE = 'customer.create',
+  CUSTOMER_UPDATE = 'customer.update',
+  CUSTOMER_MERCHANT_UPDATE = 'customer.merchant.update',
+
+  // Product Events
+  PRODUCT_CREATE = 'product.create',
+  PRODUCT_UPDATE = 'product.update',
+  PRODUCT_DELETE = 'product.delete',
+  PRODUCT_PUBLISH = 'product.publish',
+
+  // Cart Events
+  ABANDONED_CART_CREATED = 'abandoned_cart.created',
+
+  // Review Events
+  REVIEW_CREATE = 'review.create',
+}
+
+/**
+ * ✅ v4: ربط أحداث زد → أحداث النظام الموحّدة
+ * يستخدمه ZidWebhookProcessor لمعرفة أي حدث يُطلق
+ *
+ * ✅ هذه الأحداث الموحّدة هي نفسها التي يستمع لها TemplateDispatcherService
+ * لذلك لا حاجة لتعديل TemplateDispatcherService عند إضافة منصة جديدة
+ */
+export const ZID_TO_UNIFIED_EVENT_MAP: Record<string, string> = {
+  [ZidEventType.ORDER_CREATE]: 'order.created',
+  [ZidEventType.ORDER_UPDATE]: 'order.updated',
+  [ZidEventType.ORDER_STATUS_UPDATE]: 'order.status.updated',
+  [ZidEventType.ORDER_PAYMENT_STATUS_UPDATE]: 'order.payment.updated',
+  [ZidEventType.ORDER_CANCEL]: 'order.cancelled',
+  [ZidEventType.CUSTOMER_CREATE]: 'customer.created',
+  [ZidEventType.CUSTOMER_UPDATE]: 'customer.updated',
+  [ZidEventType.CUSTOMER_MERCHANT_UPDATE]: 'customer.updated',
+  [ZidEventType.PRODUCT_CREATE]: 'product.created',
+  [ZidEventType.PRODUCT_UPDATE]: 'product.updated',
+  [ZidEventType.PRODUCT_DELETE]: 'product.deleted',
+  [ZidEventType.PRODUCT_PUBLISH]: 'product.available',
+  [ZidEventType.ABANDONED_CART_CREATED]: 'cart.abandoned',
+  [ZidEventType.REVIEW_CREATE]: 'review.added',
+};
+
 @Entity('webhook_events')
 @Index(['tenantId', 'status', 'createdAt'])
 @Index(['source', 'eventType', 'createdAt'])
@@ -126,7 +185,7 @@ export class WebhookEvent extends BaseEntity {
     name: 'store_id',
     type: 'uuid',
     nullable: true,
-    comment: 'معرّف المتجر في سلة',
+    comment: 'معرّف المتجر',
   })
   storeId?: string;
 
@@ -155,7 +214,7 @@ export class WebhookEvent extends BaseEntity {
   @Column({
     type: 'varchar',
     length: 50,
-    comment: 'مصدر الـ Webhook',
+    comment: 'مصدر الـ Webhook (salla, zid, whatsapp, ...)',
   })
   source: string;
 
