@@ -1,9 +1,17 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Webhook Event Entity                       ║
+ * ║                    (Webhooks Module Copy — same as @database version)          ║
  * ║                                                                                ║
- * ║  جدول لحفظ جميع الـ Webhook Events الواردة                                      ║
+ * ║  ⚠️ هذا الملف هو نسخة من: src/database/entities/webhook-event.entity.ts       ║
+ * ║  الاختلاف الوحيد: مسارات الاستيراد (relative paths)                            ║
+ * ║  ✅ v4: إضافة دعم منصة زد (Zid) — ZidEventType + ZID_TO_UNIFIED_EVENT_MAP    ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
+ *
+ * 📁 الملف الأصلي: src/database/entities/webhook-event.entity.ts
+ * 📁 هذا الملف: src/modules/webhooks/entities/webhook-event.entity.ts
+ *
+ * ⚠️ أي تعديل يجب أن يُطبّق على كلا الملفين
  */
 
 import {
@@ -18,8 +26,12 @@ import { Tenant } from '../../../database/entities/tenant.entity';
 // ✅ تم تصحيح المسار - يشير مباشرة للـ Store entity الجديد
 import { Store } from '../../stores/entities/store.entity';
 
+// ✅ Re-export everything from the database version for convenience
+// If this module copy exists, it must export the same symbols
+
 export enum WebhookSource {
   SALLA = 'salla',
+  ZID = 'zid',             // ✅ v4: منصة زد
   WHATSAPP = 'whatsapp',
   INSTAGRAM = 'instagram',
   DISCORD = 'discord',
@@ -103,6 +115,49 @@ export enum SallaEventType {
   SPECIALOFFER_UPDATED = 'specialoffer.updated',
 }
 
+export enum ZidEventType {
+  // Order Events
+  ORDER_CREATE = 'order.create',
+  ORDER_UPDATE = 'order.update',
+  ORDER_STATUS_UPDATE = 'order.status.update',
+  ORDER_PAYMENT_STATUS_UPDATE = 'order.payment_status.update',
+  ORDER_CANCEL = 'order.cancel',
+
+  // Customer Events
+  CUSTOMER_CREATE = 'customer.create',
+  CUSTOMER_UPDATE = 'customer.update',
+  CUSTOMER_MERCHANT_UPDATE = 'customer.merchant.update',
+
+  // Product Events
+  PRODUCT_CREATE = 'product.create',
+  PRODUCT_UPDATE = 'product.update',
+  PRODUCT_DELETE = 'product.delete',
+  PRODUCT_PUBLISH = 'product.publish',
+
+  // Cart Events
+  ABANDONED_CART_CREATED = 'abandoned_cart.created',
+
+  // Review Events
+  REVIEW_CREATE = 'review.create',
+}
+
+export const ZID_TO_UNIFIED_EVENT_MAP: Record<string, string> = {
+  [ZidEventType.ORDER_CREATE]: 'order.created',
+  [ZidEventType.ORDER_UPDATE]: 'order.updated',
+  [ZidEventType.ORDER_STATUS_UPDATE]: 'order.status.updated',
+  [ZidEventType.ORDER_PAYMENT_STATUS_UPDATE]: 'order.payment.updated',
+  [ZidEventType.ORDER_CANCEL]: 'order.cancelled',
+  [ZidEventType.CUSTOMER_CREATE]: 'customer.created',
+  [ZidEventType.CUSTOMER_UPDATE]: 'customer.updated',
+  [ZidEventType.CUSTOMER_MERCHANT_UPDATE]: 'customer.updated',
+  [ZidEventType.PRODUCT_CREATE]: 'product.created',
+  [ZidEventType.PRODUCT_UPDATE]: 'product.updated',
+  [ZidEventType.PRODUCT_DELETE]: 'product.deleted',
+  [ZidEventType.PRODUCT_PUBLISH]: 'product.available',
+  [ZidEventType.ABANDONED_CART_CREATED]: 'cart.abandoned',
+  [ZidEventType.REVIEW_CREATE]: 'review.added',
+};
+
 @Entity('webhook_events')
 @Index(['tenantId', 'status', 'createdAt'])
 @Index(['source', 'eventType', 'createdAt'])
@@ -126,7 +181,7 @@ export class WebhookEvent extends BaseEntity {
     name: 'store_id',
     type: 'uuid',
     nullable: true,
-    comment: 'معرّف المتجر في سلة',
+    comment: 'معرّف المتجر',
   })
   storeId?: string;
 
@@ -153,11 +208,11 @@ export class WebhookEvent extends BaseEntity {
   externalId?: string;
 
   @Column({
-    type: 'enum',
-    enum: WebhookSource,
-    comment: 'مصدر الـ Webhook',
+    type: 'varchar',
+    length: 50,
+    comment: 'مصدر الـ Webhook (salla, zid, whatsapp, ...)',
   })
-  source: WebhookSource;
+  source: string;
 
   @Column({
     name: 'event_type',
@@ -182,12 +237,12 @@ export class WebhookEvent extends BaseEntity {
   headers?: Record<string, string>;
 
   @Column({
-    type: 'enum',
-    enum: WebhookStatus,
-    default: WebhookStatus.PENDING,
+    type: 'varchar',
+    length: 50,
+    default: 'pending',
     comment: 'حالة المعالجة',
   })
-  status: WebhookStatus;
+  status: string;
 
   @Column({
     type: 'integer',
