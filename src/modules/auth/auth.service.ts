@@ -715,7 +715,8 @@ export class AuthService implements OnModuleInit {
   async refreshTokens(refreshToken: string): Promise<{ accessToken: string; refreshToken: string }> {
     try {
       const payload = this.jwtService.verify(refreshToken, {
-        secret: this.configService.get('JWT_REFRESH_SECRET'),
+        secret: this.configService.get('JWT_REFRESH_SECRET')
+          || this.configService.get('JWT_SECRET'),
       });
 
       if (payload.jti) {
