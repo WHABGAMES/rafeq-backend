@@ -43,11 +43,12 @@ export class HealthController {
   @ApiOperation({ summary: 'Basic health check' })
   @ApiResponse({ status: 200, description: 'Application is healthy' })
   healthCheck(): HealthResponse {
+    // 🔧 FIX L-01: Reduce exposed information in public health endpoint
     return {
       status: 'healthy',
       timestamp: new Date().toISOString(),
       uptime: this.getUptime(),
-      version: process.env.npm_package_version || '1.0.0',
+      version: 'ok', // Don't expose actual version number publicly
     };
   }
 
@@ -75,14 +76,12 @@ export class HealthController {
   @ApiOperation({ summary: 'Readiness probe' })
   @ApiResponse({ status: 200, description: 'Application is ready' })
   @ApiResponse({ status: 503, description: 'Application is not ready' })
-  readiness(): { status: string; checks: Record<string, string> } {
-    // يمكن إضافة فحوصات إضافية هنا (database, redis, etc.)
+  readiness(): { status: string; ready: boolean } {
+    // 🔧 FIX L-01: Don't expose internal service names
+    // TODO: Add actual DB/Redis health checks
     return {
       status: 'ready',
-      checks: {
-        database: 'up',
-        redis: 'up',
-      },
+      ready: true,
     };
   }
 
