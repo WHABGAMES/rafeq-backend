@@ -127,8 +127,6 @@ const buildConfig = (configService: ConfigService): TypeOrmModuleOptions => {
     retryDelay: 3000,
     autoLoadEntities: false,
     keepConnectionAlive: false,
-    migrationsRun: isProduction,
-    migrations: isProduction ? ['dist/database/migrations/*.js'] : ['src/database/migrations/*.ts'],
   };
 };
 
