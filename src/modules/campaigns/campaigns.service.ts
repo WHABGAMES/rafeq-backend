@@ -104,7 +104,7 @@ export class CampaignsService {
 
     // إذا كانت حملة مشروطة، نفعّلها
     if (dto.type === CampaignType.AUTOMATED) {
-      await this.activate((saved as Campaign).id);
+      await this.activate((saved as Campaign).id, dto.tenantId);
     }
 
     return saved as Campaign;
@@ -178,8 +178,9 @@ export class CampaignsService {
   /**
    * تفعيل حملة مشروطة
    */
-  async activate(id: string): Promise<Campaign> {
-    const campaign = await this.campaignRepository.findOne({ where: { id } });
+  async activate(id: string, tenantId: string): Promise<Campaign> {
+    // 🔧 FIX C-04: Include tenantId in query to prevent IDOR
+    const campaign = await this.campaignRepository.findOne({ where: { id, tenantId } });
     
     if (!campaign) {
       throw new NotFoundException('الحملة غير موجودة');
@@ -196,8 +197,9 @@ export class CampaignsService {
   /**
    * إيقاف حملة مؤقتاً
    */
-  async pause(id: string): Promise<Campaign> {
-    const campaign = await this.campaignRepository.findOne({ where: { id } });
+  async pause(id: string, tenantId: string): Promise<Campaign> {
+    // 🔧 FIX C-04: Include tenantId in query to prevent IDOR
+    const campaign = await this.campaignRepository.findOne({ where: { id, tenantId } });
     
     if (!campaign) {
       throw new NotFoundException('الحملة غير موجودة');
@@ -210,8 +212,9 @@ export class CampaignsService {
   /**
    * استئناف حملة متوقفة
    */
-  async resume(id: string): Promise<Campaign> {
-    const campaign = await this.campaignRepository.findOne({ where: { id } });
+  async resume(id: string, tenantId: string): Promise<Campaign> {
+    // 🔧 FIX C-04: Include tenantId in query to prevent IDOR
+    const campaign = await this.campaignRepository.findOne({ where: { id, tenantId } });
     
     if (!campaign) {
       throw new NotFoundException('الحملة غير موجودة');
@@ -232,8 +235,9 @@ export class CampaignsService {
   /**
    * إلغاء حملة
    */
-  async cancel(id: string): Promise<Campaign> {
-    const campaign = await this.campaignRepository.findOne({ where: { id } });
+  async cancel(id: string, tenantId: string): Promise<Campaign> {
+    // 🔧 FIX C-04: Include tenantId in query to prevent IDOR
+    const campaign = await this.campaignRepository.findOne({ where: { id, tenantId } });
     
     if (!campaign) {
       throw new NotFoundException('الحملة غير موجودة');
