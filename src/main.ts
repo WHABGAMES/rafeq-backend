@@ -53,11 +53,41 @@ async function bootstrap() {
     // ═══════════════════════════════════════════════════════════════════════════
     // 🔧 FIX M5: Helmet Security Headers
     // ═══════════════════════════════════════════════════════════════════════════
+    // 🔧 FIX M-02: HSTS header for HTTPS enforcement
+    // 🔧 FIX M-03: Proper CSP in production
     app.use(helmet({
-      contentSecurityPolicy: isProduction ? undefined : false, // تعطيل CSP في التطوير لـ Swagger
-      crossOriginEmbedderPolicy: false, // لا تمنع embedded resources
+      // 🔧 FIX M-03: Content Security Policy — enabled in production
+      contentSecurityPolicy: isProduction ? {
+        directives: {
+          defaultSrc: ["'self'"],
+          scriptSrc: ["'self'"],
+          styleSrc: ["'self'", "'unsafe-inline'"],  // Needed for some UI libraries
+          imgSrc: ["'self'", 'data:', 'https:'],
+          connectSrc: [
+            "'self'",
+            'https://api.rafeq.ai',
+            'https://accounts.salla.sa',
+            'https://api.salla.dev',
+            'https://api.zid.sa',
+            'wss://*.rafeq.ai',  // WebSocket connections
+          ],
+          fontSrc: ["'self'", 'https://fonts.gstatic.com'],
+          objectSrc: ["'none'"],
+          frameAncestors: ["'none'"],
+          baseUri: ["'self'"],
+          formAction: ["'self'"],
+          upgradeInsecureRequests: [],
+        },
+      } : false,  // Disabled in development for Swagger
+      crossOriginEmbedderPolicy: false,
+      // 🔧 FIX M-02: HSTS — enforce HTTPS for 1 year with preload
+      hsts: isProduction ? {
+        maxAge: 31536000,         // 1 year
+        includeSubDomains: true,
+        preload: true,
+      } : false,
     }));
-    logger.log('✅ Helmet security headers enabled');
+    logger.log('✅ Helmet security headers enabled (HSTS + CSP)');
 
     // Trust Proxy (Required for DigitalOcean)
     app.set('trust proxy', 1);
