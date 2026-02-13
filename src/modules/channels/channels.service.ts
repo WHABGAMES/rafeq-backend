@@ -642,8 +642,13 @@ export class ChannelsService {
   // 💬 Send Message
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  async sendWhatsAppMessage(channelId: string, to: string, message: string): Promise<{ messageId: string }> {
-    const channel = await this.channelRepository.findOne({ where: { id: channelId } });
+  async sendWhatsAppMessage(channelId: string, to: string, message: string, storeId?: string): Promise<{ messageId: string }> {
+    // 🔧 FIX M-04: Include storeId in query when available to prevent IDOR
+    const whereClause: Record<string, unknown> = { id: channelId };
+    if (storeId) {
+      whereClause.storeId = storeId;
+    }
+    const channel = await this.channelRepository.findOne({ where: whereClause });
     if (!channel) throw new NotFoundException('Channel not found');
 
     if (channel.type === ChannelType.WHATSAPP_QR) {
