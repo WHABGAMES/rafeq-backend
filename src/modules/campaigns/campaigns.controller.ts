@@ -145,9 +145,10 @@ export class CampaignsController {
     summary: 'إيقاف الحملة مؤقتاً',
     description: 'إيقاف حملة نشطة مؤقتاً',
   })
-  async pause(@CurrentUser() _user: any,
+  async pause(@CurrentUser() user: any,
     @Param('id') id: string) {
-    return this.campaignsService.pause(id);
+    // 🔧 FIX C-04: Pass tenantId to prevent IDOR
+    return this.campaignsService.pause(id, user.tenantId);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -160,9 +161,10 @@ export class CampaignsController {
     summary: 'استئناف الحملة',
     description: 'استئناف حملة متوقفة مؤقتاً',
   })
-  async resume(@CurrentUser() _user: any,
+  async resume(@CurrentUser() user: any,
     @Param('id') id: string) {
-    return this.campaignsService.resume(id);
+    // 🔧 FIX C-04: Pass tenantId to prevent IDOR
+    return this.campaignsService.resume(id, user.tenantId);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -175,9 +177,10 @@ export class CampaignsController {
     summary: 'إلغاء الحملة',
     description: 'إلغاء حملة نهائياً',
   })
-  async cancel(@CurrentUser() _user: any,
+  async cancel(@CurrentUser() user: any,
     @Param('id') id: string) {
-    return this.campaignsService.cancel(id);
+    // 🔧 FIX C-04: Pass tenantId to prevent IDOR
+    return this.campaignsService.cancel(id, user.tenantId);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
