@@ -44,23 +44,24 @@ const entities = [
 ];
 
 /**
- * 🔧 FIX M-01: Load CA certificate for proper SSL verification
+ * 🔧 FIX M-01: Load CA certificate for SSL verification
+ * Only from explicit user config — NOT system defaults (system CA doesn't include DO's DB CA)
  */
 function loadCACertificate(configService: ConfigService): Buffer | undefined {
+  // Priority 1: Base64-encoded CA cert in environment variable
   const caCertBase64 = configService.get<string>('DB_CA_CERT');
   if (caCertBase64) return Buffer.from(caCertBase64, 'base64');
 
+  // Priority 2: File path to CA cert
   const caCertPath = configService.get<string>('DB_CA_CERT_PATH');
   if (caCertPath) {
     try { return fs.readFileSync(path.resolve(caCertPath)); }
     catch { console.error(`⚠️ Failed to read CA certificate from ${caCertPath}`); }
   }
 
-  try {
-    const doDefault = '/etc/ssl/certs/ca-certificates.crt';
-    if (fs.existsSync(doDefault)) return fs.readFileSync(doDefault);
-  } catch { /* silent */ }
-
+  // No explicit CA provided — return undefined
+  // DO NOT fallback to system CA bundle (/etc/ssl/certs/ca-certificates.crt)
+  // because it does not contain DigitalOcean Managed Database CA certificates
   return undefined;
 }
 
@@ -78,13 +79,22 @@ const buildConfig = (configService: ConfigService): TypeOrmModuleOptions => {
     console.error('🚨 SECURITY: DB_SYNCHRONIZE=true is IGNORED in production. Use TypeORM migrations.');
   }
 
-  // 🔧 FIX M-01: SSL with proper certificate verification
+  // 🔧 FIX M-01: SSL with CA certificate verification when explicitly provided
+  // Default: rejectUnauthorized=false (required for DigitalOcean Managed Database self-signed certs)
+  // Upgraded: rejectUnauthorized=true when DB_CA_CERT or DB_CA_CERT_PATH is configured
   let sslConfig: boolean | Record<string, unknown> = false;
   if (isProduction || configService.get<boolean>('database.ssl', false)) {
     const ca = loadCACertificate(configService);
-    sslConfig = { rejectUnauthorized: !!ca, ...(ca ? { ca } : {}) };
-    if (!ca && isProduction) {
-      console.warn('⚠️ SSL enabled without CA certificate. Set DB_CA_CERT or DB_CA_CERT_PATH.');
+    if (ca) {
+      // Explicit CA provided → full verification
+      sslConfig = { rejectUnauthorized: true, ca };
+      console.log('✅ SSL: Using provided CA certificate with full verification');
+    } else {
+      // No explicit CA → accept self-signed (DigitalOcean default)
+      sslConfig = { rejectUnauthorized: false };
+      if (isProduction) {
+        console.warn('⚠️ SSL: rejectUnauthorized=false. Set DB_CA_CERT for full certificate verification.');
+      }
     }
   }
 
