@@ -22,6 +22,7 @@ import {
   BadRequestException,
   ConflictException,
   Inject,
+  OnModuleInit,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -84,12 +85,40 @@ export interface UserProfile {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 @Injectable()
-export class AuthService {
+export class AuthService implements OnModuleInit {
   private readonly logger = new Logger(AuthService.name);
 
   private readonly MAX_LOGIN_ATTEMPTS = 5;
   private readonly LOCKOUT_DURATION_SECONDS = 900;
   private readonly LOGIN_ATTEMPT_WINDOW_SECONDS = 600;
+
+  /**
+   * 🔧 FIX C-03: Validate critical secrets at startup
+   * Fails fast if JWT_REFRESH_SECRET is missing in production
+   */
+  async onModuleInit(): Promise<void> {
+    const isProduction = this.configService.get('NODE_ENV') === 'production';
+    const refreshSecret = this.configService.get<string>('JWT_REFRESH_SECRET');
+    const jwtSecret = this.configService.get<string>('JWT_SECRET');
+
+    if (!refreshSecret) {
+      const msg = '🚨 FATAL: JWT_REFRESH_SECRET is not configured!';
+      this.logger.error(msg);
+      if (isProduction) {
+        throw new Error(msg + ' This is required in production.');
+      }
+    }
+
+    if (refreshSecret && jwtSecret && refreshSecret === jwtSecret) {
+      this.logger.warn('⚠️ JWT_REFRESH_SECRET should be different from JWT_SECRET');
+    }
+
+    // Validate access token expiration
+    const accessExp = this.configService.get('JWT_EXPIRES_IN', '15m');
+    if (accessExp.includes('d') || accessExp.includes('h')) {
+      this.logger.warn(`⚠️ JWT_EXPIRES_IN=${accessExp} is too long. Will be capped to 30m max.`);
+    }
+  }
 
   constructor(
     @InjectRepository(User)
@@ -345,9 +374,17 @@ export class AuthService {
   async sallaAuth(code: string, state?: string): Promise<LoginResult> {
     this.logger.log('🟢 Salla OAuth attempt');
 
-    // التحقق من state للحماية من CSRF (إذا تم إرساله)
+    // 🔧 FIX H-01: Validate HMAC-signed state parameter to prevent CSRF
     if (state) {
-      this.logger.debug(`Salla OAuth state received: ${state.substring(0, 8)}...`);
+      if (!this.verifyOAuthState(state)) {
+        this.logger.error('🚨 Invalid OAuth state parameter — potential CSRF attack');
+        throw new UnauthorizedException('Invalid OAuth state parameter');
+      }
+      this.logger.debug('✅ OAuth state verified successfully');
+    } else if (this.configService.get('NODE_ENV') === 'production') {
+      // In production, state parameter is REQUIRED
+      this.logger.error('🚨 Missing OAuth state parameter in production');
+      throw new BadRequestException('OAuth state parameter is required');
     }
 
     // 1. استبدال الكود بتوكن
@@ -383,7 +420,10 @@ export class AuthService {
       `${this.configService.get('FRONTEND_URL', 'https://rafeq.ai')}/auth/callback/salla`
     );
 
-    return `https://accounts.salla.sa/oauth2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=offline_access+settings.read`;
+    // 🔧 FIX H-01: Include HMAC-signed state for CSRF protection
+    const state = this.generateOAuthState('login', 'salla');
+
+    return `https://accounts.salla.sa/oauth2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=offline_access+settings.read&state=${encodeURIComponent(state)}`;
   }
 
   private async exchangeSallaCode(code: string): Promise<any> {
@@ -442,9 +482,16 @@ export class AuthService {
   async zidAuth(code: string, state?: string): Promise<LoginResult> {
     this.logger.log('🟣 Zid OAuth attempt');
 
-    // التحقق من state للحماية من CSRF (إذا تم إرساله)
+    // 🔧 FIX H-01: Validate HMAC-signed state parameter to prevent CSRF
     if (state) {
-      this.logger.debug(`Zid OAuth state received: ${state.substring(0, 8)}...`);
+      if (!this.verifyOAuthState(state)) {
+        this.logger.error('🚨 Invalid OAuth state parameter — potential CSRF attack');
+        throw new UnauthorizedException('Invalid OAuth state parameter');
+      }
+      this.logger.debug('✅ OAuth state verified successfully');
+    } else if (this.configService.get('NODE_ENV') === 'production') {
+      this.logger.error('🚨 Missing OAuth state parameter in production');
+      throw new BadRequestException('OAuth state parameter is required');
     }
 
     // 1. استبدال الكود بتوكن
@@ -479,7 +526,10 @@ export class AuthService {
       `${this.configService.get('FRONTEND_URL', 'https://rafeq.ai')}/auth/callback/zid`
     );
 
-    return `https://oauth.zid.sa/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code`;
+    // 🔧 FIX H-01: Include HMAC-signed state for CSRF protection
+    const state = this.generateOAuthState('login', 'zid');
+
+    return `https://oauth.zid.sa/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&state=${encodeURIComponent(state)}`;
   }
 
   private async exchangeZidCode(code: string): Promise<any> {
@@ -1114,6 +1164,10 @@ export class AuthService {
   // 🎟️ GENERATE TOKENS
   // ═══════════════════════════════════════════════════════════════════════════════
 
+  /**
+   * 🔧 FIX C-02: Access token max 30m, default 15m
+   * 🔧 FIX C-03: Refresh secret validated at startup via onModuleInit
+   */
   private async generateTokens(user: Pick<User, 'id' | 'email' | 'tenantId' | 'role'>): Promise<{
     accessToken: string;
     refreshToken: string;
@@ -1128,18 +1182,30 @@ export class AuthService {
       role: user.role,
     };
 
+    // 🔧 FIX C-02: Enforce max access token expiration (30 minutes)
+    // Even if JWT_EXPIRES_IN is set to '7d' in env, cap it at 30m
+    const requestedAccessExp = this.configService.get('JWT_EXPIRES_IN', '15m');
+    const accessExpiresIn = this.sanitizeAccessTokenExpiry(requestedAccessExp);
+
+    // 🔧 FIX C-03: Use validated refresh secret (checked at startup)
+    const refreshSecret = this.configService.get<string>('JWT_REFRESH_SECRET');
+    if (!refreshSecret) {
+      this.logger.error('🚨 JWT_REFRESH_SECRET is not configured!');
+      throw new Error('JWT_REFRESH_SECRET is required for token generation');
+    }
+
     const [accessToken, refreshToken] = await Promise.all([
       this.jwtService.signAsync(
-        { ...basePayload, jti: accessJti },
+        { ...basePayload, jti: accessJti, type: 'access' },
         {
           secret: this.configService.get('JWT_SECRET'),
-          expiresIn: this.configService.get('JWT_EXPIRES_IN', '15m'),
+          expiresIn: accessExpiresIn,
         },
       ),
       this.jwtService.signAsync(
-        { ...basePayload, jti: refreshJti },
+        { ...basePayload, jti: refreshJti, type: 'refresh' },
         {
-          secret: this.configService.get('JWT_REFRESH_SECRET'),
+          secret: refreshSecret,
           expiresIn: this.configService.get('JWT_REFRESH_EXPIRES_IN', '7d'),
         },
       ),
@@ -1147,4 +1213,96 @@ export class AuthService {
 
     return { accessToken, refreshToken };
   }
+
+  /**
+   * 🔧 FIX C-02: Sanitize access token expiration
+   * Converts the env value and caps it at 30 minutes maximum
+   */
+  private sanitizeAccessTokenExpiry(value: string): string {
+    const match = value.match(/^(\d+)(s|m|h|d)$/);
+    if (!match) return '15m'; // Invalid format → default
+
+    const num = parseInt(match[1], 10);
+    const unit = match[2];
+
+    // Convert to seconds for comparison
+    const secondsMap: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400 };
+    const totalSeconds = num * (secondsMap[unit] || 60);
+
+    // Cap at 30 minutes (1800 seconds)
+    const MAX_ACCESS_TOKEN_SECONDS = 1800;
+    if (totalSeconds > MAX_ACCESS_TOKEN_SECONDS) {
+      this.logger.warn(
+        `⚠️ JWT_EXPIRES_IN=${value} exceeds max 30m. Capping to 15m for security.`,
+      );
+      return '15m';
+    }
+
+    return value;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔧 FIX H-01: HMAC-Signed OAuth State (CSRF Protection)
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Generate a CSRF-safe OAuth state parameter
+   * Format: base64(JSON({tenantId, ts, nonce})) + '.' + HMAC-SHA256(payload)
+   */
+  generateOAuthState(tenantId: string, custom?: string): string {
+    const payload = JSON.stringify({
+      tenantId,
+      custom: custom || '',
+      ts: Date.now(),
+      nonce: crypto.randomBytes(16).toString('hex'),
+    });
+
+    const encoded = Buffer.from(payload).toString('base64url');
+    const secret = this.configService.get('JWT_SECRET', '');
+    const signature = crypto
+      .createHmac('sha256', secret)
+      .update(encoded)
+      .digest('hex');
+
+    return `${encoded}.${signature}`;
+  }
+
+  /**
+   * Verify HMAC-signed OAuth state parameter
+   * Returns true if signature is valid and not expired (10 min window)
+   */
+  private verifyOAuthState(state: string): boolean {
+    try {
+      const [encoded, signature] = state.split('.');
+      if (!encoded || !signature) return false;
+
+      // Verify HMAC signature
+      const secret = this.configService.get('JWT_SECRET', '');
+      const expectedSignature = crypto
+        .createHmac('sha256', secret)
+        .update(encoded)
+        .digest('hex');
+
+      if (!crypto.timingSafeEqual(
+        Buffer.from(signature, 'hex'),
+        Buffer.from(expectedSignature, 'hex'),
+      )) {
+        return false;
+      }
+
+      // Verify timestamp (10 minute expiry)
+      const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString());
+      const MAX_STATE_AGE_MS = 10 * 60 * 1000; // 10 minutes
+      if (Date.now() - payload.ts > MAX_STATE_AGE_MS) {
+        this.logger.warn('OAuth state expired');
+        return false;
+      }
+
+      return true;
+    } catch (error) {
+      this.logger.error('OAuth state verification failed', error);
+      return false;
+    }
+  }
+
 }
