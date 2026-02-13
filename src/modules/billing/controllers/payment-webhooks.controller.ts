@@ -3,6 +3,7 @@
  * ║              RAFIQ PLATFORM - Payment Webhooks Controller                      ║
  * ║                                                                                ║
  * ║  🔧 FIX C-05: Full signature verification for Stripe + Moyasar                ║
+ * ║  📌 استقبال webhooks من بوابات الدفع مع التحقق من التوقيع                      ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -22,6 +23,28 @@ import { ApiTags, ApiExcludeEndpoint } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { Request } from 'express';
 import * as crypto from 'crypto';
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Type Definitions
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Stripe Webhook Event shape
+ * @see https://stripe.com/docs/api/events/object
+ */
+interface StripeEventData {
+  object: Record<string, unknown>;
+  previous_attributes?: Record<string, unknown>;
+}
+
+interface StripeWebhookEvent {
+  id: string;
+  type: string;
+  data: StripeEventData;
+  created: number;
+  livemode: boolean;
+  api_version: string;
+}
 
 @ApiTags('Billing - Webhooks')
 @Controller({
@@ -45,10 +68,11 @@ export class WebhooksController {
     }
   }
 
-  /**
-   * 🔧 FIX C-05: Stripe Webhook with signature verification
-   * Uses Stripe's standard HMAC-SHA256 signature scheme
-   */
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔧 FIX C-05: Stripe Webhook with signature verification
+  // Uses Stripe's standard HMAC-SHA256 signature scheme
+  // ═══════════════════════════════════════════════════════════════════════════════
+
   @Post('stripe')
   @HttpCode(HttpStatus.OK)
   @ApiExcludeEndpoint()
@@ -68,13 +92,14 @@ export class WebhooksController {
       throw new BadRequestException('Webhook verification not configured');
     }
 
-    // Verify the signature
+    // Verify raw body is available (needed for HMAC)
     const rawBody = req.rawBody;
     if (!rawBody) {
       this.logger.error('🚨 Stripe webhook: No raw body available');
       throw new BadRequestException('Raw body required for signature verification');
     }
 
+    // Verify the cryptographic signature
     const event = this.verifyStripeSignature(rawBody, signature);
     if (!event) {
       this.logger.error('🚨 Stripe webhook: Invalid signature');
@@ -83,19 +108,30 @@ export class WebhooksController {
 
     this.logger.log(`✅ Stripe webhook verified: ${event.type}`);
 
+    // Route to handler — event.data.object is the Stripe resource
+    const eventObject = event.data.object;
+
     switch (event.type) {
       case 'checkout.session.completed':
-        await this.handleCheckoutCompleted(event.data?.object);
+        this.logger.log(`Processing checkout.session.completed — session: ${String(eventObject.id || 'unknown')}`);
+        // TODO: Activate subscription, update billing records
         break;
+
       case 'invoice.payment_succeeded':
-        await this.handleInvoicePaymentSucceeded(event.data?.object);
+        this.logger.log(`Processing invoice.payment_succeeded — invoice: ${String(eventObject.id || 'unknown')}`);
+        // TODO: Extend subscription period
         break;
+
       case 'invoice.payment_failed':
-        await this.handleInvoicePaymentFailed(event.data?.object);
+        this.logger.log(`Processing invoice.payment_failed — invoice: ${String(eventObject.id || 'unknown')}`);
+        // TODO: Notify user, mark subscription at risk
         break;
+
       case 'customer.subscription.deleted':
-        await this.handleSubscriptionDeleted(event.data?.object);
+        this.logger.log(`Processing customer.subscription.deleted — sub: ${String(eventObject.id || 'unknown')}`);
+        // TODO: Downgrade to free plan, notify user
         break;
+
       default:
         this.logger.debug(`Unhandled Stripe event: ${event.type}`);
     }
@@ -103,10 +139,11 @@ export class WebhooksController {
     return { received: true };
   }
 
-  /**
-   * 🔧 FIX C-05: Moyasar Webhook with signature verification
-   * Uses Moyasar's HMAC-SHA256 signature scheme
-   */
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔧 FIX C-05: Moyasar Webhook with signature verification
+  // Uses Moyasar's HMAC-SHA256 signature scheme
+  // ═══════════════════════════════════════════════════════════════════════════════
+
   @Post('moyasar')
   @HttpCode(HttpStatus.OK)
   @ApiExcludeEndpoint()
@@ -129,41 +166,48 @@ export class WebhooksController {
       throw new BadRequestException('Raw body required for signature verification');
     }
 
-    // Verify Moyasar signature
+    // Verify Moyasar HMAC signature
     if (!this.verifyMoyasarSignature(rawBody, signature)) {
       this.logger.error('🚨 Moyasar webhook: Invalid signature');
       throw new ForbiddenException('Invalid webhook signature');
     }
 
-    const payload = JSON.parse(rawBody.toString());
-    this.logger.log(`✅ Moyasar webhook verified: ${payload?.type}`);
+    const payload = JSON.parse(rawBody.toString()) as Record<string, unknown>;
+    const paymentType = String(payload.type || 'unknown');
+    this.logger.log(`✅ Moyasar webhook verified: ${paymentType}`);
 
-    switch (payload?.type) {
+    switch (paymentType) {
       case 'payment_paid':
-        await this.handleMoyasarPaymentPaid(payload);
+        this.logger.log(`Processing Moyasar payment_paid — id: ${String(payload.id || 'unknown')}`);
+        // TODO: Activate subscription
         break;
+
       case 'payment_failed':
-        await this.handleMoyasarPaymentFailed(payload);
+        this.logger.log(`Processing Moyasar payment_failed — id: ${String(payload.id || 'unknown')}`);
+        // TODO: Notify user of failed payment
         break;
+
       default:
-        this.logger.debug(`Unhandled Moyasar event: ${payload?.type}`);
+        this.logger.debug(`Unhandled Moyasar event: ${paymentType}`);
     }
 
     return { received: true };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 🔐 Signature Verification
+  // 🔐 Signature Verification — Private Methods
   // ═══════════════════════════════════════════════════════════════════════════════
 
   /**
    * Verify Stripe webhook signature using their standard scheme:
    * signature header format: t=timestamp,v1=hash
+   *
+   * @see https://stripe.com/docs/webhooks/signatures
    */
   private verifyStripeSignature(
     rawBody: Buffer,
     signatureHeader: string,
-  ): Record<string, unknown> | null {
+  ): StripeWebhookEvent | null {
     try {
       const elements = signatureHeader.split(',');
       const timestamp = elements.find(e => e.startsWith('t='))?.slice(2);
@@ -174,7 +218,7 @@ export class WebhooksController {
         return null;
       }
 
-      // Check timestamp tolerance (5 minutes)
+      // Check timestamp tolerance (5 minutes — prevents replay attacks)
       const TOLERANCE_SECONDS = 300;
       const timestampAge = Math.floor(Date.now() / 1000) - parseInt(timestamp, 10);
       if (Math.abs(timestampAge) > TOLERANCE_SECONDS) {
@@ -182,15 +226,17 @@ export class WebhooksController {
         return null;
       }
 
-      // Compute expected signature
+      // Compute expected signature: HMAC-SHA256(timestamp.body, secret)
       const signedPayload = `${timestamp}.${rawBody.toString()}`;
       const expectedSignature = crypto
         .createHmac('sha256', this.stripeWebhookSecret)
         .update(signedPayload)
         .digest('hex');
 
-      // Timing-safe comparison
+      // Length check required before timingSafeEqual (throws on length mismatch)
       if (signature.length !== expectedSignature.length) return null;
+
+      // Timing-safe comparison (prevents timing attacks)
       const isValid = crypto.timingSafeEqual(
         Buffer.from(signature),
         Buffer.from(expectedSignature),
@@ -198,7 +244,7 @@ export class WebhooksController {
 
       if (!isValid) return null;
 
-      return JSON.parse(rawBody.toString());
+      return JSON.parse(rawBody.toString()) as StripeWebhookEvent;
     } catch (error) {
       this.logger.error('Stripe signature verification error:', error);
       return null;
@@ -207,6 +253,8 @@ export class WebhooksController {
 
   /**
    * Verify Moyasar webhook signature (HMAC-SHA256)
+   *
+   * @see https://docs.moyasar.com/webhooks
    */
   private verifyMoyasarSignature(rawBody: Buffer, signature: string): boolean {
     try {
@@ -215,6 +263,7 @@ export class WebhooksController {
         .update(rawBody)
         .digest('hex');
 
+      // Length check required before timingSafeEqual (throws on length mismatch)
       if (signature.length !== expectedSignature.length) return false;
 
       return crypto.timingSafeEqual(
@@ -225,39 +274,5 @@ export class WebhooksController {
       this.logger.error('Moyasar signature verification error:', error);
       return false;
     }
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 📋 Event Handlers (implement your business logic here)
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  private async handleCheckoutCompleted(session: Record<string, unknown>): Promise<void> {
-    this.logger.log('Processing checkout.session.completed');
-    // TODO: Activate subscription, update billing records
-  }
-
-  private async handleInvoicePaymentSucceeded(invoice: Record<string, unknown>): Promise<void> {
-    this.logger.log('Processing invoice.payment_succeeded');
-    // TODO: Extend subscription period
-  }
-
-  private async handleInvoicePaymentFailed(invoice: Record<string, unknown>): Promise<void> {
-    this.logger.log('Processing invoice.payment_failed');
-    // TODO: Notify user, mark subscription at risk
-  }
-
-  private async handleSubscriptionDeleted(subscription: Record<string, unknown>): Promise<void> {
-    this.logger.log('Processing customer.subscription.deleted');
-    // TODO: Downgrade to free plan, notify user
-  }
-
-  private async handleMoyasarPaymentPaid(payload: Record<string, unknown>): Promise<void> {
-    this.logger.log('Processing Moyasar payment_paid');
-    // TODO: Activate subscription
-  }
-
-  private async handleMoyasarPaymentFailed(payload: Record<string, unknown>): Promise<void> {
-    this.logger.log('Processing Moyasar payment_failed');
-    // TODO: Notify user of failed payment
   }
 }
