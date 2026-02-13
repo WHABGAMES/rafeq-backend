@@ -24,6 +24,7 @@ import { AutoRegistrationService } from '../auth/auto-registration.service';
 
 // 🔐 Encryption
 import { encrypt } from '@common/utils/encryption.util';
+import * as crypto from 'crypto';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ✅ Exported Types
@@ -95,12 +96,20 @@ export class SallaOAuthService {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   generateAuthorizationUrl(tenantId: string, customState?: string): string {
+    // 🔧 FIX H-01: HMAC-signed state parameter to prevent CSRF
     const stateData = {
       tenantId,
       custom: customState || '',
-      timestamp: Date.now(),
+      ts: Date.now(),
+      nonce: crypto.randomBytes(16).toString('hex'),
     };
-    const state = Buffer.from(JSON.stringify(stateData)).toString('base64');
+    const encoded = Buffer.from(JSON.stringify(stateData)).toString('base64url');
+    const secret = this.configService.get('JWT_SECRET', '');
+    const signature = crypto
+      .createHmac('sha256', secret)
+      .update(encoded)
+      .digest('hex');
+    const state = `${encoded}.${signature}`;
 
     const params = new URLSearchParams({
       client_id: this.clientId,
@@ -117,11 +126,38 @@ export class SallaOAuthService {
 
   decodeState(state: string): { tenantId: string; custom: string } {
     try {
-      const decoded = Buffer.from(state, 'base64').toString('utf-8');
-      return JSON.parse(decoded);
+      // 🔧 FIX H-01: Verify HMAC signature before decoding
+      const [encoded, signature] = state.split('.');
+      if (!encoded || !signature) {
+        throw new Error('Invalid state format');
+      }
+
+      const secret = this.configService.get('JWT_SECRET', '');
+      const expectedSignature = crypto
+        .createHmac('sha256', secret)
+        .update(encoded)
+        .digest('hex');
+
+      // Timing-safe comparison
+      if (signature.length !== expectedSignature.length ||
+          !crypto.timingSafeEqual(
+            Buffer.from(signature, 'hex'),
+            Buffer.from(expectedSignature, 'hex'),
+          )) {
+        throw new Error('Invalid state signature');
+      }
+
+      // Verify timestamp (10 minute window)
+      const decoded = JSON.parse(Buffer.from(encoded, 'base64url').toString());
+      const MAX_AGE = 10 * 60 * 1000;
+      if (Date.now() - decoded.ts > MAX_AGE) {
+        throw new Error('State parameter expired');
+      }
+
+      return { tenantId: decoded.tenantId, custom: decoded.custom || '' };
     } catch (error) {
-      this.logger.error('Failed to decode state', error);
-      throw new BadRequestException('Invalid state parameter');
+      this.logger.error('Failed to decode/verify state', error);
+      throw new BadRequestException('Invalid or expired state parameter');
     }
   }
 
