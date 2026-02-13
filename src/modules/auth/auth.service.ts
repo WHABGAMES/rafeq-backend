@@ -94,18 +94,25 @@ export class AuthService implements OnModuleInit {
 
   /**
    * 🔧 FIX C-03: Validate critical secrets at startup
-   * Fails fast if JWT_REFRESH_SECRET is missing in production
+   * Warns if JWT_REFRESH_SECRET is missing (falls back to JWT_SECRET like original)
    */
   async onModuleInit(): Promise<void> {
     const isProduction = this.configService.get('NODE_ENV') === 'production';
     const refreshSecret = this.configService.get<string>('JWT_REFRESH_SECRET');
     const jwtSecret = this.configService.get<string>('JWT_SECRET');
 
-    if (!refreshSecret) {
-      const msg = '🚨 FATAL: JWT_REFRESH_SECRET is not configured!';
+    if (!jwtSecret) {
+      const msg = '🚨 FATAL: JWT_SECRET is not configured!';
       this.logger.error(msg);
+      throw new Error(msg + ' Cannot start without JWT_SECRET.');
+    }
+
+    if (!refreshSecret) {
+      // Original code used JWT_SECRET as fallback — don't crash, but warn strongly
+      this.logger.warn('⚠️ JWT_REFRESH_SECRET is not configured — using JWT_SECRET as fallback.');
+      this.logger.warn('⚠️ RECOMMENDED: Set a separate JWT_REFRESH_SECRET for better security.');
       if (isProduction) {
-        throw new Error(msg + ' This is required in production.');
+        this.logger.warn('🔴 PRODUCTION WARNING: Set JWT_REFRESH_SECRET in environment variables.');
       }
     }
 
@@ -1187,12 +1194,9 @@ export class AuthService implements OnModuleInit {
     const requestedAccessExp = this.configService.get('JWT_EXPIRES_IN', '15m');
     const accessExpiresIn = this.sanitizeAccessTokenExpiry(requestedAccessExp);
 
-    // 🔧 FIX C-03: Use validated refresh secret (checked at startup)
-    const refreshSecret = this.configService.get<string>('JWT_REFRESH_SECRET');
-    if (!refreshSecret) {
-      this.logger.error('🚨 JWT_REFRESH_SECRET is not configured!');
-      throw new Error('JWT_REFRESH_SECRET is required for token generation');
-    }
+    // 🔧 FIX C-03: Use separate refresh secret if available, otherwise fallback to JWT_SECRET
+    const refreshSecret = this.configService.get<string>('JWT_REFRESH_SECRET')
+      || this.configService.get<string>('JWT_SECRET');
 
     const [accessToken, refreshToken] = await Promise.all([
       this.jwtService.signAsync(
