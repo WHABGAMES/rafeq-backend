@@ -33,7 +33,6 @@ import { SallaWebhookDto, SallaWebhookJobDto } from './dto/salla-webhook.dto';
 export class SallaWebhooksController {
   private readonly logger = new Logger(SallaWebhooksController.name);
   private readonly webhookSecret: string;
-  private readonly isProduction: boolean;
 
   constructor(
     private readonly webhooksService: SallaWebhooksService,
@@ -44,8 +43,6 @@ export class SallaWebhooksController {
       this.configService.get<string>('SALLA_WEBHOOK_SECRET') ||
       this.configService.get<string>('salla.webhookSecret') ||
       '';
-
-    this.isProduction = this.configService.get<string>('NODE_ENV') === 'production';
 
     if (this.webhookSecret) {
       this.logger.log(`✅ Salla webhook secret loaded (length: ${this.webhookSecret.length})`);
