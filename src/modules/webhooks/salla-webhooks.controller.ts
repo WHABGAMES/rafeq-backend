@@ -82,13 +82,14 @@ export class SallaWebhooksController {
     // ═══════════════════════════════════════════════════════════════════════════
     const signatureValid = this.verifySignature(req.rawBody, signature);
 
+    // 🔧 FIX M-05: ALWAYS reject invalid signatures — no dev bypass
+    // Invalid signatures are rejected in ALL environments to prevent
+    // developers from accidentally relying on unverified webhooks.
     if (!signatureValid) {
-      if (this.isProduction) {
-        this.logger.error(`🚨 REJECTED: Invalid signature for ${payload.event} from merchant ${payload.merchant}`);
-        throw new ForbiddenException('Invalid webhook signature');
-      } else {
-        this.logger.warn(`⚠️ [DEV ONLY] Invalid signature for ${payload.event} - continuing in development mode`);
-      }
+      this.logger.error(
+        `🚨 REJECTED: Invalid signature for ${payload.event} from merchant ${payload.merchant}`,
+      );
+      throw new ForbiddenException('Invalid webhook signature');
     }
 
     // معالجة خاصة لـ app.store.authorize
