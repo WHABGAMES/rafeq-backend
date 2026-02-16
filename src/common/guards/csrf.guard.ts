@@ -35,8 +35,8 @@ export class CsrfGuard implements CanActivate {
   private readonly logger = new Logger(CsrfGuard.name);
   private readonly isEnabled: boolean;
 
-  constructor(private readonly configService: ConfigService) {
-    this.isEnabled = configService.get('NODE_ENV') === 'production';
+  constructor(private configService: ConfigService) {
+    this.isEnabled = this.configService.get('NODE_ENV') === 'production';
   }
 
   canActivate(context: ExecutionContext): boolean {
