@@ -66,13 +66,14 @@ export default () => ({
   },
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 🔴 REDIS
+  // 🔴 REDIS — 🔧 FIX H-02: Enforce password + TLS in production
   // ═══════════════════════════════════════════════════════════════════════════════
   redis: {
     host: process.env.REDIS_HOST || 'localhost',
     port: parseInt(process.env.REDIS_PORT || '6379', 10),
-    password: process.env.REDIS_PASSWORD || undefined,
+    password: requireEnv('REDIS_PASSWORD', ''),
     db: parseInt(process.env.REDIS_DB || '0', 10),
+    tls: process.env.REDIS_TLS === 'true',
   },
 
   // ═══════════════════════════════════════════════════════════════════════════════
