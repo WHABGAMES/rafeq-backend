@@ -26,6 +26,9 @@ import {
 import { Server, Socket } from 'socket.io';
 import { Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { Conversation } from '@database/entities/conversation.entity';
 
 /**
  * أنواع الأحداث
@@ -110,7 +113,11 @@ export class AppGateway
   // تتبع المستخدمين حسب المحادثة
   private conversationUsers: Map<string, Set<string>> = new Map();
 
-  constructor(private readonly jwtService: JwtService) {}
+  constructor(
+    private readonly jwtService: JwtService,
+    @InjectRepository(Conversation)
+    private readonly conversationRepository: Repository<Conversation>,
+  ) {}
 
   /**
    * بعد تهيئة الـ Gateway
@@ -220,14 +227,44 @@ export class AppGateway
 
   /**
    * الانضمام لمحادثة
+   * 🔧 FIX H-07: Tenant isolation — verify user belongs to the conversation's tenant
+   *   Before fix: Any user could join any conversation by sending arbitrary conversationId
+   *   After fix: Server validates the conversation belongs to the user's tenant
    */
   @SubscribeMessage(SocketEvents.JOIN_CONVERSATION)
-  handleJoinConversation(
+  async handleJoinConversation(
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { conversationId: string },
   ) {
     const user = this.connectedUsers.get(client.id);
     if (!user) return;
+
+    // ── 🔧 FIX H-07: Validate conversation ownership ──
+    if (!data.conversationId || typeof data.conversationId !== 'string') {
+      client.emit('error', { message: 'Invalid conversationId' });
+      return;
+    }
+
+    // ── 🔧 FIX H-07: Verify conversation belongs to user's tenant ──
+    try {
+      const isOwner = await this.verifyConversationOwnership(
+        data.conversationId,
+        user.tenantId,
+      );
+
+      if (!isOwner) {
+        this.logger.warn(
+          `⛔ Tenant isolation violation: User ${user.userId} (tenant: ${user.tenantId}) ` +
+          `tried to join conversation ${data.conversationId}`,
+        );
+        client.emit('error', { message: 'Access denied: conversation not found' });
+        return;
+      }
+    } catch (error) {
+      this.logger.error(`Error verifying conversation ownership: ${error}`);
+      client.emit('error', { message: 'Failed to verify access' });
+      return;
+    }
 
     const room = `conversation:${data.conversationId}`;
     client.join(room);
@@ -401,9 +438,12 @@ export class AppGateway
 
   /**
    * استخراج التوكن
+   * 🔧 FIX H-05: Removed query string token support (?token=...)
+   *   Query params appear in server logs, proxy logs, browser history, and Referer headers.
+   *   Only allow: Authorization header (preferred) or handshake auth object.
    */
   private extractToken(client: Socket): string | null {
-    // من الـ auth header
+    // ✅ From Authorization header (preferred)
     const authHeader = client.handshake.headers.authorization;
     if (authHeader) {
       const [type, token] = authHeader.split(' ');
@@ -412,17 +452,13 @@ export class AppGateway
       }
     }
 
-    // من الـ query
-    const queryToken = client.handshake.query.token;
-    if (queryToken && typeof queryToken === 'string') {
-      return queryToken;
-    }
-
-    // من الـ auth object
+    // ✅ From auth object in handshake (Socket.IO client: { auth: { token } })
     const authToken = client.handshake.auth?.token;
     if (authToken) {
       return authToken;
     }
+
+    // ⛔ REMOVED: client.handshake.query.token — leaks token in URLs/logs
 
     return null;
   }
@@ -448,6 +484,26 @@ export class AppGateway
       return payload;
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * 🔧 FIX H-07: Verify a conversation belongs to the given tenant
+   * Direct DB query — lightweight, only checks tenantId column.
+   */
+  private async verifyConversationOwnership(
+    conversationId: string,
+    tenantId: string,
+  ): Promise<boolean> {
+    try {
+      const conversation = await this.conversationRepository.findOne({
+        where: { id: conversationId, tenantId },
+        select: ['id'],
+      });
+      return !!conversation;
+    } catch (error) {
+      this.logger.error(`Error verifying conversation ownership: ${error}`);
+      return false;
     }
   }
 
