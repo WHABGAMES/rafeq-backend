@@ -58,8 +58,8 @@ services:
       POSTGRES_USER: rafiq_user
       
       # كلمة المرور
-      # ⚠️ غيّرها في الإنتاج!
-      POSTGRES_PASSWORD: rafiq_secret_password
+      # 🔧 FIX M-02: Use env variable — NEVER hardcode passwords
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set in .env}
       
       # المنطقة الزمنية
       TZ: Asia/Riyadh
@@ -118,11 +118,13 @@ services:
     container_name: rafiq_redis
     
     # أمر التشغيل مع خيارات إضافية
+    # 🔧 FIX H-02: Redis with password authentication
     command: >
       redis-server
       --appendonly yes
       --maxmemory 256mb
       --maxmemory-policy allkeys-lru
+      --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}
     
     # شرح الخيارات:
     # --appendonly yes        = حفظ البيانات على القرص (لا تضيع عند إعادة التشغيل)
@@ -138,7 +140,7 @@ services:
       - redis_data:/data
 
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -177,11 +179,12 @@ services:
       DB_PORT: 5432
       DB_NAME: rafiq_db
       DB_USERNAME: rafiq_user
-      DB_PASSWORD: rafiq_secret_password
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set in .env}
       
       # اتصال Redis
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}
 
     ports:
       # المنفذ الرئيسي للـ API
@@ -235,9 +238,9 @@ services:
 
     environment:
       # بريد تسجيل الدخول
-      PGADMIN_DEFAULT_EMAIL: admin@rafiq.sa
-      # كلمة المرور
-      PGADMIN_DEFAULT_PASSWORD: admin123
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@rafiq.sa}
+      # 🔧 FIX M-03: pgAdmin password from env variable (no more admin123!)
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:?PGADMIN_PASSWORD must be set in .env}
       # تعطيل التسجيل على الخادم
       PGADMIN_CONFIG_SERVER_MODE: 'False'
 
