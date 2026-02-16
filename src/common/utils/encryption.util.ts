@@ -88,17 +88,30 @@ export function encrypt(plainText: string | null | undefined): string | null {
 /**
  * فك تشفير نص مشفّر بـ AES-256-GCM
  * 
+ * 🔧 FIX M-05: On failure, throws error instead of returning raw value.
+ *   Old behavior: returned plaintext on decrypt failure (leaked unencrypted tokens)
+ *   New behavior: throws error so caller can handle migration explicitly
+ * 
  * @param encryptedText - النص المشفّر (iv:authTag:data)
  * @returns النص الأصلي أو null
+ * @throws Error if decryption fails (caller should handle migration)
  */
 export function decrypt(encryptedText: string | null | undefined): string | null {
   if (!encryptedText) return null;
 
-  // إذا لم يكن بالتنسيق المتوقع (نص غير مشفّر قديم)، أرجعه كما هو
   const parts = encryptedText.split(':');
+
+  // 🔧 FIX M-05: Non-encrypted format is a migration issue, not a silent pass-through
   if (parts.length !== 3) {
-    // هذا نص غير مشفر (بيانات قديمة من قبل التشفير)
-    return encryptedText;
+    console.error(
+      'Decrypt called with non-encrypted data. ' +
+      'This likely means unencrypted legacy data needs migration. ' +
+      'Run the encryption migration script.',
+    );
+    throw new Error(
+      'DECRYPT_LEGACY_DATA: Data is not in encrypted format. ' +
+      'Run migration to encrypt existing tokens.',
+    );
   }
 
   try {
@@ -108,8 +121,7 @@ export function decrypt(encryptedText: string | null | undefined): string | null
     const encrypted = parts[2];
 
     if (iv.length !== IV_LENGTH || authTag.length !== AUTH_TAG_LENGTH) {
-      // تنسيق غير صالح - ربما نص قديم غير مشفر
-      return encryptedText;
+      throw new Error('Invalid IV or auth tag length — data may be corrupted');
     }
 
     const decipher = crypto.createDecipheriv(ALGORITHM, key, iv, {
@@ -122,9 +134,22 @@ export function decrypt(encryptedText: string | null | undefined): string | null
 
     return decrypted;
   } catch (error) {
-    // إذا فشل فك التشفير، ربما النص غير مشفر (بيانات قديمة)
-    console.warn('Decryption failed, returning raw value (might be unencrypted legacy data)');
-    return encryptedText;
+    // 🔧 FIX M-05: NEVER return the raw value — it could be a plaintext token
+    const message = error instanceof Error ? error.message : 'Unknown decryption error';
+    console.error(`Decryption failed: ${message}`);
+    throw new Error(`DECRYPT_FAILED: ${message}`);
+  }
+}
+
+/**
+ * 🔧 Safe decrypt — returns null instead of throwing on failure.
+ * Use this when you want to gracefully handle legacy unencrypted data.
+ */
+export function decryptSafe(encryptedText: string | null | undefined): string | null {
+  try {
+    return decrypt(encryptedText);
+  } catch {
+    return null;
   }
 }
 
