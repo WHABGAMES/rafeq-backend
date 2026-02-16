@@ -18,6 +18,8 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet'; // 🔧 FIX M5
+import * as cookieParser from 'cookie-parser'; // 🔧 FIX M-01
+import { csrfCookieMiddleware } from './common/guards/csrf.guard'; // 🔧 FIX M-01
 
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
@@ -44,7 +46,14 @@ async function bootstrap() {
       logger: ['error', 'warn', 'log'],
       abortOnError: false,
       rawBody: true,
+      // 🔧 FIX M-07: Global body size limit — prevents OOM from oversized payloads
+      bodyParser: true,
     });
+
+    // 🔧 FIX M-07: Set body size limits via Express directly
+    // Must be BEFORE any route handlers
+    app.useBodyParser('json', { limit: '1mb' });
+    app.useBodyParser('raw', { limit: '1mb' });
 
     const configService = app.get(ConfigService);
     const port = parseInt(process.env.PORT || '3000', 10);
@@ -91,6 +100,13 @@ async function bootstrap() {
 
     // Trust Proxy (Required for DigitalOcean)
     app.set('trust proxy', 1);
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 🔧 FIX M-01: CSRF Protection via Double Submit Cookie
+    // ═══════════════════════════════════════════════════════════════════════════
+    app.use(cookieParser());
+    app.use(csrfCookieMiddleware(configService));
+    logger.log('✅ CSRF protection enabled (Double Submit Cookie)');
 
     // ═══════════════════════════════════════════════════════════════════════════
     // 🔧 FIX C2: CORS - استخدام whitelist من الإعدادات بدل origin: true
