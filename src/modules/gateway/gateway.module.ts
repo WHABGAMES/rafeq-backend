@@ -5,12 +5,16 @@
 
 import { Module, Global } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
+import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AppGateway } from './app.gateway';
+import { Conversation } from '@database/entities/conversation.entity';
 
 @Global()
 @Module({
   imports: [
+    // 🔧 FIX H-07: Conversation repo needed for tenant isolation in WebSocket
+    TypeOrmModule.forFeature([Conversation]),
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
