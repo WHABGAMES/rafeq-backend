@@ -125,7 +125,7 @@ const buildConfig = (configService: ConfigService): TypeOrmModuleOptions => {
     },
     retryAttempts: isProduction ? 10 : 3,
     retryDelay: 3000,
-    autoLoadEntities: false,
+    autoLoadEntities: true,
     keepConnectionAlive: false,
   };
 };
