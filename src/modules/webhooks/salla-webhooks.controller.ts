@@ -18,6 +18,7 @@ import {
   RawBodyRequest,
   Req,
   ForbiddenException,
+  UseGuards,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiHeader } from '@nestjs/swagger';
 import { Request } from 'express';
@@ -27,9 +28,11 @@ import { ConfigService } from '@nestjs/config';
 import { SallaWebhooksService } from './salla-webhooks.service';
 import { SallaOAuthService, SallaAppAuthorizeData } from '../stores/salla-oauth.service';
 import { SallaWebhookDto, SallaWebhookJobDto } from './dto/salla-webhook.dto';
+import { WebhookIpGuard } from './guards/webhook-ip.guard';
 
 @ApiTags('Webhooks - Salla')
 @Controller('webhooks/salla')
+@UseGuards(WebhookIpGuard) // 🔧 FIX H-06: IP allowlist defense-in-depth
 export class SallaWebhooksController {
   private readonly logger = new Logger(SallaWebhooksController.name);
   private readonly webhookSecret: string;
