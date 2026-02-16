@@ -18,7 +18,7 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet'; // 🔧 FIX M5
-import * as cookieParser from 'cookie-parser'; // 🔧 FIX M-01
+import cookieParser from 'cookie-parser'; // 🔧 FIX M-01
 import { csrfCookieMiddleware } from './common/guards/csrf.guard'; // 🔧 FIX M-01
 
 async function bootstrap() {
