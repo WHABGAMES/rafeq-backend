@@ -66,7 +66,7 @@ export class StructuredLogger implements LoggerService {
     this.writeLog('fatal', message, optionalParams);
   }
 
-  setLogLevels?(levels: LogLevel[]): void {
+  setLogLevels?(_levels: LogLevel[]): void {
     // Can be implemented if needed
   }
 
