@@ -93,38 +93,85 @@ export class AuthService implements OnModuleInit {
   private readonly LOGIN_ATTEMPT_WINDOW_SECONDS = 600;
 
   /**
-   * 🔧 FIX C-03: Validate critical secrets at startup
-   * Warns if JWT_REFRESH_SECRET is missing (falls back to JWT_SECRET like original)
+   * 🔧 FIX C-04/C-05: Validate ALL critical secrets at startup
+   * - Rejects known placeholder/default values
+   * - Enforces separate JWT_REFRESH_SECRET in production
+   * - Validates STORE_ENCRYPTION_KEY presence
    */
   async onModuleInit(): Promise<void> {
     const isProduction = this.configService.get('NODE_ENV') === 'production';
     const refreshSecret = this.configService.get<string>('JWT_REFRESH_SECRET');
     const jwtSecret = this.configService.get<string>('JWT_SECRET');
+    const appSecret = this.configService.get<string>('APP_SECRET');
+    const encryptionKey = this.configService.get<string>('STORE_ENCRYPTION_KEY');
 
+    // ── JWT_SECRET: must exist and must NOT be a placeholder ──
     if (!jwtSecret) {
-      const msg = '🚨 FATAL: JWT_SECRET is not configured!';
-      this.logger.error(msg);
-      throw new Error(msg + ' Cannot start without JWT_SECRET.');
+      throw new Error('🚨 FATAL: JWT_SECRET is not configured! Cannot start.');
     }
 
-    if (!refreshSecret) {
-      // Original code used JWT_SECRET as fallback — don't crash, but warn strongly
-      this.logger.warn('⚠️ JWT_REFRESH_SECRET is not configured — using JWT_SECRET as fallback.');
-      this.logger.warn('⚠️ RECOMMENDED: Set a separate JWT_REFRESH_SECRET for better security.');
+    const DANGEROUS_PATTERNS = [
+      'change-this', 'change-me', 'change_me', 'your-super-secret',
+      'change-in-production', 'CHANGE_ME', 'placeholder', 'example',
+      'default', 'secret123', 'password',
+    ];
+    const isPlaceholder = (val: string) =>
+      DANGEROUS_PATTERNS.some((p) => val.toLowerCase().includes(p.toLowerCase()));
+
+    if (isPlaceholder(jwtSecret)) {
+      const msg = `🚨 FATAL: JWT_SECRET contains a placeholder value! Generate a real secret.`;
+      this.logger.error(msg);
       if (isProduction) {
-        this.logger.warn('🔴 PRODUCTION WARNING: Set JWT_REFRESH_SECRET in environment variables.');
+        throw new Error(msg);
+      }
+      this.logger.warn('⚠️ Allowing placeholder JWT_SECRET in development ONLY.');
+    }
+
+    if (jwtSecret.length < 32) {
+      this.logger.warn('⚠️ JWT_SECRET is shorter than 32 characters — use at least 64.');
+      if (isProduction) {
+        throw new Error('🚨 FATAL: JWT_SECRET must be at least 32 characters in production.');
       }
     }
 
-    if (refreshSecret && jwtSecret && refreshSecret === jwtSecret) {
-      this.logger.warn('⚠️ JWT_REFRESH_SECRET should be different from JWT_SECRET');
+    // ── JWT_REFRESH_SECRET: must be separate in production ──
+    if (!refreshSecret) {
+      if (isProduction) {
+        throw new Error(
+          '🚨 FATAL: JWT_REFRESH_SECRET is required in production. ' +
+          'Generate with: node -e "console.log(require(\'crypto\').randomBytes(64).toString(\'hex\'))"',
+        );
+      }
+      this.logger.warn('⚠️ JWT_REFRESH_SECRET not set — using JWT_SECRET as fallback (DEV ONLY).');
     }
 
-    // Validate access token expiration
+    if (refreshSecret && jwtSecret && refreshSecret === jwtSecret) {
+      this.logger.warn('⚠️ JWT_REFRESH_SECRET must be different from JWT_SECRET.');
+      if (isProduction) {
+        throw new Error('🚨 FATAL: JWT_REFRESH_SECRET must differ from JWT_SECRET in production.');
+      }
+    }
+
+    // ── APP_SECRET ──
+    if (appSecret && isPlaceholder(appSecret) && isProduction) {
+      throw new Error('🚨 FATAL: APP_SECRET contains a placeholder value in production!');
+    }
+
+    // ── STORE_ENCRYPTION_KEY: required in production (H-03) ──
+    if (!encryptionKey && isProduction) {
+      throw new Error(
+        '🚨 FATAL: STORE_ENCRYPTION_KEY is required in production. ' +
+        'Generate with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"',
+      );
+    }
+
+    // ── Validate access token expiration ──
     const accessExp = this.configService.get('JWT_EXPIRES_IN', '15m');
     if (accessExp.includes('d') || accessExp.includes('h')) {
       this.logger.warn(`⚠️ JWT_EXPIRES_IN=${accessExp} is too long. Will be capped to 30m max.`);
     }
+
+    this.logger.log('✅ All critical secrets validated successfully.');
   }
 
   constructor(
@@ -187,14 +234,18 @@ export class AuthService implements OnModuleInit {
   // 📧 CHECK EMAIL - هل الإيميل مسجل؟
   // ═══════════════════════════════════════════════════════════════════════════════
 
+  /**
+   * 🔧 FIX H-01: check-email no longer reveals authProvider
+   * Only returns exists + hasPassword (needed for UX flow)
+   * Does NOT reveal which provider was used (prevents social engineering)
+   */
   async checkEmail(email: string): Promise<{
     exists: boolean;
     hasPassword: boolean;
-    authProvider?: string;
   }> {
     const user = await this.userRepository.findOne({
       where: { email: email.toLowerCase() },
-      select: ['id', 'password', 'authProvider'],
+      select: ['id', 'password'],
     });
 
     if (!user) {
@@ -204,7 +255,6 @@ export class AuthService implements OnModuleInit {
     return {
       exists: true,
       hasPassword: !!user.password,
-      authProvider: user.authProvider,
     };
   }
 
