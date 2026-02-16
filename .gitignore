@@ -12,10 +12,10 @@ logs/
 *.log
 npm-debug.log*
 
-# Environment variables
+# Environment variables — NEVER commit secrets
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 
 # IDE
 .vscode/
@@ -28,5 +28,5 @@ npm-debug.log*
 # Testing
 coverage/
 
-# Package locks (optional, based on project preference)
-package-lock.json
+# WhatsApp sessions
+whatsapp-sessions/
