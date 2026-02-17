@@ -216,18 +216,18 @@ export class TemplateDispatcherService {
       return;
     }
 
+    // ✅ FIX: dedupKey و dedupConfirmed مُعلنة خارج try حتى finally يوصلها
+    let dedupKey = '';
+    let dedupConfirmed = false;
+
     try {
       this.logger.log(`📨 Dispatching templates for: ${triggerEvent}`, { tenantId, storeId });
 
       // ✅ v18 FIX: Dedup بالهاتف — يمنع إرسال نفس القالب مرتين خلال 60 ثانية
-      // المشكلة السابقة: orderId مختلف بين الويب هوكين (order.status.updated vs order.cancelled)
-      //   order.status.updated يرسل id=2023873556
-      //   order.cancelled يرسل id=591468597
-      // → الحل: نستخدم رقم هاتف العميل كمفتاح رئيسي (ثابت بين الويب هوكين)
       const customerPhoneForDedup = this.extractCustomerPhone(raw);
       const fallbackId = String(raw.id || raw.orderId || payload.orderId || raw.reference_id || 'unknown');
       const dedupIdentifier = customerPhoneForDedup || fallbackId;
-      const dedupKey = `${dedupIdentifier}-${triggerEvent}-${tenantId}`;
+      dedupKey = `${dedupIdentifier}-${triggerEvent}-${tenantId}`;
       const now = Date.now();
 
       this.logger.debug(`🔑 DEDUP: key=${dedupKey} (phone=${customerPhoneForDedup || 'N/A'}, fallback=${fallbackId})`);
@@ -239,8 +239,11 @@ export class TemplateDispatcherService {
 
       if (this.recentDispatches.has(dedupKey)) {
         this.logger.warn(`🔁 DEDUP: Skipping duplicate dispatch for '${triggerEvent}' (key: ${dedupIdentifier}) — already sent within ${this.DEDUP_WINDOW_MS / 1000}s`);
+        dedupConfirmed = true; // ← الرسالة السابقة نجحت، لا نحذف
         return;
       }
+      // ✅ FIX: نسجل DEDUP مبدئياً لمنع إرسال متزامن
+      // finally يحذفه إذا الإرسال فشل (حتى يمر الـ retry)
       this.recentDispatches.set(dedupKey, now);
 
       // 1️⃣ البحث عن القوالب المفعّلة بنفس triggerEvent
@@ -372,18 +375,31 @@ export class TemplateDispatcherService {
           sequenceOrder: sendSettings?.sequence?.order,
         });
 
+        dedupConfirmed = true; // ✅ الجدولة نجحت → DEDUP مؤكد
         return; // لا ترسل فورياً
       }
 
       // ✅ Instant: إرسال فوري
       this.logger.log(`📤 Sending template: "${template.name}" for trigger: ${triggerEvent}`);
-      await this.sendTemplate(template, channel, customerPhone, raw);
+      const sendSuccess = await this.sendTemplate(template, channel, customerPhone, raw);
+
+      if (sendSuccess) {
+        dedupConfirmed = true; // ✅ إرسال نجح → DEDUP مؤكد
+      }
+      // إذا فشل → dedupConfirmed = false → finally يحذف DEDUP
 
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : 'Unknown';
       this.logger.error(`❌ Template dispatch failed for ${triggerEvent}: ${msg}`, {
         stack: error instanceof Error ? error.stack : undefined,
       });
+    } finally {
+      // ✅ FIX: إذا الإرسال ما تأكد (فشل / خطأ / لا قناة / لا رقم) → نحذف DEDUP
+      // حتى الـ webhook الثاني يقدر يحاول مرة ثانية
+      if (!dedupConfirmed && dedupKey) {
+        this.recentDispatches.delete(dedupKey);
+        this.logger.debug(`🔓 DEDUP released for '${triggerEvent}' — not confirmed`);
+      }
     }
   }
 
@@ -395,7 +411,7 @@ export class TemplateDispatcherService {
     channel: Channel,
     customerPhone: string,
     data: Record<string, unknown>,
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
       const message = this.replaceVariables(template.body, data);
 
@@ -417,12 +433,14 @@ export class TemplateDispatcherService {
 
       // تحديث إحصائيات الاستخدام
       await this.incrementUsage(template.id);
+      return true;
 
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : 'Unknown';
       this.logger.error(`❌ Failed to send "${template.name}" → ${customerPhone}: ${msg}`, {
         stack: error instanceof Error ? error.stack : undefined,
       });
+      return false;
     }
   }
 
