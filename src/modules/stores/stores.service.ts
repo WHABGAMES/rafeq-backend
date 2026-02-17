@@ -444,7 +444,25 @@ export class StoresService {
       );
 
     if (!rows || rows.length === 0) {
-      this.logger.warn(`❌ Merchant ${merchantId}: NOT in stores table (raw SQL confirmed — store was never created or was permanently deleted)`);
+      this.logger.warn(`❌ Merchant ${merchantId}: NOT in stores table (raw SQL confirmed)`);
+
+      // ═══════════════════════════════════════════════════════════════════════
+      // 🔄 AUTO-RECOVERY: المتجر حُذف نهائياً (hard-delete قديم)
+      //    → نبحث في webhook_events عن آخر tenantId معروف لهذا المصدر
+      //    → ننشئ متجر placeholder يربط المتجر بالـ tenant
+      //    → الـ webhooks ترجع تشتغل فوراً
+      // ═══════════════════════════════════════════════════════════════════════
+      try {
+        const recoveredStore = await this.autoRecoverStoreForMerchant(merchantId);
+        if (recoveredStore) {
+          return recoveredStore;
+        }
+      } catch (err) {
+        this.logger.error(`Auto-recovery failed for merchant ${merchantId}`, {
+          error: err instanceof Error ? err.message : 'Unknown',
+        });
+      }
+
       return null;
     }
 
@@ -473,6 +491,113 @@ export class StoresService {
     }
 
     return store;
+  }
+
+  /**
+   * 🔄 AUTO-RECOVERY: إنشاء متجر تلقائي عندما يكون المتجر محذوف نهائياً
+   *
+   * السيناريو: المتجر حُذف بـ hard-delete (قبل إصلاح softRemove)
+   *   → سلة مازالت ترسل webhooks لكن DB ما فيها Store
+   *   → نبحث عن آخر tenantId معروف من webhook_events
+   *   → ننشئ Store جديد ربط → الـ webhooks ترجع تشتغل
+   *
+   * الحماية:
+   *   - نتأكد إن الـ tenant فعلاً موجود وفعّال
+   *   - نتأكد ما في tenant ثاني يستخدم نفس المنصة (تعارض)
+   *   - المتجر يُنشأ بحالة pending (يحتاج re-authorization)
+   */
+  private async autoRecoverStoreForMerchant(merchantId: number): Promise<Store | null> {
+    this.logger.warn(`🔄 AUTO-RECOVERY: Attempting to recover store for merchant ${merchantId}`);
+
+    // 1️⃣ البحث عن آخر tenantId من webhook_events لهذا الـ merchant بالذات
+    //    _merchant مخزّن في payload JSONB (من الإصلاح الجديد)
+    //    كـ fallback: نبحث عن أي webhook سلة بـ tenantId
+    let pastEvents: Array<{ tenant_id: string }> = await this.storeRepository.manager.query(
+      `SELECT DISTINCT tenant_id FROM webhook_events
+       WHERE source = 'salla' AND tenant_id IS NOT NULL
+       AND payload->>'_merchant' = $1
+       ORDER BY created_at DESC LIMIT 5`,
+      [String(merchantId)],
+    );
+
+    // Fallback: إذا ما لقينا بالـ _merchant (بيانات قديمة قبل الإصلاح) → نبحث بدون فلتر
+    if (!pastEvents || pastEvents.length === 0) {
+      this.logger.warn(`🔄 AUTO-RECOVERY: No merchant-specific history. Trying general salla lookup...`);
+      pastEvents = await this.storeRepository.manager.query(
+        `SELECT DISTINCT tenant_id FROM webhook_events
+         WHERE source = 'salla' AND tenant_id IS NOT NULL
+         ORDER BY created_at DESC LIMIT 5`,
+      );
+    }
+
+    if (!pastEvents || pastEvents.length === 0) {
+      this.logger.warn(`🔄 AUTO-RECOVERY: No past webhook_events with tenantId for salla — cannot recover`);
+      return null;
+    }
+
+    // 2️⃣ إذا كان هناك أكثر من tenant واحد → لا نستطيع تحديد المالك بدقة
+    const uniqueTenants = [...new Set(pastEvents.map(e => e.tenant_id))];
+
+    if (uniqueTenants.length > 1) {
+      this.logger.warn(
+        `🔄 AUTO-RECOVERY: Multiple tenants found (${uniqueTenants.length}) for salla webhooks — ` +
+        `cannot auto-determine owner. Merchant ${merchantId} needs manual re-authorization.`,
+      );
+      return null;
+    }
+
+    const tenantId = uniqueTenants[0];
+
+    // 3️⃣ تأكد أن الـ tenant موجود في DB
+    const tenantExists: Array<{ id: string }> = await this.storeRepository.manager.query(
+      `SELECT id FROM tenants WHERE id = $1 AND deleted_at IS NULL LIMIT 1`,
+      [tenantId],
+    );
+
+    if (!tenantExists || tenantExists.length === 0) {
+      this.logger.warn(`🔄 AUTO-RECOVERY: Tenant ${tenantId} not found or deleted — cannot recover`);
+      return null;
+    }
+
+    // 4️⃣ تأكد ما فيه متجر سلة ثاني لنفس الـ tenant (تجنب التكرار)
+    const existingSallaStore: Array<{ id: string }> = await this.storeRepository.manager.query(
+      `SELECT id FROM stores WHERE tenant_id = $1 AND platform = 'salla' AND deleted_at IS NULL LIMIT 1`,
+      [tenantId],
+    );
+
+    if (existingSallaStore && existingSallaStore.length > 0) {
+      this.logger.warn(
+        `🔄 AUTO-RECOVERY: Tenant ${tenantId} already has a salla store (${existingSallaStore[0].id}) — ` +
+        `will not create duplicate. Merchant ${merchantId} may need re-linking.`,
+      );
+      return null;
+    }
+
+    // 5️⃣ إنشاء متجر placeholder
+    const newStore = this.storeRepository.create({
+      name: `متجر سلة #${merchantId} (مسترجع تلقائياً)`,
+      platform: StorePlatform.SALLA,
+      status: StoreStatus.PENDING,
+      sallaMerchantId: merchantId,
+      tenantId,
+    });
+
+    const saved = await this.storeRepository.save(newStore);
+
+    this.logger.warn(
+      `✅ AUTO-RECOVERY SUCCESS: Created store ${saved.id} for merchant ${merchantId} → tenant ${tenantId}. ` +
+      `Status: PENDING (needs re-authorization via Salla OAuth to get fresh tokens).`,
+    );
+
+    // إرسال حدث للمسؤول
+    this.eventEmitter.emit('store.auto_recovered', {
+      storeId: saved.id,
+      tenantId,
+      merchantId,
+      message: 'Store was hard-deleted and auto-recovered from webhook history',
+    });
+
+    return saved;
   }
 
   async findByZidStoreId(zidStoreId: string): Promise<Store | null> {
@@ -844,8 +969,18 @@ export class StoresService {
       zidStoreId: store.zidStoreId,
     });
 
-    await this.storeRepository.remove(store);
+    // ✅ FIX P1: Soft-delete بدل Hard-delete
+    // storeRepository.remove() كان يحذف الصف نهائياً من DB
+    // → الـ webhooks تفقد الربط بـ tenantId ولا يمكن استرجاعها
+    // الآن: soft-delete يحتفظ بالصف مع deleted_at
+    // → findByMerchantId يستطيع استعادته تلقائياً عند وصول webhook
+    store.status = StoreStatus.UNINSTALLED;
+    store.accessToken = undefined;
+    store.refreshToken = undefined;
+    store.tokenExpiresAt = undefined;
+    await this.storeRepository.save(store);
+    await this.storeRepository.softRemove(store);
 
-    this.logger.log(`Store permanently deleted: ${storeId}`);
+    this.logger.log(`Store soft-deleted: ${storeId} (recoverable via webhooks)`);
   }
 }
