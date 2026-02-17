@@ -33,6 +33,7 @@ import * as net from 'net';
 const SALLA_KNOWN_IPS: string[] = [
   // ✅ Confirmed from production logs (Feb 2026)
   '18.157.170.48',
+  '18.157.156.218',
 
   // Salla uses AWS eu-central-1 (Frankfurt)
   // هذه IPs إضافية شائعة — المصدر الرئيسي هو WEBHOOK_ALLOWED_IPS
@@ -109,6 +110,12 @@ export class WebhookIpGuard implements CanActivate {
       throw new ForbiddenException('Webhook source not authorized');
     }
 
+    // Debug: log both detected and raw IPs
+    const rawIp = request.socket?.remoteAddress;
+    if (rawIp && rawIp !== clientIp) {
+      this.logger.debug(`IP resolved: ${clientIp} (proxy: ${rawIp})`);
+    }
+
     // Check exact match
     if (this.allowedIps.has(clientIp)) {
       return true;
@@ -126,24 +133,35 @@ export class WebhookIpGuard implements CanActivate {
   }
 
   /**
-   * Extract the real client IP, accounting for proxies
+   * Extract the real client IP, accounting for Cloudflare and other proxies
+   * 
+   * 🐛 FIX: التطبيق خلف Cloudflare → req.socket.remoteAddress يرجع IP Cloudflare
+   *    مثلاً 172.70.240.45 بدل 18.157.170.48 (سلة)
+   *    الحل: نقرأ CF-Connecting-IP (أموثق header من Cloudflare)
    */
   private getClientIp(req: Request): string | null {
-    // Trust X-Forwarded-For only if behind a trusted proxy
-    const trustProxy = this.configService.get('TRUST_PROXY') === 'true';
-
-    if (trustProxy) {
-      const forwarded = req.headers['x-forwarded-for'];
-      if (typeof forwarded === 'string') {
-        // First IP in chain is the original client
-        return forwarded.split(',')[0].trim();
-      }
-      if (Array.isArray(forwarded) && forwarded.length > 0) {
-        return forwarded[0].split(',')[0].trim();
-      }
+    // 1️⃣ Cloudflare: CF-Connecting-IP هو أدق header (لا يقبل التلاعب)
+    const cfIp = req.headers['cf-connecting-ip'];
+    if (typeof cfIp === 'string' && cfIp.trim()) {
+      return cfIp.trim();
     }
 
-    // req.ip already handles trust proxy if express is configured
+    // 2️⃣ X-Real-IP (يُستخدم من nginx/proxies أخرى)
+    const realIp = req.headers['x-real-ip'];
+    if (typeof realIp === 'string' && realIp.trim()) {
+      return realIp.trim();
+    }
+
+    // 3️⃣ X-Forwarded-For (أول IP = العميل الأصلي)
+    const forwarded = req.headers['x-forwarded-for'];
+    if (typeof forwarded === 'string' && forwarded.trim()) {
+      return forwarded.split(',')[0].trim();
+    }
+    if (Array.isArray(forwarded) && forwarded.length > 0) {
+      return forwarded[0].split(',')[0].trim();
+    }
+
+    // 4️⃣ Fallback: Express req.ip أو socket
     return req.ip || req.socket?.remoteAddress || null;
   }
 
