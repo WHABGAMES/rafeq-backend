@@ -280,10 +280,10 @@ export class TemplateDispatcherService {
       );
       const activeTemplate = sortedTemplates[0];
 
-      // 2️⃣ البحث عن قناة واتساب متصلة
-      const channel = await this.findActiveWhatsAppChannel(storeId);
+      // 2️⃣ البحث عن قناة واتساب متصلة (بـ storeId أولاً، ثم tenantId كـ fallback)
+      const channel = await this.findActiveWhatsAppChannel(storeId, tenantId);
       if (!channel) {
-        this.logger.warn(`⚠️ No active WhatsApp channel for store ${storeId}`);
+        this.logger.warn(`⚠️ No active WhatsApp channel for store ${storeId} or tenant ${tenantId}`);
         return;
       }
       this.logger.log(`📱 WhatsApp channel found: ${channel.id} (type: ${channel.type})`);
@@ -605,18 +605,50 @@ export class TemplateDispatcherService {
 
   /**
    * البحث عن قناة واتساب متصلة
+   * 
+   * ✅ FIX: كان يبحث بـ storeId فقط → ما يلاقي القناة إذا كانت مربوطة بمتجر ثاني
+   * الحل: إذا ما لقى بـ storeId → يبحث بـ tenantId (نفس المالك = نفس القنوات)
+   * 
+   * مثال: الواتساب مربوط بـ "متجر تجريبي" لكن الويب هوك من متجر سلة الحقيقي
+   * كلاهما تحت نفس tenantId → يلاقي القناة
    */
-  private async findActiveWhatsAppChannel(storeId?: string): Promise<Channel | null> {
-    if (!storeId) return null;
+  private async findActiveWhatsAppChannel(storeId?: string, tenantId?: string): Promise<Channel | null> {
+    // 1️⃣ البحث بـ storeId المباشر (الأدق)
+    if (storeId) {
+      const channel = await this.channelRepository.findOne({
+        where: [
+          { storeId, type: ChannelType.WHATSAPP_QR, status: ChannelStatus.CONNECTED },
+          { storeId, type: ChannelType.WHATSAPP_OFFICIAL, status: ChannelStatus.CONNECTED },
+        ],
+      });
 
-    const channel = await this.channelRepository.findOne({
-      where: [
-        { storeId, type: ChannelType.WHATSAPP_QR, status: ChannelStatus.CONNECTED },
-        { storeId, type: ChannelType.WHATSAPP_OFFICIAL, status: ChannelStatus.CONNECTED },
-      ],
-    });
+      if (channel) return channel;
+    }
 
-    return channel || null;
+    // 2️⃣ Fallback: أي قناة واتساب متصلة تحت نفس الـ tenant
+    // هذا يحل مشكلة: الواتساب مربوط بمتجر A لكن الويب هوك من متجر B (نفس المالك)
+    if (tenantId) {
+      this.logger.debug(`🔍 No WhatsApp for store ${storeId} — searching by tenantId: ${tenantId}`);
+
+      const channel = await this.channelRepository
+        .createQueryBuilder('channel')
+        .innerJoin('channel.store', 'store')
+        .where('store.tenantId = :tenantId', { tenantId })
+        .andWhere('channel.type IN (:...types)', {
+          types: [ChannelType.WHATSAPP_QR, ChannelType.WHATSAPP_OFFICIAL],
+        })
+        .andWhere('channel.status = :status', { status: ChannelStatus.CONNECTED })
+        .getOne();
+
+      if (channel) {
+        this.logger.log(
+          `📱 WhatsApp found via tenant fallback: ${channel.id} (store: ${channel.storeId})`,
+        );
+        return channel;
+      }
+    }
+
+    return null;
   }
 
   /**
