@@ -63,7 +63,8 @@ export class SallaWebhooksService {
         eventType: payload.eventType,
         externalId: payload.deliveryId,
         idempotencyKey: payload.idempotencyKey,
-        payload: payload.data,
+        // ✅ حفظ merchantId في الـ payload للاسترجاع المستقبلي
+        payload: { ...payload.data, _merchant: payload.merchant },
         headers: payload.headers,
         status: WebhookStatus.PENDING,
         ipAddress: payload.ipAddress,
