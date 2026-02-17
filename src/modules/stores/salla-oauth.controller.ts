@@ -9,6 +9,10 @@
  * ║     1. من الداشبورد (فيه state + tenantId) → ربط متجر لحساب موجود             ║
  * ║     2. من متجر سلة (بدون state) → إنشاء حساب + إرسال بيانات دخول             ║
  * ║                                                                                ║
+ * ║  🐛 FIX: extractTenantId كان يفشل دائماً لأن الـ state                         ║
+ * ║     بصيغة base64url.hmac_hex وليس base64 عادي                                 ║
+ * ║     → كل flows كانت تمر عبر auto-registration بدل dashboard                  ║
+ * ║                                                                                ║
  * ║  📁 src/modules/stores/salla-oauth.controller.ts                              ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
@@ -124,17 +128,18 @@ export class SallaOAuthController {
       // ═══════════════════════════════════════════════════════════════
       // 🔀 تحديد نوع الطلب: من الداشبورد أو من متجر سلة
       // ═══════════════════════════════════════════════════════════════
-      const tenantId = this.extractTenantId(query.state);
+      const stateData = this.tryDecodeState(query.state);
 
-      if (tenantId) {
+      if (stateData) {
         // ════════════════════════════════════════════════════════════
         // 🔗 حالة 1: من الداشبورد — ربط متجر لحساب موجود
+        // ✅ FIX: الآن يستخدم decodeState الصحيح مع HMAC verification
         // ════════════════════════════════════════════════════════════
-        this.logger.log(`📊 Dashboard connect flow — tenantId: ${tenantId}`);
+        this.logger.log(`📊 Dashboard connect flow — tenantId: ${stateData.tenantId}`);
 
         const result = await this.sallaOAuthService.exchangeCodeForTokens(
           query.code,
-          tenantId,
+          stateData.tenantId,
         );
 
         this.logger.log(`✅ OAuth completed — merchant ${result.merchantId}`);
@@ -145,7 +150,6 @@ export class SallaOAuthController {
         });
 
         // تمرير custom state للـ frontend (CSRF check)
-        const stateData = this.sallaOAuthService.decodeState(query.state!);
         if (stateData.custom) {
           redirectParams.set('state', stateData.custom);
         }
@@ -194,18 +198,29 @@ export class SallaOAuthController {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 🔧 Helper: استخراج tenantId من state — بدون throw
+  // 🔧 FIX: فك state parameter بشكل صحيح مع HMAC verification
+  //
+  // 🐛 الكود القديم:
+  //    Buffer.from(state, 'base64') → كان يفشل دائماً لأن:
+  //    1. الـ state بصيغة base64url (مش base64)
+  //    2. الـ state يحتوي على '.' separator + HMAC signature
+  //    → JSON.parse يفشل → يرجع null → كل flows تمر عبر auto-registration
+  //
+  // ✅ الحل: نستخدم decodeState من SallaOAuthService مباشرة
+  //    الذي يتحقق من HMAC + timestamp + يفك الـ base64url
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  private extractTenantId(state?: string): string | null {
+  private tryDecodeState(state?: string): { tenantId: string; custom: string } | null {
     if (!state) return null;
 
     try {
-      const decoded = Buffer.from(state, 'base64').toString('utf-8');
-      const data = JSON.parse(decoded);
-      return data.tenantId || null;
+      // ✅ نستخدم decodeState الذي يتحقق من:
+      // 1. صيغة base64url.hmac_hex
+      // 2. HMAC signature صحيح (timing-safe)
+      // 3. timestamp لم ينتهِ (10 دقائق)
+      return this.sallaOAuthService.decodeState(state);
     } catch {
-      // state غير صالح = تثبيت من متجر سلة (مش من الداشبورد)
+      // state غير صالح أو منتهي = تثبيت من متجر سلة (مش من الداشبورد)
       this.logger.debug('State not valid — treating as Salla store install');
       return null;
     }
