@@ -5,6 +5,7 @@
  * ║  ✅ OAuth 2.0 Flow مع سلة                                                       ║
  * ║  ✅ يدعم Easy Mode و Standard OAuth و Custom Mode                             ║
  * ║  ✅ Auto Registration - إنشاء حساب تلقائي للتاجر                               ║
+ * ║  ✅ Multi-Store — تاجر موجود يُربط متجره الجديد على نفس tenant                 ║
  * ║  🔐 NEW: تشفير التوكنات بـ AES-256-GCM                                         ║
  * ║                                                                              ║
  * ║  📁 src/modules/stores/salla-oauth.service.ts                                ║
@@ -253,12 +254,9 @@ export class SallaOAuthService {
 
   // ═══════════════════════════════════════════════════════════════════════════════
   // 🆕 Custom Mode — تثبيت من متجر سلة (بدون tenantId)
+  // ✅ FIX: إذا التاجر موجود بالإيميل → نستخدم tenant-ه الحالي
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * 🆕 نمط مخصص — تاجر ثبّت التطبيق من متجر سلة
-   * يستبدل code بـ tokens → ينشئ tenant + store + user → يرسل بيانات الدخول
-   */
   async exchangeCodeAndAutoRegister(code: string): Promise<{
     merchantId: number;
     isNewUser: boolean;
@@ -298,7 +296,7 @@ export class SallaOAuthService {
       });
 
       if (store) {
-        // متجر موجود — تحديث التوكنات
+        // متجر موجود (نفس merchantId) — تحديث التوكنات فقط
         store.accessToken = encrypt(tokens.access_token) ?? undefined;
         store.refreshToken = encrypt(tokens.refresh_token) ?? undefined;
         store.tokenExpiresAt = this.calculateTokenExpiry(tokens.expires_in);
@@ -313,33 +311,19 @@ export class SallaOAuthService {
         store.sallaAvatar = merchantInfo.avatar || store.sallaAvatar;
         store.sallaPlan = merchantInfo.plan || store.sallaPlan;
 
-        // إذا ما عنده tenant → ينشئ واحد
+        // إذا ما عنده tenant → نحل المشكلة
         if (!store.tenantId) {
-          const tenant = await this.tenantsService.createTenantFromSalla({
-            merchantId: merchantInfo.id,
-            name: merchantInfo.name || merchantInfo.username || 'متجر سلة',
-            email: merchantInfo.email,
-            phone: merchantInfo.mobile,
-            logo: merchantInfo.avatar,
-            website: merchantInfo.domain,
-          });
-          store.tenantId = tenant.id;
+          const tenantId = await this.resolveOrCreateTenant(merchantInfo);
+          store.tenantId = tenantId;
         }
 
         this.logger.log(`📦 Updated existing store: ${store.id}`);
       } else {
-        // متجر جديد — إنشاء tenant + store
-        const tenant = await this.tenantsService.createTenantFromSalla({
-          merchantId: merchantInfo.id,
-          name: merchantInfo.name || merchantInfo.username || 'متجر سلة',
-          email: merchantInfo.email,
-          phone: merchantInfo.mobile,
-          logo: merchantInfo.avatar,
-          website: merchantInfo.domain,
-        });
+        // ✅ FIX: متجر جديد — نتحقق هل التاجر موجود بالإيميل أولاً
+        const tenantId = await this.resolveOrCreateTenant(merchantInfo);
 
         store = this.storeRepository.create({
-          tenantId: tenant.id,
+          tenantId,
           name: merchantInfo.name || merchantInfo.username || `متجر سلة ${merchantInfo.id}`,
           platform: StorePlatform.SALLA,
           status: StoreStatus.ACTIVE,
@@ -358,7 +342,7 @@ export class SallaOAuthService {
           subscribedEvents: [],
         });
 
-        this.logger.log(`🆕 Created new store for merchant ${merchantInfo.id}`);
+        this.logger.log(`🆕 Created new store for merchant ${merchantInfo.id} → tenant ${tenantId}`);
       }
 
       const savedStore = await this.storeRepository.save(store);
@@ -476,8 +460,7 @@ export class SallaOAuthService {
 
   /**
    * ✅ معالجة app.store.authorize من webhook سلة
-   * 🆕 مع Auto Registration - إنشاء حساب تلقائي للتاجر
-   * 🔐 مع تشفير التوكنات
+   * ✅ FIX: إذا التاجر موجود → نستخدم tenant-ه الحالي بدل إنشاء جديد
    */
   async handleAppStoreAuthorize(
     merchantId: number,
@@ -491,16 +474,10 @@ export class SallaOAuthService {
     const expiresIn = data.expires || 3600;
 
     if (store) {
+      // متجر موجود (نفس merchantId) — تحديث التوكنات
       if (!store.tenantId) {
-        const tenant = await this.tenantsService.createTenantFromSalla({
-          merchantId,
-          name: merchantInfo.name || merchantInfo.username || `متجر سلة`,
-          email: merchantInfo.email,
-          phone: merchantInfo.mobile,
-          logo: merchantInfo.avatar,
-          website: merchantInfo.domain,
-        });
-        store.tenantId = tenant.id;
+        const tenantId = await this.resolveOrCreateTenant(merchantInfo);
+        store.tenantId = tenantId;
       }
       
       // 🔐 تشفير التوكنات
@@ -520,17 +497,11 @@ export class SallaOAuthService {
       
       this.logger.log(`📦 Updated store for merchant ${merchantId}`);
     } else {
-      const tenant = await this.tenantsService.createTenantFromSalla({
-        merchantId,
-        name: merchantInfo.name || merchantInfo.username || `متجر سلة`,
-        email: merchantInfo.email,
-        phone: merchantInfo.mobile,
-        logo: merchantInfo.avatar,
-        website: merchantInfo.domain,
-      });
+      // ✅ FIX: متجر جديد — نتحقق هل التاجر موجود أولاً
+      const tenantId = await this.resolveOrCreateTenant(merchantInfo);
 
       store = this.storeRepository.create({
-        tenantId: tenant.id,
+        tenantId,
         name: merchantInfo.name || merchantInfo.username || `متجر سلة`,
         platform: StorePlatform.SALLA,
         status: StoreStatus.ACTIVE,
@@ -550,7 +521,7 @@ export class SallaOAuthService {
         subscribedEvents: [],
       });
 
-      this.logger.log(`🆕 Created new store for merchant ${merchantId}`);
+      this.logger.log(`🆕 Created new store for merchant ${merchantId} → tenant ${tenantId}`);
     }
 
     const savedStore = await this.storeRepository.save(store);
@@ -612,5 +583,39 @@ export class SallaOAuthService {
     store.tenantId = tenantId;
     this.logger.log(`Linked store ${storeId} to tenant ${tenantId}`);
     return this.storeRepository.save(store);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ✅ FIX: البحث عن tenant موجود أو إنشاء جديد
+  //
+  // المنطق:
+  // 1. البحث عن المستخدم بالإيميل
+  // 2. إذا موجود وعنده tenantId → نستخدمه (المتجر الجديد يُربط على نفس الحساب)
+  // 3. إذا جديد → ننشئ tenant جديد
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  private async resolveOrCreateTenant(merchantInfo: SallaMerchantInfo): Promise<string> {
+    // 🔍 البحث عن المستخدم بالإيميل
+    const existingUser = await this.autoRegistrationService.findUserByEmail(merchantInfo.email);
+
+    if (existingUser?.tenantId) {
+      this.logger.log(
+        `👤 Existing user found (${existingUser.id}) → reusing tenant ${existingUser.tenantId} for merchant ${merchantInfo.id}`,
+      );
+      return existingUser.tenantId;
+    }
+
+    // 🆕 مستخدم جديد → إنشاء tenant جديد
+    const tenant = await this.tenantsService.createTenantFromSalla({
+      merchantId: merchantInfo.id,
+      name: merchantInfo.name || merchantInfo.username || 'متجر سلة',
+      email: merchantInfo.email,
+      phone: merchantInfo.mobile,
+      logo: merchantInfo.avatar,
+      website: merchantInfo.domain,
+    });
+
+    this.logger.log(`🆕 Created new tenant ${tenant.id} for merchant ${merchantInfo.id}`);
+    return tenant.id;
   }
 }
