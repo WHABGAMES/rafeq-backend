@@ -764,6 +764,20 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
         return;
       }
 
+      // ✅ FIX P3: code 440 = connectionReplaced (جهاز ثاني فتح واتساب ويب)
+      //    إعادة المحاولة لا تنفع → ستُفصل فوراً مرة ثانية
+      //    الحل: نوقف المحاولات ونعلم المستخدم إنه يحتاج يعيد المسح
+      if (statusCode === DisconnectReason.connectionReplaced) {
+        this.logger.warn(`🔄 Session REPLACED: ${channelId} — another device took over. Stopping retries.`);
+        session.status = 'disconnected';
+        await this.markChannelDisconnected(channelId);
+        this.eventEmitter.emit('whatsapp.session_replaced', {
+          channelId,
+          message: 'Session was replaced by another device. Please re-scan QR code.',
+        });
+        return;
+      }
+
       // ✅ v10: حفظ الجلسة في DB قبل المحاولة التالية
       const sessionPath = path.join(this.sessionsPath, `wa_${channelId}`);
       await this.saveSessionToDB(channelId, sessionPath);
