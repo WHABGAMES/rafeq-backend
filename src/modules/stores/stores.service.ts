@@ -131,9 +131,8 @@ export class StoresService {
   ): Promise<Store> {
     const { tokens, merchantInfo } = data;
 
-    const existingStore = await this.storeRepository.findOne({
-      where: { sallaMerchantId: merchantInfo.id },
-    });
+    // ✅ Raw SQL لتجاوز مشكلة bigint مع TypeORM
+    const existingStore = await this.findByMerchantId(merchantInfo.id);
 
     if (existingStore) {
       if (existingStore.tenantId === tenantId) {
@@ -428,21 +427,52 @@ export class StoresService {
   }
 
   /**
-   * ✅ FIX: البحث عن متجر بـ merchantId من سلة
+   * ✅ البحث عن متجر بـ merchantId من سلة
    * 
-   * 🐛 المشكلة: عمود salla_merchant_id هو bigint في PostgreSQL
-   *    TypeORM يرجع bigint كـ string ("1841647922") مش number
-   *    findOne({ where: { sallaMerchantId: number } }) ممكن يفشل
-   *    بسبب type mismatch داخل TypeORM
-   * 
-   * ✅ الحل: QueryBuilder مع اسم العمود الحقيقي
-   *    يمرر القيمة مباشرة لـ PostgreSQL بدون تحويل من TypeORM
+   * يستخدم Raw SQL مباشرة لتجاوز كل مشاكل TypeORM مع bigint
+   * ثم يحمّل الـ Entity بالـ UUID (بدون مشاكل type)
    */
   async findByMerchantId(merchantId: number): Promise<Store | null> {
-    return this.storeRepository
-      .createQueryBuilder('store')
-      .where('"salla_merchant_id" = :merchantId', { merchantId })
-      .getOne();
+    this.logger.log(`🔍 findByMerchantId(${merchantId})`);
+
+    // 1️⃣ Raw SQL — يتجاوز TypeORM بالكامل
+    //    PostgreSQL يقارن bigint مع integer بدون مشاكل
+    const rows: Array<{ id: string; deleted_at: Date | null; tenant_id: string | null; status: string }> =
+      await this.storeRepository.manager.query(
+        `SELECT id, deleted_at, tenant_id, status FROM stores WHERE salla_merchant_id = $1 LIMIT 1`,
+        [merchantId],
+      );
+
+    if (!rows || rows.length === 0) {
+      this.logger.warn(`❌ Merchant ${merchantId}: NOT in stores table (raw SQL confirmed — store was never created or was permanently deleted)`);
+      return null;
+    }
+
+    const row = rows[0];
+    this.logger.log(`🔎 Raw SQL found: id=${row.id}, status=${row.status}, tenant=${row.tenant_id || 'NULL'}, deleted=${row.deleted_at || 'NO'}`);
+
+    // 2️⃣ إذا كان محذوف soft-delete → نسترجعه
+    if (row.deleted_at) {
+      this.logger.warn(`🔄 RECOVERY: Store ${row.id} was soft-deleted at ${row.deleted_at} — restoring for webhooks`);
+      await this.storeRepository.manager.query(
+        `UPDATE stores SET deleted_at = NULL, status = 'active' WHERE id = $1`,
+        [row.id],
+      );
+    }
+
+    // 3️⃣ تحميل الـ Entity كامل بالـ UUID (بدون مشاكل type)
+    const store = await this.storeRepository.findOne({
+      where: { id: row.id },
+    });
+
+    if (store) {
+      this.logger.log(`✅ Loaded store entity: ${store.id} (tenant: ${store.tenantId || 'NULL'})`);
+    } else {
+      // هذا ما يصير عادةً — لو صار يعني مشكلة في TypeORM
+      this.logger.error(`🚨 CRITICAL: Raw SQL found store ${row.id} but TypeORM findOne(id) returned null!`);
+    }
+
+    return store;
   }
 
   async findByZidStoreId(zidStoreId: string): Promise<Store | null> {
