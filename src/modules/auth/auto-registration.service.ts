@@ -88,14 +88,12 @@ export class AutoRegistrationService {
     merchantData: MerchantData,
     store: Store,
   ): Promise<AutoRegistrationResult> {
-    const { merchantId, email, mobile, name, storeName } = merchantData;
-
-    this.logger.log(`🔄 Processing app installation for merchant ${merchantId}`);
+    this.logger.log(`🔄 Processing app installation for merchant ${merchantData.merchantId}`);
 
     try {
       // البحث عن المستخدم بالإيميل
       const user = await this.userRepository.findOne({
-        where: { email: email.toLowerCase() },
+        where: { email: merchantData.email.toLowerCase() },
         select: ['id', 'email', 'tenantId', 'firstName', 'preferences'],
       });
 
