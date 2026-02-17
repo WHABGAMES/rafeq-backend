@@ -355,7 +355,7 @@ export class SallaWebhooksService {
     });
   }
 
-  async retryWebhook(webhookEventId: string): Promise<string> {
+  async retryWebhook(webhookEventId: string, _tenantId?: string): Promise<string> {
     const event = await this.webhookEventRepository.findOne({
       where: { id: webhookEventId },
     });
