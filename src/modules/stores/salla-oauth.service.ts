@@ -166,6 +166,24 @@ export class SallaOAuthService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔍 Store Lookup Helper
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * ✅ FIX: البحث عن متجر بـ sallaMerchantId باستخدام QueryBuilder
+   * 
+   * 🐛 المشكلة: salla_merchant_id هو bigint في PostgreSQL
+   *    TypeORM يرجع bigint كـ string — findOne ممكن يفشل بسبب type mismatch
+   * ✅ الحل: QueryBuilder مع اسم العمود المباشر
+   */
+  private async findStoreBySallaMerchantId(merchantId: number): Promise<Store | null> {
+    return this.storeRepository
+      .createQueryBuilder('store')
+      .where('"salla_merchant_id" = :merchantId', { merchantId })
+      .getOne();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
   // 🔑 Token Exchange
   // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -194,7 +212,7 @@ export class SallaOAuthService {
       const tokens = response.data;
       const merchantInfo = await this.fetchMerchantInfo(tokens.access_token);
 
-      let store = await this.storeRepository.findOne({ where: { sallaMerchantId: merchantInfo.id } });
+      let store = await this.findStoreBySallaMerchantId(merchantInfo.id);
 
       if (store) {
         store.tenantId = tenantId;
@@ -294,9 +312,7 @@ export class SallaOAuthService {
       this.logger.log(`📊 Merchant: ${merchantInfo.id} — ${merchantInfo.name}`);
 
       // 3. البحث عن متجر موجود أو إنشاء جديد
-      let store = await this.storeRepository.findOne({
-        where: { sallaMerchantId: merchantInfo.id },
-      });
+      let store = await this.findStoreBySallaMerchantId(merchantInfo.id);
 
       if (store) {
         // متجر موجود (نفس merchantId) — تحديث التوكنات فقط
@@ -474,7 +490,7 @@ export class SallaOAuthService {
     this.logger.log(`🚀 App Store authorize for merchant ${merchantId}`, { createdAt });
 
     const merchantInfo = await this.fetchMerchantInfo(data.access_token);
-    let store = await this.storeRepository.findOne({ where: { sallaMerchantId: merchantId } });
+    let store = await this.findStoreBySallaMerchantId(merchantId);
     const expiresIn = data.expires || 3600;
 
     if (store) {
@@ -566,7 +582,7 @@ export class SallaOAuthService {
    */
   async handleAppUninstalled(merchantId: number): Promise<void> {
     this.logger.log(`App uninstalled for merchant ${merchantId}`);
-    const store = await this.storeRepository.findOne({ where: { sallaMerchantId: merchantId } });
+    const store = await this.findStoreBySallaMerchantId(merchantId);
     if (store) {
       store.status = StoreStatus.UNINSTALLED;
       store.accessToken = undefined;
