@@ -3,7 +3,6 @@
  * ║                RAFIQ PLATFORM - Salla Webhooks Service                         ║
  * ║                                                                                ║
  * ║  ✅ Production-ready: ربط merchantId → Store → tenantId                       ║
- * ║  🔧 FIX M2: Tenant isolation on updateStatus, retryWebhook, getFailedWebhooks ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -148,9 +147,6 @@ export class SallaWebhooksService {
     return undefined;
   }
 
-  /**
-   * 🔧 FIX M2: إضافة tenantId اختياري للتحقق من عزل المستأجر
-   */
   async updateStatus(
     webhookEventId: string,
     status: WebhookStatus,
@@ -159,16 +155,9 @@ export class SallaWebhooksService {
       processingResult?: Record<string, unknown>;
       processingDurationMs?: number;
     },
-    tenantId?: string,
   ): Promise<void> {
-    // 🔧 FIX M2: بناء شرط البحث مع tenant isolation
-    const whereCondition: Record<string, unknown> = { id: webhookEventId };
-    if (tenantId) {
-      whereCondition.tenantId = tenantId;
-    }
-
     const event = await this.webhookEventRepository.findOne({
-      where: whereCondition,
+      where: { id: webhookEventId },
     });
 
     if (!event) {
@@ -254,28 +243,30 @@ export class SallaWebhooksService {
     tenantId: string;
     storeId: string;
   } | null> {
-    this.logger.debug(`Looking up store for merchant ${merchantId}`);
+    this.logger.log(`🔍 Looking up store for merchant ${merchantId}`);
     
     try {
       const store = await this.storesService.findByMerchantId(merchantId);
       
-      if (store && store.tenantId) {
-        this.logger.debug(`Found store: ${store.id} for merchant ${merchantId}`);
+      if (store) {
+        // ✅ FIX: tenantId قد يكون null/undefined (store exists but not linked to tenant yet)
+        if (!store.tenantId) {
+          this.logger.warn(`⚠️ Store ${store.id} found for merchant ${merchantId} but tenantId is NULL — store not linked to tenant yet`);
+          return null;
+        }
+
+        this.logger.log(`✅ Found store: ${store.id} for merchant ${merchantId} (tenant: ${store.tenantId})`);
         return {
           tenantId: store.tenantId,
           storeId: store.id,
         };
       }
       
-      if (store && !store.tenantId) {
-        this.logger.warn(`Store ${store.id} found for merchant ${merchantId} but tenantId is not linked yet`);
-      }
-      
-      this.logger.debug(`No store found for merchant ${merchantId}`);
+      this.logger.warn(`⚠️ No store found for merchant ${merchantId} — check if sallaMerchantId is correctly stored in DB`);
       return null;
       
     } catch (error) {
-      this.logger.error(`Error looking up store for merchant ${merchantId}`, {
+      this.logger.error(`❌ Error looking up store for merchant ${merchantId}`, {
         error: error instanceof Error ? error.message : 'Unknown',
       });
       return null;
@@ -364,15 +355,9 @@ export class SallaWebhooksService {
     });
   }
 
-  /**
-   * 🔧 FIX M2: إضافة tenantId إلزامي لعزل المستأجر عند إعادة المحاولة
-   */
-  async retryWebhook(webhookEventId: string, tenantId: string): Promise<string> {
+  async retryWebhook(webhookEventId: string): Promise<string> {
     const event = await this.webhookEventRepository.findOne({
-      where: {
-        id: webhookEventId,
-        tenantId, // 🔧 FIX M2: tenant isolation
-      },
+      where: { id: webhookEventId },
     });
 
     if (!event) {
@@ -394,14 +379,12 @@ export class SallaWebhooksService {
       },
     );
 
-    if (event.tenantId) {
-      await this.createLog(event.id, event.tenantId, {
-        action: WebhookLogAction.MANUALLY_RETRIED,
-        previousStatus: event.status as WebhookStatus,
-        newStatus: WebhookStatus.RETRY_PENDING,
-        message: 'Manual retry requested',
-      });
-    }
+    await this.createLog(event.id, event.tenantId, {
+      action: WebhookLogAction.MANUALLY_RETRIED,
+      previousStatus: event.status as WebhookStatus,
+      newStatus: WebhookStatus.RETRY_PENDING,
+      message: 'Manual retry requested',
+    });
 
     await this.updateStatus(webhookEventId, WebhookStatus.RETRY_PENDING);
 
