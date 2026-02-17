@@ -39,6 +39,8 @@ export interface MerchantData {
   name: string;
   storeName?: string;
   avatar?: string;
+  /** المنصة المصدر: 'salla' | 'zid' | أخرى (default: 'salla') */
+  platform?: string;
 }
 
 /**
@@ -173,19 +175,33 @@ export class AutoRegistrationService {
       this.logger.log(`✅ Set missing tenantId for user ${user.id} → ${store.tenantId}`);
     }
 
-    // ✅ تحديث merchantId في preferences إذا لزم
+    // ✅ تحديث merchantIds في preferences
+    // 🐛 FIX: المستخدمون القدامى عندهم preferences.merchantId (رقم واحد)
+    //    المستخدمون الجدد عندهم preferences.merchantIds (مصفوفة)
+    //    نهاجر من الصيغة القديمة للجديدة
     const currentPrefs = (user.preferences as Record<string, unknown>) || {};
-    const merchantIds = (currentPrefs.merchantIds as number[]) || [];
+
+    // Migration: merchantId (old) → merchantIds (new)
+    let merchantIds: number[] = [];
+    if (Array.isArray(currentPrefs.merchantIds)) {
+      merchantIds = currentPrefs.merchantIds as number[];
+    } else if (typeof currentPrefs.merchantId === 'number' && currentPrefs.merchantId > 0) {
+      // ← هاجر من الصيغة القديمة
+      merchantIds = [currentPrefs.merchantId as number];
+    }
+
     if (!merchantIds.includes(merchantId)) {
       merchantIds.push(merchantId);
-      await this.userRepository.update(user.id, {
-        preferences: {
-          ...currentPrefs,
-          merchantIds,
-          lastStoreLinkedAt: new Date().toISOString(),
-        },
-      });
     }
+
+    await this.userRepository.update(user.id, {
+      preferences: {
+        ...currentPrefs,
+        merchantId: undefined,  // ← حذف الحقل القديم
+        merchantIds,
+        lastStoreLinkedAt: new Date().toISOString(),
+      },
+    });
 
     // 📧📱 إرسال تنبيه "تم ربط متجر جديد" (بدون كلمة مرور)
     await this.sendNewStoreLinkedNotification({
@@ -235,7 +251,7 @@ export class AutoRegistrationService {
       status: UserStatus.ACTIVE,
       emailVerified: true,
       preferences: {
-        source: 'salla_app_install',
+        source: `${merchantData.platform || 'salla'}_app_install`,
         merchantIds: [merchantId],
         hasSetPassword: true,
         passwordSetAt: new Date().toISOString(),
