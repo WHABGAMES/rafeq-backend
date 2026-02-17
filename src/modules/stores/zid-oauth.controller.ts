@@ -6,8 +6,9 @@
  * ║  POST /api/stores/zid/connect  → بدء OAuth مع زد (يرجع { redirectUrl })       ║
  * ║  GET  /api/stores/zid/callback → Callback من زد                               ║
  * ║                                                                                ║
- * ║  🔧 FIX: POST بدل GET في connect لمطابقة الـ Frontend                         ║
- * ║  🔧 FIX: يرجع JSON { redirectUrl } بدل redirect مباشر                         ║
+ * ║  🔀 الـ callback يتعامل مع حالتين:                                             ║
+ * ║     1. من الداشبورد (فيه state + tenantId) → ربط متجر لحساب موجود             ║
+ * ║     2. من متجر زد (بدون state) → إنشاء حساب + إرسال بيانات دخول              ║
  * ║                                                                                ║
  * ║  📁 src/modules/stores/zid-oauth.controller.ts                                ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
@@ -58,9 +59,8 @@ export class ZidOAuthController {
   ) {}
 
   /**
-   * 🔧 FIX: POST /api/stores/zid/connect
-   * بدء عملية OAuth مع زد - يرجع { redirectUrl } بدل redirect مباشر
-   * لمطابقة الـ Frontend الذي يستخدم POST ويتوقع JSON
+   * POST /stores/zid/connect
+   * بدء عملية OAuth مع زد — من الداشبورد
    */
   @Post('connect')
   @UseGuards(JwtAuthGuard)
@@ -80,7 +80,6 @@ export class ZidOAuthController {
       
       this.logger.log(`Generated Zid OAuth URL for tenant ${tenantId}`);
       
-      // ✅ يرجع JSON بدل redirect
       return { redirectUrl };
     } catch (error: any) {
       this.logger.error('Failed to start Zid OAuth flow', error);
@@ -89,8 +88,12 @@ export class ZidOAuthController {
   }
 
   /**
-   * GET /api/stores/zid/callback
+   * GET /stores/zid/callback
    * Callback من زد بعد موافقة المستخدم
+   *
+   * 🔀 حالتين:
+   *   1. فيه state صالح (من الداشبورد) → ربط متجر لحساب موجود
+   *   2. بدون state أو state غير صالح (من متجر زد) → إنشاء حساب + إرسال بيانات
    */
   @Get('callback')
   @Public()
@@ -111,37 +114,80 @@ export class ZidOAuthController {
     const redirectPath = '/dashboard/stores';
 
     try {
+      this.logger.log(`Zid OAuth callback received`, {
+        hasCode: !!code,
+        hasState: !!state,
+        hasError: !!error,
+      });
+
+      // ✅ معالجة الأخطاء من زد
       if (error) {
         this.logger.warn('OAuth error from Zid', { error, errorDescription });
         res.redirect(`${frontendUrl}${redirectPath}?status=error&reason=${encodeURIComponent(errorDescription || error)}`);
         return;
       }
 
-      if (!code || !state) {
-        this.logger.warn('Missing code or state in Zid callback');
-        res.redirect(`${frontendUrl}${redirectPath}?status=error&reason=missing_params`);
+      // ✅ التحقق من وجود code
+      if (!code) {
+        this.logger.warn('Missing code in Zid callback');
+        res.redirect(`${frontendUrl}${redirectPath}?status=error&reason=missing_code`);
         return;
       }
 
-      const { tokens, tenantId } = await this.zidOAuthService.exchangeCodeForTokens(code, state);
-      const storeInfo = await this.zidOAuthService.getStoreInfo(tokens.access_token);
+      // ═══════════════════════════════════════════════════════════════
+      // 🔀 تحديد نوع الطلب: من الداشبورد أو من متجر زد
+      // ═══════════════════════════════════════════════════════════════
+      const hasValidState = state && this.zidOAuthService.isValidState(state);
 
-      const store = await this.storesService.connectZidStore(tenantId, {
-        tokens: {
-          accessToken: tokens.access_token,
-          refreshToken: tokens.refresh_token,
-          expiresAt: this.zidOAuthService.calculateTokenExpiry(tokens.expires_in),
-        },
-        storeInfo,
-      });
+      if (hasValidState) {
+        // ════════════════════════════════════════════════════════════
+        // 🔗 حالة 1: من الداشبورد — ربط متجر لحساب موجود
+        // ════════════════════════════════════════════════════════════
+        this.logger.log(`📊 Zid Dashboard connect flow`);
 
-      this.logger.log(`Successfully connected Zid store: ${storeInfo.name}`, {
-        tenantId,
-        storeId: store.id,
-        zidStoreId: storeInfo.id,
-      });
+        const { tokens, tenantId } = await this.zidOAuthService.exchangeCodeForTokens(code, state);
+        const storeInfo = await this.zidOAuthService.getStoreInfo(tokens.access_token);
 
-      res.redirect(`${frontendUrl}${redirectPath}?status=success&store_id=${store.id}`);
+        const store = await this.storesService.connectZidStore(tenantId, {
+          tokens: {
+            accessToken: tokens.access_token,
+            refreshToken: tokens.refresh_token,
+            expiresAt: this.zidOAuthService.calculateTokenExpiry(tokens.expires_in),
+          },
+          storeInfo,
+        });
+
+        this.logger.log(`✅ Zid store connected from dashboard: ${storeInfo.name}`, {
+          tenantId,
+          storeId: store.id,
+          zidStoreId: storeInfo.id,
+        });
+
+        res.redirect(`${frontendUrl}${redirectPath}?status=success&store_id=${store.id}`);
+
+      } else {
+        // ════════════════════════════════════════════════════════════
+        // 🆕 حالة 2: تثبيت من متجر زد — إنشاء حساب + إرسال بيانات
+        // ════════════════════════════════════════════════════════════
+        this.logger.log(`🆕 Zid store install flow — creating account`);
+
+        const result = await this.zidOAuthService.exchangeCodeAndAutoRegister(code);
+
+        this.logger.log(`✅ Zid Auto-registration completed`, {
+          zidStoreId: result.zidStoreId,
+          isNewUser: result.isNewUser,
+          email: result.email,
+        });
+
+        // ✅ توجيه التاجر لصفحة تسجيل الدخول
+        const redirectParams = new URLSearchParams({
+          status: 'success',
+          source: 'zid_install',
+          store: result.zidStoreId,
+        });
+
+        res.redirect(`${frontendUrl}/auth/login?${redirectParams.toString()}`);
+      }
 
     } catch (error: any) {
       this.logger.error('Zid OAuth callback error', {
