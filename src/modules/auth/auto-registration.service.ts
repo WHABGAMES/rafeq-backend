@@ -35,7 +35,8 @@ import { MailService } from '../mail/mail.service';
 export interface MerchantData {
   merchantId: number;
   email: string;
-  mobile: string;
+  /** ⚠️ optional: سلة أحياناً ما ترجع رقم جوال (مثل المتجر التجريبي) */
+  mobile?: string;
   name: string;
   storeName?: string;
   avatar?: string;
@@ -296,7 +297,7 @@ export class AutoRegistrationService {
     password: string;
     name: string;
     storeName: string;
-    mobile: string;
+    mobile: string | undefined | null;
     isNewUser: boolean;
   }): Promise<void> {
     const { email, password, name, storeName, mobile } = data;
@@ -352,7 +353,7 @@ export class AutoRegistrationService {
     email: string;
     name: string;
     storeName: string;
-    mobile: string;
+    mobile: string | undefined | null;
   }): Promise<void> {
     const { email, name, storeName, mobile } = data;
 
@@ -427,9 +428,15 @@ export class AutoRegistrationService {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   private async sendWhatsAppMessage(data: {
-    mobile: string;
+    mobile: string | undefined | null;
     message: string;
   }): Promise<void> {
+    // ✅ FIX: حماية من mobile = undefined (متجر سلة التجريبي ما يرسل رقم جوال)
+    if (!data.mobile) {
+      this.logger.warn('⚠️ No mobile number — skipping WhatsApp notification');
+      return;
+    }
+
     const phoneNumberId = this.configService.get<string>('WHATSAPP_PHONE_NUMBER_ID');
     const accessToken = this.configService.get<string>('WHATSAPP_ACCESS_TOKEN');
 
@@ -476,7 +483,11 @@ export class AutoRegistrationService {
     }
   }
 
-  private formatPhoneNumber(phone: string): string {
+  private formatPhoneNumber(phone: string | undefined | null): string {
+    if (!phone || typeof phone !== 'string') {
+      return '';
+    }
+
     let cleaned = phone.replace(/\D/g, '');
 
     if (cleaned.startsWith('05')) {
