@@ -427,10 +427,22 @@ export class StoresService {
     return store;
   }
 
+  /**
+   * ✅ FIX: البحث عن متجر بـ merchantId من سلة
+   * 
+   * 🐛 المشكلة: عمود salla_merchant_id هو bigint في PostgreSQL
+   *    TypeORM يرجع bigint كـ string ("1841647922") مش number
+   *    findOne({ where: { sallaMerchantId: number } }) ممكن يفشل
+   *    بسبب type mismatch داخل TypeORM
+   * 
+   * ✅ الحل: QueryBuilder مع اسم العمود الحقيقي
+   *    يمرر القيمة مباشرة لـ PostgreSQL بدون تحويل من TypeORM
+   */
   async findByMerchantId(merchantId: number): Promise<Store | null> {
-    return this.storeRepository.findOne({
-      where: { sallaMerchantId: merchantId },
-    });
+    return this.storeRepository
+      .createQueryBuilder('store')
+      .where('"salla_merchant_id" = :merchantId', { merchantId })
+      .getOne();
   }
 
   async findByZidStoreId(zidStoreId: string): Promise<Store | null> {
