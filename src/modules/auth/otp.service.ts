@@ -57,6 +57,7 @@ export interface VerificationMethod {
 export class OtpService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(OtpService.name);
   private redis: Redis;
+  private pingInterval: ReturnType<typeof setInterval> | null = null;
   
   // ═══════════════════════════════════════════════════════════════════════════════
   // ⚙️ Configuration - قابل للتعديل
@@ -116,6 +117,8 @@ export class OtpService implements OnModuleInit, OnModuleDestroy {
         },
         maxRetriesPerRequest: 3,
         enableReadyCheck: true,
+        // ✅ FIX P4: keepAlive prevents Redis idle timeout disconnects (5min cycle)
+        keepAlive: 30000,
         lazyConnect: false,
       });
 
@@ -141,6 +144,19 @@ export class OtpService implements OnModuleInit, OnModuleDestroy {
         this.logger.log('✅ OTP Service: Redis ping successful');
       }
 
+      // ✅ FIX P4: Application-level PING every 60s prevents idle timeout
+      //    TCP keepAlive (30s) may not survive cloud Redis proxies
+      //    PING is an actual Redis command that keeps the connection active
+      this.pingInterval = setInterval(async () => {
+        try {
+          if (this.redis?.status === 'ready') {
+            await this.redis.ping();
+          }
+        } catch {
+          // Silent — reconnect strategy will handle it
+        }
+      }, 60_000);
+
     } catch (error) {
       this.logger.error('❌ Failed to initialize Redis for OTP Service', error);
       throw new Error('OTP Service requires Redis connection');
@@ -148,6 +164,10 @@ export class OtpService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async closeRedis(): Promise<void> {
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval);
+      this.pingInterval = null;
+    }
     if (this.redis) {
       try {
         await this.redis.quit();
