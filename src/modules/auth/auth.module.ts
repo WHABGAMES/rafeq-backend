@@ -89,6 +89,10 @@ import { MailModule } from '../mail/mail.module';
             return Math.min(times * 1000, 5000);
           },
           enableReadyCheck: true,
+          // ✅ FIX P4: keepAlive prevents Redis idle timeout disconnects
+          // Redis server has timeout=300s (5min) → closes idle connections
+          // keepAlive sends TCP packets every 30s to prevent idle disconnect
+          keepAlive: 30000,
           reconnectOnError: (err: Error) => {
             return ['READONLY', 'ECONNRESET', 'EPIPE'].some(e => err.message.includes(e));
           },
@@ -121,6 +125,18 @@ import { MailModule } from '../mail/mail.module';
         client.on('close', () => {
           logger.warn('⚠️ Redis connection closed');
         });
+
+        // ✅ FIX P4: Application-level PING every 60s prevents idle timeout
+        //    TCP keepAlive may not survive cloud Redis proxies (Railway, Render, etc.)
+        setInterval(async () => {
+          try {
+            if (client.status === 'ready') {
+              await client.ping();
+            }
+          } catch {
+            // Silent — retryStrategy will handle reconnection
+          }
+        }, 60_000);
 
         return client;
       },
