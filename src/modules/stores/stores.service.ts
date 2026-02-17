@@ -513,10 +513,11 @@ export class StoresService {
     //    _merchant مخزّن في payload JSONB (من الإصلاح الجديد)
     //    كـ fallback: نبحث عن أي webhook سلة بـ tenantId
     let pastEvents: Array<{ tenant_id: string }> = await this.storeRepository.manager.query(
-      `SELECT DISTINCT tenant_id FROM webhook_events
+      `SELECT tenant_id FROM webhook_events
        WHERE source = 'salla' AND tenant_id IS NOT NULL
        AND payload->>'_merchant' = $1
-       ORDER BY created_at DESC LIMIT 5`,
+       GROUP BY tenant_id
+       ORDER BY MAX(created_at) DESC LIMIT 5`,
       [String(merchantId)],
     );
 
@@ -524,9 +525,10 @@ export class StoresService {
     if (!pastEvents || pastEvents.length === 0) {
       this.logger.warn(`🔄 AUTO-RECOVERY: No merchant-specific history. Trying general salla lookup...`);
       pastEvents = await this.storeRepository.manager.query(
-        `SELECT DISTINCT tenant_id FROM webhook_events
+        `SELECT tenant_id FROM webhook_events
          WHERE source = 'salla' AND tenant_id IS NOT NULL
-         ORDER BY created_at DESC LIMIT 5`,
+         GROUP BY tenant_id
+         ORDER BY MAX(created_at) DESC LIMIT 5`,
       );
     }
 
