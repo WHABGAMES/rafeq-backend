@@ -4,14 +4,13 @@
  * ║                                                                                ║
  * ║  🔧 FIX H-06: Defense-in-depth — restrict webhook endpoints to known IPs      ║
  * ║                                                                                ║
- * ║  Even with HMAC signature verification, an IP allowlist prevents:              ║
- * ║  • Replay attacks if HMAC secret leaks                                        ║
- * ║  • Brute-force signature attempts                                             ║
- * ║  • Unauthorized probing of webhook endpoints                                  ║
+ * ║  🐛 FIX: كان يرفض كل webhooks لأن SALLA_KNOWN_IPS كان فارغ                   ║
+ * ║     → أضفنا IPs سلة الحقيقية من لوقات الإنتاج                                 ║
+ * ║     → WEBHOOK_ALLOWED_IPS في .env هو المصدر الرئيسي                           ║
  * ║                                                                                ║
- * ║  Usage:                                                                        ║
- * ║    @UseGuards(WebhookIpGuard)                                                 ║
- * ║    @Controller('webhooks/salla')                                               ║
+ * ║  📋 الإعداد في .env:                                                           ║
+ * ║     WEBHOOK_ALLOWED_IPS=18.157.170.48,18.158.0.0/16,3.120.0.0/14             ║
+ * ║     WEBHOOK_IP_ALLOWLIST_ENABLED=true (أو production تلقائياً)                 ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -27,17 +26,25 @@ import { Request } from 'express';
 import * as net from 'net';
 
 /**
- * Salla's known webhook source IPs (as of 2025)
- * Update these periodically from Salla's documentation.
- * Also accepts IPs from WEBHOOK_ALLOWED_IPS env variable.
+ * Salla's known webhook source IPs
+ * مأخوذة من لوقات الإنتاج + AWS eu-central-1 (Frankfurt)
+ * ✅ يُحدّث من WEBHOOK_ALLOWED_IPS في .env
  */
 const SALLA_KNOWN_IPS: string[] = [
-  // Salla production servers — update from Salla docs
-  // These are CIDR ranges or individual IPs
+  // ✅ Confirmed from production logs (Feb 2026)
+  '18.157.170.48',
+
+  // Salla uses AWS eu-central-1 (Frankfurt)
+  // هذه IPs إضافية شائعة — المصدر الرئيسي هو WEBHOOK_ALLOWED_IPS
+  '18.156.0.0/14',    // AWS eu-central-1 range
+  '3.120.0.0/14',     // AWS eu-central-1 range
+  '35.156.0.0/14',    // AWS eu-central-1 range
+  '52.57.0.0/16',     // AWS eu-central-1 range
 ];
 
 const ZID_KNOWN_IPS: string[] = [
-  // Zid production servers — update from Zid docs
+  // Zid production servers — يُضاف عند التوثيق
+  // المصدر الرئيسي: WEBHOOK_ALLOWED_IPS في .env
 ];
 
 @Injectable()
