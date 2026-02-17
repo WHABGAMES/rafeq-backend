@@ -170,17 +170,33 @@ export class SallaOAuthService {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   /**
-   * ✅ FIX: البحث عن متجر بـ sallaMerchantId باستخدام QueryBuilder
-   * 
-   * 🐛 المشكلة: salla_merchant_id هو bigint في PostgreSQL
-   *    TypeORM يرجع bigint كـ string — findOne ممكن يفشل بسبب type mismatch
-   * ✅ الحل: QueryBuilder مع اسم العمود المباشر
+   * ✅ البحث عن متجر بـ sallaMerchantId
+   * يستخدم Raw SQL لتجاوز مشاكل TypeORM مع bigint
    */
   private async findStoreBySallaMerchantId(merchantId: number): Promise<Store | null> {
-    return this.storeRepository
-      .createQueryBuilder('store')
-      .where('"salla_merchant_id" = :merchantId', { merchantId })
-      .getOne();
+    // Raw SQL → PostgreSQL handles bigint comparison directly
+    const rows: Array<{ id: string; deleted_at: Date | null }> =
+      await this.storeRepository.manager.query(
+        `SELECT id, deleted_at FROM stores WHERE salla_merchant_id = $1 LIMIT 1`,
+        [merchantId],
+      );
+
+    if (!rows || rows.length === 0) {
+      this.logger.warn(`❌ Merchant ${merchantId}: not found in stores (raw SQL)`);
+      return null;
+    }
+
+    // Restore if soft-deleted
+    if (rows[0].deleted_at) {
+      this.logger.warn(`🔄 RECOVERY: Restoring soft-deleted store ${rows[0].id} for merchant ${merchantId}`);
+      await this.storeRepository.manager.query(
+        `UPDATE stores SET deleted_at = NULL, status = 'active' WHERE id = $1`,
+        [rows[0].id],
+      );
+    }
+
+    // Load entity by UUID (zero type issues)
+    return this.storeRepository.findOne({ where: { id: rows[0].id } });
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
