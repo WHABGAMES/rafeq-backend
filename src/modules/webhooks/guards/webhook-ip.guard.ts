@@ -55,7 +55,7 @@ export class WebhookIpGuard implements CanActivate {
   private readonly allowedCidrs: string[];
   private readonly isEnabled: boolean;
 
-  constructor(private readonly configService: ConfigService) {
+  constructor(configService: ConfigService) {
     const isProduction = configService.get('NODE_ENV') === 'production';
 
     // Load IPs from environment: comma-separated list
