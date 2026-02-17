@@ -568,10 +568,24 @@ export class StoresService {
     );
 
     if (existingSallaStore && existingSallaStore.length > 0) {
+      // ✅ المتجر موجود لكن salla_merchant_id غلط أو فاضي
+      //    → نربط الـ merchantId الجديد بالمتجر الموجود
+      const existingStoreId = existingSallaStore[0].id;
       this.logger.warn(
-        `🔄 AUTO-RECOVERY: Tenant ${tenantId} already has a salla store (${existingSallaStore[0].id}) — ` +
-        `will not create duplicate. Merchant ${merchantId} may need re-linking.`,
+        `🔄 AUTO-RECOVERY: Tenant ${tenantId} has store ${existingStoreId} — linking merchant ${merchantId} to it`,
       );
+
+      await this.storeRepository.manager.query(
+        `UPDATE stores SET salla_merchant_id = $1 WHERE id = $2`,
+        [merchantId, existingStoreId],
+      );
+
+      const store = await this.storeRepository.findOne({ where: { id: existingStoreId } });
+      if (store) {
+        this.logger.warn(`✅ AUTO-RECOVERY SUCCESS: Linked merchant ${merchantId} → store ${existingStoreId} (tenant: ${store.tenantId})`);
+        return store;
+      }
+
       return null;
     }
 
