@@ -46,7 +46,8 @@ export interface ZidStoreInfo {
   uuid: string;
   name: string;
   email: string;
-  mobile: string;
+  /** ⚠️ optional: Zid قد لا يرجع رقم جوال */
+  mobile?: string;
   url: string;
   logo?: string;
   currency: string;
