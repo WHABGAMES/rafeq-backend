@@ -358,6 +358,7 @@ export class SallaOAuthService {
             name: merchantInfo.name || merchantInfo.username || 'تاجر',
             storeName: merchantInfo.name,
             avatar: merchantInfo.avatar,
+            platform: 'salla',
           },
           savedStore,
         );
@@ -536,6 +537,7 @@ export class SallaOAuthService {
           name: merchantInfo.name || merchantInfo.username || 'تاجر',
           storeName: merchantInfo.name,
           avatar: merchantInfo.avatar,
+          platform: 'salla',
         },
         savedStore,
       );
@@ -596,13 +598,15 @@ export class SallaOAuthService {
 
   private async resolveOrCreateTenant(merchantInfo: SallaMerchantInfo): Promise<string> {
     // 🔍 البحث عن المستخدم بالإيميل
-    const existingUser = await this.autoRegistrationService.findUserByEmail(merchantInfo.email);
+    if (merchantInfo.email) {
+      const existingUser = await this.autoRegistrationService.findUserByEmail(merchantInfo.email);
 
-    if (existingUser?.tenantId) {
-      this.logger.log(
-        `👤 Existing user found (${existingUser.id}) → reusing tenant ${existingUser.tenantId} for merchant ${merchantInfo.id}`,
-      );
-      return existingUser.tenantId;
+      if (existingUser?.tenantId) {
+        this.logger.log(
+          `👤 Existing user found (${existingUser.id}) → reusing tenant ${existingUser.tenantId} for merchant ${merchantInfo.id}`,
+        );
+        return existingUser.tenantId;
+      }
     }
 
     // 🆕 مستخدم جديد → إنشاء tenant جديد
