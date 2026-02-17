@@ -46,7 +46,8 @@ export interface SallaMerchantInfo {
   name: string;
   username?: string;
   email: string;
-  mobile: string;
+  /** ⚠️ optional: سلة أحياناً ما ترجع رقم جوال (مثل المتجر التجريبي) */
+  mobile?: string;
   domain: string;
   plan: string;
   avatar?: string;
@@ -157,7 +158,9 @@ export class SallaOAuthService {
 
       return { tenantId: decoded.tenantId, custom: decoded.custom || '' };
     } catch (error) {
-      this.logger.error('Failed to decode/verify state', error);
+      // ✅ FIX: DEBUG وليس ERROR — state من سلة (غير موقّع) هو سلوك متوقع
+      // يحدث عند تثبيت التطبيق من متجر سلة (وليس من الداشبورد)
+      this.logger.debug('State is not HMAC-signed — likely Salla-generated state');
       throw new BadRequestException('Invalid or expired state parameter');
     }
   }
