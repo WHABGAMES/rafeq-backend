@@ -343,6 +343,19 @@ export class ZidOAuthService {
 
         const result = await this.zidApiService.registerWebhooks(webhookTokens, webhookUrl, appId);
         this.logger.log(`🔔 Zid webhooks: registered=${result.registered.join(',')} | failed=${result.failed.join(',') || 'none'}`);
+
+        // ✅ v3: تحقق من حالة الـ webhooks بعد التسجيل
+        try {
+          const webhooks = await this.zidApiService.listWebhooks(webhookTokens);
+          const activeCount = webhooks.filter((w: any) => w.active === true).length;
+          const inactiveCount = webhooks.filter((w: any) => w.active === false).length;
+          this.logger.log(`📋 Zid webhooks status: total=${webhooks.length}, active=${activeCount}, inactive=${inactiveCount}`);
+          if (inactiveCount > 0) {
+            this.logger.error(`🚨 WARNING: ${inactiveCount} Zid webhooks are INACTIVE — notifications will NOT work!`);
+          }
+        } catch (listErr: any) {
+          this.logger.warn(`⚠️ Could not verify Zid webhook status: ${listErr.message}`);
+        }
       } catch (error: any) {
         this.logger.warn(`⚠️ Zid webhook registration failed (non-fatal): ${error.message}`);
       }
