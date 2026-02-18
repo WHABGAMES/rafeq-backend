@@ -533,17 +533,25 @@ export class ZidOAuthService {
             : (rawLanguage || 'ar');
 
           // logo قد يكون string أو object
-          const logoStr = typeof rawLogo === 'object' && rawLogo !== null
-            ? (rawLogo.url || rawLogo.original || rawLogo.src || JSON.stringify(rawLogo))
-            : (rawLogo || undefined);
+          let logoStr: string | undefined;
+          if (typeof rawLogo === 'string' && rawLogo.length > 0) {
+            logoStr = rawLogo.substring(0, 490);
+          } else if (typeof rawLogo === 'object' && rawLogo !== null) {
+            logoStr = (rawLogo.url || rawLogo.original || rawLogo.src || undefined);
+          }
 
           // email قد يكون null في store → نجرب من user level
-          const emailStr = storeData.email
-            || storeData.username
+          // ⚠️ لا نستخدم username كـ email (username = اسم المتجر مو إيميل)
+          const rawEmail = storeData.email
             || raw?.user?.email
-            || raw?.user?.username
             || data?.email
             || '';
+
+          // ✅ إذا ما فيه إيميل حقيقي → نولّد إيميل مؤقت
+          const storeId = storeData.id || storeData.store_id || storeData.uuid || 'unknown';
+          const emailStr = rawEmail && rawEmail.includes('@')
+            ? rawEmail
+            : `zid_${storeId}@store.rafeq.ai`;
 
           const mobileStr = storeData.mobile
             || storeData.phone
