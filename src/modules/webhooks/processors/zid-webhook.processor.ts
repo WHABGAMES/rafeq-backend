@@ -243,22 +243,49 @@ export class ZidWebhookProcessor extends WorkerHost {
     data: Record<string, unknown>,
     context: { tenantId?: string; storeId?: string; webhookEventId: string },
   ): Promise<Record<string, unknown>> {
-    this.logger.log('Processing Zid order-update', { orderId: data.id });
+    this.logger.log('Processing Zid order-update', { orderId: data.id, status: data.status });
 
     if (context.tenantId && data.id) {
       await this.updateOrderStatusInDatabase(data, context);
     }
 
-    this.eventEmitter.emit('order.status.updated', {
+    // ✅ v2: تحويل حالة زد → event محدد (مثل Salla processor)
+    // template-dispatcher يسمع events محددة، مو order.status.updated العام
+    const statusSlug = this.extractZidStatusSlug(data.status);
+    const specificEvent = this.mapZidStatusToEvent(statusSlug);
+
+    this.logger.log('🔄 Zid status mapping:', {
+      rawStatus: data.status,
+      statusSlug,
+      specificEvent: specificEvent || 'NONE',
+    });
+
+    const eventPayload = {
       tenantId: context.tenantId,
       storeId: context.storeId,
       orderId: data.id,
+      orderNumber: data.order_number || data.code,
       status: data.status,
+      newStatus: data.status,
+      previousStatus: data.previous_status,
       raw: data,
       source: 'zid',
-    });
+    };
 
-    return { handled: true, action: 'order_update', orderId: data.id, emittedEvent: 'order.status.updated' };
+    if (specificEvent) {
+      this.logger.log(`📌 Emitting: ${specificEvent}`);
+      this.eventEmitter.emit(specificEvent, eventPayload);
+    } else {
+      this.logger.warn(`⚠️ No event mapping for Zid status "${statusSlug}" — no template sent`);
+    }
+
+    return {
+      handled: true,
+      action: 'order_update',
+      orderId: data.id,
+      statusSlug,
+      specificEvent: specificEvent || 'NONE',
+    };
   }
 
   private async handleOrderCancelled(
@@ -586,6 +613,97 @@ export class ZidWebhookProcessor extends WorkerHost {
       });
       return null;
     }
+  }
+
+  /**
+   * ✅ استخراج slug الحالة من بيانات زد
+   * زد يرسل status كـ string أو object: { slug, name, code }
+   */
+  private extractZidStatusSlug(status: unknown): string {
+    if (typeof status === 'string') return status.toLowerCase();
+    if (typeof status === 'object' && status !== null) {
+      const obj = status as Record<string, unknown>;
+      return String(
+        obj.slug || obj.code || obj.name || obj.status || '',
+      ).toLowerCase();
+    }
+    return '';
+  }
+
+  /**
+   * ✅ تحويل حالة زد → event محدد يسمعه template-dispatcher
+   *
+   * حالات زد:          → Events محددة:
+   * new/pending         → order.created
+   * processing/confirmed → order.status.processing
+   * ready               → order.status.ready_to_ship
+   * shipped             → order.shipped
+   * inDelivery/in_transit → order.status.in_transit
+   * delivered           → order.delivered
+   * completed           → order.status.completed
+   * cancelled/canceled  → order.cancelled
+   * refunded            → order.refunded
+   * on_hold             → order.status.on_hold
+   * paid                → order.status.paid
+   */
+  private mapZidStatusToEvent(statusSlug: string): string | null {
+    const map: Record<string, string> = {
+      // طلب جديد
+      'new': 'order.created',
+      'pending': 'order.created',
+
+      // قيد التنفيذ
+      'processing': 'order.status.processing',
+      'confirmed': 'order.status.processing',
+      'in_progress': 'order.status.processing',
+
+      // جاهز للشحن
+      'ready': 'order.status.ready_to_ship',
+      'ready_to_ship': 'order.status.ready_to_ship',
+
+      // تم الشحن
+      'shipped': 'order.shipped',
+
+      // جاري التوصيل
+      'indelivery': 'order.status.in_transit',
+      'in_delivery': 'order.status.in_transit',
+      'in_transit': 'order.status.in_transit',
+      'out_for_delivery': 'order.status.in_transit',
+      'delivering': 'order.status.in_transit',
+
+      // تم التوصيل
+      'delivered': 'order.delivered',
+
+      // مكتمل
+      'completed': 'order.status.completed',
+
+      // ملغي
+      'cancelled': 'order.cancelled',
+      'canceled': 'order.cancelled',
+
+      // مسترجع
+      'refunded': 'order.refunded',
+
+      // معلق
+      'on_hold': 'order.status.on_hold',
+
+      // مدفوع
+      'paid': 'order.status.paid',
+
+      // بانتظار الدفع
+      'pending_payment': 'order.status.pending_payment',
+      'awaiting_payment': 'order.status.pending_payment',
+
+      // بانتظار المراجعة
+      'under_review': 'order.status.under_review',
+      'awaiting_review': 'order.status.under_review',
+
+      // استرداد
+      'restoring': 'order.status.restoring',
+      'restored': 'order.status.restoring',
+    };
+
+    return map[statusSlug] || null;
   }
 
   private mapZidOrderStatus(status: unknown): OrderStatus {
