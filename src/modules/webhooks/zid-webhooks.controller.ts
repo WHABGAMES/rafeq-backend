@@ -20,6 +20,8 @@ import {
   RawBodyRequest,
   Req,
   ForbiddenException,
+  UsePipes,
+  ValidationPipe,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiHeader } from '@nestjs/swagger';
 import { Request } from 'express';
@@ -79,6 +81,12 @@ export class ZidWebhooksController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Receive Zid webhooks' })
   @ApiHeader({ name: 'x-zid-signature', description: 'HMAC signature' })
+  @UsePipes(new ValidationPipe({
+    transform: true,
+    whitelist: false,           // ← لا نحذف الحقول الزائدة
+    forbidNonWhitelisted: false, // ← لا نرفض الحقول الزائدة (زد يرسل حقول كثيرة)
+    transformOptions: { enableImplicitConversion: true },
+  }))
   async handleWebhook(
     @Req() req: RawBodyRequest<Request>,
     @Body() payload: ZidWebhookDto,
