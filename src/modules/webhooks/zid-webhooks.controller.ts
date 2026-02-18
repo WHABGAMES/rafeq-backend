@@ -11,6 +11,7 @@
 import {
   Controller,
   Post,
+  Get,
   Body,
   Headers,
   HttpCode,
@@ -51,6 +52,24 @@ export class ZidWebhooksController {
     } else {
       this.logger.warn('⚠️ ZID_WEBHOOK_SECRET is not configured — signature verification disabled');
     }
+  }
+
+  /**
+   * 🔔 التحقق من نقطة الـ Webhook (GET)
+   * زد يرسل GET ping عند تسجيل webhook جديد للتحقق من أن الرابط يعمل
+   * بدون هذا الـ handler، الطلب يُلتقط من WebhooksController@Get(':id')
+   * اللي عليه JwtAuthGuard → يرجع 401 → زد يعتبر الرابط معطل
+   */
+  @Get()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Zid webhook endpoint verification' })
+  verifyWebhook(): { success: boolean; message: string; endpoint: string } {
+    this.logger.log('🔔 Zid webhook verification ping received');
+    return {
+      success: true,
+      message: 'Zid webhook endpoint is active',
+      endpoint: '/api/webhooks/zid',
+    };
   }
 
   /**
