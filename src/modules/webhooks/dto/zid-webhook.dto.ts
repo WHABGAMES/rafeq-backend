@@ -2,104 +2,11 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                RAFIQ PLATFORM - Zid Webhook DTOs                               ║
  * ║                                                                                ║
- * ║  ✅ v2: مرن — يقبل أي شكل payload من زد                                       ║
- * ║  زد يرسل store_id كرقم أحياناً وكنص أحياناً                                    ║
- * ║  زد يرسل حقول إضافية كثيرة (conditions, subscriber, original_id, etc.)        ║
- * ║  Zid Webhook Docs: https://docs.zid.sa/docs/webhooks                          ║
+ * ║  ✅ v3: مُبسّط — الـ Controller يستخدم Record<string, any>                     ║
+ * ║  لأن زد لا يرسل "event" — يرسل بيانات الكيان مباشرة                           ║
+ * ║  الـ DTO الوحيد المستخدم هو ZidWebhookJobDto (للـ Queue الداخلي)               ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
-
-import { IsString, IsOptional, IsObject, IsNotEmpty } from 'class-validator';
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { Transform } from 'class-transformer';
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// 📦 Zid Webhook Base DTO
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * الشكل الأساسي لكل webhook من زد
- *
- * زد يرسل الحدث بأشكال مختلفة:
- * {
- *   "event": "order.status.update",
- *   "store_id": "f47ac10b-..." أو 3078847 (رقم),
- *   "triggered_at": "2024-01-15T10:30:00.000Z",
- *   "payload": { ... },
- *   "conditions": { ... },
- *   "original_id": "...",
- *   "subscriber": "...",
- *   ...حقول إضافية
- * }
- */
-export class ZidWebhookDto {
-  @ApiProperty({
-    description: 'نوع الحدث',
-    example: 'order.status.update',
-  })
-  @IsString()
-  @IsNotEmpty()
-  event: string;
-
-  @ApiProperty({
-    description: 'معرّف المتجر في زد (قد يكون نص أو رقم)',
-    example: '3078847',
-  })
-  @Transform(({ value }) => String(value))  // ✅ يحوّل الرقم لنص تلقائياً
-  @IsString()
-  store_id: string;
-
-  @ApiPropertyOptional({
-    description: 'تاريخ إطلاق الحدث',
-    example: '2024-01-15T10:30:00.000Z',
-  })
-  @IsOptional()
-  triggered_at?: string;
-
-  @ApiPropertyOptional({
-    description: 'بيانات الحدث',
-    type: 'object',
-  })
-  @IsObject()
-  @IsOptional()
-  payload?: Record<string, unknown>;
-
-  @ApiPropertyOptional({
-    description: 'بيانات الحدث (بديل)',
-    type: 'object',
-  })
-  @IsObject()
-  @IsOptional()
-  data?: Record<string, unknown>;
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // ✅ v2: حقول إضافية يرسلها زد — بدونها يرجع 400 مع forbidNonWhitelisted
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  @IsOptional()
-  id?: string;
-
-  @IsOptional()
-  conditions?: Record<string, unknown>;
-
-  @IsOptional()
-  original_id?: string;
-
-  @IsOptional()
-  subscriber?: string;
-
-  @IsOptional()
-  active?: boolean;
-
-  @IsOptional()
-  target_url?: string;
-
-  @IsOptional()
-  status?: unknown;
-
-  @IsOptional()
-  message?: Record<string, unknown>;
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 📊 Internal Queue DTO
@@ -107,15 +14,33 @@ export class ZidWebhookDto {
 
 /**
  * بيانات الـ Job في الـ Queue لزد
+ * يُنشأ في الـ Controller بعد اكتشاف نوع الحدث من البيانات الخام
  */
 export class ZidWebhookJobDto {
+  /** نوع الحدث المكتشف (order.status.update, order.create, etc.) */
   eventType: string;
+
+  /** معرّف المتجر في زد */
   storeId: string;
+
+  /** بيانات الحدث الكاملة كما جاءت من زد */
   data: Record<string, unknown>;
+
+  /** وقت الحدث */
   triggeredAt: string;
+
+  /** معرّف التسليم من زد */
   deliveryId?: string;
+
+  /** مفتاح منع التكرار */
   idempotencyKey: string;
+
+  /** التوقيع */
   signature?: string;
+
+  /** عنوان IP */
   ipAddress?: string;
+
+  /** الهيدرز */
   headers?: Record<string, string>;
 }
