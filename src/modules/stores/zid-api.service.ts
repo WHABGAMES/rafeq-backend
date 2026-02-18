@@ -218,13 +218,10 @@ export class ZidApiService {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   /**
-   * 🛍️ Products — حسب وثائق زد الرسمية:
-   *   Endpoint: GET /v1/products/  (ليس /managers/store/products)
-   *   Header:   Access-Token (الـ managerToken)  — ليس Authorization + X-Manager-Token
-   *   Params:   page_size, page (ليس per_page)
-   *   Response: { count, results: [...] }  (ليس { data: [...], pagination })
+   * 🛍️ Products — نفس أسلوب Orders و Customers (dual tokens)
    *
-   * زد يقولون: "we use Access-Token with Product component API endpoints for technical reasons"
+   * ❌ /products/ + Access-Token → "No such user" (لا يعمل)
+   * ✅ /managers/store/products + Authorization + X-Manager-Token → يعمل (مثل الطلبات)
    */
   async getProducts(
     tokens: ZidAuthTokens,
@@ -233,27 +230,26 @@ export class ZidApiService {
     try {
       const queryParams = new URLSearchParams();
       if (params.page) queryParams.append('page', params.page.toString());
-      if (params.per_page) queryParams.append('page_size', params.per_page.toString());
+      if (params.per_page) queryParams.append('per_page', params.per_page.toString());
       if (params.status) queryParams.append('status', params.status);
 
       const response = await firstValueFrom(
         this.httpService.get(
-          `${this.ZID_API_URL}/products/?${queryParams.toString()}`,
-          { headers: this.getProductHeaders(tokens) },
+          `${this.ZID_API_URL}/managers/store/products?${queryParams.toString()}`,
+          { headers: this.getHeaders(tokens) },
         ),
       );
 
-      // ✅ تحويل response shape من products API إلى الشكل الموحد
       const raw = response.data;
-      const results = raw.results || raw.data || [];
-      const count = raw.count ?? results.length;
+      const results = raw.data || raw.results || [];
+      const pagination = raw.pagination;
 
-      this.logger.debug(`Fetched ${results.length} products from Zid (total: ${count})`);
+      this.logger.debug(`Fetched ${results.length} products from Zid`);
 
       return {
         data: results,
-        pagination: {
-          total: count,
+        pagination: pagination || {
+          total: results.length,
           current_page: params.page || 1,
           per_page: params.per_page || results.length,
         },
@@ -271,8 +267,8 @@ export class ZidApiService {
     try {
       const response = await firstValueFrom(
         this.httpService.get(
-          `${this.ZID_API_URL}/products/${productId}`,
-          { headers: this.getProductHeaders(tokens) },
+          `${this.ZID_API_URL}/managers/store/products/${productId}`,
+          { headers: this.getHeaders(tokens) },
         ),
       );
 
@@ -434,21 +430,4 @@ export class ZidApiService {
     }
   }
 
-  /**
-   * 🛍️ Headers خاصة بـ Products API
-   * حسب وثائق زد: "we use Access-Token with Product component API endpoints for technical reasons"
-   *
-   * Products endpoints تستخدم:
-   *   Access-Token: {managerToken}  (الـ encrypted blob)
-   * بدل:
-   *   Authorization + X-Manager-Token
-   */
-  private getProductHeaders(tokens: ZidAuthTokens): Record<string, string> {
-    return {
-      'Accept': 'application/json',
-      'Content-Type': 'application/json',
-      'Accept-Language': 'ar',
-      'Access-Token': tokens.managerToken,
-    };
-  }
 }
