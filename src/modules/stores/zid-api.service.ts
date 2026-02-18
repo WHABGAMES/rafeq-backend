@@ -4,6 +4,10 @@
  * ║                                                                                ║
  * ║  خدمة للتواصل مع API زد                                                         ║
  * ║  جلب الطلبات، العملاء، المنتجات، إلخ                                            ║
+ * ║                                                                                ║
+ * ║  ✅ FIX: زد API يحتاج headerين حسب الوثائق الرسمية:                             ║
+ * ║     Authorization: Bearer {authorizationToken}  ← JWT من token response         ║
+ * ║     X-Manager-Token: {managerToken}             ← access_token من token response║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -17,6 +21,16 @@ import { firstValueFrom } from 'rxjs';
  * 
  * Base URL: https://api.zid.sa/v1
  */
+
+/**
+ * ✅ توكنات زد — يُمررون لكل API call
+ * managerToken = access_token (encrypted blob) → X-Manager-Token header
+ * authorizationToken = authorization (JWT) → Authorization: Bearer header
+ */
+export interface ZidAuthTokens {
+  managerToken: string;
+  authorizationToken?: string;
+}
 
 export interface ZidApiResponse<T> {
   status: string;
@@ -103,11 +117,8 @@ export class ZidApiService {
   // 📦 Orders
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * جلب الطلبات
-   */
   async getOrders(
-    accessToken: string,
+    tokens: ZidAuthTokens,
     params: { page?: number; per_page?: number; status?: string } = {},
   ): Promise<ZidApiResponse<ZidOrder[]>> {
     try {
@@ -119,9 +130,7 @@ export class ZidApiService {
       const response = await firstValueFrom(
         this.httpService.get(
           `${this.ZID_API_URL}/managers/store/orders?${queryParams.toString()}`,
-          {
-            headers: this.getHeaders(accessToken),
-          },
+          { headers: this.getHeaders(tokens) },
         ),
       );
 
@@ -130,22 +139,18 @@ export class ZidApiService {
     } catch (error: any) {
       this.logger.error('Failed to fetch Zid orders', {
         error: error?.response?.data || error.message,
+        status: error?.response?.status,
       });
       throw error;
     }
   }
 
-  /**
-   * جلب طلب واحد
-   */
-  async getOrder(accessToken: string, orderId: number): Promise<ZidOrder> {
+  async getOrder(tokens: ZidAuthTokens, orderId: number): Promise<ZidOrder> {
     try {
       const response = await firstValueFrom(
         this.httpService.get(
           `${this.ZID_API_URL}/managers/store/orders/${orderId}`,
-          {
-            headers: this.getHeaders(accessToken),
-          },
+          { headers: this.getHeaders(tokens) },
         ),
       );
 
@@ -162,11 +167,8 @@ export class ZidApiService {
   // 👥 Customers
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * جلب العملاء
-   */
   async getCustomers(
-    accessToken: string,
+    tokens: ZidAuthTokens,
     params: { page?: number; per_page?: number; search?: string } = {},
   ): Promise<ZidApiResponse<ZidCustomer[]>> {
     try {
@@ -178,9 +180,7 @@ export class ZidApiService {
       const response = await firstValueFrom(
         this.httpService.get(
           `${this.ZID_API_URL}/managers/store/customers?${queryParams.toString()}`,
-          {
-            headers: this.getHeaders(accessToken),
-          },
+          { headers: this.getHeaders(tokens) },
         ),
       );
 
@@ -189,22 +189,18 @@ export class ZidApiService {
     } catch (error: any) {
       this.logger.error('Failed to fetch Zid customers', {
         error: error?.response?.data || error.message,
+        status: error?.response?.status,
       });
       throw error;
     }
   }
 
-  /**
-   * جلب عميل واحد
-   */
-  async getCustomer(accessToken: string, customerId: number): Promise<ZidCustomer> {
+  async getCustomer(tokens: ZidAuthTokens, customerId: number): Promise<ZidCustomer> {
     try {
       const response = await firstValueFrom(
         this.httpService.get(
           `${this.ZID_API_URL}/managers/store/customers/${customerId}`,
-          {
-            headers: this.getHeaders(accessToken),
-          },
+          { headers: this.getHeaders(tokens) },
         ),
       );
 
@@ -221,11 +217,8 @@ export class ZidApiService {
   // 🛍️ Products
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * جلب المنتجات
-   */
   async getProducts(
-    accessToken: string,
+    tokens: ZidAuthTokens,
     params: { page?: number; per_page?: number; status?: string } = {},
   ): Promise<ZidApiResponse<ZidProduct[]>> {
     try {
@@ -237,9 +230,7 @@ export class ZidApiService {
       const response = await firstValueFrom(
         this.httpService.get(
           `${this.ZID_API_URL}/managers/store/products?${queryParams.toString()}`,
-          {
-            headers: this.getHeaders(accessToken),
-          },
+          { headers: this.getHeaders(tokens) },
         ),
       );
 
@@ -248,22 +239,18 @@ export class ZidApiService {
     } catch (error: any) {
       this.logger.error('Failed to fetch Zid products', {
         error: error?.response?.data || error.message,
+        status: error?.response?.status,
       });
       throw error;
     }
   }
 
-  /**
-   * جلب منتج واحد
-   */
-  async getProduct(accessToken: string, productId: number): Promise<ZidProduct> {
+  async getProduct(tokens: ZidAuthTokens, productId: number): Promise<ZidProduct> {
     try {
       const response = await firstValueFrom(
         this.httpService.get(
           `${this.ZID_API_URL}/managers/store/products/${productId}`,
-          {
-            headers: this.getHeaders(accessToken),
-          },
+          { headers: this.getHeaders(tokens) },
         ),
       );
 
@@ -277,13 +264,10 @@ export class ZidApiService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // ✅ NEW: Store Info - للمزامنة
+  // ✅ Store Info - للمزامنة
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * جلب معلومات المتجر للمزامنة
-   */
-  async getStoreInfo(accessToken: string): Promise<{
+  async getStoreInfo(tokens: ZidAuthTokens): Promise<{
     id: string;
     uuid: string;
     name: string;
@@ -297,44 +281,65 @@ export class ZidApiService {
     try {
       const response = await firstValueFrom(
         this.httpService.get(
-          `${this.ZID_API_URL}/managers/store/info`,
-          {
-            headers: this.getHeaders(accessToken),
-          },
+          `${this.ZID_API_URL}/managers/account/profile`,
+          { headers: this.getHeaders(tokens) },
         ),
       );
 
-      const storeData = response.data.data || response.data;
+      const raw = response.data;
+      const user = raw?.user || raw?.data || raw;
+      const storeData = user?.store || user;
+
+      const rawCurrency = storeData.currency;
+      const rawLanguage = storeData.language;
 
       return {
-        id: storeData.id?.toString() || storeData.store_id?.toString(),
-        uuid: storeData.uuid || storeData.id?.toString(),
-        name: storeData.name || storeData.store_name,
-        email: storeData.email || '',
-        mobile: storeData.mobile || storeData.phone || '',
+        id: String(storeData.id || storeData.store_id || ''),
+        uuid: String(storeData.uuid || storeData.id || ''),
+        name: storeData.name || storeData.store_name || storeData.title || '',
+        email: storeData.email || user?.email || '',
+        mobile: storeData.mobile || storeData.phone || user?.mobile || '',
         url: storeData.url || storeData.domain || '',
-        logo: storeData.logo || storeData.image,
-        currency: storeData.currency || 'SAR',
-        language: storeData.language || 'ar',
+        logo: typeof storeData.logo === 'string' ? storeData.logo.substring(0, 490) : undefined,
+        currency: typeof rawCurrency === 'object' && rawCurrency !== null
+          ? (rawCurrency.code || 'SAR') : (rawCurrency || 'SAR'),
+        language: typeof rawLanguage === 'object' && rawLanguage !== null
+          ? (rawLanguage.code || 'ar') : (rawLanguage || 'ar'),
       };
     } catch (error: any) {
       this.logger.error('Failed to fetch Zid store info', {
         error: error?.response?.data || error.message,
+        status: error?.response?.status,
       });
       throw error;
     }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 🛠️ Helpers
+  // 🛠️ Helpers — حسب وثائق زد الرسمية
+  //
+  // Authorization: Bearer {authorizationToken}  ← JWT
+  // X-Manager-Token: {managerToken}             ← access_token (encrypted blob)
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  private getHeaders(accessToken: string) {
-    return {
-      Authorization: `Bearer ${accessToken}`,
-      Accept: 'application/json',
+  private getHeaders(tokens: ZidAuthTokens): Record<string, string> {
+    const headers: Record<string, string> = {
+      'Accept': 'application/json',
       'Content-Type': 'application/json',
       'Accept-Language': 'ar',
     };
+
+    if (tokens.authorizationToken) {
+      // ✅ الطريقة الرسمية: headerين
+      headers['Authorization'] = `Bearer ${tokens.authorizationToken}`;
+      headers['X-Manager-Token'] = tokens.managerToken;
+      headers['Role'] = 'Manager';
+    } else {
+      // Fallback: bearer فقط (ما يشتغل مع أغلب الـ endpoints)
+      headers['Authorization'] = `Bearer ${tokens.managerToken}`;
+      this.logger.warn('⚠️ Zid API call without authorizationToken — may fail');
+    }
+
+    return headers;
   }
 }
