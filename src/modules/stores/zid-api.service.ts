@@ -365,6 +365,75 @@ export class ZidApiService {
     return headers;
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔔 Webhooks — تسجيل webhooks في زد
+  //
+  // POST /v1/managers/webhooks
+  // Events: order.create, order.status.update, customer.create, etc.
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * تسجيل webhooks في زد عند تثبيت التطبيق
+   */
+  async registerWebhooks(
+    tokens: ZidAuthTokens,
+    targetUrl: string,
+    appId: string,
+  ): Promise<{ registered: string[]; failed: string[] }> {
+    const events = [
+      'order.create',
+      'order.status.update',
+    ];
+
+    const registered: string[] = [];
+    const failed: string[] = [];
+
+    for (const event of events) {
+      try {
+        await firstValueFrom(
+          this.httpService.post(
+            `${this.ZID_API_URL}/managers/webhooks`,
+            {
+              event,
+              target_url: targetUrl,
+              original_id: appId,
+              subscriber: appId,
+            },
+            { headers: this.getHeaders(tokens) },
+          ),
+        );
+        registered.push(event);
+        this.logger.log(`✅ Zid webhook registered: ${event} → ${targetUrl}`);
+      } catch (error: any) {
+        const msg = error?.response?.data?.message?.description || error.message;
+        failed.push(event);
+        this.logger.warn(`⚠️ Failed to register Zid webhook: ${event} — ${msg}`);
+      }
+    }
+
+    return { registered, failed };
+  }
+
+  /**
+   * قائمة webhooks المسجلة
+   */
+  async listWebhooks(tokens: ZidAuthTokens): Promise<any[]> {
+    try {
+      const response = await firstValueFrom(
+        this.httpService.get(
+          `${this.ZID_API_URL}/managers/webhooks`,
+          { headers: this.getHeaders(tokens) },
+        ),
+      );
+      return response.data?.data || [];
+    } catch (error: any) {
+      this.logger.error('Failed to list Zid webhooks', {
+        error: error?.response?.data || error.message,
+      });
+      return [];
+    }
+  }
+
   /**
    * 🛍️ Headers خاصة بـ Products API
    * حسب وثائق زد: "we use Access-Token with Product component API endpoints for technical reasons"
