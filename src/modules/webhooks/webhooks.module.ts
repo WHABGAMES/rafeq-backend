@@ -1,6 +1,7 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Webhooks Module                            ║
+ * ║  ✅ v5: إصلاح ترتيب Controllers — المسارات المحددة أولاً                       ║
  * ║  ✅ v4: إضافة زد webhooks (controller + service + processor + queue)          ║
  * ║  ✅ v3: إضافة Order + Customer repos لجلب رقم العميل                          ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
@@ -14,19 +15,19 @@ import { ConfigModule } from '@nestjs/config';
 // Controllers
 import { WebhooksController } from './webhooks.controller';
 import { SallaWebhooksController } from './salla-webhooks.controller';
-import { ZidWebhooksController } from './zid-webhooks.controller';            // ✅ v4: زد
+import { ZidWebhooksController } from './zid-webhooks.controller';
 
 // Services
 import { WebhooksService } from './webhooks.service';
 import { SallaWebhooksService } from './salla-webhooks.service';
-import { ZidWebhooksService } from './zid-webhooks.service';                  // ✅ v4: زد
+import { ZidWebhooksService } from './zid-webhooks.service';
 import { WebhookVerificationService } from './webhook-verification.service';
 import { TemplateDispatcherService } from './template-dispatcher.service';
 import { TemplateSchedulerService } from './template-scheduler.service';
 
 // Processors
 import { SallaWebhookProcessor } from './processors/salla-webhook.processor';
-import { ZidWebhookProcessor } from './processors/zid-webhook.processor';     // ✅ v4: زد
+import { ZidWebhookProcessor } from './processors/zid-webhook.processor';
 import { TemplateSchedulerProcessor } from './processors/template-scheduler.processor';
 
 // Entities
@@ -60,7 +61,6 @@ import { TemplatesModule } from '../templates/templates.module';
       },
     }),
 
-    // ✅ v4: Queue زد
     BullModule.registerQueue({
       name: 'zid-webhooks',
       defaultJobOptions: {
@@ -88,10 +88,22 @@ import { TemplatesModule } from '../templates/templates.module';
     TemplatesModule,
   ],
 
+  /**
+   * ⚠️ ترتيب الـ Controllers مهم جداً في NestJS!
+   *
+   * المسارات المحددة (webhooks/salla, webhooks/zid) يجب أن تُسجّل قبل
+   * المسار المعمّم (webhooks/:id) وإلا WebhooksController يلتقط الطلبات
+   * الموجهة لسلة وزد بسبب @Get(':id') → JwtAuthGuard → 401
+   *
+   * الترتيب الصحيح:
+   *   1. SallaWebhooksController → @Controller('webhooks/salla')  [مسار ثابت]
+   *   2. ZidWebhooksController   → @Controller('webhooks/zid')    [مسار ثابت]
+   *   3. WebhooksController      → @Controller('webhooks')        [مسار معمّم :id]
+   */
   controllers: [
-    WebhooksController,
-    SallaWebhooksController,
-    ZidWebhooksController,
+    SallaWebhooksController,   // ← webhooks/salla (ثابت - أولاً)
+    ZidWebhooksController,     // ← webhooks/zid   (ثابت - ثانياً)
+    WebhooksController,        // ← webhooks/:id   (معمّم - أخيراً)
   ],
 
   providers: [
