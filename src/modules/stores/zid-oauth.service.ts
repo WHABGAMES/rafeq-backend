@@ -517,16 +517,61 @@ export class ZidOAuthService {
           // إذا البيانات فيها store متداخل
           const storeData = data?.store || data;
 
+          // ✅ زد يرجع currency و language كـ objects مو strings
+          // currency: {"id":4,"name":"ريال سعودي","code":"SAR","symbol":"ر.س",...}
+          // language: {"id":2,"name":"عربي","code":"ar","direction":"rtl"}
+          const rawCurrency = storeData.currency;
+          const rawLanguage = storeData.language;
+          const rawLogo = storeData.logo;
+
+          const currencyStr = typeof rawCurrency === 'object' && rawCurrency !== null
+            ? (rawCurrency.code || 'SAR')
+            : (rawCurrency || 'SAR');
+
+          const languageStr = typeof rawLanguage === 'object' && rawLanguage !== null
+            ? (rawLanguage.code || 'ar')
+            : (rawLanguage || 'ar');
+
+          // logo قد يكون string أو object
+          const logoStr = typeof rawLogo === 'object' && rawLogo !== null
+            ? (rawLogo.url || rawLogo.original || rawLogo.src || JSON.stringify(rawLogo))
+            : (rawLogo || undefined);
+
+          // email قد يكون null في store → نجرب من user level
+          const emailStr = storeData.email
+            || storeData.username
+            || raw?.user?.email
+            || raw?.user?.username
+            || data?.email
+            || '';
+
+          const mobileStr = storeData.mobile
+            || storeData.phone
+            || raw?.user?.mobile
+            || raw?.user?.phone
+            || data?.mobile
+            || '';
+
+          this.logger.log('📋 [V2] Final mapped values:', {
+            id: storeData.id,
+            name: storeData.name || storeData.title,
+            email: emailStr,
+            mobile: mobileStr,
+            currency: currencyStr,
+            language: languageStr,
+            logo: logoStr ? 'present' : 'none',
+          });
+
           return {
             id: String(storeData.id || storeData.store_id || storeData.uuid || ''),
             uuid: String(storeData.uuid || storeData.id || ''),
             name: storeData.name || storeData.store_name || storeData.title || '',
-            email: storeData.email || storeData.manager_email || data?.email || '',
-            mobile: storeData.mobile || storeData.phone || data?.mobile || '',
+            email: emailStr,
+            mobile: mobileStr,
             url: storeData.url || storeData.domain || '',
-            logo: storeData.logo || storeData.image || undefined,
-            currency: storeData.currency || 'SAR',
-            language: storeData.language || 'ar',
+            logo: logoStr,
+            currency: currencyStr,
+            language: languageStr,
             created_at: storeData.created_at || new Date().toISOString(),
           };
 
