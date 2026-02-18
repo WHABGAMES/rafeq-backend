@@ -211,6 +211,34 @@ export class TemplateDispatcherService {
     const storeId = payload.storeId as string | undefined;
     const raw = (payload.raw || payload) as Record<string, unknown>;
 
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // 🔍 DIAGNOSTIC: تشخيص شامل — يطبع كل المتطلبات بسطر واحد
+    // ═══════════════════════════════════════════════════════════════════════════════
+    {
+      const diag: Record<string, unknown> = { trigger: triggerEvent, tenantId: tenantId || '❌ MISSING', storeId: storeId || '❌ MISSING' };
+      
+      if (tenantId) {
+        // فحص القوالب
+        const tplCount = await this.templateRepository.count({
+          where: [
+            { tenantId, triggerEvent, status: 'approved' },
+            { tenantId, triggerEvent, status: 'active' },
+          ],
+        });
+        diag.templates = tplCount > 0 ? `✅ ${tplCount}` : '❌ 0 — لا يوجد قالب مفعّل لهذا الحدث';
+
+        // فحص القناة
+        const ch = await this.findActiveWhatsAppChannel(storeId, tenantId);
+        diag.whatsapp = ch ? `✅ ${ch.id}` : '❌ لا يوجد قناة واتساب متصلة';
+
+        // فحص الهاتف
+        const phone = this.extractCustomerPhone(raw);
+        diag.phone = phone ? `✅ ${phone}` : '❌ لا يوجد رقم في البيانات';
+      }
+
+      this.logger.warn(`🔍 DISPATCH DIAGNOSTIC: ${JSON.stringify(diag)}`);
+    }
+
     if (!tenantId) {
       this.logger.warn(`⚠️ No tenantId for event ${triggerEvent} - skipping`);
       return;
