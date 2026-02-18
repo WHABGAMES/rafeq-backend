@@ -2,9 +2,15 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                RAFIQ PLATFORM - Zid Webhooks Controller                        ║
  * ║                                                                                ║
- * ║  ✅ v1: Production-ready                                                       ║
+ * ║  ✅ v2: Fix 400 — bypass global ValidationPipe                                 ║
  * ║  🔐 HMAC-SHA256 signature verification                                        ║
  * ║  🔒 Rejects invalid signatures in production                                  ║
+ * ║                                                                                ║
+ * ║  ⚠️  لماذا لا نستخدم DTO class مع @Body()؟                                    ║
+ * ║  لأن main.ts فيها global ValidationPipe مع forbidNonWhitelisted: true          ║
+ * ║  وزد يرسل حقول كثيرة (conditions, subscriber, message, etc.)                  ║
+ * ║  الـ global pipe يعمل قبل @UsePipes ولا يمكن تجاوزه                            ║
+ * ║  الحل: نستقبل body كـ Record<string, any> ونتحقق يدوياً                       ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -20,8 +26,7 @@ import {
   RawBodyRequest,
   Req,
   ForbiddenException,
-  UsePipes,
-  ValidationPipe,
+  BadRequestException,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiHeader } from '@nestjs/swagger';
 import { Request } from 'express';
@@ -29,7 +34,7 @@ import * as crypto from 'crypto';
 import { ConfigService } from '@nestjs/config';
 
 import { ZidWebhooksService } from './zid-webhooks.service';
-import { ZidWebhookDto, ZidWebhookJobDto } from './dto/zid-webhook.dto';
+import { ZidWebhookJobDto } from './dto/zid-webhook.dto';
 
 @ApiTags('Webhooks - Zid')
 @Controller('webhooks/zid')
@@ -59,8 +64,6 @@ export class ZidWebhooksController {
   /**
    * 🔔 التحقق من نقطة الـ Webhook (GET)
    * زد يرسل GET ping عند تسجيل webhook جديد للتحقق من أن الرابط يعمل
-   * بدون هذا الـ handler، الطلب يُلتقط من WebhooksController@Get(':id')
-   * اللي عليه JwtAuthGuard → يرجع 401 → زد يعتبر الرابط معطل
    */
   @Get()
   @HttpCode(HttpStatus.OK)
@@ -76,28 +79,51 @@ export class ZidWebhooksController {
 
   /**
    * 🔔 استقبال Webhooks من زد
+   *
+   * ⚠️ نستخدم Record<string, any> بدل ZidWebhookDto عشان:
+   *    - Global ValidationPipe (forbidNonWhitelisted: true) يرفض الحقول الزائدة
+   *    - @UsePipes لا يتجاوز الـ global pipe (يعملون بالتسلسل)
+   *    - زد يرسل حقول كثيرة غير معروفة مسبقاً
+   *    - نتحقق يدوياً من الحقول المطلوبة فقط (event, store_id)
    */
   @Post()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Receive Zid webhooks' })
   @ApiHeader({ name: 'x-zid-signature', description: 'HMAC signature' })
-  @UsePipes(new ValidationPipe({
-    transform: true,
-    whitelist: false,           // ← لا نحذف الحقول الزائدة
-    forbidNonWhitelisted: false, // ← لا نرفض الحقول الزائدة (زد يرسل حقول كثيرة)
-    transformOptions: { enableImplicitConversion: true },
-  }))
   async handleWebhook(
     @Req() req: RawBodyRequest<Request>,
-    @Body() payload: ZidWebhookDto,
+    @Body() body: Record<string, any>,
     @Headers('x-zid-signature') signature?: string,
     @Headers('x-zid-delivery-id') deliveryId?: string,
   ): Promise<{ success: boolean; message: string; jobId?: string }> {
     const startTime = Date.now();
 
-    this.logger.log(`📥 Zid webhook received: ${payload.event}`, {
-      storeId: payload.store_id,
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 📥 استخراج الحقول الأساسية من الـ body
+    // ═══════════════════════════════════════════════════════════════════════════
+    const event = body?.event;
+    const storeId = body?.store_id != null ? String(body.store_id) : undefined;
+
+    // ✅ التحقق اليدوي من الحقول المطلوبة
+    if (!event || typeof event !== 'string') {
+      this.logger.warn('❌ Zid webhook rejected: missing or invalid "event" field', {
+        bodyKeys: Object.keys(body || {}),
+        event,
+      });
+      throw new BadRequestException('Missing required field: event');
+    }
+
+    if (!storeId) {
+      this.logger.warn('❌ Zid webhook rejected: missing "store_id" field', {
+        bodyKeys: Object.keys(body || {}),
+      });
+      throw new BadRequestException('Missing required field: store_id');
+    }
+
+    this.logger.log(`📥 Zid webhook received: ${event}`, {
+      storeId,
       deliveryId,
+      bodyKeys: Object.keys(body),
     });
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -108,32 +134,33 @@ export class ZidWebhooksController {
 
       if (!signatureValid) {
         if (this.isProduction) {
-          this.logger.error(`🚨 REJECTED: Invalid Zid signature for ${payload.event}`);
+          this.logger.error(`🚨 REJECTED: Invalid Zid signature for ${event}`);
           throw new ForbiddenException('Invalid webhook signature');
         } else {
-          this.logger.warn(`⚠️ [DEV] Invalid Zid signature for ${payload.event} — continuing`);
+          this.logger.warn(`⚠️ [DEV] Invalid Zid signature for ${event} — continuing`);
         }
       }
     }
 
     // التحقق من التكرار
-    const idempotencyKey = this.generateIdempotencyKey(payload);
+    const triggeredAt = body.triggered_at || '';
+    const idempotencyKey = this.generateIdempotencyKey(event, storeId, triggeredAt, body);
     const isDuplicate = await this.webhooksService.checkDuplicate(idempotencyKey);
 
     if (isDuplicate) {
-      this.logger.log(`⏭️ Duplicate Zid webhook skipped: ${payload.event}`);
+      this.logger.log(`⏭️ Duplicate Zid webhook skipped: ${event}`);
       return { success: true, message: 'Duplicate webhook - already processed' };
     }
 
     // زد يرسل البيانات في payload أو data
-    const eventData = payload.payload || payload.data || {};
+    const eventData = body.payload || body.data || {};
 
     // إضافة للـ Queue
     const jobData: ZidWebhookJobDto = {
-      eventType: payload.event,
-      storeId: payload.store_id,
+      eventType: event,
+      storeId,
       data: eventData,
-      triggeredAt: payload.triggered_at || new Date().toISOString(),
+      triggeredAt: triggeredAt || new Date().toISOString(),
       deliveryId: deliveryId || `zid_delivery_${Date.now()}`,
       idempotencyKey,
       signature,
@@ -143,7 +170,7 @@ export class ZidWebhooksController {
 
     const jobId = await this.webhooksService.queueWebhook(jobData);
 
-    this.logger.log(`✅ Zid webhook queued: ${payload.event}`, {
+    this.logger.log(`✅ Zid webhook queued: ${event}`, {
       jobId,
       duration: `${Date.now() - startTime}ms`,
     });
@@ -187,8 +214,13 @@ export class ZidWebhooksController {
     }
   }
 
-  private generateIdempotencyKey(payload: ZidWebhookDto): string {
-    const data = `zid_${payload.event}_${payload.store_id}_${payload.triggered_at || ''}_${JSON.stringify(payload.payload || payload.data || {}).slice(0, 100)}`;
+  private generateIdempotencyKey(
+    event: string,
+    storeId: string,
+    triggeredAt: string,
+    body: Record<string, any>,
+  ): string {
+    const data = `zid_${event}_${storeId}_${triggeredAt}_${JSON.stringify(body.payload || body.data || {}).slice(0, 100)}`;
     return crypto.createHash('sha256').update(data).digest('hex');
   }
 
