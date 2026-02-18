@@ -180,7 +180,7 @@ export class ApiConnectController {
     // ✅ التحقق بإرسال طلب لـ Zid API
     let storeInfo: any;
     try {
-      storeInfo = await this.zidApiService.getStoreInfo(dto.apiKey);
+      storeInfo = await this.zidApiService.getStoreInfo({ managerToken: dto.apiKey });
     } catch (error: any) {
       this.logger.warn(`Invalid Zid API key`, {
         tenantId,
