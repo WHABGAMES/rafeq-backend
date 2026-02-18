@@ -2,15 +2,10 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                RAFIQ PLATFORM - Zid Webhooks Controller                        ║
  * ║                                                                                ║
- * ║  ✅ v2: Fix 400 — bypass global ValidationPipe                                 ║
+ * ║  ✅ v3: إعادة كتابة كاملة بناءً على payload زد الحقيقي                        ║
+ * ║  زد لا يرسل "event" — يرسل بيانات الطلب/العميل مباشرة                         ║
+ * ║  الـ Controller يكتشف نوع الحدث من بنية البيانات                               ║
  * ║  🔐 HMAC-SHA256 signature verification                                        ║
- * ║  🔒 Rejects invalid signatures in production                                  ║
- * ║                                                                                ║
- * ║  ⚠️  لماذا لا نستخدم DTO class مع @Body()؟                                    ║
- * ║  لأن main.ts فيها global ValidationPipe مع forbidNonWhitelisted: true          ║
- * ║  وزد يرسل حقول كثيرة (conditions, subscriber, message, etc.)                  ║
- * ║  الـ global pipe يعمل قبل @UsePipes ولا يمكن تجاوزه                            ║
- * ║  الحل: نستقبل body كـ Record<string, any> ونتحقق يدوياً                       ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -26,7 +21,6 @@ import {
   RawBodyRequest,
   Req,
   ForbiddenException,
-  BadRequestException,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiHeader } from '@nestjs/swagger';
 import { Request } from 'express';
@@ -80,16 +74,30 @@ export class ZidWebhooksController {
   /**
    * 🔔 استقبال Webhooks من زد
    *
-   * ⚠️ نستخدم Record<string, any> بدل ZidWebhookDto عشان:
-   *    - Global ValidationPipe (forbidNonWhitelisted: true) يرفض الحقول الزائدة
-   *    - @UsePipes لا يتجاوز الـ global pipe (يعملون بالتسلسل)
-   *    - زد يرسل حقول كثيرة غير معروفة مسبقاً
-   *    - نتحقق يدوياً من الحقول المطلوبة فقط (event, store_id)
+   * ⚠️ زد لا يرسل حقل "event" في الـ body
+   * يرسل بيانات الكيان مباشرة (طلب/عميل/منتج)
+   * نكتشف نوع الحدث من بنية البيانات
+   *
+   * مثال payload حقيقي من زد عند تغيير حالة طلب:
+   * {
+   *   "id": 65179524,
+   *   "store_id": 3078847,
+   *   "order_status": "جاهز",
+   *   "display_status": {...},
+   *   "customer": { "id": 123, "name": "أحمد", "mobile": "0500..." },
+   *   "products": [...],
+   *   "order_total": {...},
+   *   ...
+   * }
+   *
+   * 🔑 نستخدم Record<string, any> بدل DTO class
+   * لأن NestJS Global ValidationPipe يتخطى Object types
+   * وبالتالي لا يرفض الحقول الزائدة من زد
    */
   @Post()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Receive Zid webhooks' })
-  @ApiHeader({ name: 'x-zid-signature', description: 'HMAC signature' })
+  @ApiHeader({ name: 'x-zid-signature', description: 'HMAC signature', required: false })
   async handleWebhook(
     @Req() req: RawBodyRequest<Request>,
     @Body() body: Record<string, any>,
@@ -99,32 +107,28 @@ export class ZidWebhooksController {
     const startTime = Date.now();
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // 📥 استخراج الحقول الأساسية من الـ body
+    // 📌 استخراج البيانات الأساسية من payload زد الخام
     // ═══════════════════════════════════════════════════════════════════════════
-    const event = body?.event;
-    const storeId = body?.store_id != null ? String(body.store_id) : undefined;
+    const storeId = body.store_id != null ? String(body.store_id) : undefined;
+    const detectedEvent = this.detectEventType(body);
 
-    // ✅ التحقق اليدوي من الحقول المطلوبة
-    if (!event || typeof event !== 'string') {
-      this.logger.warn('❌ Zid webhook rejected: missing or invalid "event" field', {
-        bodyKeys: Object.keys(body || {}),
-        event,
-      });
-      throw new BadRequestException('Missing required field: event');
-    }
-
-    if (!storeId) {
-      this.logger.warn('❌ Zid webhook rejected: missing "store_id" field', {
-        bodyKeys: Object.keys(body || {}),
-      });
-      throw new BadRequestException('Missing required field: store_id');
-    }
-
-    this.logger.log(`📥 Zid webhook received: ${event}`, {
+    this.logger.log(`📥 Zid webhook received → detected: ${detectedEvent}`, {
       storeId,
+      orderId: body.id,
+      orderStatus: body.order_status,
       deliveryId,
-      bodyKeys: Object.keys(body),
+      bodyKeys: Object.keys(body).slice(0, 10),
     });
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ✅ التحقق: على الأقل لازم يكون فيه store_id
+    // ═══════════════════════════════════════════════════════════════════════════
+    if (!storeId) {
+      this.logger.warn('❌ Zid webhook rejected: missing store_id', {
+        bodyKeys: Object.keys(body),
+      });
+      return { success: false, message: 'Missing store_id' };
+    }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // 🔐 التحقق من التوقيع
@@ -134,34 +138,34 @@ export class ZidWebhooksController {
 
       if (!signatureValid) {
         if (this.isProduction) {
-          this.logger.error(`🚨 REJECTED: Invalid Zid signature for ${event}`);
+          this.logger.error(`🚨 REJECTED: Invalid Zid signature for ${detectedEvent}`);
           throw new ForbiddenException('Invalid webhook signature');
         } else {
-          this.logger.warn(`⚠️ [DEV] Invalid Zid signature for ${event} — continuing`);
+          this.logger.warn(`⚠️ [DEV] Invalid Zid signature for ${detectedEvent} — continuing`);
         }
       }
     }
 
-    // التحقق من التكرار
-    const triggeredAt = body.triggered_at || '';
-    const idempotencyKey = this.generateIdempotencyKey(event, storeId, triggeredAt, body);
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 🔁 التحقق من التكرار
+    // ═══════════════════════════════════════════════════════════════════════════
+    const idempotencyKey = this.generateIdempotencyKey(body, detectedEvent);
     const isDuplicate = await this.webhooksService.checkDuplicate(idempotencyKey);
 
     if (isDuplicate) {
-      this.logger.log(`⏭️ Duplicate Zid webhook skipped: ${event}`);
+      this.logger.log(`⏭️ Duplicate Zid webhook skipped: ${detectedEvent}`);
       return { success: true, message: 'Duplicate webhook - already processed' };
     }
 
-    // زد يرسل البيانات في payload أو data
-    const eventData = body.payload || body.data || {};
-
-    // إضافة للـ Queue
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 📤 إضافة للـ Queue — نرسل الـ body الكامل كـ data
+    // ═══════════════════════════════════════════════════════════════════════════
     const jobData: ZidWebhookJobDto = {
-      eventType: event,
+      eventType: detectedEvent,
       storeId,
-      data: eventData,
-      triggeredAt: triggeredAt || new Date().toISOString(),
-      deliveryId: deliveryId || `zid_delivery_${Date.now()}`,
+      data: body,  // ✅ كل بيانات الطلب/العميل كما جاءت من زد
+      triggeredAt: (body.updated_at as string) || (body.created_at as string) || new Date().toISOString(),
+      deliveryId: deliveryId || `zid_${Date.now()}_${body.id || 'unknown'}`,
       idempotencyKey,
       signature,
       headers: this.extractHeaders(req),
@@ -170,12 +174,58 @@ export class ZidWebhooksController {
 
     const jobId = await this.webhooksService.queueWebhook(jobData);
 
-    this.logger.log(`✅ Zid webhook queued: ${event}`, {
+    this.logger.log(`✅ Zid webhook queued: ${detectedEvent}`, {
       jobId,
+      orderId: body.id,
+      orderStatus: body.order_status,
       duration: `${Date.now() - startTime}ms`,
     });
 
     return { success: true, message: 'Webhook received', jobId };
+  }
+
+  /**
+   * 🔍 اكتشاف نوع الحدث من بنية البيانات
+   *
+   * زد لا يرسل "event" — نكتشفه من الحقول الموجودة:
+   * - order_status موجود → حدث طلب
+   * - customer بدون order_status → حدث عميل
+   * - products بدون order_status → حدث منتج
+   */
+  private detectEventType(body: Record<string, any>): string {
+    // ── طلب (Order) ──
+    // إذا فيه order_status أو invoice_number أو order_total → هذا طلب
+    if (body.order_status !== undefined || body.invoice_number !== undefined || body.order_total !== undefined) {
+      // نحاول نعرف إذا طلب جديد أو تحديث حالة
+      // إذا فيه histories (سجل تغييرات) بأكثر من عنصر → تحديث
+      const histories = body.histories;
+      if (Array.isArray(histories) && histories.length > 1) {
+        return 'order.status.update';
+      }
+      // إذا الحالة "new" أو "pending" أو "جديد" → طلب جديد
+      const status = typeof body.order_status === 'string' ? body.order_status.toLowerCase() : '';
+      if (status === 'new' || status === 'pending' || status === 'جديد') {
+        return 'order.create';
+      }
+      // Default: تحديث حالة (الأغلب)
+      return 'order.status.update';
+    }
+
+    // ── عميل (Customer) ──
+    if (body.mobile !== undefined && body.email !== undefined && !body.order_status) {
+      return body.created_at === body.updated_at ? 'customer.create' : 'customer.update';
+    }
+
+    // ── منتج (Product) ──
+    if (body.sku !== undefined || (body.name !== undefined && body.price !== undefined && !body.order_status)) {
+      return 'product.update';
+    }
+
+    // ── Default ──
+    this.logger.warn('⚠️ Could not detect Zid event type from payload', {
+      keys: Object.keys(body).slice(0, 15),
+    });
+    return 'unknown';
   }
 
   /**
@@ -214,13 +264,12 @@ export class ZidWebhooksController {
     }
   }
 
-  private generateIdempotencyKey(
-    event: string,
-    storeId: string,
-    triggeredAt: string,
-    body: Record<string, any>,
-  ): string {
-    const data = `zid_${event}_${storeId}_${triggeredAt}_${JSON.stringify(body.payload || body.data || {}).slice(0, 100)}`;
+  private generateIdempotencyKey(body: Record<string, any>, eventType: string): string {
+    const orderId = body.id || '';
+    const status = body.order_status || '';
+    const storeId = body.store_id || '';
+    const updatedAt = body.updated_at || '';
+    const data = `zid_${eventType}_${storeId}_${orderId}_${status}_${updatedAt}`;
     return crypto.createHash('sha256').update(data).digest('hex');
   }
 
