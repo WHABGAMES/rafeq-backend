@@ -218,10 +218,13 @@ export class ZidApiService {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   /**
-   * 🛍️ Products — نفس أسلوب Orders و Customers (dual tokens)
+   * 🛍️ Products — حسب وثائق زد الرسمية:
+   *   Endpoint: GET /v1/products/  (ليس /managers/store/products)
+   *   Header:   Access-Token (الـ managerToken)  — ليس Authorization + X-Manager-Token
+   *   Params:   page_size, page (ليس per_page)
+   *   Response: { count, results: [...] }  (ليس { data: [...], pagination })
    *
-   * ❌ /products/ + Access-Token → "No such user" (لا يعمل)
-   * ✅ /managers/store/products + Authorization + X-Manager-Token → يعمل (مثل الطلبات)
+   * زد يقولون: "we use Access-Token with Product component API endpoints for technical reasons"
    */
   async getProducts(
     tokens: ZidAuthTokens,
@@ -230,26 +233,27 @@ export class ZidApiService {
     try {
       const queryParams = new URLSearchParams();
       if (params.page) queryParams.append('page', params.page.toString());
-      if (params.per_page) queryParams.append('per_page', params.per_page.toString());
+      if (params.per_page) queryParams.append('page_size', params.per_page.toString());
       if (params.status) queryParams.append('status', params.status);
 
       const response = await firstValueFrom(
         this.httpService.get(
-          `${this.ZID_API_URL}/managers/store/products?${queryParams.toString()}`,
-          { headers: this.getHeaders(tokens) },
+          `${this.ZID_API_URL}/products/?${queryParams.toString()}`,
+          { headers: this.getProductHeaders(tokens) },
         ),
       );
 
+      // ✅ تحويل response shape من products API إلى الشكل الموحد
       const raw = response.data;
-      const results = raw.data || raw.results || [];
-      const pagination = raw.pagination;
+      const results = raw.results || raw.data || [];
+      const count = raw.count ?? results.length;
 
-      this.logger.debug(`Fetched ${results.length} products from Zid`);
+      this.logger.debug(`Fetched ${results.length} products from Zid (total: ${count})`);
 
       return {
         data: results,
-        pagination: pagination || {
-          total: results.length,
+        pagination: {
+          total: count,
           current_page: params.page || 1,
           per_page: params.per_page || results.length,
         },
@@ -267,8 +271,8 @@ export class ZidApiService {
     try {
       const response = await firstValueFrom(
         this.httpService.get(
-          `${this.ZID_API_URL}/managers/store/products/${productId}`,
-          { headers: this.getHeaders(tokens) },
+          `${this.ZID_API_URL}/products/${productId}`,
+          { headers: this.getProductHeaders(tokens) },
         ),
       );
 
@@ -369,7 +373,15 @@ export class ZidApiService {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   /**
-   * تسجيل webhooks في زد عند تثبيت التطبيق
+   * ✅ v3: تسجيل webhooks في زد — حذف أولاً ثم إعادة تسجيل
+   *
+   * ⚠️ مشكلة مكتشفة: زد يعطّل الـ webhook بصمت (active=false, status=error/inactive)
+   * إذا الـ endpoint رجع أخطاء متكررة (مثل 400).
+   * زد ما عنده Update/Patch API — الحل الوحيد: حذف + إعادة إنشاء.
+   *
+   * الخطوات:
+   * 1. حذف كل webhooks المسجلة بنفس الـ subscriber (تنظيف كامل)
+   * 2. تسجيل webhooks جديدة (fresh = active=true)
    */
   async registerWebhooks(
     tokens: ZidAuthTokens,
@@ -384,9 +396,41 @@ export class ZidApiService {
     const registered: string[] = [];
     const failed: string[] = [];
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // الخطوة 1: حذف كل webhooks القديمة المرتبطة بالتطبيق
+    // هذا يحل مشكلة الـ webhooks المعطّلة (inactive/error)
+    // ═══════════════════════════════════════════════════════════════════════════
+    try {
+      this.logger.log(`🧹 Cleaning up old Zid webhooks for subscriber: ${appId}`);
+      await firstValueFrom(
+        this.httpService.delete(
+          `${this.ZID_API_URL}/managers/webhooks/subscribers/${appId}`,
+          { headers: this.getHeaders(tokens) },
+        ),
+      );
+      this.logger.log(`✅ Old Zid webhooks deleted for subscriber: ${appId}`);
+    } catch (deleteError: any) {
+      const status = deleteError?.response?.status;
+      // 404 = ما فيه webhooks قديمة — عادي
+      if (status === 404) {
+        this.logger.log(`📋 No existing Zid webhooks to clean up (404)`);
+      } else {
+        this.logger.warn(`⚠️ Failed to delete old Zid webhooks (non-fatal)`, {
+          status,
+          error: deleteError?.response?.data?.message || deleteError.message,
+        });
+      }
+    }
+
+    // تأخير قصير بعد الحذف لضمان الاتساق في نظام زد
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // الخطوة 2: تسجيل webhooks جديدة (fresh = active=true)
+    // ═══════════════════════════════════════════════════════════════════════════
     for (const event of events) {
       try {
-        await firstValueFrom(
+        const response = await firstValueFrom(
           this.httpService.post(
             `${this.ZID_API_URL}/managers/webhooks`,
             {
@@ -398,12 +442,33 @@ export class ZidApiService {
             { headers: this.getHeaders(tokens) },
           ),
         );
+
+        const webhookData = response.data?.data || response.data;
+        const isActive = webhookData?.active;
+        const webhookStatus = webhookData?.status;
+
         registered.push(event);
-        this.logger.log(`✅ Zid webhook registered: ${event} → ${targetUrl}`);
+        this.logger.log(`✅ Zid webhook registered: ${event} → ${targetUrl}`, {
+          active: isActive,
+          status: typeof webhookStatus === 'object' ? JSON.stringify(webhookStatus) : webhookStatus,
+          webhookId: webhookData?.id,
+        });
+
+        // ⚠️ تحذير إذا الـ webhook مسجّل لكن مو active
+        if (isActive === false) {
+          this.logger.error(`🚨 Zid webhook registered but NOT ACTIVE: ${event} — may need manual intervention`);
+        }
       } catch (error: any) {
-        const msg = error?.response?.data?.message?.description || error.message;
+        const msg = error?.response?.data?.message?.description
+          || error?.response?.data?.message
+          || error.message;
+        const status = error?.response?.status;
         failed.push(event);
-        this.logger.warn(`⚠️ Failed to register Zid webhook: ${event} — ${msg}`);
+        this.logger.warn(`⚠️ Failed to register Zid webhook: ${event}`, {
+          status,
+          error: msg,
+          responseData: JSON.stringify(error?.response?.data || {}).slice(0, 200),
+        });
       }
     }
 
@@ -411,7 +476,7 @@ export class ZidApiService {
   }
 
   /**
-   * قائمة webhooks المسجلة
+   * قائمة webhooks المسجلة — مع تشخيص حالة كل webhook
    */
   async listWebhooks(tokens: ZidAuthTokens): Promise<any[]> {
     try {
@@ -421,7 +486,19 @@ export class ZidApiService {
           { headers: this.getHeaders(tokens) },
         ),
       );
-      return response.data?.data || [];
+      const webhooks = response.data?.data || [];
+
+      // تشخيص: طباعة حالة كل webhook
+      for (const wh of webhooks) {
+        const statusStr = typeof wh.status === 'object' ? JSON.stringify(wh.status) : wh.status;
+        if (wh.active === false) {
+          this.logger.error(`🚨 INACTIVE webhook: ${wh.event} → ${wh.target_url} (active=${wh.active}, status=${statusStr})`);
+        } else {
+          this.logger.log(`✅ Active webhook: ${wh.event} → ${wh.target_url} (active=${wh.active}, status=${statusStr})`);
+        }
+      }
+
+      return webhooks;
     } catch (error: any) {
       this.logger.error('Failed to list Zid webhooks', {
         error: error?.response?.data || error.message,
@@ -430,4 +507,21 @@ export class ZidApiService {
     }
   }
 
+  /**
+   * 🛍️ Headers خاصة بـ Products API
+   * حسب وثائق زد: "we use Access-Token with Product component API endpoints for technical reasons"
+   *
+   * Products endpoints تستخدم:
+   *   Access-Token: {managerToken}  (الـ encrypted blob)
+   * بدل:
+   *   Authorization + X-Manager-Token
+   */
+  private getProductHeaders(tokens: ZidAuthTokens): Record<string, string> {
+    return {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+      'Accept-Language': 'ar',
+      'Access-Token': tokens.managerToken,
+    };
+  }
 }
