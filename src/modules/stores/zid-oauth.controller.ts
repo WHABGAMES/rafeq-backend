@@ -4,11 +4,16 @@
  * ║                                                                                ║
  * ║  Endpoints:                                                                    ║
  * ║  POST /api/stores/zid/connect  → بدء OAuth مع زد (يرجع { redirectUrl })       ║
- * ║  GET  /api/stores/zid/callback → Callback من زد                               ║
+ * ║  GET  /api/stores/zid/callback → Callback من زد (browser redirect)            ║
+ * ║  POST /api/stores/zid/callback → Callback من زد (server-to-server)            ║
  * ║                                                                                ║
- * ║  🔀 الـ callback يتعامل مع حالتين:                                             ║
+ * ║  🔀 الـ callback يتعامل مع 3 حالات:                                            ║
+ * ║     0. بدون params → 200 OK (validation ping من زد)                           ║
  * ║     1. من الداشبورد (فيه state + tenantId) → ربط متجر لحساب موجود             ║
  * ║     2. من متجر زد (بدون state) → إنشاء حساب + إرسال بيانات دخول              ║
+ * ║                                                                                ║
+ * ║  ✅ FIX: زد يفحص الـ callback URL قبل OAuth                                    ║
+ * ║     يرسل GET بدون params → يتوقع 200 OK (كان يجيه 302 → يلغي)                ║
  * ║                                                                                ║
  * ║  📁 src/modules/stores/zid-oauth.controller.ts                                ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
@@ -20,6 +25,7 @@ import {
   Post,
   Body,
   Query,
+  Req,
   Res,
   Logger,
   BadRequestException,
@@ -27,7 +33,7 @@ import {
   Request,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
-import { Response } from 'express';
+import { Response, Request as ExpressRequest } from 'express';
 import { ConfigService } from '@nestjs/config';
 
 // Services
@@ -58,10 +64,10 @@ export class ZidOAuthController {
     private readonly configService: ConfigService,
   ) {}
 
-  /**
-   * POST /stores/zid/connect
-   * بدء عملية OAuth مع زد — من الداشبورد
-   */
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // POST /stores/zid/connect — بدء OAuth من الداشبورد
+  // ═══════════════════════════════════════════════════════════════════════════════
+
   @Post('connect')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth('JWT-auth')
@@ -87,26 +93,98 @@ export class ZidOAuthController {
     }
   }
 
-  /**
-   * GET /stores/zid/callback
-   * Callback من زد بعد موافقة المستخدم
-   *
-   * 🔀 حالتين:
-   *   1. فيه state صالح (من الداشبورد) → ربط متجر لحساب موجود
-   *   2. بدون state أو state غير صالح (من متجر زد) → إنشاء حساب + إرسال بيانات
-   */
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // GET /stores/zid/callback — Browser redirect من زد
+  // ═══════════════════════════════════════════════════════════════════════════════
+
   @Get('callback')
   @Public()
   @ApiOperation({
-    summary: 'Callback من زد',
-    description: 'يستقبل authorization code من زد ويكمل عملية الربط',
+    summary: 'Callback من زد (GET)',
+    description: 'يستقبل authorization code من زد عبر browser redirect',
   })
-  async handleCallback(
+  async handleCallbackGet(
+    @Req() req: ExpressRequest,
     @Query('code') code: string,
     @Query('state') state: string,
     @Query('error') error: string,
     @Query('error_description') errorDescription: string,
     @Res() res: Response,
+  ): Promise<void> {
+    this.logFullRequest(req, 'GET');
+
+    // ═════════════════════════════════════════════════════════
+    // ✅ Validation Ping — زد يفحص الرابط قبل OAuth
+    // إذا ما في أي parameter → يرد 200 OK
+    // ═════════════════════════════════════════════════════════
+    if (!code && !state && !error) {
+      this.logger.log('✅ Zid validation ping detected → responding 200 OK');
+      res.status(200).json({
+        status: 'ok',
+        service: 'rafeq',
+        endpoint: 'zid-oauth-callback',
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    return this.processOAuthCallback({ code, state, error, errorDescription }, res);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // POST /stores/zid/callback — Server-to-server من زد
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Post('callback')
+  @Public()
+  @ApiOperation({
+    summary: 'Callback من زد (POST)',
+    description: 'يستقبل authorization code من زد عبر POST',
+  })
+  async handleCallbackPost(
+    @Req() req: ExpressRequest,
+    @Res() res: Response,
+  ): Promise<void> {
+    this.logFullRequest(req, 'POST');
+
+    // استخراج البيانات من body و/أو query
+    const query = req.query || {};
+    const body = req.body || {};
+
+    const code = (body.code || query.code || body.authorization_code) as string | undefined;
+    const state = (body.state || query.state) as string | undefined;
+    const error = (body.error || query.error) as string | undefined;
+    const errorDescription = (body.error_description || query.error_description) as string | undefined;
+
+    // ═════════════════════════════════════════════════════════
+    // ✅ Validation Ping — POST بدون بيانات
+    // ═════════════════════════════════════════════════════════
+    if (!code && !state && !error) {
+      this.logger.log('✅ Zid validation ping (POST) → responding 200 OK');
+      res.status(200).json({
+        status: 'ok',
+        service: 'rafeq',
+        endpoint: 'zid-oauth-callback',
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    return this.processOAuthCallback({ code, state, error, errorDescription }, res);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔄 معالجة OAuth Callback الموحدة
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  private async processOAuthCallback(
+    params: {
+      code?: string;
+      state?: string;
+      error?: string;
+      errorDescription?: string;
+    },
+    res: Response,
   ): Promise<void> {
     const frontendUrl = this.configService.get<string>('app.frontendUrl')
       || this.configService.get<string>('FRONTEND_URL')
@@ -114,30 +192,37 @@ export class ZidOAuthController {
     const redirectPath = '/dashboard/stores';
 
     try {
-      this.logger.log(`Zid OAuth callback received`, {
-        hasCode: !!code,
-        hasState: !!state,
-        hasError: !!error,
+      this.logger.log(`Zid OAuth callback processing`, {
+        hasCode: !!params.code,
+        hasState: !!params.state,
+        hasError: !!params.error,
       });
 
       // ✅ معالجة الأخطاء من زد
-      if (error) {
-        this.logger.warn('OAuth error from Zid', { error, errorDescription });
-        res.redirect(`${frontendUrl}${redirectPath}?status=error&reason=${encodeURIComponent(errorDescription || error)}`);
+      if (params.error) {
+        this.logger.warn('OAuth error from Zid', {
+          error: params.error,
+          errorDescription: params.errorDescription,
+        });
+        res.redirect(
+          `${frontendUrl}${redirectPath}?status=error&reason=${encodeURIComponent(params.errorDescription || params.error)}`,
+        );
         return;
       }
 
       // ✅ التحقق من وجود code
-      if (!code) {
+      if (!params.code) {
         this.logger.warn('Missing code in Zid callback');
-        res.redirect(`${frontendUrl}${redirectPath}?status=error&reason=missing_code`);
+        res.redirect(
+          `${frontendUrl}${redirectPath}?status=error&reason=missing_code`,
+        );
         return;
       }
 
       // ═══════════════════════════════════════════════════════════════
       // 🔀 تحديد نوع الطلب: من الداشبورد أو من متجر زد
       // ═══════════════════════════════════════════════════════════════
-      const hasValidState = state && this.zidOAuthService.isValidState(state);
+      const hasValidState = params.state && this.zidOAuthService.isValidState(params.state);
 
       if (hasValidState) {
         // ════════════════════════════════════════════════════════════
@@ -145,7 +230,10 @@ export class ZidOAuthController {
         // ════════════════════════════════════════════════════════════
         this.logger.log(`📊 Zid Dashboard connect flow`);
 
-        const { tokens, tenantId } = await this.zidOAuthService.exchangeCodeForTokens(code, state);
+        const { tokens, tenantId } = await this.zidOAuthService.exchangeCodeForTokens(
+          params.code,
+          params.state!,
+        );
         const storeInfo = await this.zidOAuthService.getStoreInfo(tokens.access_token);
 
         const store = await this.storesService.connectZidStore(tenantId, {
@@ -163,7 +251,9 @@ export class ZidOAuthController {
           zidStoreId: storeInfo.id,
         });
 
-        res.redirect(`${frontendUrl}${redirectPath}?status=success&store_id=${store.id}`);
+        res.redirect(
+          `${frontendUrl}${redirectPath}?status=success&store_id=${store.id}`,
+        );
 
       } else {
         // ════════════════════════════════════════════════════════════
@@ -171,7 +261,7 @@ export class ZidOAuthController {
         // ════════════════════════════════════════════════════════════
         this.logger.log(`🆕 Zid store install flow — creating account`);
 
-        const result = await this.zidOAuthService.exchangeCodeAndAutoRegister(code);
+        const result = await this.zidOAuthService.exchangeCodeAndAutoRegister(params.code);
 
         this.logger.log(`✅ Zid Auto-registration completed`, {
           zidStoreId: result.zidStoreId,
@@ -186,14 +276,43 @@ export class ZidOAuthController {
           store: result.zidStoreId,
         });
 
-        res.redirect(`${frontendUrl}/auth/login?${redirectParams.toString()}`);
+        res.redirect(
+          `${frontendUrl}/auth/login?${redirectParams.toString()}`,
+        );
       }
 
     } catch (error: any) {
       this.logger.error('Zid OAuth callback error', {
         error: error instanceof Error ? error.message : 'Unknown',
       });
-      res.redirect(`${frontendUrl}${redirectPath}?status=error&reason=connection_failed`);
+      res.redirect(
+        `${frontendUrl}${redirectPath}?status=error&reason=connection_failed`,
+      );
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 📝 تسجيل تفاصيل الطلب الكاملة (للتشخيص)
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  private logFullRequest(req: ExpressRequest, method: string): void {
+    const bodyKeys = req.body ? Object.keys(req.body) : [];
+    const queryKeys = req.query ? Object.keys(req.query) : [];
+
+    this.logger.log(`🔍 Zid callback [${method}] — request details`, {
+      url: req.originalUrl,
+      queryKeys,
+      queryParams: req.query || {},
+      bodyKeys,
+      body: bodyKeys.length > 0 ? req.body : '(empty)',
+      headers: {
+        'content-type': req.headers['content-type'] || '(none)',
+        'user-agent': req.headers['user-agent'] || '(none)',
+        'x-zid-signature': req.headers['x-zid-signature'] || '(none)',
+        'referer': req.headers['referer'] || '(none)',
+        'origin': req.headers['origin'] || '(none)',
+      },
+      ip: req.headers['x-forwarded-for'] || req.ip || '(unknown)',
+    });
   }
 }
