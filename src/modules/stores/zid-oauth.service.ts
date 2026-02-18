@@ -269,6 +269,14 @@ export class ZidOAuthService {
         store.zidCurrency = storeInfo.currency || store.zidCurrency;
         store.zidLanguage = storeInfo.language || store.zidLanguage;
 
+        // ✅ حفظ authorization token (JWT) في settings
+        if (tokens.authorization) {
+          store.settings = {
+            ...(store.settings || {}),
+            zidAuthorizationToken: encrypt(tokens.authorization),
+          };
+        }
+
         if (!store.tenantId) {
           const tenantId = await this.resolveOrCreateTenant(storeInfo);
           store.tenantId = tenantId;
@@ -300,6 +308,9 @@ export class ZidOAuthService {
             autoReply: true,
             welcomeMessageEnabled: true,
             orderNotificationsEnabled: true,
+            zidAuthorizationToken: tokens.authorization
+              ? encrypt(tokens.authorization)
+              : undefined,
           },
           subscribedEvents: [
             'order.created',
@@ -560,11 +571,18 @@ export class ZidOAuthService {
             || data?.mobile
             || '';
 
+          // ✅ حماية: mobile قد يكون object (mobile_object) — نستخرج string فقط
+          const safeMobile = typeof mobileStr === 'string'
+            ? mobileStr.substring(0, 20)
+            : (typeof mobileStr === 'object' && mobileStr !== null
+              ? String(mobileStr.number || mobileStr.phone || mobileStr.value || '').substring(0, 20)
+              : '');
+
           this.logger.log('📋 [V2] Final mapped values:', {
             id: storeData.id,
             name: storeData.name || storeData.title,
             email: emailStr,
-            mobile: mobileStr,
+            mobile: safeMobile,
             currency: currencyStr,
             language: languageStr,
             logo: logoStr ? 'present' : 'none',
@@ -575,7 +593,7 @@ export class ZidOAuthService {
             uuid: String(storeData.uuid || storeData.id || ''),
             name: storeData.name || storeData.store_name || storeData.title || '',
             email: emailStr,
-            mobile: mobileStr,
+            mobile: safeMobile,
             url: storeData.url || storeData.domain || '',
             logo: logoStr,
             currency: currencyStr,
