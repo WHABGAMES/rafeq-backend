@@ -23,7 +23,7 @@ import { Repository } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
 // 🔐 Encryption
-import { encrypt, decrypt } from '@common/utils/encryption.util';
+import { encrypt, decrypt, decryptSafe } from '@common/utils/encryption.util';
 
 // Entities
 import { Store, StoreStatus, StorePlatform } from './entities/store.entity';
@@ -31,8 +31,8 @@ import { Store, StoreStatus, StorePlatform } from './entities/store.entity';
 // Services
 import { SallaOAuthService, SallaMerchantInfo } from './salla-oauth.service';
 import { SallaApiService } from './salla-api.service';
-import { ZidOAuthService, ZidStoreInfo } from './zid-oauth.service';
-import { ZidApiService } from './zid-api.service';
+import { ZidOAuthService, ZidStoreInfo, ZidTokenResponse } from './zid-oauth.service';
+import { ZidApiService, ZidAuthTokens } from './zid-api.service';
 
 interface ConnectSallaStoreData {
   tokens: {
@@ -119,6 +119,27 @@ export class StoresService {
    */
   private getDecryptedRefreshToken(store: Store): string | null {
     return decrypt(store.refreshToken ?? null);
+  }
+
+  /**
+   * ✅ جلب توكنات زد الكاملة (managerToken + authorizationToken)
+   * حسب وثائق زد: API يحتاج headerين:
+   *   Authorization: Bearer {authorizationToken}
+   *   X-Manager-Token: {managerToken}
+   */
+  private getZidTokens(store: Store, managerToken: string): ZidAuthTokens {
+    const encryptedAuth = (store.settings as any)?.zidAuthorizationToken;
+    // ✅ decryptSafe — لا يرمي exception إذا البيانات تالفة أو غير مشفرة
+    const authorizationToken = encryptedAuth ? decryptSafe(encryptedAuth) : null;
+
+    if (!authorizationToken) {
+      this.logger.warn(`⚠️ Zid store ${store.id} missing authorizationToken — API calls may fail`);
+    }
+
+    return {
+      managerToken,
+      authorizationToken: authorizationToken || undefined,
+    };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -629,9 +650,16 @@ export class StoresService {
   ): Promise<Store> {
     const store = await this.findById(tenantId, storeId);
 
+    // 🔐 حماية الحقول الداخلية من الكتابة فوقها
+    const PROTECTED_KEYS = ['zidAuthorizationToken'];
+    const sanitized = { ...settings };
+    for (const key of PROTECTED_KEYS) {
+      delete sanitized[key];
+    }
+
     store.settings = {
       ...store.settings,
-      ...settings,
+      ...sanitized,
     };
 
     return this.storeRepository.save(store);
@@ -722,7 +750,8 @@ export class StoresService {
     this.logger.debug(`Syncing Zid store: ${store.zidStoreId}`);
 
     try {
-      const storeInfo = await this.zidApiService.getStoreInfo(accessToken);
+      const zidTokens = this.getZidTokens(store, accessToken);
+      const storeInfo = await this.zidApiService.getStoreInfo(zidTokens);
 
       store.zidStoreName = storeInfo.name;
       store.zidEmail = storeInfo.email;
@@ -778,6 +807,15 @@ export class StoresService {
       } else if (store.platform === StorePlatform.ZID) {
         tokens = await this.zidOAuthService.refreshAccessToken(refreshToken);
         store.tokenExpiresAt = this.zidOAuthService.calculateTokenExpiry(tokens.expires_in);
+
+        // ✅ حفظ authorization token الجديد إذا رجع من الـ refresh
+        const zidTokens = tokens as ZidTokenResponse;
+        if (zidTokens.authorization) {
+          store.settings = {
+            ...(store.settings || {}),
+            zidAuthorizationToken: encrypt(zidTokens.authorization),
+          };
+        }
       } else {
         throw new Error(`Unsupported platform: ${store.platform}`);
       }
@@ -940,10 +978,11 @@ export class StoresService {
         }
 
       } else if (storeWithTokens.platform === StorePlatform.ZID) {
+        const zidTokens = this.getZidTokens(storeWithTokens, accessToken);
         const [ordersRes, productsRes, customersRes] = await Promise.allSettled([
-          this.zidApiService.getOrders(accessToken, { page: 1, per_page: 1 }),
-          this.zidApiService.getProducts(accessToken, { page: 1, per_page: 1 }),
-          this.zidApiService.getCustomers(accessToken, { page: 1, per_page: 1 }),
+          this.zidApiService.getOrders(zidTokens, { page: 1, per_page: 1 }),
+          this.zidApiService.getProducts(zidTokens, { page: 1, per_page: 1 }),
+          this.zidApiService.getCustomers(zidTokens, { page: 1, per_page: 1 }),
         ]);
 
         if (ordersRes.status === 'fulfilled') {
