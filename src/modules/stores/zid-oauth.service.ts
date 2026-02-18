@@ -364,16 +364,17 @@ export class ZidOAuthService {
   async getStoreInfo(accessToken: string): Promise<ZidStoreInfo> {
     try {
       const response = await firstValueFrom(
-        this.httpService.get(`${this.ZID_API_URL}/managers/account`, {
+        this.httpService.get(`${this.ZID_API_URL}/managers/store/info`, {
           headers: {
             Authorization: `Bearer ${accessToken}`,
             Accept: 'application/json',
+            'Content-Type': 'application/json',
             'Accept-Language': 'ar',
           },
         }),
       );
 
-      const data = response.data?.store || response.data;
+      const data = response.data?.data || response.data?.store || response.data;
 
       this.logger.log('Successfully fetched Zid store info', {
         storeId: data.id,
@@ -381,9 +382,9 @@ export class ZidOAuthService {
       });
 
       return {
-        id: data.id?.toString() || data.uuid,
+        id: data.id?.toString() || data.store_id?.toString() || data.uuid,
         uuid: data.uuid || data.id?.toString(),
-        name: data.name || data.title,
+        name: data.name || data.store_name || data.title,
         email: data.email || '',
         mobile: data.mobile || data.phone || '',
         url: data.url || data.domain || '',
