@@ -8,6 +8,12 @@
  * ║  ✅ Multi-Store — تاجر موجود يُربط متجره الجديد على نفس tenant                 ║
  * ║  🔐 تشفير التوكنات بـ AES-256-GCM                                               ║
  * ║                                                                                ║
+ * ║  ✅ FIX (based on official Zid docs):                                           ║
+ * ║     - Token response returns: access_token, authorization, refresh_token       ║
+ * ║     - API headers: Authorization: Bearer {authorization}                       ║
+ * ║                     X-Manager-Token: {access_token}                            ║
+ * ║     - Endpoint: /managers/account/profile                                      ║
+ * ║                                                                                ║
  * ║  📁 src/modules/stores/zid-oauth.service.ts                                   ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
@@ -39,6 +45,13 @@ export interface ZidTokenResponse {
   refresh_token: string;
   expires_in: number;
   token_type: string;
+  /**
+   * ✅ زد يرجع هذا الحقل الإضافي في الـ token response
+   * حسب وثائق زد الرسمية:
+   *   Authorization header ← authorization field
+   *   X-Manager-Token header ← access_token field
+   */
+  authorization?: string;
 }
 
 export interface ZidStoreInfo {
@@ -80,9 +93,6 @@ export class ZidOAuthService {
   // 🔗 OAuth URL Generation
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * إنشاء رابط OAuth لزد
-   */
   generateAuthorizationUrl(tenantId: string): string {
     const state = this.generateState(tenantId);
 
@@ -116,9 +126,6 @@ export class ZidOAuthService {
   // 🔑 Token Exchange — Dashboard Mode (with state)
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * استبدال Authorization Code بـ Access Token
-   */
   async exchangeCodeForTokens(
     code: string,
     state: string,
@@ -166,7 +173,6 @@ export class ZidOAuthService {
 
   // ═══════════════════════════════════════════════════════════════════════════════
   // 🆕 Auto Registration — تثبيت من متجر زد (بدون state/tenantId)
-  // ✅ نفس آلية سلة: resolveOrCreateTenant + handleAppInstallation
   // ═══════════════════════════════════════════════════════════════════════════════
 
   async exchangeCodeAndAutoRegister(code: string): Promise<{
@@ -174,7 +180,7 @@ export class ZidOAuthService {
     isNewUser: boolean;
     email: string;
   }> {
-    this.logger.log('🆕 exchangeCodeAndAutoRegister — Zid store install');
+    this.logger.log('🆕 exchangeCodeAndAutoRegister — Zid store install [V2-FIX]');
 
     const clientId = this.configService.get<string>('zid.clientId');
     const clientSecret = this.configService.get<string>('zid.clientSecret');
@@ -185,9 +191,11 @@ export class ZidOAuthService {
     }
 
     try {
+      // ═══════════════════════════════════════════════════════════════════════
       // 1. استبدال code بـ tokens
+      // ═══════════════════════════════════════════════════════════════════════
       const response = await firstValueFrom(
-        this.httpService.post<ZidTokenResponse>(
+        this.httpService.post(
           this.ZID_TOKEN_URL,
           {
             grant_type: 'authorization_code',
@@ -205,19 +213,47 @@ export class ZidOAuthService {
         ),
       );
 
-      const tokens = response.data;
+      const tokenData = response.data;
 
+      // ✅ تسجيل كل حقول الـ token response (ضروري للتشخيص)
+      this.logger.log('🔑 [V2] Zid token response keys:', {
+        allKeys: Object.keys(tokenData),
+        hasAccessToken: !!tokenData.access_token,
+        hasAuthorization: !!tokenData.authorization,
+        hasRefreshToken: !!tokenData.refresh_token,
+        tokenType: tokenData.token_type,
+        expiresIn: tokenData.expires_in,
+        accessTokenPrefix: tokenData.access_token?.substring(0, 30) + '...',
+        authorizationPrefix: tokenData.authorization
+          ? tokenData.authorization.substring(0, 30) + '...'
+          : '(not present)',
+      });
+
+      const tokens: ZidTokenResponse = {
+        access_token: tokenData.access_token,
+        refresh_token: tokenData.refresh_token,
+        expires_in: tokenData.expires_in,
+        token_type: tokenData.token_type,
+        authorization: tokenData.authorization,
+      };
+
+      // ═══════════════════════════════════════════════════════════════════════
       // 2. جلب بيانات المتجر
-      const storeInfo = await this.getStoreInfo(tokens.access_token);
+      // ═══════════════════════════════════════════════════════════════════════
+      const storeInfo = await this.getStoreInfo(
+        tokens.access_token,
+        tokens.authorization,
+      );
       this.logger.log(`📊 Zid Store: ${storeInfo.id} — ${storeInfo.name}`);
 
+      // ═══════════════════════════════════════════════════════════════════════
       // 3. البحث عن متجر موجود أو إنشاء جديد
+      // ═══════════════════════════════════════════════════════════════════════
       let store = await this.storeRepository.findOne({
         where: { zidStoreId: storeInfo.id },
       });
 
       if (store) {
-        // متجر موجود (نفس zidStoreId) — تحديث التوكنات
         store.accessToken = encrypt(tokens.access_token) ?? undefined;
         store.refreshToken = encrypt(tokens.refresh_token) ?? undefined;
         store.tokenExpiresAt = this.calculateTokenExpiry(tokens.expires_in);
@@ -240,7 +276,6 @@ export class ZidOAuthService {
 
         this.logger.log(`📦 Updated existing Zid store: ${store.id}`);
       } else {
-        // ✅ متجر جديد — نتحقق هل التاجر موجود بالإيميل أولاً
         const tenantId = await this.resolveOrCreateTenant(storeInfo);
 
         store = this.storeRepository.create({
@@ -278,7 +313,9 @@ export class ZidOAuthService {
 
       const savedStore = await this.storeRepository.save(store);
 
+      // ═══════════════════════════════════════════════════════════════════════
       // 4. إنشاء/تحديث المستخدم + إرسال بيانات الدخول
+      // ═══════════════════════════════════════════════════════════════════════
       let isNewUser = false;
       try {
         const regResult = await this.autoRegistrationService.handleAppInstallation(
@@ -313,7 +350,7 @@ export class ZidOAuthService {
       };
 
     } catch (error: any) {
-      this.logger.error('Failed exchangeCodeAndAutoRegister (Zid)', {
+      this.logger.error('❌ [V2] Failed exchangeCodeAndAutoRegister', {
         error: error?.response?.data || error.message,
       });
       throw new BadRequestException('Failed to complete Zid store installation');
@@ -358,56 +395,172 @@ export class ZidOAuthService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 👤 Store Info
+  // 👤 Store Info — بناءً على وثائق زد الرسمية
+  //
+  // الطريقة الرسمية (من https://docs.zid.sa/authorization):
+  //   Authorization: Bearer {authorization}     ← حقل authorization من token response
+  //   X-Manager-Token: {access_token}           ← حقل access_token من token response
+  //
+  // يجرب عدة endpoints و header combinations حتى ينجح
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  async getStoreInfo(accessToken: string): Promise<ZidStoreInfo> {
-    try {
-      const response = await firstValueFrom(
-        this.httpService.get(`${this.ZID_API_URL}/managers/store/info`, {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            Accept: 'application/json',
-            'Content-Type': 'application/json',
-            'Accept-Language': 'ar',
-          },
-        }),
-      );
+  async getStoreInfo(
+    accessToken: string,
+    authorization?: string,
+  ): Promise<ZidStoreInfo> {
 
-      const data = response.data?.data || response.data?.store || response.data;
+    this.logger.log('🔍 [V2] getStoreInfo called', {
+      hasAccessToken: !!accessToken,
+      hasAuthorization: !!authorization,
+    });
 
-      this.logger.log('Successfully fetched Zid store info', {
-        storeId: data.id,
-        storeName: data.name,
+    // ✅ بناء كل مجموعات الـ headers الممكنة بالترتيب الصحيح
+    const headerSets: Array<{ name: string; headers: Record<string, string> }> = [];
+
+    // الطريقة 1 (الرسمية حسب وثائق زد):
+    // Authorization = authorization field, X-Manager-Token = access_token field
+    if (authorization) {
+      headerSets.push({
+        name: 'OFFICIAL: Bearer(authorization) + XMT(access_token)',
+        headers: {
+          'Authorization': `Bearer ${authorization}`,
+          'X-Manager-Token': accessToken,
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+          'Accept-Language': 'ar',
+          'Role': 'Manager',
+        },
       });
-
-      return {
-        id: data.id?.toString() || data.store_id?.toString() || data.uuid,
-        uuid: data.uuid || data.id?.toString(),
-        name: data.name || data.store_name || data.title,
-        email: data.email || '',
-        mobile: data.mobile || data.phone || '',
-        url: data.url || data.domain || '',
-        logo: data.logo || data.image,
-        currency: data.currency || 'SAR',
-        language: data.language || 'ar',
-        created_at: data.created_at || new Date().toISOString(),
-      };
-    } catch (error: any) {
-      this.logger.error('Failed to fetch Zid store info', {
-        error: error?.response?.data || error.message,
-      });
-      throw new BadRequestException('فشل في جلب بيانات المتجر من زد');
     }
+
+    // الطريقة 2 (عكسية — إذا الحقول مقلوبة):
+    // Authorization = access_token, X-Manager-Token = authorization
+    if (authorization) {
+      headerSets.push({
+        name: 'REVERSE: Bearer(access_token) + XMT(authorization)',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'X-Manager-Token': authorization,
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+          'Accept-Language': 'ar',
+          'Role': 'Manager',
+        },
+      });
+    }
+
+    // الطريقة 3: Bearer فقط (بدون X-Manager-Token)
+    headerSets.push({
+      name: 'BEARER-ONLY: Bearer(access_token)',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'Accept-Language': 'ar',
+      },
+    });
+
+    // إذا فيه authorization → جرب Bearer authorization بدون XMT
+    if (authorization) {
+      headerSets.push({
+        name: 'AUTH-BEARER-ONLY: Bearer(authorization)',
+        headers: {
+          'Authorization': `Bearer ${authorization}`,
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+          'Accept-Language': 'ar',
+        },
+      });
+    }
+
+    // ✅ الـ endpoints المحتملة (من وثائق زد)
+    const endpoints = [
+      '/managers/account/profile',
+      '/managers/store/info',
+      '/managers/account',
+    ];
+
+    // ✅ جرّب كل endpoint مع كل مجموعة headers
+    for (const endpoint of endpoints) {
+      for (const headerSet of headerSets) {
+        const url = `${this.ZID_API_URL}${endpoint}`;
+        try {
+          this.logger.log(`🔍 [V2] Trying: ${endpoint} | ${headerSet.name}`);
+
+          const resp = await firstValueFrom(
+            this.httpService.get(url, { headers: headerSet.headers }),
+          );
+
+          // ✅ نجح!
+          this.logger.log(`✅ [V2] SUCCESS: ${endpoint} | ${headerSet.name}`, {
+            status: resp.status,
+            topKeys: Object.keys(resp.data || {}),
+          });
+
+          // استخراج البيانات — زد يرجعها بأشكال مختلفة
+          const raw = resp.data;
+          const data = raw?.data
+            || raw?.store
+            || raw?.user?.store
+            || raw?.user
+            || raw;
+
+          this.logger.log('📊 [V2] Extracted store data:', {
+            keys: Object.keys(data || {}),
+            id: data?.id,
+            store_id: data?.store_id,
+            name: data?.name || data?.store_name,
+            email: data?.email,
+            mobile: data?.mobile,
+          });
+
+          // إذا البيانات فيها store متداخل
+          const storeData = data?.store || data;
+
+          return {
+            id: String(storeData.id || storeData.store_id || storeData.uuid || ''),
+            uuid: String(storeData.uuid || storeData.id || ''),
+            name: storeData.name || storeData.store_name || storeData.title || '',
+            email: storeData.email || storeData.manager_email || data?.email || '',
+            mobile: storeData.mobile || storeData.phone || data?.mobile || '',
+            url: storeData.url || storeData.domain || '',
+            logo: storeData.logo || storeData.image || undefined,
+            currency: storeData.currency || 'SAR',
+            language: storeData.language || 'ar',
+            created_at: storeData.created_at || new Date().toISOString(),
+          };
+
+        } catch (error: any) {
+          const status = error?.response?.status || '?';
+          const errBody = error?.response?.data;
+          const desc = errBody?.message?.description
+            || errBody?.message
+            || error?.message
+            || '';
+          this.logger.warn(
+            `❌ [V2] ${endpoint} | ${headerSet.name} → ${status}: ${typeof desc === 'object' ? JSON.stringify(desc) : desc}`,
+          );
+        }
+      }
+    }
+
+    // كل المحاولات فشلت
+    this.logger.error('❌ [V2] ALL getStoreInfo attempts FAILED', {
+      endpointCount: endpoints.length,
+      headerSetCount: headerSets.length,
+      totalAttempts: endpoints.length * headerSets.length,
+    });
+
+    throw new BadRequestException(
+      'فشل في جلب بيانات المتجر من زد — كل المحاولات فشلت',
+    );
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
   // ✅ البحث عن tenant موجود أو إنشاء جديد
-  // نفس آلية سلة — البحث بالإيميل أولاً
   // ═══════════════════════════════════════════════════════════════════════════════
 
   private async resolveOrCreateTenant(storeInfo: ZidStoreInfo): Promise<string> {
-    // 🔍 البحث عن المستخدم بالإيميل
     if (storeInfo.email) {
       const existingUser = await this.autoRegistrationService.findUserByEmail(storeInfo.email);
 
@@ -419,7 +572,6 @@ export class ZidOAuthService {
       }
     }
 
-    // 🆕 مستخدم جديد → إنشاء tenant جديد
     const tenant = await this.tenantsService.createTenantFromSalla({
       merchantId: parseInt(storeInfo.id) || 0,
       name: storeInfo.name || 'متجر زد',
@@ -447,10 +599,6 @@ export class ZidOAuthService {
     return state;
   }
 
-  /**
-   * التحقق من state — يرجع tenantId إذا صالح
-   * يرجع null إذا غير صالح (بدل throw) — للاستخدام في الـ controller
-   */
   validateState(state: string): string {
     const stored = this.stateStorage.get(state);
     if (!stored) {
@@ -464,9 +612,6 @@ export class ZidOAuthService {
     return stored.tenantId;
   }
 
-  /**
-   * فحص هل الـ state صالح — بدون throw
-   */
   isValidState(state: string): boolean {
     const stored = this.stateStorage.get(state);
     if (!stored) return false;
