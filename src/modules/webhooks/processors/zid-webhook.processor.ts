@@ -2,7 +2,7 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║              RAFIQ PLATFORM - Zid Webhook Processor                            ║
  * ║                                                                                ║
- * ║  ✅ v1: Production-ready                                                       ║
+ * ║  ✅ v2: Fix — order.create + fallback events + Arabic statuses               ║
  * ║  يعالج أحداث زد من الـ Queue ويحدّث قاعدة البيانات                              ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
@@ -81,6 +81,7 @@ export class ZidWebhookProcessor extends WorkerHost {
         // Orders - تدعم كل الصيغ الممكنة من Zid
         case 'new-order':
         case 'order.new':
+        case 'order.create':      // ✅ v2: هذا اسم الـ webhook المسجّل فعلياً في زد
           result = await this.handleNewOrder(data, context);
           break;
         case 'order-update':
@@ -151,8 +152,10 @@ export class ZidWebhookProcessor extends WorkerHost {
           break;
 
         default:
-          this.logger.warn(`Unknown Zid event type: ${eventType}`);
-          result = { handled: false, action: 'unknown_event', eventType };
+          this.logger.warn(`⚠️ Unknown Zid event type: ${eventType} — emitting as-is`);
+          // ✅ v2: بدل تجاهل الحدث، نرسله كما هو — ممكن يكون مفيد
+          this.eventEmitter.emit(eventType, { tenantId, storeId: internalStoreId, raw: data, source: 'zid' });
+          result = { handled: true, action: 'unknown_event_forwarded', eventType };
           break;
       }
 
@@ -255,9 +258,9 @@ export class ZidWebhookProcessor extends WorkerHost {
     const specificEvent = this.mapZidStatusToEvent(statusSlug);
 
     this.logger.log('🔄 Zid status mapping:', {
-      rawStatus: data.status,
+      rawStatus: JSON.stringify(data.status),
       statusSlug,
-      specificEvent: specificEvent || 'NONE',
+      specificEvent: specificEvent || 'NONE → will use fallback',
     });
 
     const eventPayload = {
@@ -276,7 +279,11 @@ export class ZidWebhookProcessor extends WorkerHost {
       this.logger.log(`📌 Emitting: ${specificEvent}`);
       this.eventEmitter.emit(specificEvent, eventPayload);
     } else {
-      this.logger.warn(`⚠️ No event mapping for Zid status "${statusSlug}" — no template sent`);
+      // ✅ v2: Fallback — حالة غير معروفة → نحاول نطلق event عام
+      // نجرب أولاً: order.status.{slug} (ممكن template-dispatcher يسمعه)
+      const fallbackEvent = statusSlug ? `order.status.${statusSlug}` : 'order.status.updated';
+      this.logger.warn(`⚠️ No mapping for Zid status "${statusSlug}" → emitting fallback: ${fallbackEvent}`);
+      this.eventEmitter.emit(fallbackEvent, eventPayload);
     }
 
     return {
@@ -651,18 +658,24 @@ export class ZidWebhookProcessor extends WorkerHost {
       // طلب جديد
       'new': 'order.created',
       'pending': 'order.created',
+      'created': 'order.created',
 
       // قيد التنفيذ
       'processing': 'order.status.processing',
       'confirmed': 'order.status.processing',
       'in_progress': 'order.status.processing',
+      'accepted': 'order.status.processing',
+      'preparation': 'order.status.processing',
+      'preparing': 'order.status.processing',
 
       // جاهز للشحن
       'ready': 'order.status.ready_to_ship',
       'ready_to_ship': 'order.status.ready_to_ship',
+      'ready_for_pickup': 'order.status.ready_to_ship',
 
       // تم الشحن
       'shipped': 'order.shipped',
+      'shipping': 'order.shipped',
 
       // جاري التوصيل
       'indelivery': 'order.status.in_transit',
@@ -670,12 +683,15 @@ export class ZidWebhookProcessor extends WorkerHost {
       'in_transit': 'order.status.in_transit',
       'out_for_delivery': 'order.status.in_transit',
       'delivering': 'order.status.in_transit',
+      'on_the_way': 'order.status.in_transit',
 
       // تم التوصيل
       'delivered': 'order.delivered',
 
       // مكتمل
       'completed': 'order.status.completed',
+      'complete': 'order.status.completed',
+      'done': 'order.status.completed',
 
       // ملغي
       'cancelled': 'order.cancelled',
@@ -683,24 +699,47 @@ export class ZidWebhookProcessor extends WorkerHost {
 
       // مسترجع
       'refunded': 'order.refunded',
+      'refund': 'order.refunded',
 
       // معلق
       'on_hold': 'order.status.on_hold',
+      'hold': 'order.status.on_hold',
+      'holded': 'order.status.on_hold',
 
       // مدفوع
       'paid': 'order.status.paid',
+      'payment_received': 'order.status.paid',
+      'cod_confirmed': 'order.status.paid',
 
       // بانتظار الدفع
       'pending_payment': 'order.status.pending_payment',
       'awaiting_payment': 'order.status.pending_payment',
+      'unpaid': 'order.status.pending_payment',
 
       // بانتظار المراجعة
       'under_review': 'order.status.under_review',
       'awaiting_review': 'order.status.under_review',
+      'review': 'order.status.under_review',
 
       // استرداد
       'restoring': 'order.status.restoring',
       'restored': 'order.status.restoring',
+
+      // ═══ حالات بالعربي (زد أحياناً يرسل الحالة بالعربي) ═══
+      'جديد': 'order.created',
+      'قيد التنفيذ': 'order.status.processing',
+      'جاهز للشحن': 'order.status.ready_to_ship',
+      'تم الشحن': 'order.shipped',
+      'جاري التوصيل': 'order.status.in_transit',
+      'تم التوصيل': 'order.delivered',
+      'مكتمل': 'order.status.completed',
+      'ملغي': 'order.cancelled',
+      'مسترجع': 'order.refunded',
+      'معلق': 'order.status.on_hold',
+      'مدفوع': 'order.status.paid',
+      'بانتظار الدفع': 'order.status.pending_payment',
+      'بانتظار المراجعة': 'order.status.under_review',
+      'قيد الاسترجاع': 'order.status.restoring',
     };
 
     return map[statusSlug] || null;
