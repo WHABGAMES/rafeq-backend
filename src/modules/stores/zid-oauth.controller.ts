@@ -8,12 +8,12 @@
  * ║  POST /api/stores/zid/callback → Callback من زد (server-to-server)            ║
  * ║                                                                                ║
  * ║  🔀 الـ callback يتعامل مع 3 حالات:                                            ║
- * ║     0. بدون params → 200 OK (validation ping من زد)                           ║
+ * ║     0. بدون params → redirect لصفحة OAuth (install flow من زد)                ║
  * ║     1. من الداشبورد (فيه state + tenantId) → ربط متجر لحساب موجود             ║
  * ║     2. من متجر زد (بدون state) → إنشاء حساب + إرسال بيانات دخول              ║
  * ║                                                                                ║
- * ║  ✅ FIX: زد يفحص الـ callback URL قبل OAuth                                    ║
- * ║     يرسل GET بدون params → يتوقع 200 OK (كان يجيه 302 → يلغي)                ║
+ * ║  ✅ FIX: زد يحوّل المتصفح مباشرة للـ callback بدون code                         ║
+ * ║     لازم نحوّله لصفحة OAuth عشان التاجر يوافق ويرجع بـ code                    ║
  * ║                                                                                ║
  * ║  📁 src/modules/stores/zid-oauth.controller.ts                                ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
@@ -114,17 +114,31 @@ export class ZidOAuthController {
     this.logFullRequest(req, 'GET');
 
     // ═════════════════════════════════════════════════════════
-    // ✅ Validation Ping — زد يفحص الرابط قبل OAuth
-    // إذا ما في أي parameter → يرد 200 OK
+    // ✅ Install Flow — زد يحوّل المتصفح بدون code
+    // التاجر ضغط "تفعيل" → نحوّله لصفحة OAuth عشان يوافق
     // ═════════════════════════════════════════════════════════
     if (!code && !state && !error) {
-      this.logger.log('✅ Zid validation ping detected → responding 200 OK');
-      res.status(200).json({
-        status: 'ok',
-        service: 'rafeq',
-        endpoint: 'zid-oauth-callback',
-        timestamp: new Date().toISOString(),
+      this.logger.log('🔀 Zid install flow detected → redirecting to OAuth authorize');
+
+      const clientId = this.configService.get<string>('zid.clientId');
+      const redirectUri = this.configService.get<string>('zid.oauthCallbackUrl');
+
+      if (!clientId || !redirectUri) {
+        this.logger.error('❌ Zid OAuth config missing (clientId or redirectUri)');
+        const frontendUrl = this.configService.get<string>('app.frontendUrl') || 'https://rafeq.ai';
+        res.redirect(`${frontendUrl}/dashboard/stores?status=error&reason=config_missing`);
+        return;
+      }
+
+      const oauthParams = new URLSearchParams({
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        response_type: 'code',
       });
+
+      const oauthUrl = `https://oauth.zid.sa/oauth/authorize?${oauthParams.toString()}`;
+      this.logger.log(`🔗 Redirecting to: ${oauthUrl}`);
+      res.redirect(oauthUrl);
       return;
     }
 
@@ -157,16 +171,30 @@ export class ZidOAuthController {
     const errorDescription = (body.error_description || query.error_description) as string | undefined;
 
     // ═════════════════════════════════════════════════════════
-    // ✅ Validation Ping — POST بدون بيانات
+    // ✅ Install Flow — POST بدون بيانات → redirect to OAuth
     // ═════════════════════════════════════════════════════════
     if (!code && !state && !error) {
-      this.logger.log('✅ Zid validation ping (POST) → responding 200 OK');
-      res.status(200).json({
-        status: 'ok',
-        service: 'rafeq',
-        endpoint: 'zid-oauth-callback',
-        timestamp: new Date().toISOString(),
+      this.logger.log('🔀 Zid install flow (POST) → redirecting to OAuth authorize');
+
+      const clientId = this.configService.get<string>('zid.clientId');
+      const redirectUri = this.configService.get<string>('zid.oauthCallbackUrl');
+
+      if (!clientId || !redirectUri) {
+        this.logger.error('❌ Zid OAuth config missing');
+        const frontendUrl = this.configService.get<string>('app.frontendUrl') || 'https://rafeq.ai';
+        res.redirect(`${frontendUrl}/dashboard/stores?status=error&reason=config_missing`);
+        return;
+      }
+
+      const oauthParams = new URLSearchParams({
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        response_type: 'code',
       });
+
+      const oauthUrl = `https://oauth.zid.sa/oauth/authorize?${oauthParams.toString()}`;
+      this.logger.log(`🔗 Redirecting to: ${oauthUrl}`);
+      res.redirect(oauthUrl);
       return;
     }
 
