@@ -2,8 +2,8 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║              RAFIQ PLATFORM - Zid Webhook Processor                            ║
  * ║                                                                                ║
- * ║  ✅ v2: Fix — order.create + fallback events + Arabic statuses               ║
- * ║  يعالج أحداث زد من الـ Queue ويحدّث قاعدة البيانات                              ║
+ * ║  ✅ v3: إعادة كتابة كاملة — يتعامل مع payload زد الخام                       ║
+ * ║  زد يرسل order_status كنص عربي + بيانات الطلب مباشرة بدون event              ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -81,13 +81,13 @@ export class ZidWebhookProcessor extends WorkerHost {
         // Orders - تدعم كل الصيغ الممكنة من Zid
         case 'new-order':
         case 'order.new':
-        case 'order.create':      // ✅ v2: هذا اسم الـ webhook المسجّل فعلياً في زد
+        case 'order.create':      // ✅ v3: هذا الاسم الفعلي المسجّل في زد + المكتشف من Controller
           result = await this.handleNewOrder(data, context);
           break;
         case 'order-update':
         case 'order.update':
         case 'order-status-update':
-        case 'order.status.update':
+        case 'order.status.update': // ✅ v3: هذا الاسم الفعلي المسجّل في زد + المكتشف من Controller
           result = await this.handleOrderUpdate(data, context);
           break;
         case 'order-cancelled':
@@ -153,7 +153,6 @@ export class ZidWebhookProcessor extends WorkerHost {
 
         default:
           this.logger.warn(`⚠️ Unknown Zid event type: ${eventType} — emitting as-is`);
-          // ✅ v2: بدل تجاهل الحدث، نرسله كما هو — ممكن يكون مفيد
           this.eventEmitter.emit(eventType, { tenantId, storeId: internalStoreId, raw: data, source: 'zid' });
           result = { handled: true, action: 'unknown_event_forwarded', eventType };
           break;
@@ -213,9 +212,9 @@ export class ZidWebhookProcessor extends WorkerHost {
     data: Record<string, unknown>,
     context: { tenantId?: string; storeId?: string; webhookEventId: string },
   ): Promise<Record<string, unknown>> {
-    this.logger.log('Processing Zid new-order', { orderId: data.id });
+    this.logger.log('Processing Zid new-order', { orderId: data.id, code: data.code });
 
-    // حفظ العميل أولاً إذا موجود
+    // ✅ v3: العميل موجود في data.customer مباشرة (payload زد الخام)
     const customer = data.customer as Record<string, unknown> | undefined;
     let savedCustomer: Customer | null = null;
     if (customer?.id) {
@@ -231,11 +230,11 @@ export class ZidWebhookProcessor extends WorkerHost {
       tenantId: context.tenantId,
       storeId: context.storeId,
       orderId: data.id,
-      orderNumber: data.order_number,
-      total: data.total,
+      orderNumber: data.code || data.invoice_number || data.order_number,
+      total: data.order_total,
       customerName: customer?.name,
-      customerPhone: customer?.mobile,
-      raw: data,
+      customerPhone: customer?.mobile || customer?.phone,
+      raw: data,  // ✅ كامل بيانات الطلب
       source: 'zid',
     });
 
@@ -246,32 +245,42 @@ export class ZidWebhookProcessor extends WorkerHost {
     data: Record<string, unknown>,
     context: { tenantId?: string; storeId?: string; webhookEventId: string },
   ): Promise<Record<string, unknown>> {
-    this.logger.log('Processing Zid order-update', { orderId: data.id, status: data.status });
+    this.logger.log('Processing Zid order-update', {
+      orderId: data.id,
+      orderStatus: data.order_status,
+      displayStatus: JSON.stringify(data.display_status),
+    });
 
     if (context.tenantId && data.id) {
       await this.updateOrderStatusInDatabase(data, context);
     }
 
-    // ✅ v2: تحويل حالة زد → event محدد (مثل Salla processor)
-    // template-dispatcher يسمع events محددة، مو order.status.updated العام
-    const statusSlug = this.extractZidStatusSlug(data.status);
+    // ✅ v3: استخراج الحالة من بيانات زد الحقيقية
+    // زد يرسل: order_status = "جاهز" (نص عربي) أو display_status = { slug, name, code }
+    const statusSlug = this.extractZidStatusSlug(data.order_status || data.display_status || data.status);
     const specificEvent = this.mapZidStatusToEvent(statusSlug);
 
     this.logger.log('🔄 Zid status mapping:', {
-      rawStatus: JSON.stringify(data.status),
-      statusSlug,
+      rawOrderStatus: data.order_status,
+      rawDisplayStatus: JSON.stringify(data.display_status),
+      extractedSlug: statusSlug,
       specificEvent: specificEvent || 'NONE → will use fallback',
     });
+
+    // ✅ v3: استخراج بيانات العميل من الـ payload الخام
+    const customer = data.customer as Record<string, unknown> | undefined;
 
     const eventPayload = {
       tenantId: context.tenantId,
       storeId: context.storeId,
       orderId: data.id,
-      orderNumber: data.order_number || data.code,
-      status: data.status,
-      newStatus: data.status,
+      orderNumber: data.code || data.invoice_number || data.order_number,
+      status: data.order_status,
+      newStatus: data.order_status,
       previousStatus: data.previous_status,
-      raw: data,
+      customerName: customer?.name,
+      customerPhone: customer?.mobile || customer?.phone,
+      raw: data,  // ✅ كامل بيانات الطلب — template-dispatcher يستخرج الهاتف من raw.customer
       source: 'zid',
     };
 
@@ -279,8 +288,7 @@ export class ZidWebhookProcessor extends WorkerHost {
       this.logger.log(`📌 Emitting: ${specificEvent}`);
       this.eventEmitter.emit(specificEvent, eventPayload);
     } else {
-      // ✅ v2: Fallback — حالة غير معروفة → نحاول نطلق event عام
-      // نجرب أولاً: order.status.{slug} (ممكن template-dispatcher يسمعه)
+      // ✅ v3: Fallback — حالة غير معروفة → نرسل event بناءً على الـ slug
       const fallbackEvent = statusSlug ? `order.status.${statusSlug}` : 'order.status.updated';
       this.logger.warn(`⚠️ No mapping for Zid status "${statusSlug}" → emitting fallback: ${fallbackEvent}`);
       this.eventEmitter.emit(fallbackEvent, eventPayload);
@@ -291,7 +299,7 @@ export class ZidWebhookProcessor extends WorkerHost {
       action: 'order_update',
       orderId: data.id,
       statusSlug,
-      specificEvent: specificEvent || 'NONE',
+      specificEvent: specificEvent || `fallback:order.status.${statusSlug || 'updated'}`,
     };
   }
 
@@ -498,7 +506,9 @@ export class ZidWebhookProcessor extends WorkerHost {
         where: { sallaOrderId, storeId: context.storeId },
       });
 
-      const rawItems = (data.items as Record<string, unknown>[] | undefined) || [];
+      const rawItems = (data.products as Record<string, unknown>[] | undefined) 
+                     || (data.items as Record<string, unknown>[] | undefined) 
+                     || [];
       const items = rawItems.map(item => ({
         productId: String(item.product_id || item.id || ''),
         name: String(item.name || ''),
@@ -508,23 +518,29 @@ export class ZidWebhookProcessor extends WorkerHost {
         totalPrice: Number(item.total || 0),
       }));
 
+      // ✅ v3: استخراج المبلغ — زد يرسل order_total كـ object أو رقم
+      const orderTotal = data.order_total;
+      const totalAmount = typeof orderTotal === 'object' && orderTotal !== null
+        ? Number((orderTotal as Record<string, unknown>).amount || (orderTotal as Record<string, unknown>).total || 0)
+        : Number(orderTotal || data.total || 0);
+
       if (!order) {
         order = this.orderRepository.create({
           tenantId: context.tenantId,
           storeId: context.storeId,
           customerId: customerId || undefined,
           sallaOrderId,
-          referenceId: (data.order_number as string) || (data.reference_id as string) || undefined,
-          status: this.mapZidOrderStatus(data.status),
-          totalAmount: Number(data.total) || 0,
-          subtotal: Number(data.sub_total || data.total) || 0,
-          currency: String(data.currency || 'SAR'),
+          referenceId: (data.code as string) || (data.invoice_number as string) || (data.order_number as string) || undefined,
+          status: this.mapZidOrderStatus(data.order_status || data.status),
+          totalAmount,
+          subtotal: Number(data.sub_total || totalAmount) || 0,
+          currency: String(data.currency_code || data.currency || 'SAR'),
           items: items as any,
           metadata: { source: 'zid', sallaData: data } as any,
         });
       } else {
-        order.status = this.mapZidOrderStatus(data.status);
-        order.totalAmount = Number(data.total) || order.totalAmount;
+        order.status = this.mapZidOrderStatus(data.order_status || data.status);
+        order.totalAmount = totalAmount || order.totalAmount;
         if (customerId) order.customerId = customerId;
         if (items.length > 0) order.items = items as any;
         order.metadata = { ...(order.metadata || {}), source: 'zid', sallaData: data } as any;
@@ -557,7 +573,7 @@ export class ZidWebhookProcessor extends WorkerHost {
         return;
       }
 
-      order.status = this.mapZidOrderStatus(data.status);
+      order.status = this.mapZidOrderStatus(data.order_status || data.status);
       order.metadata = { ...(order.metadata || {}), source: 'zid', sallaData: { ...(order.metadata?.sallaData || {}), lastWebhookData: data } } as any;
       await this.orderRepository.save(order);
     } catch (error) {
@@ -623,38 +639,45 @@ export class ZidWebhookProcessor extends WorkerHost {
   }
 
   /**
-   * ✅ استخراج slug الحالة من بيانات زد
-   * زد يرسل status كـ string أو object: { slug, name, code }
+   * ✅ v3: استخراج slug الحالة من بيانات زد
+   *
+   * زد يرسل الحالة بعدة أشكال:
+   * 1. order_status = "جاهز" (نص عربي مباشر)
+   * 2. display_status = { slug: "ready", name: "جاهز", code: "ready" }
+   * 3. status = "ready" (نص إنجليزي)
+   *
+   * نحاول استخراج slug إنجليزي أولاً، ثم نقبل العربي
    */
   private extractZidStatusSlug(status: unknown): string {
-    if (typeof status === 'string') return status.toLowerCase();
+    if (typeof status === 'string') {
+      return status.toLowerCase().trim();
+    }
     if (typeof status === 'object' && status !== null) {
       const obj = status as Record<string, unknown>;
-      return String(
-        obj.slug || obj.code || obj.name || obj.status || '',
-      ).toLowerCase();
+      // الأولوية: slug > code > name > status
+      const slug = obj.slug || obj.code || obj.status;
+      if (slug && typeof slug === 'string') {
+        return slug.toLowerCase().trim();
+      }
+      // fallback: name (قد يكون عربي)
+      if (obj.name && typeof obj.name === 'string') {
+        return obj.name.toLowerCase().trim();
+      }
     }
     return '';
   }
 
   /**
-   * ✅ تحويل حالة زد → event محدد يسمعه template-dispatcher
+   * ✅ v3: تحويل حالة زد → event محدد يسمعه template-dispatcher
    *
-   * حالات زد:          → Events محددة:
-   * new/pending         → order.created
-   * processing/confirmed → order.status.processing
-   * ready               → order.status.ready_to_ship
-   * shipped             → order.shipped
-   * inDelivery/in_transit → order.status.in_transit
-   * delivered           → order.delivered
-   * completed           → order.status.completed
-   * cancelled/canceled  → order.cancelled
-   * refunded            → order.refunded
-   * on_hold             → order.status.on_hold
-   * paid                → order.status.paid
+   * ⚠️ زد يرسل order_status كنص عربي: "جاهز", "مكتمل", "جديد"
+   * أو display_status.slug كنص إنجليزي: "ready", "completed"
+   * نغطي الاثنين
    */
   private mapZidStatusToEvent(statusSlug: string): string | null {
     const map: Record<string, string> = {
+      // ═══ حالات بالإنجليزي ═══
+      
       // طلب جديد
       'new': 'order.created',
       'pending': 'order.created',
@@ -665,8 +688,8 @@ export class ZidWebhookProcessor extends WorkerHost {
       'confirmed': 'order.status.processing',
       'in_progress': 'order.status.processing',
       'accepted': 'order.status.processing',
-      'preparation': 'order.status.processing',
       'preparing': 'order.status.processing',
+      'preparation': 'order.status.processing',
 
       // جاهز للشحن
       'ready': 'order.status.ready_to_ship',
@@ -709,7 +732,6 @@ export class ZidWebhookProcessor extends WorkerHost {
       // مدفوع
       'paid': 'order.status.paid',
       'payment_received': 'order.status.paid',
-      'cod_confirmed': 'order.status.paid',
 
       // بانتظار الدفع
       'pending_payment': 'order.status.pending_payment',
@@ -725,45 +747,62 @@ export class ZidWebhookProcessor extends WorkerHost {
       'restoring': 'order.status.restoring',
       'restored': 'order.status.restoring',
 
-      // ═══ حالات بالعربي (زد أحياناً يرسل الحالة بالعربي) ═══
+      // ═══ حالات بالعربي (زد يرسل order_status كنص عربي) ═══
       'جديد': 'order.created',
+      'بانتظار المراجعة': 'order.status.under_review',
       'قيد التنفيذ': 'order.status.processing',
-      'جاهز للشحن': 'order.status.ready_to_ship',
+      'جاهز': 'order.status.ready_to_ship',
       'تم الشحن': 'order.shipped',
       'جاري التوصيل': 'order.status.in_transit',
       'تم التوصيل': 'order.delivered',
       'مكتمل': 'order.status.completed',
       'ملغي': 'order.cancelled',
       'مسترجع': 'order.refunded',
+      'قيد الاسترجاع': 'order.status.restoring',
       'معلق': 'order.status.on_hold',
       'مدفوع': 'order.status.paid',
       'بانتظار الدفع': 'order.status.pending_payment',
-      'بانتظار المراجعة': 'order.status.under_review',
-      'قيد الاسترجاع': 'order.status.restoring',
+      'تم التنفيذ': 'order.status.completed',
     };
 
     return map[statusSlug] || null;
   }
 
   private mapZidOrderStatus(status: unknown): OrderStatus {
-    const statusStr = typeof status === 'string' ? status.toLowerCase()
-      : typeof status === 'object' && status !== null ? String((status as Record<string, unknown>).slug || (status as Record<string, unknown>).name || '') .toLowerCase()
-      : '';
+    const statusStr = this.extractZidStatusSlug(status);
 
     const statusMap: Record<string, OrderStatus> = {
+      // English
       'new': OrderStatus.CREATED,
       'pending': OrderStatus.CREATED,
       'confirmed': OrderStatus.PROCESSING,
       'processing': OrderStatus.PROCESSING,
+      'ready': OrderStatus.READY_TO_SHIP,
+      'ready_to_ship': OrderStatus.READY_TO_SHIP,
       'shipped': OrderStatus.SHIPPED,
+      'in_transit': OrderStatus.SHIPPED,
+      'in_delivery': OrderStatus.SHIPPED,
       'delivered': OrderStatus.DELIVERED,
       'cancelled': OrderStatus.CANCELLED,
+      'canceled': OrderStatus.CANCELLED,
       'refunded': OrderStatus.REFUNDED,
       'completed': OrderStatus.COMPLETED,
       'on_hold': OrderStatus.ON_HOLD,
       'paid': OrderStatus.PAID,
-      'ready_to_ship': OrderStatus.READY_TO_SHIP,
       'failed': OrderStatus.FAILED,
+      // Arabic
+      'جديد': OrderStatus.CREATED,
+      'قيد التنفيذ': OrderStatus.PROCESSING,
+      'جاهز': OrderStatus.READY_TO_SHIP,
+      'تم الشحن': OrderStatus.SHIPPED,
+      'جاري التوصيل': OrderStatus.SHIPPED,
+      'تم التوصيل': OrderStatus.DELIVERED,
+      'مكتمل': OrderStatus.COMPLETED,
+      'تم التنفيذ': OrderStatus.COMPLETED,
+      'ملغي': OrderStatus.CANCELLED,
+      'مسترجع': OrderStatus.REFUNDED,
+      'معلق': OrderStatus.ON_HOLD,
+      'مدفوع': OrderStatus.PAID,
     };
 
     return statusMap[statusStr] || OrderStatus.CREATED;
