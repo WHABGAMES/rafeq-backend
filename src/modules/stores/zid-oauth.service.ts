@@ -32,6 +32,7 @@ import { Store, StoreStatus, StorePlatform } from './entities/store.entity';
 // Services
 import { TenantsService } from '../tenants/tenants.service';
 import { AutoRegistrationService } from '../auth/auto-registration.service';
+import { ZidApiService } from './zid-api.service';
 
 // 🔐 Encryption
 import { encrypt } from '@common/utils/encryption.util';
@@ -87,6 +88,7 @@ export class ZidOAuthService {
     private readonly storeRepository: Repository<Store>,
     private readonly tenantsService: TenantsService,
     private readonly autoRegistrationService: AutoRegistrationService,
+    private readonly zidApiService: ZidApiService,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -323,6 +325,27 @@ export class ZidOAuthService {
       }
 
       const savedStore = await this.storeRepository.save(store);
+
+      // ═══════════════════════════════════════════════════════════════════════
+      // 3.5 تسجيل Webhooks في زد (مطلوب عبر API)
+      // ═══════════════════════════════════════════════════════════════════════
+      try {
+        const baseUrl = this.configService.get<string>('app.baseUrl')
+          || this.configService.get<string>('APP_BASE_URL')
+          || 'https://api.rafeq.ai';
+        const webhookUrl = `${baseUrl}/api/webhooks/zid`;
+        const appId = this.configService.get<string>('zid.clientId') || 'rafeq-app';
+
+        const webhookTokens = {
+          managerToken: tokens.access_token,
+          authorizationToken: tokens.authorization || undefined,
+        };
+
+        const result = await this.zidApiService.registerWebhooks(webhookTokens, webhookUrl, appId);
+        this.logger.log(`🔔 Zid webhooks: registered=${result.registered.join(',')} | failed=${result.failed.join(',') || 'none'}`);
+      } catch (error: any) {
+        this.logger.warn(`⚠️ Zid webhook registration failed (non-fatal): ${error.message}`);
+      }
 
       // ═══════════════════════════════════════════════════════════════════════
       // 4. إنشاء/تحديث المستخدم + إرسال بيانات الدخول
