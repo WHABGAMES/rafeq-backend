@@ -19,7 +19,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, DeepPartial } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
 // 🔐 Encryption
@@ -641,6 +641,18 @@ export class StoresService {
     return this.storeRepository.findOne({
       where: { zidStoreId },
     });
+  }
+
+  async update(storeId: string, updateData: DeepPartial<Store>): Promise<Store> {
+    // First verify the store exists
+    const existing = await this.storeRepository.findOne({ where: { id: storeId } });
+    if (!existing) {
+      throw new NotFoundException(`Store ${storeId} not found`);
+    }
+    
+    // Merge the update data with the existing store and save
+    const updated = this.storeRepository.merge(existing, updateData);
+    return await this.storeRepository.save(updated);
   }
 
   async updateSettings(
