@@ -389,8 +389,24 @@ export class ZidApiService {
     appId: string,
   ): Promise<{ registered: string[]; failed: string[] }> {
     const events = [
+      // Order events
       'order.create',
       'order.status.update',
+      'order.payment_status.update',
+      
+      // Customer events
+      'customer.create',
+      'customer.update',
+      
+      // Product events
+      'product.create',
+      'product.update',
+      
+      // Cart events
+      'abandoned_cart.created',
+      
+      // App lifecycle
+      'app.uninstalled',
     ];
 
     const registered: string[] = [];

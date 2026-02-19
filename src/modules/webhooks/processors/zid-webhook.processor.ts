@@ -142,13 +142,15 @@ export class ZidWebhookProcessor extends WorkerHost {
           result = await this.handleInventoryLow(data, context);
           break;
 
-        // App
+        // App lifecycle
         case 'app-installed':
         case 'app.installed':
-        case 'app-uninstalled':
-        case 'app.uninstalled':
           result = { handled: true, action: eventType };
           this.eventEmitter.emit(eventType, { tenantId, storeId: internalStoreId, raw: data });
+          break;
+        case 'app-uninstalled':
+        case 'app.uninstalled':
+          result = await this.handleAppUninstalled(data, context);
           break;
 
         default:
@@ -398,6 +400,82 @@ export class ZidWebhookProcessor extends WorkerHost {
     });
 
     return { handled: true, action: 'customer_update', customerId: data.id };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🚫 App Lifecycle Handlers
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * ✅ معالجة app.uninstalled
+   * عندما يقوم التاجر بإلغاء تثبيت التطبيق من متجره
+   */
+  private async handleAppUninstalled(
+    data: Record<string, unknown>,
+    context: { tenantId?: string; storeId?: string; webhookEventId: string },
+  ): Promise<Record<string, unknown>> {
+    this.logger.log('🗑️ Processing app.uninstalled', { 
+      storeId: data.store_id || context.storeId,
+      zidStoreId: data.store_id,
+    });
+
+    const zidStoreId = data.store_id ? String(data.store_id) : undefined;
+    
+    if (!zidStoreId) {
+      this.logger.warn('⚠️ No store_id in app.uninstalled payload');
+      return { handled: false, error: 'Missing store_id' };
+    }
+
+    // تحديث حالة المتجر في قاعدة البيانات
+    try {
+      // البحث عن المتجر بـ zidStoreId
+      const store = await this.orderRepository.manager
+        .createQueryBuilder()
+        .select('store')
+        .from('stores', 'store')
+        .where('store.zid_store_id = :zidStoreId', { zidStoreId })
+        .getOne();
+
+      if (store) {
+        // تحديث الحالة إلى UNINSTALLED
+        await this.orderRepository.manager
+          .createQueryBuilder()
+          .update('stores')
+          .set({
+            status: 'uninstalled',
+            access_token: null,
+            refresh_token: null,
+            token_expires_at: null,
+            updated_at: new Date(),
+          })
+          .where('id = :id', { id: store.id })
+          .execute();
+
+        this.logger.log(`✅ Store marked as uninstalled: ${store.id}`);
+
+        // إطلاق حدث للإشعار
+        this.eventEmitter.emit('store.uninstalled', {
+          tenantId: store.tenant_id,
+          storeId: store.id,
+          zidStoreId,
+          uninstalledAt: new Date().toISOString(),
+        });
+
+        return { 
+          handled: true, 
+          action: 'app_uninstalled', 
+          storeId: store.id,
+          emittedEvent: 'store.uninstalled',
+        };
+      } else {
+        this.logger.warn(`⚠️ Store not found for Zid store ${zidStoreId}`);
+        return { handled: false, error: 'Store not found' };
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Unknown';
+      this.logger.error(`❌ Failed to handle app.uninstalled: ${msg}`);
+      throw error;
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
