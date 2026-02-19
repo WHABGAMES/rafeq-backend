@@ -786,11 +786,38 @@ export class StoresService {
   // 🔐 Token Management (مع تشفير/فك تشفير)
   // ═══════════════════════════════════════════════════════════════════════════════
 
+  /**
+   * Check if store's access token is expired
+   * @param store Store entity with tokenExpiresAt
+   * @returns true if token is expired or expiring within 5 minutes
+   */
+  private isTokenExpired(store: Store): boolean {
+    if (!store.tokenExpiresAt) {
+      this.logger.warn(`Store ${store.id} has no tokenExpiresAt - assuming expired`);
+      return true;
+    }
+
+    // Consider token expired if less than 5 minutes remaining
+    const expiryBuffer = 5 * 60 * 1000; // 5 minutes in ms
+    const timeUntilExpiry = new Date(store.tokenExpiresAt).getTime() - Date.now();
+    const isExpired = timeUntilExpiry < expiryBuffer;
+
+    if (isExpired) {
+      this.logger.log(`Token expired for store ${store.id} (expires: ${store.tokenExpiresAt}, remaining: ${Math.floor(timeUntilExpiry / 1000)}s)`);
+    }
+
+    return isExpired;
+  }
+
   async ensureValidToken(store: Store): Promise<string> {
     // 🔐 فك تشفير التوكن الحالي
     const currentToken = this.getDecryptedAccessToken(store);
 
-    if (!store.needsTokenRefresh && currentToken) {
+    // ✅ FIX: Check token expiry before returning
+    const isExpired = this.isTokenExpired(store);
+
+    if (!store.needsTokenRefresh && currentToken && !isExpired) {
+      this.logger.debug(`Using valid token for store ${store.id}`);
       return currentToken;
     }
 
@@ -841,6 +868,8 @@ export class StoresService {
       store.consecutiveErrors = 0;
 
       await this.storeRepository.save(store);
+
+      this.logger.log(`✅ Token refreshed successfully for store ${store.id} (${store.platform})`);
 
       return tokens.access_token;
 
@@ -1015,7 +1044,16 @@ export class StoresService {
       this.logger.debug(`Store stats for ${store.id}: orders=${stats.orders}, products=${stats.products}, customers=${stats.customers}`);
 
     } catch (error: any) {
-      this.logger.warn(`Failed to fetch stats for store ${store.id}: ${error.message}`);
+      const status = error?.response?.status;
+
+      if (status === 401) {
+        this.logger.error(`Authentication failed for store ${store.id} - token may be invalid or revoked`, {
+          platform: store.platform,
+          error: error?.response?.data,
+        });
+      } else {
+        this.logger.warn(`Failed to fetch stats for store ${store.id}: ${error.message}`);
+      }
     }
 
     return stats;
