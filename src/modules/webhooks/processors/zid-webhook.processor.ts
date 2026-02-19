@@ -437,12 +437,18 @@ export class ZidWebhookProcessor extends WorkerHost {
       });
 
       if (store) {
-        // تحديث الحالة إلى UNINSTALLED using Store entity and enum
-        store.status = StoreStatus.UNINSTALLED;
-        store.accessToken = undefined;
-        store.refreshToken = undefined;
-        store.tokenExpiresAt = undefined;
-        await this.storeRepository.save(store);
+        // تحديث الحالة إلى UNINSTALLED using Store repository with raw query for nullable fields
+        await this.storeRepository
+          .createQueryBuilder()
+          .update(Store)
+          .set({
+            status: StoreStatus.UNINSTALLED,
+            accessToken: () => 'NULL',
+            refreshToken: () => 'NULL',
+            tokenExpiresAt: () => 'NULL',
+          })
+          .where('id = :id', { id: store.id })
+          .execute();
 
         this.logger.log(`✅ Store marked as uninstalled: ${store.id}`);
 
