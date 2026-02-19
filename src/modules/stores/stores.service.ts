@@ -643,6 +643,15 @@ export class StoresService {
     });
   }
 
+  async update(storeId: string, updateData: Partial<Store>): Promise<Store> {
+    await this.storeRepository.update(storeId, updateData as any);
+    const updated = await this.storeRepository.findOne({ where: { id: storeId } });
+    if (!updated) {
+      throw new NotFoundException(`Store ${storeId} not found after update`);
+    }
+    return updated;
+  }
+
   async updateSettings(
     tenantId: string,
     storeId: string,
