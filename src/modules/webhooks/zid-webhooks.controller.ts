@@ -48,10 +48,16 @@ export class ZidWebhooksController {
 
     this.isProduction = this.configService.get<string>('NODE_ENV') === 'production';
 
+    // ✅ Enforce secret in production
+    if (this.isProduction && !this.webhookSecret) {
+      this.logger.error('❌ CRITICAL: ZID_WEBHOOK_SECRET is REQUIRED in production mode');
+      throw new Error('ZID_WEBHOOK_SECRET environment variable is not set');
+    }
+
     if (this.webhookSecret) {
-      this.logger.log(`✅ Zid webhook secret loaded (length: ${this.webhookSecret.length})`);
+      this.logger.log(`🔐 Zid webhook secret loaded (length: ${this.webhookSecret.length})`);
     } else {
-      this.logger.warn('⚠️ ZID_WEBHOOK_SECRET is not configured — signature verification disabled');
+      this.logger.warn('⚠️ Zid webhook secret NOT SET - signature verification DISABLED (development only)');
     }
   }
 

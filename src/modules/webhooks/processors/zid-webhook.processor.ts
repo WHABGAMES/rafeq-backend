@@ -18,6 +18,7 @@ import { WebhookStatus } from '@database/entities/webhook-event.entity';
 import { WebhookLogAction } from '../entities/webhook-log.entity';
 import { Order, OrderStatus } from '@database/entities/order.entity';
 import { Customer, CustomerStatus } from '@database/entities/customer.entity';
+import { Store, StoreStatus } from '../../../modules/stores/entities/store.entity';
 
 interface ZidWebhookJobData {
   webhookEventId: string;
@@ -43,6 +44,8 @@ export class ZidWebhookProcessor extends WorkerHost {
     private readonly orderRepository: Repository<Order>,
     @InjectRepository(Customer)
     private readonly customerRepository: Repository<Customer>,
+    @InjectRepository(Store)
+    private readonly storeRepository: Repository<Store>,
   ) {
     super();
   }
@@ -142,13 +145,15 @@ export class ZidWebhookProcessor extends WorkerHost {
           result = await this.handleInventoryLow(data, context);
           break;
 
-        // App
+        // App lifecycle
         case 'app-installed':
         case 'app.installed':
-        case 'app-uninstalled':
-        case 'app.uninstalled':
           result = { handled: true, action: eventType };
           this.eventEmitter.emit(eventType, { tenantId, storeId: internalStoreId, raw: data });
+          break;
+        case 'app-uninstalled':
+        case 'app.uninstalled':
+          result = await this.handleAppUninstalled(data, context);
           break;
 
         default:
@@ -398,6 +403,78 @@ export class ZidWebhookProcessor extends WorkerHost {
     });
 
     return { handled: true, action: 'customer_update', customerId: data.id };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🚫 App Lifecycle Handlers
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * ✅ معالجة app.uninstalled
+   * عندما يقوم التاجر بإلغاء تثبيت التطبيق من متجره
+   */
+  private async handleAppUninstalled(
+    data: Record<string, unknown>,
+    context: { tenantId?: string; storeId?: string; webhookEventId: string },
+  ): Promise<Record<string, unknown>> {
+    this.logger.log('🗑️ Processing app.uninstalled', { 
+      storeId: data.store_id || context.storeId,
+      zidStoreId: data.store_id,
+    });
+
+    const zidStoreId = data.store_id ? String(data.store_id) : undefined;
+    
+    if (!zidStoreId) {
+      this.logger.warn('⚠️ No store_id in app.uninstalled payload');
+      return { handled: false, error: 'Missing store_id' };
+    }
+
+    // تحديث حالة المتجر في قاعدة البيانات
+    try {
+      // البحث عن المتجر بـ zidStoreId using Store repository
+      const store = await this.storeRepository.findOne({
+        where: { zidStoreId },
+      });
+
+      if (store) {
+        // تحديث الحالة إلى UNINSTALLED using Store repository with raw query for nullable fields
+        await this.storeRepository
+          .createQueryBuilder()
+          .update(Store)
+          .set({
+            status: StoreStatus.UNINSTALLED,
+            accessToken: () => 'NULL',
+            refreshToken: () => 'NULL',
+            tokenExpiresAt: () => 'NULL',
+          })
+          .where('id = :id', { id: store.id })
+          .execute();
+
+        this.logger.log(`✅ Store marked as uninstalled: ${store.id}`);
+
+        // إطلاق حدث للإشعار
+        this.eventEmitter.emit('store.uninstalled', {
+          tenantId: store.tenantId,
+          storeId: store.id,
+          zidStoreId,
+          uninstalledAt: new Date().toISOString(),
+        });
+
+        return { 
+          handled: true, 
+          action: 'app_uninstalled', 
+          storeId: store.id,
+          emittedEvent: 'store.uninstalled',
+        };
+      } else {
+        this.logger.warn(`⚠️ Store not found for Zid store ${zidStoreId}`);
+        return { handled: false, error: 'Store not found' };
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Unknown';
+      this.logger.error(`❌ Failed to handle app.uninstalled: ${msg}`);
+      throw error;
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
