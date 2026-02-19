@@ -267,6 +267,7 @@ export class StoresService {
         throw new ConflictException('هذا المتجر مربوط بحساب آخر');
       }
 
+      // Note: existingStore.tenantId will be saved in updateZidStoreConnection()
       return this.updateZidStoreConnection(existingStore, tokens, storeInfo);
     }
 
@@ -674,7 +675,10 @@ export class StoresService {
   }
 
   /**
-   * ✅ Generic update method for updating store fields
+   * Generic update method for updating non-sensitive store fields.
+   * 
+   * Note: This method should only be used for updating non-sensitive fields.
+   * For updating tokens, use the appropriate OAuth service methods.
    * 
    * @param storeId - Store UUID
    * @param updateData - Partial store data to update
