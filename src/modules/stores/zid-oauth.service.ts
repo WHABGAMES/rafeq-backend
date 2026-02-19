@@ -254,6 +254,7 @@ export class ZidOAuthService {
       const zidStoreId = String(storeInfo.id); // ✅ Ensure string type
       let store = await this.storeRepository.findOne({
         where: { zidStoreId },
+        withDeleted: true,  // ✅ Include soft-deleted stores to handle re-installation after deletion
       });
 
       let isNewStore = false;
@@ -263,6 +264,13 @@ export class ZidOAuthService {
         // 🔄 UPDATE existing store (re-installation scenario)
         // ════════════════════════════════════════════════════════════════════
         this.logger.log(`🔄 Updating existing Zid store: ${zidStoreId} (DB ID: ${store.id})`);
+
+        // ♻️ Restore soft-deleted store if merchant is re-installing
+        if (store.deletedAt) {
+          await this.storeRepository.restore(store.id);
+          store.deletedAt = undefined;
+          this.logger.log(`♻️ Restoring soft-deleted Zid store: ${zidStoreId}`);
+        }
 
         this.updateZidStoreFields(store, tokens, storeInfo);
 
@@ -332,14 +340,22 @@ export class ZidOAuthService {
         if (saveError.code === '23505' || saveError.message?.includes('duplicate key')) {
           this.logger.warn(`⚠️ Duplicate key detected for ${zidStoreId}, re-querying and updating...`);
           
-          // Re-query the existing store
+          // Re-query the existing store (including soft-deleted)
           const existingStore = await this.storeRepository.findOne({
             where: { zidStoreId },
+            withDeleted: true,  // ✅ Must include soft-deleted to resolve constraint violation
           });
           
           if (!existingStore) {
             // This shouldn't happen, but handle it anyway
-            throw saveError;
+            this.logger.error(`❌ Duplicate key but store not found: ${zidStoreId}`);
+            throw new Error('Database inconsistency detected');
+          }
+          
+          // ♻️ Restore soft-deleted store if needed
+          if (existingStore.deletedAt) {
+            await this.storeRepository.restore(existingStore.id);
+            existingStore.deletedAt = undefined;
           }
           
           // Update the existing store using shared logic
