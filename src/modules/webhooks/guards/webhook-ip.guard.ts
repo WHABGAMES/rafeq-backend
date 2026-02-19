@@ -44,7 +44,11 @@ const SALLA_KNOWN_IPS: string[] = [
 ];
 
 const ZID_KNOWN_IPS: string[] = [
-  // Zid production servers — يُضاف عند التوثيق
+  // ✅ Confirmed from production logs (Feb 2026)
+  '108.128.244.94',
+
+  // TODO: Contact Zid support for official IP ranges
+  // Update this list as more Zid server IPs are identified
   // المصدر الرئيسي: WEBHOOK_ALLOWED_IPS في .env
 ];
 
