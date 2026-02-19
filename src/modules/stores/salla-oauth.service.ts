@@ -328,7 +328,7 @@ export class SallaOAuthService {
       this.logger.log(`📊 Merchant: ${merchantInfo.id} — ${merchantInfo.name}`);
 
       // 3. البحث عن متجر موجود أو إنشاء جديد
-      const sallaMerchantId = String(merchantInfo.id); // ✅ Ensure string type
+      const sallaMerchantId = merchantInfo.id; // ✅ Use number type as expected
       let store = await this.findStoreBySallaMerchantId(sallaMerchantId);
 
       let isNewStore = false;
