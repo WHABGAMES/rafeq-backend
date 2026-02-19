@@ -133,7 +133,13 @@ export class StoresService {
     const authorizationToken = encryptedAuth ? decryptSafe(encryptedAuth) : null;
 
     if (!authorizationToken) {
-      this.logger.warn(`⚠️ Zid store ${store.id} missing authorizationToken — API calls may fail`);
+      this.logger.warn(`⚠️ Zid store ${store.id} has no authorization token - using access token only`, {
+        storeName: store.name || store.zidStoreName,
+        zidStoreId: store.zidStoreId,
+        note: 'Some Zid API endpoints may fail without authorization token',
+      });
+    } else {
+      this.logger.debug(`Using Zid tokens for store ${store.id} (both access + authorization)`);
     }
 
     return {
@@ -1045,11 +1051,14 @@ export class StoresService {
 
     } catch (error: any) {
       const status = error?.response?.status;
+      const errorDetail = error?.response?.data?.detail || error?.response?.data?.message;
 
       if (status === 401) {
-        this.logger.error(`Authentication failed for store ${store.id} - token may be invalid or revoked`, {
+        this.logger.error(`❌ Zid authentication failed for store ${store.id}`, {
           platform: store.platform,
-          error: error?.response?.data,
+          error: errorDetail,
+          storeName: store.name || store.zidStoreName,
+          hint: 'Store may need reconnection',
         });
       } else {
         this.logger.warn(`Failed to fetch stats for store ${store.id}: ${error.message}`);

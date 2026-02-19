@@ -120,6 +120,7 @@ export class ZidApiService {
   async getOrders(
     tokens: ZidAuthTokens,
     params: { page?: number; per_page?: number; status?: string } = {},
+    _retryWithoutAuth = false,
   ): Promise<ZidApiResponse<ZidOrder[]>> {
     try {
       const queryParams = new URLSearchParams();
@@ -137,9 +138,25 @@ export class ZidApiService {
       this.logger.debug(`Fetched ${response.data.data?.length || 0} orders from Zid`);
       return response.data;
     } catch (error: any) {
+      const status = error?.response?.status;
+      const errorDetail = error?.response?.data?.detail || error?.response?.data?.message;
+
+      // ✅ FIX: Retry without authorization token on "No such user" 401 error
+      if (status === 401 && errorDetail?.includes('No such user') && !_retryWithoutAuth) {
+        this.logger.warn('⚠️ Zid API 401 "No such user" - retrying orders without authorization token', {
+          error: errorDetail,
+        });
+        return this.getOrders(
+          { managerToken: tokens.managerToken, authorizationToken: undefined },
+          params,
+          true,
+        );
+      }
+
       this.logger.error('Failed to fetch Zid orders', {
         error: error?.response?.data || error.message,
-        status: error?.response?.status,
+        status,
+        hasAuthToken: !!tokens.authorizationToken,
       });
       throw error;
     }
@@ -170,6 +187,7 @@ export class ZidApiService {
   async getCustomers(
     tokens: ZidAuthTokens,
     params: { page?: number; per_page?: number; search?: string } = {},
+    _retryWithoutAuth = false,
   ): Promise<ZidApiResponse<ZidCustomer[]>> {
     try {
       const queryParams = new URLSearchParams();
@@ -187,9 +205,25 @@ export class ZidApiService {
       this.logger.debug(`Fetched ${response.data.data?.length || 0} customers from Zid`);
       return response.data;
     } catch (error: any) {
+      const status = error?.response?.status;
+      const errorDetail = error?.response?.data?.detail || error?.response?.data?.message;
+
+      // ✅ FIX: Retry without authorization token on "No such user" 401 error
+      if (status === 401 && errorDetail?.includes('No such user') && !_retryWithoutAuth) {
+        this.logger.warn('⚠️ Zid API 401 "No such user" - retrying customers without authorization token', {
+          error: errorDetail,
+        });
+        return this.getCustomers(
+          { managerToken: tokens.managerToken, authorizationToken: undefined },
+          params,
+          true,
+        );
+      }
+
       this.logger.error('Failed to fetch Zid customers', {
         error: error?.response?.data || error.message,
-        status: error?.response?.status,
+        status,
+        hasAuthToken: !!tokens.authorizationToken,
       });
       throw error;
     }
@@ -229,6 +263,7 @@ export class ZidApiService {
   async getProducts(
     tokens: ZidAuthTokens,
     params: { page?: number; per_page?: number; status?: string } = {},
+    _retryWithoutAuth = false,
   ): Promise<ZidApiResponse<ZidProduct[]>> {
     try {
       const queryParams = new URLSearchParams();
@@ -259,9 +294,25 @@ export class ZidApiService {
         },
       } as ZidApiResponse<ZidProduct[]>;
     } catch (error: any) {
+      const status = error?.response?.status;
+      const errorDetail = error?.response?.data?.detail || error?.response?.data?.message;
+
+      // ✅ FIX: Retry without authorization token on "No such user" 401 error
+      if (status === 401 && errorDetail?.includes('No such user') && !_retryWithoutAuth) {
+        this.logger.warn('⚠️ Zid API 401 "No such user" - retrying products without authorization token', {
+          error: errorDetail,
+        });
+        return this.getProducts(
+          { managerToken: tokens.managerToken, authorizationToken: undefined },
+          params,
+          true,
+        );
+      }
+
       this.logger.error('Failed to fetch Zid products', {
         error: error?.response?.data || error.message,
-        status: error?.response?.status,
+        status,
+        hasAuthToken: !!tokens.authorizationToken,
       });
       throw error;
     }

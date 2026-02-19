@@ -239,6 +239,37 @@ export class ZidOAuthService {
         authorization: tokenData.authorization,
       };
 
+      // ✅ FIX: If authorization token is missing from OAuth response, try to retrieve it
+      // from the Zid account endpoint. This handles the reactivation scenario where Zid
+      // may not include the authorization field in the token response.
+      if (!tokens.authorization) {
+        this.logger.warn('⚠️ Authorization token not in OAuth response - attempting to retrieve from Zid account');
+        try {
+          const accountResp = await firstValueFrom(
+            this.httpService.get(`${this.ZID_API_URL}/account`, {
+              headers: {
+                'Authorization': `Bearer ${tokens.access_token}`,
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+              },
+            }),
+          );
+          const authToken = accountResp.data?.authorization
+            || accountResp.data?.data?.authorization
+            || accountResp.data?.user?.authorization;
+          if (authToken) {
+            tokens.authorization = authToken;
+            this.logger.log('✅ Retrieved authorization token from Zid account endpoint');
+          } else {
+            this.logger.warn('⚠️ Authorization token not available from Zid account endpoint - will proceed with access token only');
+          }
+        } catch (error: any) {
+          this.logger.warn('⚠️ Could not fetch authorization from Zid account endpoint', {
+            error: error?.response?.data || error.message,
+          });
+        }
+      }
+
       // ═══════════════════════════════════════════════════════════════════════
       // 2. جلب بيانات المتجر
       // ═══════════════════════════════════════════════════════════════════════
@@ -740,10 +771,20 @@ export class ZidOAuthService {
 
     // ✅ حفظ authorization token (JWT) في settings
     if (tokens.authorization) {
+      // New authorization token provided — update it
       store.settings = {
         ...(store.settings || {}),
         zidAuthorizationToken: encrypt(tokens.authorization),
       };
+      this.logger.log(`✅ Authorization token updated for store ${store.zidStoreId}`);
+    } else {
+      // ✅ FIX: Clear old (potentially invalid) authorization token when Zid does not return one
+      // This prevents using a revoked token from a previous connection after reactivation
+      const { zidAuthorizationToken: _removed, ...otherSettings } = (store.settings as any) || {};
+      store.settings = otherSettings;
+      this.logger.warn(`⚠️ No authorization token from Zid - cleared old token for store ${store.zidStoreId}`, {
+        storeName: store.zidStoreName,
+      });
     }
   }
 
