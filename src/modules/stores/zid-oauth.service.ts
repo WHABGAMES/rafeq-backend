@@ -251,11 +251,19 @@ export class ZidOAuthService {
       // ═══════════════════════════════════════════════════════════════════════
       // 3. البحث عن متجر موجود أو إنشاء جديد
       // ═══════════════════════════════════════════════════════════════════════
+      const zidStoreId = String(storeInfo.id); // ✅ Ensure string type
       let store = await this.storeRepository.findOne({
-        where: { zidStoreId: storeInfo.id },
+        where: { zidStoreId },
       });
 
+      let isNewStore = false;
+
       if (store) {
+        // ════════════════════════════════════════════════════════════════════
+        // 🔄 UPDATE existing store (re-installation scenario)
+        // ════════════════════════════════════════════════════════════════════
+        this.logger.log(`🔄 Updating existing Zid store: ${zidStoreId} (DB ID: ${store.id})`);
+
         store.accessToken = encrypt(tokens.access_token) ?? undefined;
         store.refreshToken = encrypt(tokens.refresh_token) ?? undefined;
         store.tokenExpiresAt = this.calculateTokenExpiry(tokens.expires_in);
@@ -282,18 +290,23 @@ export class ZidOAuthService {
         if (!store.tenantId) {
           const tenantId = await this.resolveOrCreateTenant(storeInfo);
           store.tenantId = tenantId;
+          this.logger.log(`🔗 Linking store to tenant ${tenantId}`);
         }
-
-        this.logger.log(`📦 Updated existing Zid store: ${store.id}`);
       } else {
+        // ════════════════════════════════════════════════════════════════════
+        // 🆕 CREATE new store (first-time installation)
+        // ════════════════════════════════════════════════════════════════════
+        isNewStore = true;
+        this.logger.log(`🆕 Creating new Zid store: ${zidStoreId}`);
+
         const tenantId = await this.resolveOrCreateTenant(storeInfo);
 
         store = this.storeRepository.create({
           tenantId,
-          name: storeInfo.name || `متجر زد ${storeInfo.id}`,
+          name: storeInfo.name || `متجر زد ${zidStoreId}`,
           platform: StorePlatform.ZID,
           status: StoreStatus.ACTIVE,
-          zidStoreId: storeInfo.id,
+          zidStoreId,
           zidStoreUuid: storeInfo.uuid,
           accessToken: encrypt(tokens.access_token) ?? undefined,
           refreshToken: encrypt(tokens.refresh_token) ?? undefined,
@@ -306,6 +319,7 @@ export class ZidOAuthService {
           zidCurrency: storeInfo.currency,
           zidLanguage: storeInfo.language,
           lastSyncedAt: new Date(),
+          lastTokenRefreshAt: new Date(),
           settings: {
             autoReply: true,
             welcomeMessageEnabled: true,
@@ -320,11 +334,69 @@ export class ZidOAuthService {
             'order.status.updated',
           ],
         });
-
-        this.logger.log(`🆕 Created new Zid store: ${storeInfo.id} → tenant ${tenantId}`);
       }
 
-      const savedStore = await this.storeRepository.save(store);
+      // ═════════════════════════════════════════════════════════════════════
+      // 💾 Save store (with duplicate key handling)
+      // ═════════════════════════════════════════════════════════════════════
+      let savedStore: Store;
+      try {
+        savedStore = await this.storeRepository.save(store);
+        
+        if (isNewStore) {
+          this.logger.log(`✅ Zid store created: ${zidStoreId} → tenant ${store.tenantId}`);
+        } else {
+          this.logger.log(`✅ Zid store updated: ${zidStoreId} → tenant ${store.tenantId}`);
+        }
+      } catch (saveError: any) {
+        // Handle duplicate key constraint violation (race condition)
+        if (saveError.code === '23505' || saveError.message?.includes('duplicate key')) {
+          this.logger.warn(`⚠️ Duplicate key detected for ${zidStoreId}, re-querying and updating...`);
+          
+          // Re-query the existing store
+          const existingStore = await this.storeRepository.findOne({
+            where: { zidStoreId },
+          });
+          
+          if (!existingStore) {
+            // This shouldn't happen, but handle it anyway
+            throw saveError;
+          }
+          
+          // Update the existing store
+          existingStore.accessToken = encrypt(tokens.access_token) ?? undefined;
+          existingStore.refreshToken = encrypt(tokens.refresh_token) ?? undefined;
+          existingStore.tokenExpiresAt = this.calculateTokenExpiry(tokens.expires_in);
+          existingStore.lastTokenRefreshAt = new Date();
+          existingStore.status = StoreStatus.ACTIVE;
+          existingStore.consecutiveErrors = 0;
+          existingStore.lastError = undefined;
+          existingStore.zidStoreName = storeInfo.name || existingStore.zidStoreName;
+          existingStore.zidEmail = storeInfo.email || existingStore.zidEmail;
+          existingStore.zidMobile = storeInfo.mobile || existingStore.zidMobile;
+          existingStore.zidDomain = storeInfo.url || existingStore.zidDomain;
+          existingStore.zidLogo = storeInfo.logo || existingStore.zidLogo;
+          existingStore.zidCurrency = storeInfo.currency || existingStore.zidCurrency;
+          existingStore.zidLanguage = storeInfo.language || existingStore.zidLanguage;
+          
+          if (tokens.authorization) {
+            existingStore.settings = {
+              ...(existingStore.settings || {}),
+              zidAuthorizationToken: encrypt(tokens.authorization),
+            };
+          }
+          
+          if (!existingStore.tenantId && store.tenantId) {
+            existingStore.tenantId = store.tenantId;
+            this.logger.log(`🔗 Linking store to tenant ${store.tenantId}`);
+          }
+          
+          savedStore = await this.storeRepository.save(existingStore);
+          this.logger.log(`✅ Zid store updated after retry: ${zidStoreId} → tenant ${savedStore.tenantId}`);
+        } else {
+          throw saveError;
+        }
+      }
 
       // ═══════════════════════════════════════════════════════════════════════
       // 3.5 تسجيل Webhooks في زد (مطلوب عبر API)
