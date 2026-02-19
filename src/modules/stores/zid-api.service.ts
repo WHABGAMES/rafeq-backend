@@ -456,8 +456,8 @@ export class ZidApiService {
       // Cart events
       'abandoned_cart.created',
       
-      // App lifecycle
-      'app.uninstalled',
+      // ❌ REMOVED: Zid doesn't support app.uninstalled webhook (returns 422 validation error)
+      // 'app.uninstalled',
     ];
 
     const registered: string[] = [];
