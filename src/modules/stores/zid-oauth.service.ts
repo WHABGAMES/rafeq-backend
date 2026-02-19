@@ -264,28 +264,7 @@ export class ZidOAuthService {
         // ════════════════════════════════════════════════════════════════════
         this.logger.log(`🔄 Updating existing Zid store: ${zidStoreId} (DB ID: ${store.id})`);
 
-        store.accessToken = encrypt(tokens.access_token) ?? undefined;
-        store.refreshToken = encrypt(tokens.refresh_token) ?? undefined;
-        store.tokenExpiresAt = this.calculateTokenExpiry(tokens.expires_in);
-        store.lastTokenRefreshAt = new Date();
-        store.status = StoreStatus.ACTIVE;
-        store.consecutiveErrors = 0;
-        store.lastError = undefined;
-        store.zidStoreName = storeInfo.name || store.zidStoreName;
-        store.zidEmail = storeInfo.email || store.zidEmail;
-        store.zidMobile = storeInfo.mobile || store.zidMobile;
-        store.zidDomain = storeInfo.url || store.zidDomain;
-        store.zidLogo = storeInfo.logo || store.zidLogo;
-        store.zidCurrency = storeInfo.currency || store.zidCurrency;
-        store.zidLanguage = storeInfo.language || store.zidLanguage;
-
-        // ✅ حفظ authorization token (JWT) في settings
-        if (tokens.authorization) {
-          store.settings = {
-            ...(store.settings || {}),
-            zidAuthorizationToken: encrypt(tokens.authorization),
-          };
-        }
+        this.updateZidStoreFields(store, tokens, storeInfo);
 
         if (!store.tenantId) {
           const tenantId = await this.resolveOrCreateTenant(storeInfo);
@@ -363,28 +342,8 @@ export class ZidOAuthService {
             throw saveError;
           }
           
-          // Update the existing store
-          existingStore.accessToken = encrypt(tokens.access_token) ?? undefined;
-          existingStore.refreshToken = encrypt(tokens.refresh_token) ?? undefined;
-          existingStore.tokenExpiresAt = this.calculateTokenExpiry(tokens.expires_in);
-          existingStore.lastTokenRefreshAt = new Date();
-          existingStore.status = StoreStatus.ACTIVE;
-          existingStore.consecutiveErrors = 0;
-          existingStore.lastError = undefined;
-          existingStore.zidStoreName = storeInfo.name || existingStore.zidStoreName;
-          existingStore.zidEmail = storeInfo.email || existingStore.zidEmail;
-          existingStore.zidMobile = storeInfo.mobile || existingStore.zidMobile;
-          existingStore.zidDomain = storeInfo.url || existingStore.zidDomain;
-          existingStore.zidLogo = storeInfo.logo || existingStore.zidLogo;
-          existingStore.zidCurrency = storeInfo.currency || existingStore.zidCurrency;
-          existingStore.zidLanguage = storeInfo.language || existingStore.zidLanguage;
-          
-          if (tokens.authorization) {
-            existingStore.settings = {
-              ...(existingStore.settings || {}),
-              zidAuthorizationToken: encrypt(tokens.authorization),
-            };
-          }
+          // Update the existing store using shared logic
+          this.updateZidStoreFields(existingStore, tokens, storeInfo);
           
           if (!existingStore.tenantId && store.tenantId) {
             existingStore.tenantId = store.tenantId;
@@ -738,6 +697,39 @@ export class ZidOAuthService {
   // ═══════════════════════════════════════════════════════════════════════════════
   // ✅ البحث عن tenant موجود أو إنشاء جديد
   // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Helper method to update an existing Zid store with new tokens and info
+   * Used both in normal update path and duplicate key retry path
+   */
+  private updateZidStoreFields(
+    store: Store,
+    tokens: ZidTokenResponse,
+    storeInfo: ZidStoreInfo,
+  ): void {
+    store.accessToken = encrypt(tokens.access_token) ?? undefined;
+    store.refreshToken = encrypt(tokens.refresh_token) ?? undefined;
+    store.tokenExpiresAt = this.calculateTokenExpiry(tokens.expires_in);
+    store.lastTokenRefreshAt = new Date();
+    store.status = StoreStatus.ACTIVE;
+    store.consecutiveErrors = 0;
+    store.lastError = undefined;
+    store.zidStoreName = storeInfo.name || store.zidStoreName;
+    store.zidEmail = storeInfo.email || store.zidEmail;
+    store.zidMobile = storeInfo.mobile || store.zidMobile;
+    store.zidDomain = storeInfo.url || store.zidDomain;
+    store.zidLogo = storeInfo.logo || store.zidLogo;
+    store.zidCurrency = storeInfo.currency || store.zidCurrency;
+    store.zidLanguage = storeInfo.language || store.zidLanguage;
+
+    // ✅ حفظ authorization token (JWT) في settings
+    if (tokens.authorization) {
+      store.settings = {
+        ...(store.settings || {}),
+        zidAuthorizationToken: encrypt(tokens.authorization),
+      };
+    }
+  }
 
   private async resolveOrCreateTenant(storeInfo: ZidStoreInfo): Promise<string> {
     if (storeInfo.email) {

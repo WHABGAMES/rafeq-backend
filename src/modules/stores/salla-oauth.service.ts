@@ -339,19 +339,7 @@ export class SallaOAuthService {
         // ════════════════════════════════════════════════════════════════════
         this.logger.log(`🔄 Updating existing Salla store: ${sallaMerchantId} (DB ID: ${store.id})`);
 
-        store.accessToken = encrypt(tokens.access_token) ?? undefined;
-        store.refreshToken = encrypt(tokens.refresh_token) ?? undefined;
-        store.tokenExpiresAt = this.calculateTokenExpiry(tokens.expires_in);
-        store.lastTokenRefreshAt = new Date();
-        store.status = StoreStatus.ACTIVE;
-        store.consecutiveErrors = 0;
-        store.lastError = undefined;
-        store.sallaStoreName = merchantInfo.name || store.sallaStoreName;
-        store.sallaEmail = merchantInfo.email || store.sallaEmail;
-        store.sallaMobile = merchantInfo.mobile || store.sallaMobile;
-        store.sallaDomain = merchantInfo.domain || store.sallaDomain;
-        store.sallaAvatar = merchantInfo.avatar || store.sallaAvatar;
-        store.sallaPlan = merchantInfo.plan || store.sallaPlan;
+        this.updateSallaStoreFields(store, tokens, merchantInfo);
 
         // إذا ما عنده tenant → نحل المشكلة
         if (!store.tenantId) {
@@ -415,20 +403,8 @@ export class SallaOAuthService {
             throw saveError;
           }
           
-          // Update the existing store
-          existingStore.accessToken = encrypt(tokens.access_token) ?? undefined;
-          existingStore.refreshToken = encrypt(tokens.refresh_token) ?? undefined;
-          existingStore.tokenExpiresAt = this.calculateTokenExpiry(tokens.expires_in);
-          existingStore.lastTokenRefreshAt = new Date();
-          existingStore.status = StoreStatus.ACTIVE;
-          existingStore.consecutiveErrors = 0;
-          existingStore.lastError = undefined;
-          existingStore.sallaStoreName = merchantInfo.name || existingStore.sallaStoreName;
-          existingStore.sallaEmail = merchantInfo.email || existingStore.sallaEmail;
-          existingStore.sallaMobile = merchantInfo.mobile || existingStore.sallaMobile;
-          existingStore.sallaDomain = merchantInfo.domain || existingStore.sallaDomain;
-          existingStore.sallaAvatar = merchantInfo.avatar || existingStore.sallaAvatar;
-          existingStore.sallaPlan = merchantInfo.plan || existingStore.sallaPlan;
+          // Update the existing store using shared logic
+          this.updateSallaStoreFields(existingStore, tokens, merchantInfo);
           
           if (!existingStore.tenantId && store.tenantId) {
             existingStore.tenantId = store.tenantId;
@@ -690,6 +666,30 @@ export class SallaOAuthService {
   // 2. إذا موجود وعنده tenantId → نستخدمه (المتجر الجديد يُربط على نفس الحساب)
   // 3. إذا جديد → ننشئ tenant جديد
   // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Helper method to update an existing Salla store with new tokens and info
+   * Used both in normal update path and duplicate key retry path
+   */
+  private updateSallaStoreFields(
+    store: Store,
+    tokens: SallaTokenResponse,
+    merchantInfo: SallaMerchantInfo,
+  ): void {
+    store.accessToken = encrypt(tokens.access_token) ?? undefined;
+    store.refreshToken = encrypt(tokens.refresh_token) ?? undefined;
+    store.tokenExpiresAt = this.calculateTokenExpiry(tokens.expires_in);
+    store.lastTokenRefreshAt = new Date();
+    store.status = StoreStatus.ACTIVE;
+    store.consecutiveErrors = 0;
+    store.lastError = undefined;
+    store.sallaStoreName = merchantInfo.name || store.sallaStoreName;
+    store.sallaEmail = merchantInfo.email || store.sallaEmail;
+    store.sallaMobile = merchantInfo.mobile || store.sallaMobile;
+    store.sallaDomain = merchantInfo.domain || store.sallaDomain;
+    store.sallaAvatar = merchantInfo.avatar || store.sallaAvatar;
+    store.sallaPlan = merchantInfo.plan || store.sallaPlan;
+  }
 
   private async resolveOrCreateTenant(merchantInfo: SallaMerchantInfo): Promise<string> {
     // 🔍 البحث عن المستخدم بالإيميل
