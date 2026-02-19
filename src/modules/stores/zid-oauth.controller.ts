@@ -269,6 +269,7 @@ export class ZidOAuthController {
             accessToken: tokens.access_token,
             refreshToken: tokens.refresh_token,
             expiresAt: this.zidOAuthService.calculateTokenExpiry(tokens.expires_in),
+            authorizationToken: tokens.authorization,
           },
           storeInfo,
         });
