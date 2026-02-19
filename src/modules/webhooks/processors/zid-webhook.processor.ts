@@ -18,6 +18,7 @@ import { WebhookStatus } from '@database/entities/webhook-event.entity';
 import { WebhookLogAction } from '../entities/webhook-log.entity';
 import { Order, OrderStatus } from '@database/entities/order.entity';
 import { Customer, CustomerStatus } from '@database/entities/customer.entity';
+import { Store, StoreStatus } from '../../../modules/stores/entities/store.entity';
 
 interface ZidWebhookJobData {
   webhookEventId: string;
@@ -43,6 +44,8 @@ export class ZidWebhookProcessor extends WorkerHost {
     private readonly orderRepository: Repository<Order>,
     @InjectRepository(Customer)
     private readonly customerRepository: Repository<Customer>,
+    @InjectRepository(Store)
+    private readonly storeRepository: Repository<Store>,
   ) {
     super();
   }
@@ -428,34 +431,24 @@ export class ZidWebhookProcessor extends WorkerHost {
 
     // تحديث حالة المتجر في قاعدة البيانات
     try {
-      // البحث عن المتجر بـ zidStoreId
-      const store = await this.orderRepository.manager
-        .createQueryBuilder()
-        .select('store')
-        .from('stores', 'store')
-        .where('store.zid_store_id = :zidStoreId', { zidStoreId })
-        .getOne();
+      // البحث عن المتجر بـ zidStoreId using Store repository
+      const store = await this.storeRepository.findOne({
+        where: { zidStoreId },
+      });
 
       if (store) {
-        // تحديث الحالة إلى UNINSTALLED
-        await this.orderRepository.manager
-          .createQueryBuilder()
-          .update('stores')
-          .set({
-            status: 'uninstalled',
-            access_token: null,
-            refresh_token: null,
-            token_expires_at: null,
-            updated_at: new Date(),
-          })
-          .where('id = :id', { id: store.id })
-          .execute();
+        // تحديث الحالة إلى UNINSTALLED using Store entity and enum
+        store.status = StoreStatus.UNINSTALLED;
+        store.accessToken = undefined;
+        store.refreshToken = undefined;
+        store.tokenExpiresAt = undefined;
+        await this.storeRepository.save(store);
 
         this.logger.log(`✅ Store marked as uninstalled: ${store.id}`);
 
         // إطلاق حدث للإشعار
         this.eventEmitter.emit('store.uninstalled', {
-          tenantId: store.tenant_id,
+          tenantId: store.tenantId,
           storeId: store.id,
           zidStoreId,
           uninstalledAt: new Date().toISOString(),
