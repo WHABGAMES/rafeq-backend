@@ -650,12 +650,9 @@ export class StoresService {
       throw new NotFoundException(`Store ${storeId} not found`);
     }
     
-    // Update the store - TypeORM's update() accepts partial entity data
-    await this.storeRepository.update(storeId, updateData as any);
-    
-    // Return the updated store
-    const updated = await this.storeRepository.findOne({ where: { id: storeId } });
-    return updated!;
+    // Merge the update data with the existing store and save
+    const updated = this.storeRepository.merge(existing, updateData);
+    return await this.storeRepository.save(updated);
   }
 
   async updateSettings(
