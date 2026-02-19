@@ -48,6 +48,7 @@ interface ConnectZidStoreData {
     accessToken: string;
     refreshToken: string;
     expiresAt: Date;
+    authorizationToken?: string;
   };
   storeInfo: ZidStoreInfo;
 }
@@ -248,10 +249,26 @@ export class StoresService {
     });
 
     if (existingStore) {
-      if (existingStore.tenantId === tenantId) {
-        return this.updateZidStoreConnection(existingStore, tokens, storeInfo);
+      // ══════════════════════════════════════════════════════════════════════════
+      // 🔄 Re-installation scenario: Update existing store
+      // ══════════════════════════════════════════════════════════════════════════
+      this.logger.log(
+        `🔄 Updating existing Zid store: ${storeInfo.id} (store ID: ${existingStore.id})`,
+      );
+
+      // Link to tenant if not already linked
+      if (!existingStore.tenantId) {
+        existingStore.tenantId = tenantId;
+        this.logger.log(`🔗 Linking store ${existingStore.id} to tenant ${tenantId}`);
+      } else if (existingStore.tenantId !== tenantId) {
+        this.logger.warn(
+          `⚠️ Store ${existingStore.id} already linked to tenant ${existingStore.tenantId}, requested tenant: ${tenantId}`,
+        );
+        throw new ConflictException('هذا المتجر مربوط بحساب آخر');
       }
-      throw new ConflictException('هذا المتجر مربوط بحساب آخر');
+
+      // Note: existingStore.tenantId will be saved in updateZidStoreConnection()
+      return this.updateZidStoreConnection(existingStore, tokens, storeInfo);
     }
 
     const store = this.storeRepository.create({
@@ -273,6 +290,9 @@ export class StoresService {
         autoReply: true,
         welcomeMessageEnabled: true,
         orderNotificationsEnabled: true,
+        ...(tokens.authorizationToken && {
+          zidAuthorizationToken: encrypt(tokens.authorizationToken),
+        }),
       },
       subscribedEvents: [
         'order.created',
@@ -280,6 +300,7 @@ export class StoresService {
         'order.status.updated',
       ],
       lastSyncedAt: new Date(),
+      lastTokenRefreshAt: new Date(),
     });
 
     // 🔐 تشفير التوكنات
@@ -313,6 +334,7 @@ export class StoresService {
     store.tokenExpiresAt = tokens.expiresAt;
     store.status = StoreStatus.ACTIVE;
     store.lastSyncedAt = new Date();
+    store.lastTokenRefreshAt = new Date();
     store.consecutiveErrors = 0;
     store.lastError = undefined;
     store.zidStoreName = storeInfo.name;
@@ -322,6 +344,15 @@ export class StoresService {
     store.zidLogo = storeInfo.logo;
     store.zidCurrency = storeInfo.currency;
     store.zidLanguage = storeInfo.language;
+
+    // ✅ حفظ authorization token (JWT) في settings إذا موجود
+    if (tokens.authorizationToken) {
+      store.settings = {
+        ...(store.settings || {}),
+        zidAuthorizationToken: encrypt(tokens.authorizationToken),
+      };
+      this.logger.log(`✅ Zid authorization token saved in settings for store ${store.id}`);
+    }
 
     return this.storeRepository.save(store);
   }
@@ -641,6 +672,29 @@ export class StoresService {
     return this.storeRepository.findOne({
       where: { zidStoreId },
     });
+  }
+
+  /**
+   * Generic update method for updating non-sensitive store fields.
+   * 
+   * Note: This method should only be used for updating non-sensitive fields.
+   * For updating tokens, use the appropriate OAuth service methods.
+   * 
+   * @param storeId - Store UUID
+   * @param updateData - Partial store data to update
+   * @returns Updated store entity
+   * @throws NotFoundException if store not found
+   */
+  async update(storeId: string, updateData: Partial<Store>): Promise<Store> {
+    const store = await this.storeRepository.findOne({ where: { id: storeId } });
+    if (!store) {
+      throw new NotFoundException(`Store ${storeId} not found`);
+    }
+    
+    // Merge update data into existing store
+    Object.assign(store, updateData);
+    
+    return this.storeRepository.save(store);
   }
 
   async updateSettings(
