@@ -19,7 +19,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, DeepPartial } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
 // 🔐 Encryption
@@ -643,13 +643,19 @@ export class StoresService {
     });
   }
 
-  async update(storeId: string, updateData: Partial<Store>): Promise<Store> {
-    await this.storeRepository.update(storeId, updateData as any);
-    const updated = await this.storeRepository.findOne({ where: { id: storeId } });
-    if (!updated) {
-      throw new NotFoundException(`Store ${storeId} not found after update`);
+  async update(storeId: string, updateData: DeepPartial<Store>): Promise<Store> {
+    // First verify the store exists
+    const existing = await this.storeRepository.findOne({ where: { id: storeId } });
+    if (!existing) {
+      throw new NotFoundException(`Store ${storeId} not found`);
     }
-    return updated;
+    
+    // Update the store - TypeORM's update() accepts partial entity data
+    await this.storeRepository.update(storeId, updateData as any);
+    
+    // Return the updated store
+    const updated = await this.storeRepository.findOne({ where: { id: storeId } });
+    return updated!;
   }
 
   async updateSettings(
