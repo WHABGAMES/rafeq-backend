@@ -2,10 +2,16 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                RAFIQ PLATFORM - Zid Webhooks Controller                        ║
  * ║                                                                                ║
- * ║  ✅ v3: إعادة كتابة كاملة بناءً على payload زد الحقيقي                        ║
+ * ║  ✅ v4: Security Model - IP Validation (Zid Platform Standard)                ║
  * ║  زد لا يرسل "event" — يرسل بيانات الطلب/العميل مباشرة                         ║
  * ║  الـ Controller يكتشف نوع الحدث من بنية البيانات                               ║
- * ║  🔐 HMAC-SHA256 signature verification                                        ║
+ * ║                                                                                ║
+ * ║  🔐 SECURITY LAYERS:                                                           ║
+ * ║  1. WebhookIpGuard - IP allowlisting (primary security)                        ║
+ * ║  2. OAuth 2.0 - Webhook registration authentication                            ║
+ * ║                                                                                ║
+ * ║  ⚠️ NOTE: Zid does NOT send HMAC signatures (unlike Salla/Shopify)           ║
+ * ║  Security via OAuth + IP validation (documented Zid platform behavior)        ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -20,7 +26,7 @@ import {
   Logger,
   RawBodyRequest,
   Req,
-  ForbiddenException,
+  UseGuards,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiHeader } from '@nestjs/swagger';
 import { Request } from 'express';
@@ -29,13 +35,14 @@ import { ConfigService } from '@nestjs/config';
 
 import { ZidWebhooksService } from './zid-webhooks.service';
 import { ZidWebhookJobDto } from './dto/zid-webhook.dto';
+import { WebhookIpGuard } from './guards/webhook-ip.guard';
 
 @ApiTags('Webhooks - Zid')
 @Controller('webhooks/zid')
+@UseGuards(WebhookIpGuard) // ✅ IP allowlist - primary security layer for Zid
 export class ZidWebhooksController {
   private readonly logger = new Logger(ZidWebhooksController.name);
   private readonly webhookSecret: string;
-  private readonly isProduction: boolean;
 
   constructor(
     private readonly webhooksService: ZidWebhooksService,
@@ -46,18 +53,11 @@ export class ZidWebhooksController {
       this.configService.get<string>('zid.webhookSecret') ||
       '';
 
-    this.isProduction = this.configService.get<string>('NODE_ENV') === 'production';
-
-    // ✅ Enforce secret in production
-    if (this.isProduction && !this.webhookSecret) {
-      this.logger.error('❌ CRITICAL: ZID_WEBHOOK_SECRET is REQUIRED in production mode');
-      throw new Error('ZID_WEBHOOK_SECRET environment variable is not set');
-    }
-
     if (this.webhookSecret) {
-      this.logger.log(`🔐 Zid webhook secret loaded (length: ${this.webhookSecret.length})`);
+      this.logger.log(`🔐 Zid webhook secret loaded (length: ${this.webhookSecret.length}) — used only if Zid sends signature`);
     } else {
-      this.logger.warn('⚠️ Zid webhook secret NOT SET - signature verification DISABLED (development only)');
+      // ⚠️ Zid does NOT send HMAC signatures — secret is optional and reserved for future use
+      this.logger.log('📝 ZID_WEBHOOK_SECRET not set — Zid does not send webhook signatures (expected)');
     }
   }
 
@@ -137,19 +137,23 @@ export class ZidWebhooksController {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // 🔐 التحقق من التوقيع
+    // 🔐 التحقق من التوقيع (اختياري — زد لا يرسل توقيعات HMAC)
+    // ⚠️ Zid does NOT send HMAC signatures unlike Salla/Shopify.
+    // Primary security is provided by WebhookIpGuard (IP allowlisting).
+    // We only verify a signature if BOTH secret is configured AND Zid sends one
+    // (future-proofing in case Zid adds signature support).
     // ═══════════════════════════════════════════════════════════════════════════
-    if (this.webhookSecret) {
+    if (this.webhookSecret && signature) {
       const signatureValid = this.verifySignature(req.rawBody, signature);
-
       if (!signatureValid) {
-        if (this.isProduction) {
-          this.logger.error(`🚨 REJECTED: Invalid Zid signature for ${detectedEvent}`);
-          throw new ForbiddenException('Invalid webhook signature');
-        } else {
-          this.logger.warn(`⚠️ [DEV] Invalid Zid signature for ${detectedEvent} — continuing`);
-        }
+        this.logger.warn(`⚠️ Zid signature verification failed for ${detectedEvent}`);
+        // Don't reject — Zid doesn't officially support signatures yet
+      } else {
+        this.logger.log(`✅ Zid signature verified for ${detectedEvent}`);
       }
+    } else {
+      // Expected path for Zid webhooks — no signature (documented platform behavior)
+      this.logger.debug(`📝 Zid webhook ${detectedEvent} — no signature (expected for Zid platform)`);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
