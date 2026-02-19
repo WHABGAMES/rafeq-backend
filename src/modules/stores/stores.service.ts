@@ -23,7 +23,7 @@ import { Repository, DeepPartial } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
 // 🔐 Encryption
-import { encrypt, decrypt, decryptSafe } from '@common/utils/encryption.util';
+import { encrypt, decrypt, decryptSafe, isEncrypted } from '@common/utils/encryption.util';
 
 // Entities
 import { Store, StoreStatus, StorePlatform } from './entities/store.entity';
@@ -128,9 +128,12 @@ export class StoresService {
    *   X-Manager-Token: {managerToken}
    */
   private getZidTokens(store: Store, managerToken: string): ZidAuthTokens {
-    const encryptedAuth = (store.settings as any)?.zidAuthorizationToken;
-    // ✅ decryptSafe — لا يرمي exception إذا البيانات تالفة أو غير مشفرة
-    const authorizationToken = encryptedAuth ? decryptSafe(encryptedAuth) : null;
+    const storedAuth = (store.settings as any)?.zidAuthorizationToken;
+    // ✅ Handle both encrypted tokens (new) and plain JWT tokens (legacy)
+    let authorizationToken: string | null = null;
+    if (storedAuth) {
+      authorizationToken = isEncrypted(storedAuth) ? decryptSafe(storedAuth) : storedAuth;
+    }
 
     if (!authorizationToken) {
       this.logger.warn(`⚠️ Zid store ${store.id} has no authorization token - using access token only`, {
