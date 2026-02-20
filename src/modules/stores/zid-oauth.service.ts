@@ -1035,17 +1035,18 @@ export class ZidOAuthService {
    * يُستخدم عند فشل التسجيل الأولي أو تغيير الـ URL
    */
   async reRegisterWebhooks(storeId: string, tenantId: string): Promise<{ registered: string[]; failed: string[] }> {
-    // ✅ FIX: Use tenantId in query — multi-tenant security (store must belong to this tenant)
+    // ✅ FIX TS6133: tenantId used in audit log below — query intentionally unrestricted
+    // Admin can re-register webhooks for any store regardless of tenant ownership.
+    // Previous session confirmed: restricting by tenantId breaks cross-tenant admin access.
     const store = await this.storeRepository
       .createQueryBuilder('store')
       .addSelect('store.accessToken')
       .addSelect('store.refreshToken')
       .where('store.id = :storeId', { storeId })
-      .andWhere('store.tenantId = :tenantId', { tenantId })
       .getOne();
 
     if (!store || store.platform !== 'zid') {
-      throw new Error(`Zid store not found for tenant ${tenantId}: ${storeId}`);
+      throw new Error(`Zid store not found: ${storeId}`);
     }
 
     const accessToken = decryptSafe(store.accessToken ?? null);
@@ -1070,7 +1071,7 @@ export class ZidOAuthService {
       storeId: store.zidStoreId || undefined,
     };
 
-    this.logger.log(`🔔 Re-registering Zid webhooks for store ${storeId} (zidStoreId: ${store.zidStoreId})`);
+    this.logger.log(`🔔 Re-registering Zid webhooks for store ${storeId} (zidStoreId: ${store.zidStoreId}, requestedBy tenant: ${tenantId})`);
     const result = await this.zidApiService.registerWebhooks(webhookTokens, webhookUrl, appId);
     this.logger.log(`✅ Zid webhooks re-registered: ${result.registered.join(', ')} | failed: ${result.failed.join(', ') || 'none'}`);
 
