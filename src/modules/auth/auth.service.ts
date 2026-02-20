@@ -23,6 +23,7 @@ import {
   ConflictException,
   Inject,
   OnModuleInit,
+  forwardRef,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -37,6 +38,7 @@ import { User, UserStatus, UserRole, AuthProvider } from '@database/entities/use
 import { Tenant, TenantStatus, SubscriptionPlan } from '@database/entities/tenant.entity';
 import { OtpService, OtpChannel } from './otp.service';
 import { MailService } from '../mail/mail.service';
+import { ZidOAuthService, ZidTokenResponse, ZidStoreInfo } from '../stores/zid-oauth.service';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Types
@@ -189,6 +191,9 @@ export class AuthService implements OnModuleInit {
 
     private readonly otpService: OtpService,
     private readonly mailService: MailService,
+
+    @Inject(forwardRef(() => ZidOAuthService))
+    private readonly zidOAuthService: ZidOAuthService,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -537,7 +542,7 @@ export class AuthService implements OnModuleInit {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   async zidAuth(code: string, state?: string): Promise<LoginResult> {
-    this.logger.log('🟣 Zid OAuth attempt');
+    this.logger.log('🟣 Zid OAuth activation attempt');
 
     // 🔧 FIX H-01: Validate HMAC-signed state parameter to prevent CSRF
     if (state) {
@@ -552,28 +557,87 @@ export class AuthService implements OnModuleInit {
     }
 
     // 1. استبدال الكود بتوكن
-    const tokens = await this.exchangeZidCode(code);
+    const rawTokens = await this.exchangeZidCode(code);
+    const tokens: ZidTokenResponse = {
+      access_token: rawTokens.access_token,
+      refresh_token: rawTokens.refresh_token,
+      expires_in: rawTokens.expires_in ?? 3600,
+      token_type: rawTokens.token_type ?? 'Bearer',
+      authorization: rawTokens.authorization,
+    };
 
-    // 2. جلب بيانات التاجر من زد
-    const merchantData = await this.getZidMerchantData(tokens.access_token);
-
-    if (!merchantData || !merchantData.user?.email) {
-      throw new UnauthorizedException('فشل الحصول على بيانات حساب زد');
+    // 2. جلب بيانات المتجر عبر ZidOAuthService (يدعم عدة endpoints وترويسات)
+    let storeInfo: ZidStoreInfo | null = null;
+    try {
+      storeInfo = await this.zidOAuthService.getStoreInfo(
+        tokens.access_token,
+        tokens.authorization,
+      );
+      this.logger.log(`📊 Zid store info: id=${storeInfo.id}, name=${storeInfo.name}`);
+    } catch (infoError: any) {
+      this.logger.warn(`⚠️ Could not fetch Zid store info via ZidOAuthService: ${infoError.message} — falling back to /account`);
     }
 
-    const merchant = merchantData.user;
+    // 2b. Fallback: جلب البيانات من /account إذا فشل getStoreInfo
+    let email: string;
+    let merchantName: string;
+    let merchantMobile: string | undefined;
+    let providerId: string | undefined;
 
-    // ⚡ توحيد الحسابات: بحث بالإيميل
+    if (storeInfo?.email && storeInfo.email.includes('@') && !storeInfo.email.endsWith('@store.rafeq.ai')) {
+      email = storeInfo.email;
+      merchantName = storeInfo.name || 'تاجر زد';
+      merchantMobile = storeInfo.mobile;
+      providerId = String(storeInfo.id);
+    } else {
+      const merchantData = await this.getZidMerchantData(tokens.access_token);
+
+      if (!merchantData?.user?.email) {
+        throw new UnauthorizedException('فشل الحصول على بيانات حساب زد');
+      }
+
+      const merchant = merchantData.user;
+      email = merchant.email;
+      merchantName = merchant.name || 'تاجر زد';
+      merchantMobile = merchant.mobile;
+      providerId = String(merchant.id || merchant.store_id);
+
+      // تحديث storeInfo بالإيميل الصحيح إذا كان مولّداً
+      if (storeInfo) {
+        storeInfo.email = email;
+      }
+    }
+
+    // 3. إيجاد أو إنشاء المستخدم
     const loginResult = await this.findOrCreateUserByEmail({
-      email: merchant.email,
-      firstName: merchant.name?.split(' ')[0] || 'تاجر',
-      lastName: merchant.name?.split(' ').slice(1).join(' ') || 'زد',
-      phone: merchant.mobile,
+      email,
+      firstName: merchantName.split(' ')[0] || 'تاجر',
+      lastName: merchantName.split(' ').slice(1).join(' ') || 'زد',
+      phone: merchantMobile,
       authProvider: AuthProvider.ZID,
-      providerId: String(merchant.id || merchant.store_id),
+      providerId,
     });
 
-    this.logger.log(`✅ Zid login successful: ${this.maskEmail(merchant.email)}`);
+    // 4. ربط متجر زد بالتنانت (non-fatal — لا نفشل العملية إذا تعذّر)
+    if (storeInfo) {
+      try {
+        const user = await this.userRepository.findOne({
+          where: { id: loginResult.user.id },
+          select: ['id', 'tenantId'],
+        });
+
+        if (user?.tenantId) {
+          await this.zidOAuthService.connectZidStoreFromTokens(tokens, storeInfo, user.tenantId);
+          this.logger.log(`✅ Zid store connected for tenant ${user.tenantId}`);
+        } else {
+          this.logger.warn('⚠️ User has no tenantId — skipping Zid store connection');
+        }
+      } catch (storeError: any) {
+        this.logger.error(`❌ Zid store connection failed (non-fatal): ${storeError.message}`);
+      }
+    }
+
+    this.logger.log(`✅ Zid auth successful: ${this.maskEmail(email)}`);
     return loginResult;
   }
 
