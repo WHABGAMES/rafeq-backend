@@ -21,6 +21,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DeepPartial } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { ConfigService } from '@nestjs/config';
 
 // 🔐 Encryption
 import { encrypt, decrypt, decryptSafe, isEncrypted } from '@common/utils/encryption.util';
@@ -82,6 +83,7 @@ export class StoresService {
     private readonly zidOAuthService: ZidOAuthService,
     private readonly zidApiService: ZidApiService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly configService: ConfigService,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -300,6 +302,26 @@ export class StoresService {
 
     const savedStore = await this.storeRepository.save(store);
 
+    // ✅ FIX (Bug #3): Register Zid webhooks after dashboard OAuth connection
+    // PR #24 audit: auto-registration flow registered webhooks but dashboard flow did not
+    try {
+      const baseUrl = this.configService.get<string>('app.baseUrl')
+        || this.configService.get<string>('APP_BASE_URL')
+        || 'https://api.rafeq.ai';
+      const webhookUrl = `${baseUrl}/api/webhooks/zid`;
+      const appId = this.configService.get<string>('zid.clientId') || 'rafeq-app';
+
+      const webhookTokens = {
+        managerToken: tokens.accessToken,
+        authorizationToken: tokens.authorization || undefined,
+      };
+
+      const result = await this.zidApiService.registerWebhooks(webhookTokens, webhookUrl, appId);
+      this.logger.log(`🔔 Dashboard OAuth - Zid webhooks registered: ${result.registered.join(',')}`);
+    } catch (error: any) {
+      this.logger.warn(`⚠️ Webhook registration failed (non-fatal): ${error.message}`);
+    }
+
     this.eventEmitter.emit('store.connected', {
       storeId: savedStore.id,
       tenantId,
@@ -337,11 +359,18 @@ export class StoresService {
     store.zidLanguage = storeInfo.language;
 
     // ✅ تحديث authorization token في settings
+    // ✅ FIX (Bug #2): Mirror updateZidStoreFields logic — clear stale token when Zid doesn't return one
+    // PR #24 audit: missing else branch caused revoked tokens to persist in database
     if (tokens.authorization) {
       store.settings = {
         ...(store.settings || {}),
         zidAuthorizationToken: encrypt(tokens.authorization),
       };
+    } else {
+      // Clear old (potentially invalid) authorization token to prevent 401 errors
+      const { zidAuthorizationToken: _removed, ...otherSettings } = (store.settings as any) || {};
+      store.settings = otherSettings;
+      this.logger.warn(`⚠️ No authorization token from Zid - cleared old token for store ${store.zidStoreId}`);
     }
 
     return this.storeRepository.save(store);
