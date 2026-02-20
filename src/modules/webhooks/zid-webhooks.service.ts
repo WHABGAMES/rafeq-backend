@@ -268,33 +268,54 @@ export class ZidWebhooksService {
   }
 
   private extractEntityType(eventType: string): string | undefined {
-    // Zid events: "new-order" → "order", "customer-update" → "customer"
-    const parts = eventType.split('-');
-    if (parts.length >= 2) {
-      // "new-order" → "order", "order-update" → "order"
-      return parts.includes('order') ? 'order'
-        : parts.includes('customer') ? 'customer'
-        : parts.includes('product') ? 'product'
-        : parts.includes('cart') ? 'cart'
-        : parts.includes('review') ? 'review'
-        : parts[0];
-    }
-    return parts[0] || undefined;
+    // ✅ FIX: Zid events use dot notation (order.create, app.market.application.install)
+    const lower = eventType.toLowerCase();
+    if (lower.startsWith('order')) return 'order';
+    if (lower.startsWith('customer')) return 'customer';
+    if (lower.startsWith('product')) return 'product';
+    if (lower.startsWith('abandoned_cart') || lower.startsWith('cart')) return 'cart';
+    if (lower.startsWith('app.market')) return 'app';
+    if (lower.startsWith('category')) return 'category';
+    return eventType.split('.')[0] || undefined;
   }
 
   private getEventPriority(eventType: string): number {
+    // ✅ FIX: Updated to match Zid dot-notation event types confirmed by Zid API docs
     const priorities: Record<string, number> = {
-      'new-order': 1,
-      'order-status-update': 2,
-      'new-customer': 2,
-      'abandoned-cart': 2,
-      'order-update': 3,
-      'order-cancelled': 3,
-      'order-refunded': 3,
-      'customer-update': 5,
-      'product-create': 6,
-      'product-update': 7,
-      'new-review': 8,
+      // Order events
+      'order.create': 1,
+      'order.payment_status.update': 1,
+      'order.status.update': 2,
+      // App Market events (business-critical)
+      'app.market.application.install': 1,
+      'app.market.application.uninstall': 1,
+      'app.market.subscription.active': 1,
+      'app.market.subscription.expired': 1,
+      'app.market.subscription.suspended': 1,
+      'app.market.subscription.renew': 2,
+      'app.market.subscription.upgrade': 2,
+      'app.market.subscription.refunded': 2,
+      'app.market.application.authorized': 2,
+      'app.market.subscription.warning': 3,
+      'app.market.private.plan.request': 4,
+      'app.market.application.rated': 7,
+      // Customer events
+      'customer.create': 3,
+      'customer.update': 5,
+      'customer.merchant.update': 5,
+      'customer.login': 8,
+      // Abandoned cart
+      'abandoned_cart.created': 3,
+      'abandoned_cart.completed': 3,
+      // Product events
+      'product.create': 6,
+      'product.update': 7,
+      'product.publish': 7,
+      'product.delete': 6,
+      // Category events
+      'category.create': 8,
+      'category.update': 8,
+      'category.delete': 8,
     };
 
     return priorities[eventType] || 5;
