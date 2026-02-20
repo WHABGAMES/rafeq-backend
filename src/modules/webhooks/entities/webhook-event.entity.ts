@@ -104,38 +104,69 @@ export enum SallaEventType {
   SPECIALOFFER_UPDATED = 'specialoffer.updated',
 }
 
+/**
+ * ✅ v2: محدّث بالكامل ليطابق وثائق Zid الرسمية (dot-notation)
+ * المصدر: https://docs.zid.sa/docs/webhook-events
+ *
+ * ⚠️ القيم القديمة بـ hyphen (new-order, order-update...) تم حذفها —
+ *    استخدم القيم الجديدة بـ dot-notation في كل الكود الجديد.
+ */
 export enum ZidEventType {
-  // Order Events
-  ORDER_NEW = 'new-order',
-  ORDER_UPDATE = 'order-update',
-  ORDER_STATUS_UPDATE = 'order-status-update',
-  ORDER_CANCELLED = 'order-cancelled',
-  ORDER_REFUNDED = 'order-refunded',
+  // ─── Order Events ─────────────────────────────────────────────────────────
+  /** طلب جديد */
+  ORDER_CREATE             = 'order.create',
+  /** تحديث حالة الطلب */
+  ORDER_STATUS_UPDATE      = 'order.status.update',
+  /** تحديث حالة الدفع (paid / unpaid) */
+  ORDER_PAYMENT_STATUS_UPDATE = 'order.payment_status.update',
 
-  // Customer Events
-  CUSTOMER_NEW = 'new-customer',
-  CUSTOMER_UPDATE = 'customer-update',
+  // ─── Product Events ────────────────────────────────────────────────────────
+  /** إنشاء منتج */
+  PRODUCT_CREATE           = 'product.create',
+  /** تعديل منتج */
+  PRODUCT_UPDATE           = 'product.update',
+  /** نشر منتج */
+  PRODUCT_PUBLISH          = 'product.publish',
+  /** حذف منتج */
+  PRODUCT_DELETE           = 'product.delete',
 
-  // Product Events
-  PRODUCT_CREATE = 'product-create',
-  PRODUCT_UPDATE = 'product-update',
-  PRODUCT_DELETE = 'product-delete',
+  // ─── Abandoned Cart Events ─────────────────────────────────────────────────
+  /** سلة متروكة */
+  ABANDONED_CART_CREATED   = 'abandoned_cart.created',
+  /** سلة مكتملة (عميل عاد وأتمّ الشراء) */
+  ABANDONED_CART_COMPLETED = 'abandoned_cart.completed',
 
-  // Cart Events
-  ABANDONED_CART = 'abandoned-cart',
+  // ─── Customer Events ───────────────────────────────────────────────────────
+  /** عميل جديد */
+  CUSTOMER_CREATE          = 'customer.create',
+  /** تحديث بيانات العميل */
+  CUSTOMER_UPDATE          = 'customer.update',
+  /** تحديث بيانات التاجر المرتبطة بعميل */
+  CUSTOMER_MERCHANT_UPDATE = 'customer.merchant.update',
+  /** تسجيل دخول العميل */
+  CUSTOMER_LOGIN           = 'customer.login',
 
-  // Review Events
-  NEW_REVIEW = 'new-review',
+  // ─── Product Category Events ───────────────────────────────────────────────
+  /** إنشاء قسم */
+  CATEGORY_CREATE          = 'category.create',
+  /** تعديل قسم */
+  CATEGORY_UPDATE          = 'category.update',
+  /** حذف قسم */
+  CATEGORY_DELETE          = 'category.delete',
 
-  // Coupon Events
-  COUPON_USED = 'coupon-used',
-
-  // Inventory Events
-  INVENTORY_LOW = 'inventory-low',
-
-  // App Events
-  APP_INSTALLED = 'app-installed',
-  APP_UNINSTALLED = 'app-uninstalled',
+  // ─── App Market Lifecycle Events ───────────────────────────────────────────
+  APP_AUTHORIZED           = 'app.market.application.authorized',
+  APP_INSTALL              = 'app.market.application.install',
+  APP_UNINSTALL            = 'app.market.application.uninstall',
+  APP_RATED                = 'app.market.application.rated',
+  SUBSCRIPTION_ACTIVE      = 'app.market.subscription.active',
+  SUBSCRIPTION_WARNING     = 'app.market.subscription.warning',
+  SUBSCRIPTION_SUSPENDED   = 'app.market.subscription.suspended',
+  SUBSCRIPTION_EXPIRED     = 'app.market.subscription.expired',
+  SUBSCRIPTION_RENEW       = 'app.market.subscription.renew',
+  SUBSCRIPTION_UPGRADE     = 'app.market.subscription.upgrade',
+  SUBSCRIPTION_REFUNDED    = 'app.market.subscription.refunded',
+  PRIVATE_PLAN_REQUEST     = 'app.market.private.plan.request',
 }
 
 @Entity('webhook_events')
