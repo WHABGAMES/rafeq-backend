@@ -35,7 +35,7 @@ import { AutoRegistrationService } from '../auth/auto-registration.service';
 import { ZidApiService } from './zid-api.service';
 
 // 🔐 Encryption
-import { encrypt, decrypt, decryptSafe } from '@common/utils/encryption.util';
+import { encrypt, decryptSafe } from '@common/utils/encryption.util';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ✅ Exported Types
