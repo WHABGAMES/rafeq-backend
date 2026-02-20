@@ -194,81 +194,207 @@ export class ZidWebhooksController {
     return { success: true, message: 'Webhook received', jobId };
   }
 
+
   /**
-   * 🔍 اكتشاف نوع الحدث من بنية البيانات
+   * 🔍 اكتشاف نوع الحدث من بنية البيانات — متوافق مع وثائق Zid الرسمية
    *
-   * ✅ FIX v5: فحص event_name أولاً (أحداث App Market تُرسل مع event_name)
-   * ثم الكشف من بنية البيانات للأحداث التجارية (merchant events)
+   * ترتيب الكشف (من الأكثر تحديداً للأقل):
    *
-   * أحداث App Market تحتوي على event_name:
-   *   app.market.application.install
-   *   app.market.application.uninstall
-   *   app.market.subscription.active / expired / suspended
+   * 0. App Market events   → تحتوي على event_name (وثائق Zid: Events section)
+   * 1. order.payment_status.update → payment_status_change field
+   * 2. abandoned_cart.*    → cart_total + phase/url/reminders_count fields
+   * 3. order.*             → order_status / invoice_number / order_total fields
+   * 4. customer.*          → email + mobile/telephone بدون حقول الطلبات
+   * 5. category.*          → sub_categories / flat_name بدون sku أو email
+   * 6. product.*           → sku / name+price بدون order أو customer fields
    *
-   * الأحداث التجارية تُرسل بيانات الطلب/العميل مباشرة بدون event_name
+   * مصادر: Zid API Docs - Webhook Events + Payload Schemas
    */
   private detectEventType(body: Record<string, any>): string {
-    // ── 0. أحداث App Market: تحتوي على event_name ──
+
+    // ══════════════════════════════════════════════════════════════════
+    // 0. App Market events — تُرسل مع event_name (12 حدث رسمي من زد)
+    //    app.market.application.install / uninstall / authorized / rated
+    //    app.market.subscription.active / renew / upgrade / suspended /
+    //                              expired / refunded / warning
+    //    app.market.private.plan.request
+    // ══════════════════════════════════════════════════════════════════
     if (body.event_name && typeof body.event_name === 'string') {
       const eventName = body.event_name.trim();
       this.logger.log(`🏪 App Market event detected via event_name: ${eventName}`);
       return eventName;
     }
 
-    // ── 1. تحديث حالة الدفع (payment_status.update) ──
-    // يُرسل مع payment_status_change أو payment_status محددة
+    // ══════════════════════════════════════════════════════════════════
+    // 1. order.payment_status.update
+    //    وثائق Zid: "Triggered when an order's payment status changes to paid or unpaid"
+    //    يُرسل حقل payment_status_change مع old/new values
+    // ══════════════════════════════════════════════════════════════════
     if (body.payment_status_change !== undefined) {
       return 'order.payment_status.update';
     }
 
-    // ── 2. سلة مهجورة (abandoned_cart) ──
-    if (body.cart_total !== undefined || body.customer_id !== undefined && !body.order_status && !body.invoice_number) {
-      if (body.url !== undefined || body.phase !== undefined || body.reminders_count !== undefined) {
-        return 'abandoned_cart.created';
-      }
+    // ══════════════════════════════════════════════════════════════════
+    // 2. abandoned_cart.created / abandoned_cart.completed
+    //    وثائق Zid: AbandonedCart schema:
+    //    cart_total, cart_total_string, phase, url, reminders_count,
+    //    customer_id, customer_name, customer_email, customer_mobile
+    //
+    //    phase === 'completed' → abandoned_cart.completed
+    //    أي phase أخرى (new, login, shipping_address, ...) → abandoned_cart.created
+    // ══════════════════════════════════════════════════════════════════
+    const isAbandonedCart = (
+      body.cart_total !== undefined &&
+      body.order_status === undefined &&
+      body.invoice_number === undefined &&
+      (body.phase !== undefined || body.url !== undefined || body.reminders_count !== undefined)
+    );
+    if (isAbandonedCart) {
+      return body.phase === 'completed' ? 'abandoned_cart.completed' : 'abandoned_cart.created';
     }
 
-    // ── 3. طلب (Order) ──
-    if (body.order_status !== undefined || body.invoice_number !== undefined || body.order_total !== undefined) {
-      // إذا فيه payment_status_change بدون order_status تغيير → payment update
-      // نحاول نعرف إذا طلب جديد أو تحديث حالة
+    // ══════════════════════════════════════════════════════════════════
+    // 3. Order events — وثائق Zid: Order schema
+    //    order.create, order.status.update, order.payment_status.update
+    //    الحقول المميّزة: order_status, invoice_number, order_total
+    // ══════════════════════════════════════════════════════════════════
+    if (
+      body.order_status !== undefined ||
+      body.invoice_number !== undefined ||
+      body.order_total !== undefined
+    ) {
+      // histories.length > 1 → حدثت تغييرات سابقة → order.status.update
       const histories = body.histories;
       if (Array.isArray(histories) && histories.length > 1) {
         return 'order.status.update';
       }
-      // إذا الحالة "new" أو "pending" أو "جديد" → طلب جديد
+      // استخراج كود الحالة — زد يُرسله كـ object { code, name } أو string
       const orderStatus = body.order_status;
-      const statusCode = typeof orderStatus === 'object' && orderStatus !== null
-        ? (orderStatus.code || orderStatus.slug || '').toLowerCase()
-        : (typeof orderStatus === 'string' ? orderStatus.toLowerCase() : '');
-      if (statusCode === 'new' || statusCode === 'pending' || statusCode === 'جديد') {
+      const statusCode = (
+        typeof orderStatus === 'object' && orderStatus !== null
+          ? (orderStatus.code || orderStatus.slug || '')
+          : (typeof orderStatus === 'string' ? orderStatus : '')
+      ).toLowerCase();
+
+      // 'new' أو 'جديد' → طلب جديد
+      if (statusCode === 'new' || statusCode === 'جديد') {
         return 'order.create';
       }
-      // Default: تحديث حالة (الأغلب)
+
+      // الافتراضي: تحديث حالة الطلب
       return 'order.status.update';
     }
 
-    // ── 4. عميل (Customer) ──
-    if (
-      (body.mobile !== undefined || body.telephone !== undefined) &&
+    // ══════════════════════════════════════════════════════════════════
+    // 4. Customer events — وثائق Zid: Customer schema
+    //    customer.create, customer.update, customer.login,
+    //    customer.merchant.update
+    //
+    //    الحقول المميّزة: email + (mobile أو telephone)
+    //    customer.login: is_active + لا توجد تغييرات على البيانات
+    //    customer.merchant.update: يحتوي على حقل merchant أو meta خاص
+    // ══════════════════════════════════════════════════════════════════
+    const isCustomerPayload = (
       body.email !== undefined &&
+      (body.mobile !== undefined || body.telephone !== undefined) &&
       body.order_status === undefined &&
-      body.invoice_number === undefined
-    ) {
-      return body.created_at === body.updated_at ? 'customer.create' : 'customer.update';
+      body.invoice_number === undefined &&
+      body.cart_total === undefined &&
+      body.sku === undefined
+    );
+    if (isCustomerPayload) {
+      // customer.merchant.update: يحتوي على حقول تاجر/بيانات تجارية
+      if (body.business_name !== undefined || body.tax_number !== undefined || body.commercial_registration !== undefined) {
+        return 'customer.merchant.update';
+      }
+      // customer.login: لا تغيير في البيانات، created_at قديم، updated_at حديث جداً
+      // زد يُرسل نفس Customer schema — نستخدم is_active كمؤشر
+      // إذا created_at !== updated_at ولا يوجد تغيير واضح → customer.login
+      if (body.is_active !== undefined && body.created_at !== undefined && body.updated_at !== undefined) {
+        // إذا كانت الحسابات مختلفة وهناك is_active فقط → login
+        const createdAt = new Date(body.created_at).getTime();
+        const updatedAt = new Date(body.updated_at).getTime();
+        // تسجيل دخول: الفرق بين created_at و updated_at كبير جداً (حساب قديم)
+        if (!isNaN(createdAt) && !isNaN(updatedAt) && (updatedAt - createdAt) > 86400000 /* 24h */) {
+          // ملاحظة: customer.login يُرسل نفس payload Customer
+          // نعتمد على is_active + عدم وجود تغيير في البيانات الأساسية
+          if (body.name !== undefined && body.gender === undefined) {
+            return 'customer.login';
+          }
+        }
+      }
+      // customer.create: الحساب جديد (created_at === updated_at أو قريبان)
+      if (body.created_at !== undefined && body.updated_at !== undefined) {
+        return body.created_at === body.updated_at ? 'customer.create' : 'customer.update';
+      }
+      return 'customer.create';
     }
 
-    // ── 5. منتج (Product) ──
-    if (
+    // ══════════════════════════════════════════════════════════════════
+    // 5. Category events — وثائق Zid: ProductCategory schema
+    //    category.create, category.update, category.delete
+    //    الحقول المميّزة: sub_categories أو flat_name أو slug
+    //    بدون: sku، order_status، email، telephone، cart_total
+    // ══════════════════════════════════════════════════════════════════
+    const isCategoryPayload = (
+      (body.sub_categories !== undefined || body.flat_name !== undefined) &&
+      body.sku === undefined &&
+      body.order_status === undefined &&
+      body.email === undefined &&
+      body.cart_total === undefined
+    );
+    if (isCategoryPayload) {
+      // category.delete: is_published === false مع deleted_at أو عدم وجود products
+      if (body.is_published === false && (body.deleted_at !== undefined || body.products_count === 0)) {
+        return 'category.delete';
+      }
+      // category.create: created_at === updated_at
+      if (body.created_at !== undefined && body.updated_at !== undefined) {
+        return body.created_at === body.updated_at ? 'category.create' : 'category.update';
+      }
+      return 'category.update';
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // 6. Product events — وثائق Zid: Product schema
+    //    product.create, product.update, product.publish, product.delete
+    //    الحقول المميّزة: sku / name+price+is_published
+    // ══════════════════════════════════════════════════════════════════
+    const isProductPayload = (
       body.sku !== undefined ||
-      (body.name !== undefined && body.price !== undefined && !body.order_status && !body.email)
-    ) {
+      (
+        body.name !== undefined &&
+        body.price !== undefined &&
+        body.order_status === undefined &&
+        body.email === undefined &&
+        body.cart_total === undefined
+      )
+    );
+    if (isProductPayload) {
+      // product.delete: يحتوي على deleted أو is_published: false مع deleted_at
+      if (body.deleted !== undefined && body.deleted !== null) {
+        return 'product.delete';
+      }
+      // product.publish: is_published تغيّر إلى true
+      if (body.is_published === true && body.is_draft === false) {
+        // إذا created_at !== updated_at → تم النشر من draft
+        if (body.created_at !== undefined && body.updated_at !== undefined && body.created_at !== body.updated_at) {
+          return 'product.publish';
+        }
+      }
+      // product.create: created_at === updated_at (منتج جديد)
+      if (body.created_at !== undefined && body.updated_at !== undefined) {
+        return body.created_at === body.updated_at ? 'product.create' : 'product.update';
+      }
       return 'product.update';
     }
 
-    // ── Default ──
+    // ══════════════════════════════════════════════════════════════════
+    // Default: لم يُتعرّف على الحدث
+    // ══════════════════════════════════════════════════════════════════
     this.logger.warn('⚠️ Could not detect Zid event type from payload', {
       keys: Object.keys(body).slice(0, 15),
+      storeId: body.store_id,
     });
     return 'unknown';
   }
