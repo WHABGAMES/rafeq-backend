@@ -145,7 +145,7 @@ export class ZidWebhookProcessor extends WorkerHost {
           result = await this.handleInventoryLow(data, context);
           break;
 
-        // App lifecycle
+        // App lifecycle - local events
         case 'app-installed':
         case 'app.installed':
           result = { handled: true, action: eventType };
@@ -153,7 +153,42 @@ export class ZidWebhookProcessor extends WorkerHost {
           break;
         case 'app-uninstalled':
         case 'app.uninstalled':
+        // ✅ FIX: App Market events from Partner Dashboard (event_name field)
+        case 'app.market.application.uninstall':
           result = await this.handleAppUninstalled(data, context);
+          break;
+
+        // ✅ FIX: App Market install/subscription events
+        case 'app.market.application.install':
+        case 'app.market.application.authorized':
+          result = await this.handleAppInstalled(data, context);
+          break;
+
+        case 'app.market.subscription.active':
+        case 'app.market.subscription.renew':
+        case 'app.market.subscription.upgrade':
+          result = await this.handleSubscriptionActive(data, context);
+          break;
+
+        case 'app.market.subscription.suspended':
+        case 'app.market.subscription.expired':
+          result = await this.handleSubscriptionExpired(data, context);
+          break;
+
+        case 'app.market.subscription.refunded':
+          result = { handled: true, action: eventType };
+          this.eventEmitter.emit('store.subscription.refunded', { tenantId, storeId: internalStoreId, raw: data });
+          break;
+
+        case 'app.market.subscription.warning':
+          result = { handled: true, action: eventType };
+          this.eventEmitter.emit('store.subscription.warning', { tenantId, storeId: internalStoreId, raw: data });
+          break;
+
+        case 'app.market.application.rated':
+        case 'app.market.private.plan.request':
+          result = { handled: true, action: eventType };
+          this.eventEmitter.emit(eventType, { tenantId, storeId: internalStoreId, raw: data });
           break;
 
         default:
@@ -409,8 +444,139 @@ export class ZidWebhookProcessor extends WorkerHost {
   // 🚫 App Lifecycle Handlers
   // ═══════════════════════════════════════════════════════════════════════════════
 
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🏪 App Lifecycle Handlers
+  // ═══════════════════════════════════════════════════════════════════════════════
+
   /**
-   * ✅ معالجة app.uninstalled
+   * ✅ معالجة app.market.application.install / authorized
+   * عندما يقوم التاجر بتثبيت التطبيق من متجره
+   */
+  private async handleAppInstalled(
+    data: Record<string, unknown>,
+    context: { tenantId?: string; storeId?: string; webhookEventId: string },
+  ): Promise<Record<string, unknown>> {
+    const zidStoreId = data.store_id ? String(data.store_id) : undefined;
+    const storeUuid = data.store_uuid ? String(data.store_uuid) : undefined;
+    const merchantEmail = data.merchant_email as string | undefined;
+
+    this.logger.log('🎉 Processing app.market.application.install', {
+      zidStoreId,
+      storeUuid,
+      merchantEmail,
+      planName: data.plan_name,
+    });
+
+    // إطلاق حدث للإشعار بالتثبيت
+    this.eventEmitter.emit('store.installed', {
+      tenantId: context.tenantId,
+      storeId: context.storeId,
+      zidStoreId,
+      storeUuid,
+      merchantEmail,
+      planName: data.plan_name,
+      installedAt: new Date().toISOString(),
+      raw: data,
+    });
+
+    return {
+      handled: true,
+      action: 'app_installed',
+      zidStoreId,
+      emittedEvent: 'store.installed',
+    };
+  }
+
+  /**
+   * ✅ معالجة app.market.subscription.active / renew / upgrade
+   */
+  private async handleSubscriptionActive(
+    data: Record<string, unknown>,
+    context: { tenantId?: string; storeId?: string; webhookEventId: string },
+  ): Promise<Record<string, unknown>> {
+    const zidStoreId = data.store_id ? String(data.store_id) : undefined;
+
+    this.logger.log('💳 Processing subscription active/renew/upgrade', {
+      zidStoreId,
+      planName: data.plan_name,
+      status: data.status,
+      endDate: data.end_date,
+    });
+
+    // تفعيل المتجر إذا كان معلّقاً
+    if (zidStoreId) {
+      try {
+        const store = await this.storeRepository.findOne({ where: { zidStoreId } });
+        if (store && store.status !== StoreStatus.ACTIVE) {
+          await this.storeRepository.update({ id: store.id }, { status: StoreStatus.ACTIVE });
+          this.logger.log(`✅ Store reactivated: ${store.id}`);
+        }
+      } catch (e) { /* non-fatal */ }
+    }
+
+    this.eventEmitter.emit('store.subscription.active', {
+      tenantId: context.tenantId,
+      storeId: context.storeId,
+      zidStoreId,
+      planName: data.plan_name,
+      endDate: data.end_date,
+      amountPaid: data.amount_paid,
+      raw: data,
+    });
+
+    return { handled: true, action: 'subscription_active', zidStoreId };
+  }
+
+  /**
+   * ✅ معالجة app.market.subscription.suspended / expired
+   * تعليق خدمة المتجر عند انتهاء الاشتراك
+   */
+  private async handleSubscriptionExpired(
+    data: Record<string, unknown>,
+    context: { tenantId?: string; storeId?: string; webhookEventId: string },
+  ): Promise<Record<string, unknown>> {
+    const zidStoreId = data.store_id ? String(data.store_id) : undefined;
+    const merchantEmail = data.merchant_email as string | undefined;
+
+    this.logger.log('⏰ Processing subscription expired/suspended', {
+      zidStoreId,
+      planName: data.plan_name,
+      status: data.status,
+      endDate: data.end_date,
+      eventName: data.event_name,
+    });
+
+    // تعليق المتجر في قاعدة البيانات
+    if (zidStoreId) {
+      try {
+        const store = await this.storeRepository.findOne({ where: { zidStoreId } });
+        if (store) {
+          await this.storeRepository.update({ id: store.id }, { status: StoreStatus.SUSPENDED });
+          this.logger.log(`⚠️ Store suspended due to subscription expiry: ${store.id}`);
+        }
+      } catch (e) { /* non-fatal */ }
+    }
+
+    this.eventEmitter.emit('store.subscription.expired', {
+      tenantId: context.tenantId,
+      storeId: context.storeId,
+      zidStoreId,
+      merchantEmail,
+      planName: data.plan_name,
+      expiredAt: data.end_date,
+      raw: data,
+    });
+
+    return {
+      handled: true,
+      action: 'subscription_expired',
+      zidStoreId,
+      emittedEvent: 'store.subscription.expired',
+    };
+  }
+
+  /**
+   * ✅ معالجة app.uninstalled / app.market.application.uninstall
    * عندما يقوم التاجر بإلغاء تثبيت التطبيق من متجره
    */
   private async handleAppUninstalled(
