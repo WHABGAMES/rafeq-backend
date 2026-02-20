@@ -349,6 +349,7 @@ export class ZidOAuthController {
   }
   @Post(':storeId/reregister-webhooks')
   @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
   async reRegisterWebhooks(
     @Req() req: any,
     @Param('storeId') storeId: string,
