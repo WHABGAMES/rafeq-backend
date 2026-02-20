@@ -251,6 +251,33 @@ export class ZidWebhookProcessor extends WorkerHost {
         metadata: result,
       });
 
+
+      // ✅ إطلاق حدث webhook.processed لنظام تنبيهات الموظفين
+      // ✅ normalize Zid event names → NotificationTriggerEvent values
+      const normalizedEventType = (
+        eventType === 'order.create'            ? 'order.created' :
+        eventType === 'order.new'               ? 'order.created' :
+        eventType === 'order.update'            ? 'order.updated' :
+        eventType === 'order.status.update'     ? 'order.status.updated' :
+        eventType === 'order.payment_status.update' ? 'order.payment.updated' :
+        eventType === 'order.cancel'            ? 'order.cancelled' :
+        eventType === 'order.refund'            ? 'order.refunded' :
+        eventType === 'customer.create'         ? 'customer.created' :
+        eventType === 'customer.new'            ? 'customer.created' :
+        eventType === 'customer.update'         ? 'customer.updated' :
+        eventType === 'product.update'          ? 'product.updated' :
+        eventType === 'product.quantity.low'    ? 'product.low_stock' :
+        eventType === 'abandoned_cart.created'  ? 'abandoned.cart' :
+        eventType
+      );
+      this.eventEmitter.emit('webhook.processed', {
+        webhookEventId,
+        eventType: normalizedEventType,
+        tenantId,
+        storeId: internalStoreId,
+        data: job.data.data,
+      });
+
       this.logger.log(`✅ Zid webhook processed: ${eventType} in ${processingDurationMs}ms`);
 
     } catch (error) {
