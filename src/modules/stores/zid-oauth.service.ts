@@ -530,26 +530,78 @@ export class ZidOAuthService {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   async getStoreInfo(
-    accessToken: string,
-    authorization?: string,
+    managerToken: string,
+    authorizationToken?: string,
   ): Promise<ZidStoreInfo> {
 
     this.logger.log('🔍 [V2] getStoreInfo called', {
-      hasAccessToken: !!accessToken,
-      hasAuthorization: !!authorization,
+      hasManagerToken: !!managerToken,
+      hasAuthorizationToken: !!authorizationToken,
     });
+
+    const attempts = this.buildStoreInfoAttempts(managerToken, authorizationToken);
+
+    // ✅ جرّب كل endpoint مع كل مجموعة headers
+    for (const attempt of attempts) {
+      try {
+        this.logger.log(`🔍 [V2] Trying: ${attempt.endpoint} | ${attempt.name}`);
+
+        const resp = await firstValueFrom(
+          this.httpService.get(`${this.ZID_API_URL}${attempt.endpoint}`, { headers: attempt.headers }),
+        );
+
+        // ✅ نجح!
+        this.logger.log(`✅ [V2] SUCCESS: ${attempt.endpoint} | ${attempt.name}`, {
+          status: resp.status,
+          topKeys: Object.keys(resp.data || {}),
+        });
+
+        return this.normalizeStoreInfo(resp.data);
+
+      } catch (error: any) {
+        const status = error?.response?.status || '?';
+        const errBody = error?.response?.data;
+        const desc = errBody?.message?.description
+          || errBody?.message
+          || error?.message
+          || '';
+        this.logger.warn(
+          `❌ [V2] ${attempt.endpoint} | ${attempt.name} → ${status}: ${typeof desc === 'object' ? JSON.stringify(desc) : desc}`,
+        );
+      }
+    }
+
+    // كل المحاولات فشلت
+    this.logger.error('❌ [V2] ALL getStoreInfo attempts FAILED', {
+      totalAttempts: attempts.length,
+    });
+
+    throw new BadRequestException(
+      'فشل في جلب بيانات المتجر من زد — كل المحاولات فشلت',
+    );
+  }
+
+  /**
+   * Build ordered list of store info fetch attempts (endpoint + header combinations)
+   * @private
+   */
+  private buildStoreInfoAttempts(
+    managerToken: string,
+    authorizationToken?: string,
+  ): Array<{ name: string; endpoint: string; headers: Record<string, string> }> {
+    const attempts: Array<{ name: string; endpoint: string; headers: Record<string, string> }> = [];
 
     // ✅ بناء كل مجموعات الـ headers الممكنة بالترتيب الصحيح
     const headerSets: Array<{ name: string; headers: Record<string, string> }> = [];
 
     // الطريقة 1 (الرسمية حسب وثائق زد):
     // Authorization = authorization field, X-Manager-Token = access_token field
-    if (authorization) {
+    if (authorizationToken) {
       headerSets.push({
         name: 'OFFICIAL: Bearer(authorization) + XMT(access_token)',
         headers: {
-          'Authorization': `Bearer ${authorization}`,
-          'X-Manager-Token': accessToken,
+          'Authorization': `Bearer ${authorizationToken}`,
+          'X-Manager-Token': managerToken,
           'Accept': 'application/json',
           'Content-Type': 'application/json',
           'Accept-Language': 'ar',
@@ -560,12 +612,12 @@ export class ZidOAuthService {
 
     // الطريقة 2 (عكسية — إذا الحقول مقلوبة):
     // Authorization = access_token, X-Manager-Token = authorization
-    if (authorization) {
+    if (authorizationToken) {
       headerSets.push({
         name: 'REVERSE: Bearer(access_token) + XMT(authorization)',
         headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'X-Manager-Token': authorization,
+          'Authorization': `Bearer ${managerToken}`,
+          'X-Manager-Token': authorizationToken,
           'Accept': 'application/json',
           'Content-Type': 'application/json',
           'Accept-Language': 'ar',
@@ -578,7 +630,7 @@ export class ZidOAuthService {
     headerSets.push({
       name: 'BEARER-ONLY: Bearer(access_token)',
       headers: {
-        'Authorization': `Bearer ${accessToken}`,
+        'Authorization': `Bearer ${managerToken}`,
         'Accept': 'application/json',
         'Content-Type': 'application/json',
         'Accept-Language': 'ar',
@@ -586,11 +638,11 @@ export class ZidOAuthService {
     });
 
     // إذا فيه authorization → جرب Bearer authorization بدون XMT
-    if (authorization) {
+    if (authorizationToken) {
       headerSets.push({
         name: 'AUTH-BEARER-ONLY: Bearer(authorization)',
         headers: {
-          'Authorization': `Bearer ${authorization}`,
+          'Authorization': `Bearer ${authorizationToken}`,
           'Accept': 'application/json',
           'Content-Type': 'application/json',
           'Accept-Language': 'ar',
@@ -598,147 +650,119 @@ export class ZidOAuthService {
       });
     }
 
-    // ✅ الـ endpoints المحتملة (من وثائق زد)
+    // ✅ الـ endpoints المحتملة (من وثائق زد) — build attempts matrix
     const endpoints = [
       '/managers/account/profile',
       '/managers/store/info',
       '/managers/account',
     ];
 
-    // ✅ جرّب كل endpoint مع كل مجموعة headers
     for (const endpoint of endpoints) {
       for (const headerSet of headerSets) {
-        const url = `${this.ZID_API_URL}${endpoint}`;
-        try {
-          this.logger.log(`🔍 [V2] Trying: ${endpoint} | ${headerSet.name}`);
-
-          const resp = await firstValueFrom(
-            this.httpService.get(url, { headers: headerSet.headers }),
-          );
-
-          // ✅ نجح!
-          this.logger.log(`✅ [V2] SUCCESS: ${endpoint} | ${headerSet.name}`, {
-            status: resp.status,
-            topKeys: Object.keys(resp.data || {}),
-          });
-
-          // استخراج البيانات — زد يرجعها بأشكال مختلفة
-          const raw = resp.data;
-          const data = raw?.data
-            || raw?.store
-            || raw?.user?.store
-            || raw?.user
-            || raw;
-
-          this.logger.log('📊 [V2] Extracted store data:', {
-            keys: Object.keys(data || {}),
-            id: data?.id,
-            store_id: data?.store_id,
-            name: data?.name || data?.store_name,
-            email: data?.email,
-            mobile: data?.mobile,
-          });
-
-          // إذا البيانات فيها store متداخل
-          const storeData = data?.store || data;
-
-          // ✅ زد يرجع currency و language كـ objects مو strings
-          // currency: {"id":4,"name":"ريال سعودي","code":"SAR","symbol":"ر.س",...}
-          // language: {"id":2,"name":"عربي","code":"ar","direction":"rtl"}
-          const rawCurrency = storeData.currency;
-          const rawLanguage = storeData.language;
-          const rawLogo = storeData.logo;
-
-          const currencyStr = typeof rawCurrency === 'object' && rawCurrency !== null
-            ? (rawCurrency.code || 'SAR')
-            : (rawCurrency || 'SAR');
-
-          const languageStr = typeof rawLanguage === 'object' && rawLanguage !== null
-            ? (rawLanguage.code || 'ar')
-            : (rawLanguage || 'ar');
-
-          // logo قد يكون string أو object
-          let logoStr: string | undefined;
-          if (typeof rawLogo === 'string' && rawLogo.length > 0) {
-            logoStr = rawLogo.substring(0, 490);
-          } else if (typeof rawLogo === 'object' && rawLogo !== null) {
-            logoStr = (rawLogo.url || rawLogo.original || rawLogo.src || undefined);
-          }
-
-          // email قد يكون null في store → نجرب من user level
-          // ⚠️ لا نستخدم username كـ email (username = اسم المتجر مو إيميل)
-          const rawEmail = storeData.email
-            || raw?.user?.email
-            || data?.email
-            || '';
-
-          // ✅ إذا ما فيه إيميل حقيقي → نولّد إيميل مؤقت
-          const storeId = storeData.id || storeData.store_id || storeData.uuid || 'unknown';
-          const emailStr = rawEmail && rawEmail.includes('@')
-            ? rawEmail
-            : `zid_${storeId}@store.rafeq.ai`;
-
-          const mobileStr = storeData.mobile
-            || storeData.phone
-            || raw?.user?.mobile
-            || raw?.user?.phone
-            || data?.mobile
-            || '';
-
-          // ✅ حماية: mobile قد يكون object (mobile_object) — نستخرج string فقط
-          const safeMobile = typeof mobileStr === 'string'
-            ? mobileStr.substring(0, 20)
-            : (typeof mobileStr === 'object' && mobileStr !== null
-              ? String(mobileStr.number || mobileStr.phone || mobileStr.value || '').substring(0, 20)
-              : '');
-
-          this.logger.log('📋 [V2] Final mapped values:', {
-            id: storeData.id,
-            name: storeData.name || storeData.title,
-            email: emailStr,
-            mobile: safeMobile,
-            currency: currencyStr,
-            language: languageStr,
-            logo: logoStr ? 'present' : 'none',
-          });
-
-          return {
-            id: String(storeData.id || storeData.store_id || storeData.uuid || ''),
-            uuid: String(storeData.uuid || storeData.id || ''),
-            name: storeData.name || storeData.store_name || storeData.title || '',
-            email: emailStr,
-            mobile: safeMobile,
-            url: storeData.url || storeData.domain || '',
-            logo: logoStr,
-            currency: currencyStr,
-            language: languageStr,
-            created_at: storeData.created_at || new Date().toISOString(),
-          };
-
-        } catch (error: any) {
-          const status = error?.response?.status || '?';
-          const errBody = error?.response?.data;
-          const desc = errBody?.message?.description
-            || errBody?.message
-            || error?.message
-            || '';
-          this.logger.warn(
-            `❌ [V2] ${endpoint} | ${headerSet.name} → ${status}: ${typeof desc === 'object' ? JSON.stringify(desc) : desc}`,
-          );
-        }
+        attempts.push({
+          name: headerSet.name,
+          endpoint,
+          headers: headerSet.headers,
+        });
       }
     }
 
-    // كل المحاولات فشلت
-    this.logger.error('❌ [V2] ALL getStoreInfo attempts FAILED', {
-      endpointCount: endpoints.length,
-      headerSetCount: headerSets.length,
-      totalAttempts: endpoints.length * headerSets.length,
+    return attempts;
+  }
+
+  /**
+   * Normalize store info response from different Zid API endpoints
+   * Handles varying response shapes (data nested under user, store, data, etc.)
+   * @private
+   */
+  private normalizeStoreInfo(raw: any): ZidStoreInfo {
+    const data = raw?.data
+      || raw?.store
+      || raw?.user?.store
+      || raw?.user
+      || raw;
+
+    this.logger.log('📊 [V2] Extracted store data:', {
+      keys: Object.keys(data || {}),
+      id: data?.id,
+      store_id: data?.store_id,
+      name: data?.name || data?.store_name,
+      email: data?.email,
+      mobile: data?.mobile,
     });
 
-    throw new BadRequestException(
-      'فشل في جلب بيانات المتجر من زد — كل المحاولات فشلت',
-    );
+    // إذا البيانات فيها store متداخل
+    const storeData = data?.store || data;
+
+    // ✅ زد يرجع currency و language كـ objects مو strings
+    const rawCurrency = storeData.currency;
+    const rawLanguage = storeData.language;
+    const rawLogo = storeData.logo;
+
+    const currencyStr = typeof rawCurrency === 'object' && rawCurrency !== null
+      ? (rawCurrency.code || 'SAR')
+      : (rawCurrency || 'SAR');
+
+    const languageStr = typeof rawLanguage === 'object' && rawLanguage !== null
+      ? (rawLanguage.code || 'ar')
+      : (rawLanguage || 'ar');
+
+    // logo قد يكون string أو object
+    let logoStr: string | undefined;
+    if (typeof rawLogo === 'string' && rawLogo.length > 0) {
+      logoStr = rawLogo.substring(0, 490);
+    } else if (typeof rawLogo === 'object' && rawLogo !== null) {
+      logoStr = (rawLogo.url || rawLogo.original || rawLogo.src || undefined);
+    }
+
+    // email قد يكون null في store → نجرب من user level
+    const rawEmail = storeData.email
+      || raw?.user?.email
+      || data?.email
+      || '';
+
+    // ✅ إذا ما فيه إيميل حقيقي → نولّد إيميل مؤقت
+    const storeId = storeData.id || storeData.store_id || storeData.uuid || 'unknown';
+    const emailStr = rawEmail && rawEmail.includes('@')
+      ? rawEmail
+      : `zid_${storeId}@store.rafeq.ai`;
+
+    const mobileStr = storeData.mobile
+      || storeData.phone
+      || raw?.user?.mobile
+      || raw?.user?.phone
+      || data?.mobile
+      || '';
+
+    // ✅ حماية: mobile قد يكون object — نستخرج string فقط
+    const safeMobile = typeof mobileStr === 'string'
+      ? mobileStr.substring(0, 20)
+      : (typeof mobileStr === 'object' && mobileStr !== null
+        ? String(mobileStr.number || mobileStr.phone || mobileStr.value || '').substring(0, 20)
+        : '');
+
+    this.logger.log('📋 [V2] Final mapped values:', {
+      id: storeData.id,
+      name: storeData.name || storeData.title,
+      email: emailStr,
+      mobile: safeMobile,
+      currency: currencyStr,
+      language: languageStr,
+      logo: logoStr ? 'present' : 'none',
+    });
+
+    return {
+      id: String(storeData.id || storeData.store_id || storeData.uuid || ''),
+      uuid: String(storeData.uuid || storeData.id || ''),
+      name: storeData.name || storeData.store_name || storeData.title || '',
+      email: emailStr,
+      mobile: safeMobile,
+      url: storeData.url || storeData.domain || '',
+      logo: logoStr,
+      currency: currencyStr,
+      language: languageStr,
+      created_at: storeData.created_at || new Date().toISOString(),
+    };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
