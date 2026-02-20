@@ -618,6 +618,45 @@ export class AuthService implements OnModuleInit {
       providerId,
     });
 
+    // ✅ FIX: إرسال بيانات الدخول للمستخدمين الجدد عبر زد (/auth/callback/zid flow)
+    if (loginResult.isNewUser) {
+      try {
+        // توليد كلمة مرور من رقم الجوال
+        let password: string;
+        if (merchantMobile && typeof merchantMobile === 'string') {
+          let cleanMobile = merchantMobile.replace(/\D/g, '');
+          if (cleanMobile.startsWith('966') && cleanMobile.length > 9) cleanMobile = cleanMobile.slice(3);
+          if (cleanMobile.startsWith('0') && cleanMobile.length > 9) cleanMobile = cleanMobile.slice(1);
+          password = cleanMobile.length >= 6 ? `Ra${cleanMobile}` : `Ra${Date.now().toString().slice(-8)}`;
+        } else {
+          password = `Ra${Date.now().toString().slice(-8)}`;
+        }
+
+        // تحديث كلمة المرور في قاعدة البيانات (bcrypt مستورد في أعلى الملف)
+        const hashedPassword = await bcrypt.hash(password, 12);
+        await this.userRepository.update(loginResult.user.id, { password: hashedPassword });
+
+        // ✅ FIX: تحديث needsPassword لأننا قمنا بتعيين كلمة مرور للمستخدم الجديد
+        (loginResult.user as any).needsPassword = false;
+
+        // إرسال بيانات الدخول بالإيميل
+        await this.mailService.sendWelcomeCredentials({
+          to: email,
+          name: merchantName || 'شريكنا',
+          storeName: storeInfo?.name || 'متجرك في زد',
+          email,
+          password,
+          loginUrl: 'https://rafeq.ai',
+          isNewUser: true,
+        });
+
+        this.logger.log(`✅ Welcome credentials sent to new Zid user: ${this.maskEmail(email)}`);
+      } catch (welcomeError: any) {
+        // non-fatal — لا نُفشل العملية إذا فشل الإرسال
+        this.logger.error(`❌ Failed to send welcome credentials for Zid user: ${welcomeError.message}`);
+      }
+    }
+
     // 4. ربط متجر زد بالتنانت (non-fatal — لا نفشل العملية إذا تعذّر)
     if (storeInfo) {
       try {
