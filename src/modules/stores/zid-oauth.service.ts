@@ -1035,9 +1035,12 @@ export class ZidOAuthService {
    * يُستخدم عند فشل التسجيل الأولي أو تغيير الـ URL
    */
   async reRegisterWebhooks(storeId: string, tenantId: string): Promise<{ registered: string[]; failed: string[] }> {
-    const store = await this.storeRepository.findOne({
-      where: { id: storeId, tenantId },
-    });
+    const store = await this.storeRepository
+      .createQueryBuilder('store')
+      .addSelect('store.accessToken')
+      .addSelect('store.refreshToken')
+      .where('store.id = :storeId AND store.tenantId = :tenantId', { storeId, tenantId })
+      .getOne();
 
     if (!store || store.platform !== 'zid') {
       throw new Error(`Zid store not found: ${storeId}`);
