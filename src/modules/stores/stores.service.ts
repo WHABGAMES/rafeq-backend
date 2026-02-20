@@ -48,6 +48,7 @@ interface ConnectZidStoreData {
     accessToken: string;
     refreshToken: string;
     expiresAt: Date;
+    authorization?: string;
   };
   storeInfo: ZidStoreInfo;
 }
@@ -282,6 +283,9 @@ export class StoresService {
         autoReply: true,
         welcomeMessageEnabled: true,
         orderNotificationsEnabled: true,
+        ...(tokens.authorization
+          ? { zidAuthorizationToken: encrypt(tokens.authorization) }
+          : {}),
       },
       subscribedEvents: [
         'order.created',
@@ -331,6 +335,14 @@ export class StoresService {
     store.zidLogo = storeInfo.logo;
     store.zidCurrency = storeInfo.currency;
     store.zidLanguage = storeInfo.language;
+
+    // ✅ تحديث authorization token في settings
+    if (tokens.authorization) {
+      store.settings = {
+        ...(store.settings || {}),
+        zidAuthorizationToken: encrypt(tokens.authorization),
+      };
+    }
 
     return this.storeRepository.save(store);
   }

@@ -159,8 +159,8 @@ export function decryptSafe(encryptedText: string | null | undefined): string | 
  */
 export function maskSecret(value: string | null | undefined): string {
   if (!value) return '***';
-  if (value.length <= 6) return '***';
-  return `${value.slice(0, 4)}***${value.slice(-1)}`;
+  if (value.length <= 10) return '***';
+  return `${value.slice(0, 10)}...`;
 }
 
 /**
@@ -170,12 +170,14 @@ export function isEncrypted(text: string | null | undefined): boolean {
   if (!text) return false;
   const parts = text.split(':');
   if (parts.length !== 3) return false;
-  // تحقق أن الأجزاء hex صالحة
+  const [iv, authTag, encrypted] = parts;
+  // تحقق أن الأجزاء hex صالحة وأن البيانات المشفّرة غير فارغة
   return (
-    parts[0].length === IV_LENGTH * 2 &&
-    parts[1].length === AUTH_TAG_LENGTH * 2 &&
-    /^[0-9a-f]+$/i.test(parts[0]) &&
-    /^[0-9a-f]+$/i.test(parts[1]) &&
-    /^[0-9a-f]+$/i.test(parts[2])
+    iv.length === IV_LENGTH * 2 &&
+    authTag.length === AUTH_TAG_LENGTH * 2 &&
+    encrypted.length > 0 &&
+    /^[0-9a-f]+$/i.test(iv) &&
+    /^[0-9a-f]+$/i.test(authTag) &&
+    /^[0-9a-f]+$/i.test(encrypted)
   );
 }
