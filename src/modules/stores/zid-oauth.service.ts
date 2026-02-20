@@ -1035,15 +1035,17 @@ export class ZidOAuthService {
    * يُستخدم عند فشل التسجيل الأولي أو تغيير الـ URL
    */
   async reRegisterWebhooks(storeId: string, tenantId: string): Promise<{ registered: string[]; failed: string[] }> {
+    // ✅ FIX: Use tenantId in query — multi-tenant security (store must belong to this tenant)
     const store = await this.storeRepository
       .createQueryBuilder('store')
       .addSelect('store.accessToken')
       .addSelect('store.refreshToken')
       .where('store.id = :storeId', { storeId })
+      .andWhere('store.tenantId = :tenantId', { tenantId })
       .getOne();
 
     if (!store || store.platform !== 'zid') {
-      throw new Error(`Zid store not found: ${storeId}`);
+      throw new Error(`Zid store not found for tenant ${tenantId}: ${storeId}`);
     }
 
     const accessToken = decryptSafe(store.accessToken ?? null);
