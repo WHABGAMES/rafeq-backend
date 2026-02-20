@@ -1039,7 +1039,7 @@ export class ZidOAuthService {
       .createQueryBuilder('store')
       .addSelect('store.accessToken')
       .addSelect('store.refreshToken')
-      .where('store.id = :storeId AND store.tenantId = :tenantId', { storeId, tenantId })
+      .where('store.id = :storeId', { storeId })
       .getOne();
 
     if (!store || store.platform !== 'zid') {
