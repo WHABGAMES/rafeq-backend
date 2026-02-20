@@ -276,8 +276,8 @@ export class AnalyticsService {
       .innerJoin('channels', 'ch', 'ch.id = conv.channelId')
       .select(
         `CASE
-          WHEN ch.type IN ('whatsapp_official', 'whatsapp_qr') THEN 'whatsapp'
-          ELSE ch.type
+          WHEN ch.type::text IN ('whatsapp_official', 'whatsapp_qr') THEN 'whatsapp'
+          ELSE ch.type::text
         END`,
         'channel',
       )
@@ -289,8 +289,8 @@ export class AnalyticsService {
       })
       .groupBy(
         `CASE
-          WHEN ch.type IN ('whatsapp_official', 'whatsapp_qr') THEN 'whatsapp'
-          ELSE ch.type
+          WHEN ch.type::text IN ('whatsapp_official', 'whatsapp_qr') THEN 'whatsapp'
+          ELSE ch.type::text
         END`,
       )
       .orderBy('count', 'DESC')
