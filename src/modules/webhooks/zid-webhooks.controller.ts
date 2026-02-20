@@ -197,37 +197,72 @@ export class ZidWebhooksController {
   /**
    * 🔍 اكتشاف نوع الحدث من بنية البيانات
    *
-   * زد لا يرسل "event" — نكتشفه من الحقول الموجودة:
-   * - order_status موجود → حدث طلب
-   * - customer بدون order_status → حدث عميل
-   * - products بدون order_status → حدث منتج
+   * ✅ FIX v5: فحص event_name أولاً (أحداث App Market تُرسل مع event_name)
+   * ثم الكشف من بنية البيانات للأحداث التجارية (merchant events)
+   *
+   * أحداث App Market تحتوي على event_name:
+   *   app.market.application.install
+   *   app.market.application.uninstall
+   *   app.market.subscription.active / expired / suspended
+   *
+   * الأحداث التجارية تُرسل بيانات الطلب/العميل مباشرة بدون event_name
    */
   private detectEventType(body: Record<string, any>): string {
-    // ── طلب (Order) ──
-    // إذا فيه order_status أو invoice_number أو order_total → هذا طلب
+    // ── 0. أحداث App Market: تحتوي على event_name ──
+    if (body.event_name && typeof body.event_name === 'string') {
+      const eventName = body.event_name.trim();
+      this.logger.log(`🏪 App Market event detected via event_name: ${eventName}`);
+      return eventName;
+    }
+
+    // ── 1. تحديث حالة الدفع (payment_status.update) ──
+    // يُرسل مع payment_status_change أو payment_status محددة
+    if (body.payment_status_change !== undefined) {
+      return 'order.payment_status.update';
+    }
+
+    // ── 2. سلة مهجورة (abandoned_cart) ──
+    if (body.cart_total !== undefined || body.customer_id !== undefined && !body.order_status && !body.invoice_number) {
+      if (body.url !== undefined || body.phase !== undefined || body.reminders_count !== undefined) {
+        return 'abandoned_cart.created';
+      }
+    }
+
+    // ── 3. طلب (Order) ──
     if (body.order_status !== undefined || body.invoice_number !== undefined || body.order_total !== undefined) {
+      // إذا فيه payment_status_change بدون order_status تغيير → payment update
       // نحاول نعرف إذا طلب جديد أو تحديث حالة
-      // إذا فيه histories (سجل تغييرات) بأكثر من عنصر → تحديث
       const histories = body.histories;
       if (Array.isArray(histories) && histories.length > 1) {
         return 'order.status.update';
       }
       // إذا الحالة "new" أو "pending" أو "جديد" → طلب جديد
-      const status = typeof body.order_status === 'string' ? body.order_status.toLowerCase() : '';
-      if (status === 'new' || status === 'pending' || status === 'جديد') {
+      const orderStatus = body.order_status;
+      const statusCode = typeof orderStatus === 'object' && orderStatus !== null
+        ? (orderStatus.code || orderStatus.slug || '').toLowerCase()
+        : (typeof orderStatus === 'string' ? orderStatus.toLowerCase() : '');
+      if (statusCode === 'new' || statusCode === 'pending' || statusCode === 'جديد') {
         return 'order.create';
       }
       // Default: تحديث حالة (الأغلب)
       return 'order.status.update';
     }
 
-    // ── عميل (Customer) ──
-    if (body.mobile !== undefined && body.email !== undefined && !body.order_status) {
+    // ── 4. عميل (Customer) ──
+    if (
+      (body.mobile !== undefined || body.telephone !== undefined) &&
+      body.email !== undefined &&
+      body.order_status === undefined &&
+      body.invoice_number === undefined
+    ) {
       return body.created_at === body.updated_at ? 'customer.create' : 'customer.update';
     }
 
-    // ── منتج (Product) ──
-    if (body.sku !== undefined || (body.name !== undefined && body.price !== undefined && !body.order_status)) {
+    // ── 5. منتج (Product) ──
+    if (
+      body.sku !== undefined ||
+      (body.name !== undefined && body.price !== undefined && !body.order_status && !body.email)
+    ) {
       return 'product.update';
     }
 
@@ -275,8 +310,16 @@ export class ZidWebhooksController {
   }
 
   private generateIdempotencyKey(body: Record<string, any>, eventType: string): string {
+    // ✅ FIX: App Market events use event_name + store_id + status + payment_date
+    if (body.event_name) {
+      const data = `zid_${body.event_name}_${body.store_id || ''}_${body.status || ''}_${body.payment_date || body.start_date || ''}`;
+      return crypto.createHash('sha256').update(data).digest('hex');
+    }
+    // Merchant events: use orderId + status + store_id + updatedAt
     const orderId = body.id || '';
-    const status = body.order_status || '';
+    const status = typeof body.order_status === 'object' && body.order_status !== null
+      ? (body.order_status.code || body.order_status.slug || '')
+      : (body.order_status || '');
     const storeId = body.store_id || '';
     const updatedAt = body.updated_at || '';
     const data = `zid_${eventType}_${storeId}_${orderId}_${status}_${updatedAt}`;
