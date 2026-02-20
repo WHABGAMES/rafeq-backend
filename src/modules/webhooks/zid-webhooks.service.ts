@@ -47,8 +47,9 @@ export class ZidWebhooksService {
     const startTime = Date.now();
 
     try {
-      // البحث عن المتجر باستخدام zidStoreId
-      const storeInfo = await this.findStoreByZidStoreId(payload.storeId);
+      // ✅ FIX v2: pass store_uuid as fallback identifier
+      const storeUuid = payload.data?.store_uuid as string | undefined;
+      const storeInfo = await this.findStoreByZidStoreId(payload.storeId, storeUuid);
 
       if (!storeInfo) {
         this.logger.warn(`No store found for Zid store ${payload.storeId} - webhook will be saved without tenantId`);
@@ -218,27 +219,36 @@ export class ZidWebhooksService {
   }
 
   /**
-   * البحث عن المتجر باستخدام zidStoreId
+   * ✅ FIX v2: البحث عن المتجر باستخدام zidStoreId أولاً، ثم store_uuid كـ fallback
+   * زد يرسل store_id (integer) وأحياناً store_uuid في الـ payload
    */
-  private async findStoreByZidStoreId(zidStoreId: string): Promise<{
+  private async findStoreByZidStoreId(zidStoreId: string, storeUuid?: string): Promise<{
     tenantId: string;
     storeId: string;
   } | null> {
     this.logger.debug(`Looking up store for Zid store ${zidStoreId}`);
 
     try {
+      // محاولة 1: البحث بـ zidStoreId
       const store = await this.storesService.findByZidStoreId(zidStoreId);
 
       if (store && store.tenantId) {
         this.logger.debug(`Found store: ${store.id} for Zid store ${zidStoreId}`);
-        return {
-          tenantId: store.tenantId,
-          storeId: store.id,
-        };
+        return { tenantId: store.tenantId, storeId: store.id };
       }
 
       if (store && !store.tenantId) {
         this.logger.warn(`Store ${store.id} found for Zid store ${zidStoreId} but tenantId is not linked yet`);
+      }
+
+      // محاولة 2: البحث بـ store_uuid (fallback)
+      if (storeUuid) {
+        this.logger.debug(`Trying fallback: lookup by store_uuid ${storeUuid}`);
+        const storeByUuid = await this.storesService.findByZidStoreUuid(storeUuid);
+        if (storeByUuid && storeByUuid.tenantId) {
+          this.logger.debug(`Found store via store_uuid: ${storeByUuid.id}`);
+          return { tenantId: storeByUuid.tenantId, storeId: storeByUuid.id };
+        }
       }
 
       this.logger.debug(`No store found for Zid store ${zidStoreId}`);
