@@ -90,9 +90,17 @@ export class ZidWebhookProcessor extends WorkerHost {
         case 'order-update':
         case 'order.update':
         case 'order-status-update':
-        case 'order.status.update': // ✅ v3: هذا الاسم الفعلي المسجّل في زد + المكتشف من Controller
+        case 'order.status.update': // ✅ وثائق Zid الرسمية: order.status.update
           result = await this.handleOrderUpdate(data, context);
           break;
+
+        // ✅ وثائق Zid الرسمية: order.payment_status.update
+        // "Triggered when an order's payment status changes to paid or unpaid"
+        // يُرسل حقل payment_status_change مع القيم القديمة والجديدة
+        case 'order.payment_status.update':
+          result = await this.handleOrderPaymentStatusUpdate(data, context);
+          break;
+
         case 'order-cancelled':
         case 'order.cancel':
         case 'order.cancelled':
@@ -104,7 +112,7 @@ export class ZidWebhookProcessor extends WorkerHost {
           result = await this.handleOrderRefunded(data, context);
           break;
 
-        // Customers
+        // Customers — وثائق Zid: 4 أحداث رسمية
         case 'new-customer':
         case 'customer.new':
         case 'customer.create':
@@ -114,8 +122,18 @@ export class ZidWebhookProcessor extends WorkerHost {
         case 'customer.update':
           result = await this.handleCustomerUpdate(data, context);
           break;
+        // ✅ وثائق Zid الرسمية: customer.login
+        // "Triggered when a customer logs into the store"
+        case 'customer.login':
+          result = await this.handleCustomerLogin(data, context);
+          break;
+        // ✅ وثائق Zid الرسمية: customer.merchant.update
+        // "Triggered when a merchant updates their business information"
+        case 'customer.merchant.update':
+          result = await this.handleCustomerMerchantUpdate(data, context);
+          break;
 
-        // Products
+        // Products — وثائق Zid: 4 أحداث رسمية
         case 'product-create':
         case 'product.create':
         case 'product-update':
@@ -124,11 +142,30 @@ export class ZidWebhookProcessor extends WorkerHost {
         case 'product.delete':
           result = await this.handleProductEvent(eventType, data, context);
           break;
+        // ✅ وثائق Zid الرسمية: product.publish
+        // "Triggered when a product is published (moved from draft to active)"
+        case 'product.publish':
+          result = await this.handleProductEvent('product.publish', data, context);
+          break;
 
-        // Cart
+        // Cart — وثائق Zid: 2 أحداث رسمية
+        // ✅ abandoned_cart.created: بدأ التخلي عن السلة (phase != completed)
+        case 'abandoned_cart.created':
         case 'abandoned-cart':
         case 'cart.abandoned':
           result = await this.handleAbandonedCart(data, context);
+          break;
+        // ✅ abandoned_cart.completed: أكمل العميل الشراء بعد التخلي
+        case 'abandoned_cart.completed':
+          result = await this.handleAbandonedCartCompleted(data, context);
+          break;
+
+        // Categories — وثائق Zid: 3 أحداث رسمية
+        // ✅ category.create / category.update / category.delete
+        case 'category.create':
+        case 'category.update':
+        case 'category.delete':
+          result = await this.handleCategoryEvent(eventType, data, context);
           break;
 
         // Reviews
@@ -654,15 +691,19 @@ export class ZidWebhookProcessor extends WorkerHost {
   ): Promise<Record<string, unknown>> {
     this.logger.log(`Processing Zid ${eventType}`, { productId: data.id });
 
-    const emitEvent = (eventType === 'product-create' || eventType === 'product.create') ? 'product.created'
-      : (eventType === 'product-delete' || eventType === 'product.delete') ? 'product.deleted'
-      : 'product.updated';
+    // ✅ وثائق Zid: 4 أحداث رسمية للمنتجات
+    const emitEvent =
+      (eventType === 'product-create' || eventType === 'product.create')  ? 'product.created'  :
+      (eventType === 'product-delete' || eventType === 'product.delete')  ? 'product.deleted'  :
+      (eventType === 'product.publish')                                   ? 'product.published' :
+      'product.updated';
 
     this.eventEmitter.emit(emitEvent, {
       tenantId: context.tenantId,
       storeId: context.storeId,
       productId: data.id,
       productName: data.name,
+      isPublished: data.is_published,
       raw: data,
       source: 'zid',
     });
@@ -670,28 +711,246 @@ export class ZidWebhookProcessor extends WorkerHost {
     return { handled: true, action: eventType, productId: data.id, emittedEvent: emitEvent };
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 💳 Order Payment Status Handler — وثائق Zid: order.payment_status.update
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * ✅ وثائق Zid الرسمية: order.payment_status.update
+   * "Triggered when an order's payment status changes to paid or unpaid"
+   * Payload: { payment_status_change: { old, new }, id, store_id, ... }
+   */
+  private async handleOrderPaymentStatusUpdate(
+    data: Record<string, unknown>,
+    context: { tenantId?: string; storeId?: string; webhookEventId: string },
+  ): Promise<Record<string, unknown>> {
+    const paymentChange = data.payment_status_change as Record<string, unknown> | undefined;
+    const newStatus = paymentChange?.new ?? data.payment_status;
+    const oldStatus = paymentChange?.old;
+
+    this.logger.log('💳 Processing Zid order.payment_status.update', {
+      orderId: data.id,
+      oldStatus,
+      newStatus,
+    });
+
+    // تحديث حالة الطلب في DB إذا أصبح مدفوعاً
+    if (context.tenantId && data.id && newStatus === 'paid') {
+      try {
+        await this.orderRepository.update(
+          { sallaOrderId: String(data.id), tenantId: context.tenantId },
+          { status: OrderStatus.PAID },
+        );
+      } catch (e) { /* ignore - order may not exist yet */ }
+    }
+
+    this.eventEmitter.emit('order.payment_status.updated', {
+      tenantId: context.tenantId,
+      storeId: context.storeId,
+      orderId: data.id,
+      oldPaymentStatus: oldStatus,
+      newPaymentStatus: newStatus,
+      isPaid: newStatus === 'paid',
+      raw: data,
+      source: 'zid',
+    });
+
+    return {
+      handled: true,
+      action: 'order_payment_status_update',
+      orderId: data.id,
+      oldStatus,
+      newStatus,
+    };
+  }
+
+  /**
+   * ✅ وثائق Zid الرسمية: abandoned_cart.created
+   * AbandonedCart schema: cart_total, cart_total_string, phase, url,
+   *   reminders_count, customer_id, customer_name, customer_email, customer_mobile
+   */
   private async handleAbandonedCart(
     data: Record<string, unknown>,
     context: { tenantId?: string; storeId?: string; webhookEventId: string },
   ): Promise<Record<string, unknown>> {
-    this.logger.log('Processing Zid abandoned-cart', { cartId: data.id });
+    this.logger.log('🛒 Processing Zid abandoned_cart.created', {
+      cartId: data.id,
+      phase: data.phase,
+      customerId: data.customer_id,
+    });
 
-    const customer = data.customer as Record<string, unknown> | undefined;
-    if (customer?.id) await this.syncCustomerToDatabase(customer, context);
+    // زد يُرسل بيانات العميل مدمجة في نفس الـ payload (customer_name, customer_mobile...)
+    // وليس nested object — نتحقق من كلا الطريقتين
+    const nestedCustomer = data.customer as Record<string, unknown> | undefined;
+    if (nestedCustomer?.id) await this.syncCustomerToDatabase(nestedCustomer, context);
 
     this.eventEmitter.emit('cart.abandoned', {
       tenantId: context.tenantId,
       storeId: context.storeId,
       cartId: data.id,
-      customerName: customer?.name,
-      customerPhone: customer?.mobile,
-      cartTotal: data.total,
+      // ✅ وثائق Zid: flat fields في abandoned_cart payload
+      customerId: data.customer_id ?? nestedCustomer?.id,
+      customerName: data.customer_name ?? nestedCustomer?.name,
+      customerPhone: data.customer_mobile ?? nestedCustomer?.mobile,
+      customerEmail: data.customer_email ?? nestedCustomer?.email,
+      cartTotal: data.cart_total ?? data.total,
+      cartTotalString: data.cart_total_string,
+      phase: data.phase,
+      cartUrl: data.url,
+      remindersCount: data.reminders_count,
       items: data.items,
       raw: data,
       source: 'zid',
     });
 
-    return { handled: true, action: 'abandoned_cart', cartId: data.id };
+    return { handled: true, action: 'abandoned_cart_created', cartId: data.id };
+  }
+
+  /**
+   * ✅ وثائق Zid الرسمية: abandoned_cart.completed
+   * "Triggered when a customer completes a purchase after abandoning a cart"
+   * Payload: نفس AbandonedCart schema لكن phase === 'completed'
+   * الفرق التجاري: هذا يعني نجاح حملة استرداد السلة
+   */
+  private async handleAbandonedCartCompleted(
+    data: Record<string, unknown>,
+    context: { tenantId?: string; storeId?: string; webhookEventId: string },
+  ): Promise<Record<string, unknown>> {
+    this.logger.log('✅ Processing Zid abandoned_cart.completed', {
+      cartId: data.id,
+      customerId: data.customer_id,
+      cartTotal: data.cart_total,
+    });
+
+    const customer = data.customer as Record<string, unknown> | undefined;
+    if (customer?.id) await this.syncCustomerToDatabase(customer, context);
+
+    // استرداد السلة = نجاح → emit event يختلف عن التخلي
+    this.eventEmitter.emit('cart.recovered', {
+      tenantId: context.tenantId,
+      storeId: context.storeId,
+      cartId: data.id,
+      customerId: data.customer_id,
+      customerName: customer?.name ?? data.customer_name,
+      customerPhone: customer?.mobile ?? data.customer_mobile,
+      customerEmail: customer?.email ?? data.customer_email,
+      cartTotal: data.cart_total,
+      remindersCount: data.reminders_count,
+      phase: data.phase,
+      raw: data,
+      source: 'zid',
+    });
+
+    return { handled: true, action: 'abandoned_cart_completed', cartId: data.id };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 👤 Customer Extra Handlers — وثائق Zid: customer.login + customer.merchant.update
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * ✅ وثائق Zid الرسمية: customer.login
+   * "Triggered when a customer logs into the store"
+   * Payload: Customer schema (نفس customer.create لكن يُرسل عند كل دخول)
+   */
+  private async handleCustomerLogin(
+    data: Record<string, unknown>,
+    context: { tenantId?: string; storeId?: string; webhookEventId: string },
+  ): Promise<Record<string, unknown>> {
+    this.logger.log('🔐 Processing Zid customer.login', {
+      customerId: data.id,
+      email: data.email,
+    });
+
+    this.eventEmitter.emit('customer.login', {
+      tenantId: context.tenantId,
+      storeId: context.storeId,
+      customerId: data.id,
+      name: data.name,
+      email: data.email,
+      mobile: data.mobile ?? data.telephone,
+      raw: data,
+      source: 'zid',
+    });
+
+    return { handled: true, action: 'customer_login', customerId: data.id };
+  }
+
+  /**
+   * ✅ وثائق Zid الرسمية: customer.merchant.update
+   * "Triggered when a merchant updates their business/commercial information"
+   * Payload: يحتوي على بيانات تجارية مثل business_name, tax_number, commercial_registration
+   */
+  private async handleCustomerMerchantUpdate(
+    data: Record<string, unknown>,
+    context: { tenantId?: string; storeId?: string; webhookEventId: string },
+  ): Promise<Record<string, unknown>> {
+    this.logger.log('🏪 Processing Zid customer.merchant.update', {
+      customerId: data.id,
+      businessName: data.business_name,
+    });
+
+    // sync عام للعميل
+    await this.syncCustomerToDatabase(data, context);
+
+    this.eventEmitter.emit('customer.merchant.updated', {
+      tenantId: context.tenantId,
+      storeId: context.storeId,
+      customerId: data.id,
+      businessName: data.business_name,
+      taxNumber: data.tax_number,
+      commercialRegistration: data.commercial_registration,
+      raw: data,
+      source: 'zid',
+    });
+
+    return { handled: true, action: 'customer_merchant_update', customerId: data.id };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 📂 Category Handlers — وثائق Zid: category.create / update / delete
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * ✅ وثائق Zid الرسمية: category.create / category.update / category.delete
+   * Payload: ProductCategory schema
+   *   { id, name, slug, flat_name, is_published, sub_categories, products_count, ... }
+   */
+  private async handleCategoryEvent(
+    eventType: string,
+    data: Record<string, unknown>,
+    context: { tenantId?: string; storeId?: string; webhookEventId: string },
+  ): Promise<Record<string, unknown>> {
+    this.logger.log(`📂 Processing Zid ${eventType}`, {
+      categoryId: data.id,
+      categoryName: data.name,
+    });
+
+    // تحديد الـ event المُصدَر بناءً على نوع الحدث
+    const emitEvent =
+      eventType === 'category.create' ? 'category.created'  :
+      eventType === 'category.delete' ? 'category.deleted'  :
+      'category.updated';
+
+    this.eventEmitter.emit(emitEvent, {
+      tenantId: context.tenantId,
+      storeId: context.storeId,
+      categoryId: data.id,
+      categoryName: data.name,
+      categorySlug: data.slug,
+      isPublished: data.is_published,
+      subCategories: data.sub_categories,
+      productsCount: data.products_count,
+      raw: data,
+      source: 'zid',
+    });
+
+    return {
+      handled: true,
+      action: eventType.replace('.', '_'),
+      categoryId: data.id,
+      emittedEvent: emitEvent,
+    };
   }
 
   private async handleNewReview(
