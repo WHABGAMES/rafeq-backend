@@ -35,7 +35,7 @@ import { AutoRegistrationService } from '../auth/auto-registration.service';
 import { ZidApiService } from './zid-api.service';
 
 // 🔐 Encryption
-import { encrypt } from '@common/utils/encryption.util';
+import { encrypt, decrypt, decryptSafe } from '@common/utils/encryption.util';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ✅ Exported Types
@@ -417,6 +417,7 @@ export class ZidOAuthService {
         const webhookTokens = {
           managerToken: tokens.access_token,
           authorizationToken: tokens.authorization || undefined,
+          storeId: String(storeInfo.id || ''), // ✅ FIX: Store-Id header لتسجيل الـ webhooks
         };
 
         const result = await this.zidApiService.registerWebhooks(webhookTokens, webhookUrl, appId);
@@ -1018,6 +1019,7 @@ export class ZidOAuthService {
       const webhookTokens = {
         managerToken: tokens.access_token,
         authorizationToken: tokens.authorization || undefined,
+        storeId: String(zidStoreId || ''), // ✅ FIX: Store-Id header لتسجيل الـ webhooks
       };
 
       await this.zidApiService.registerWebhooks(webhookTokens, webhookUrl, appId);
@@ -1028,4 +1030,43 @@ export class ZidOAuthService {
 
     return savedStore;
   }
+  /**
+   * ✅ إعادة تسجيل Webhooks لمتجر موجود
+   * يُستخدم عند فشل التسجيل الأولي أو تغيير الـ URL
+   */
+  async reRegisterWebhooks(storeId: string, tenantId: string): Promise<{ registered: string[]; failed: string[] }> {
+    const store = await this.storeRepository.findOne({
+      where: { id: storeId, tenantId },
+    });
+
+    if (!store || store.platform !== 'zid') {
+      throw new Error(`Zid store not found: ${storeId}`);
+    }
+
+    const accessToken = decrypt(store.accessToken ?? null);
+    const authToken = decryptSafe((store.settings as any)?.zidAuthorizationToken);
+
+    if (!accessToken) {
+      throw new Error('Store access token not found');
+    }
+
+    const baseUrl = this.configService.get<string>('app.baseUrl')
+      || this.configService.get<string>('APP_BASE_URL')
+      || 'https://api.rafeq.ai';
+    const webhookUrl = `${baseUrl}/api/webhooks/zid`;
+    const appId = this.configService.get<string>('zid.clientId') || 'rafeq-app';
+
+    const webhookTokens = {
+      managerToken: accessToken,
+      authorizationToken: authToken || undefined,
+      storeId: store.zidStoreId || undefined,
+    };
+
+    this.logger.log(`🔔 Re-registering Zid webhooks for store ${storeId} (zidStoreId: ${store.zidStoreId})`);
+    const result = await this.zidApiService.registerWebhooks(webhookTokens, webhookUrl, appId);
+    this.logger.log(`✅ Zid webhooks re-registered: ${result.registered.join(', ')} | failed: ${result.failed.join(', ') || 'none'}`);
+
+    return result;
+  }
+
 }
