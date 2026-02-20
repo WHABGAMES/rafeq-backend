@@ -120,64 +120,27 @@ export class ZidApiService {
   async getOrders(
     tokens: ZidAuthTokens,
     params: { page?: number; per_page?: number; status?: string } = {},
-    _retryWithoutAuth = false,
   ): Promise<ZidApiResponse<ZidOrder[]>> {
-    try {
-      const queryParams = new URLSearchParams();
-      if (params.page) queryParams.append('page', params.page.toString());
-      if (params.per_page) queryParams.append('per_page', params.per_page.toString());
-      if (params.status) queryParams.append('status', params.status);
-
-      const response = await firstValueFrom(
-        this.httpService.get(
-          `${this.ZID_API_URL}/managers/store/orders?${queryParams.toString()}`,
-          { headers: this.getHeaders(tokens) },
-        ),
-      );
-
-      this.logger.debug(`Fetched ${response.data.data?.length || 0} orders from Zid`);
-      return response.data;
-    } catch (error: any) {
-      const status = error?.response?.status;
-      const errorDetail = error?.response?.data?.detail || error?.response?.data?.message;
-
-      // ✅ FIX: Retry without authorization token on "No such user" 401 error
-      if (status === 401 && errorDetail?.includes('No such user') && !_retryWithoutAuth) {
-        this.logger.warn('⚠️ Zid API 401 "No such user" - retrying orders without authorization token', {
-          error: errorDetail,
-        });
-        return this.getOrders(
-          { managerToken: tokens.managerToken, authorizationToken: undefined },
-          params,
-          true,
-        );
-      }
-
-      this.logger.error('Failed to fetch Zid orders', {
-        error: error?.response?.data || error.message,
-        status,
-        hasAuthToken: !!tokens.authorizationToken,
-      });
-      throw error;
-    }
+    const response = await this.callZidApi<ZidApiResponse<ZidOrder[]>>(
+      'GET',
+      '/managers/store/orders',
+      tokens,
+      { params },
+      'get orders',
+    );
+    this.logger.debug(`Fetched ${response.data?.length || 0} orders from Zid`);
+    return response;
   }
 
   async getOrder(tokens: ZidAuthTokens, orderId: number): Promise<ZidOrder> {
-    try {
-      const response = await firstValueFrom(
-        this.httpService.get(
-          `${this.ZID_API_URL}/managers/store/orders/${orderId}`,
-          { headers: this.getHeaders(tokens) },
-        ),
-      );
-
-      return response.data.data;
-    } catch (error: any) {
-      this.logger.error(`Failed to fetch Zid order ${orderId}`, {
-        error: error?.response?.data || error.message,
-      });
-      throw error;
-    }
+    const response = await this.callZidApi<{ data: ZidOrder }>(
+      'GET',
+      `/managers/store/orders/${orderId}`,
+      tokens,
+      {},
+      `get order ${orderId}`,
+    );
+    return response.data;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -187,64 +150,27 @@ export class ZidApiService {
   async getCustomers(
     tokens: ZidAuthTokens,
     params: { page?: number; per_page?: number; search?: string } = {},
-    _retryWithoutAuth = false,
   ): Promise<ZidApiResponse<ZidCustomer[]>> {
-    try {
-      const queryParams = new URLSearchParams();
-      if (params.page) queryParams.append('page', params.page.toString());
-      if (params.per_page) queryParams.append('per_page', params.per_page.toString());
-      if (params.search) queryParams.append('search', params.search);
-
-      const response = await firstValueFrom(
-        this.httpService.get(
-          `${this.ZID_API_URL}/managers/store/customers?${queryParams.toString()}`,
-          { headers: this.getHeaders(tokens) },
-        ),
-      );
-
-      this.logger.debug(`Fetched ${response.data.data?.length || 0} customers from Zid`);
-      return response.data;
-    } catch (error: any) {
-      const status = error?.response?.status;
-      const errorDetail = error?.response?.data?.detail || error?.response?.data?.message;
-
-      // ✅ FIX: Retry without authorization token on "No such user" 401 error
-      if (status === 401 && errorDetail?.includes('No such user') && !_retryWithoutAuth) {
-        this.logger.warn('⚠️ Zid API 401 "No such user" - retrying customers without authorization token', {
-          error: errorDetail,
-        });
-        return this.getCustomers(
-          { managerToken: tokens.managerToken, authorizationToken: undefined },
-          params,
-          true,
-        );
-      }
-
-      this.logger.error('Failed to fetch Zid customers', {
-        error: error?.response?.data || error.message,
-        status,
-        hasAuthToken: !!tokens.authorizationToken,
-      });
-      throw error;
-    }
+    const response = await this.callZidApi<ZidApiResponse<ZidCustomer[]>>(
+      'GET',
+      '/managers/store/customers',
+      tokens,
+      { params },
+      'get customers',
+    );
+    this.logger.debug(`Fetched ${response.data?.length || 0} customers from Zid`);
+    return response;
   }
 
   async getCustomer(tokens: ZidAuthTokens, customerId: number): Promise<ZidCustomer> {
-    try {
-      const response = await firstValueFrom(
-        this.httpService.get(
-          `${this.ZID_API_URL}/managers/store/customers/${customerId}`,
-          { headers: this.getHeaders(tokens) },
-        ),
-      );
-
-      return response.data.data;
-    } catch (error: any) {
-      this.logger.error(`Failed to fetch Zid customer ${customerId}`, {
-        error: error?.response?.data || error.message,
-      });
-      throw error;
-    }
+    const response = await this.callZidApi<{ data: ZidCustomer }>(
+      'GET',
+      `/managers/store/customers/${customerId}`,
+      tokens,
+      {},
+      `get customer ${customerId}`,
+    );
+    return response.data;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -263,77 +189,47 @@ export class ZidApiService {
   async getProducts(
     tokens: ZidAuthTokens,
     params: { page?: number; per_page?: number; status?: string } = {},
-    _retryWithoutAuth = false,
   ): Promise<ZidApiResponse<ZidProduct[]>> {
-    try {
-      const queryParams = new URLSearchParams();
-      if (params.page) queryParams.append('page', params.page.toString());
-      if (params.per_page) queryParams.append('page_size', params.per_page.toString());
-      if (params.status) queryParams.append('status', params.status);
+    // Products API has a different response shape — handle normalization after the call
+    const productParams: Record<string, any> = {};
+    if (params.page) productParams['page'] = params.page;
+    if (params.per_page) productParams['page_size'] = params.per_page;
+    if (params.status) productParams['status'] = params.status;
 
-      const response = await firstValueFrom(
-        this.httpService.get(
-          `${this.ZID_API_URL}/products/?${queryParams.toString()}`,
-          { headers: this.getProductHeaders(tokens) },
-        ),
-      );
+    const raw = await this.callZidApi<{ count?: number; results?: ZidProduct[]; data?: ZidProduct[] }>(
+      'GET',
+      '/products/',
+      tokens,
+      { params: productParams, useProductHeaders: true },
+      'get products',
+    );
 
-      // ✅ تحويل response shape من products API إلى الشكل الموحد
-      const raw = response.data;
-      const results = raw.results || raw.data || [];
-      const count = raw.count ?? results.length;
+    // ✅ تحويل response shape من products API إلى الشكل الموحد
+    const results = raw.results || raw.data || [];
+    const count = raw.count ?? results.length;
 
-      this.logger.debug(`Fetched ${results.length} products from Zid (total: ${count})`);
+    this.logger.debug(`Fetched ${results.length} products from Zid (total: ${count})`);
 
-      return {
-        data: results,
-        pagination: {
-          total: count,
-          current_page: params.page || 1,
-          per_page: params.per_page || results.length,
-        },
-      } as ZidApiResponse<ZidProduct[]>;
-    } catch (error: any) {
-      const status = error?.response?.status;
-      const errorDetail = error?.response?.data?.detail || error?.response?.data?.message;
-
-      // ✅ FIX: Retry without authorization token on "No such user" 401 error
-      if (status === 401 && errorDetail?.includes('No such user') && !_retryWithoutAuth) {
-        this.logger.warn('⚠️ Zid API 401 "No such user" - retrying products without authorization token', {
-          error: errorDetail,
-        });
-        return this.getProducts(
-          { managerToken: tokens.managerToken, authorizationToken: undefined },
-          params,
-          true,
-        );
-      }
-
-      this.logger.error('Failed to fetch Zid products', {
-        error: error?.response?.data || error.message,
-        status,
-        hasAuthToken: !!tokens.authorizationToken,
-      });
-      throw error;
-    }
+    return {
+      data: results,
+      pagination: {
+        total: count,
+        current_page: params.page || 1,
+        per_page: params.per_page || results.length,
+        last_page: params.per_page && params.per_page > 0 ? Math.ceil(count / params.per_page) : 1,
+      },
+    } as ZidApiResponse<ZidProduct[]>;
   }
 
   async getProduct(tokens: ZidAuthTokens, productId: number): Promise<ZidProduct> {
-    try {
-      const response = await firstValueFrom(
-        this.httpService.get(
-          `${this.ZID_API_URL}/products/${productId}`,
-          { headers: this.getProductHeaders(tokens) },
-        ),
-      );
-
-      return response.data.data || response.data;
-    } catch (error: any) {
-      this.logger.error(`Failed to fetch Zid product ${productId}`, {
-        error: error?.response?.data || error.message,
-      });
-      throw error;
-    }
+    const raw = await this.callZidApi<{ data?: ZidProduct } | ZidProduct>(
+      'GET',
+      `/products/${productId}`,
+      tokens,
+      { useProductHeaders: true },
+      `get product ${productId}`,
+    );
+    return (raw as { data?: ZidProduct }).data || (raw as ZidProduct);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -351,51 +247,133 @@ export class ZidApiService {
     currency: string;
     language: string;
   }> {
+    const raw = await this.callZidApi<any>(
+      'GET',
+      '/managers/account/profile',
+      tokens,
+      {},
+      'get store info',
+    );
+
+    const user = raw?.user || raw?.data || raw;
+    const storeData = user?.store || user;
+
+    const rawCurrency = storeData.currency;
+    const rawLanguage = storeData.language;
+
+    return {
+      id: String(storeData.id || storeData.store_id || ''),
+      uuid: String(storeData.uuid || storeData.id || ''),
+      name: storeData.name || storeData.store_name || storeData.title || '',
+      email: storeData.email || user?.email || '',
+      mobile: storeData.mobile || storeData.phone || user?.mobile || '',
+      url: storeData.url || storeData.domain || '',
+      logo: typeof storeData.logo === 'string' ? storeData.logo.substring(0, 490) : undefined,
+      currency: typeof rawCurrency === 'object' && rawCurrency !== null
+        ? (rawCurrency.code || 'SAR') : (rawCurrency || 'SAR'),
+      language: typeof rawLanguage === 'object' && rawLanguage !== null
+        ? (rawLanguage.code || 'ar') : (rawLanguage || 'ar'),
+    };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🛠️ Core HTTP Layer — CENTRALIZED
+  //
+  // Handles all Zid API calls with:
+  //   - Smart retry on 401 "No such user" (drops authorizationToken)
+  //   - Exponential backoff for transient errors (network, 5xx, 429)
+  //   - Centralized logging with operation context
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Centralized Zid API call with retry logic
+   * @private
+   */
+  private async callZidApi<T>(
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
+    endpoint: string,
+    tokens: ZidAuthTokens,
+    options: {
+      params?: Record<string, any>;
+      body?: any;
+      useProductHeaders?: boolean;
+    } = {},
+    operationName: string,
+    retryCount = 0,
+  ): Promise<T> {
+    const maxRetries = 2;
+    const headers = options.useProductHeaders
+      ? this.getProductHeaders(tokens)
+      : this.getManagerHeaders(tokens);
+
+    this.logger.debug(`📤 Zid API: ${method} ${endpoint}`, {
+      operation: operationName,
+      hasAuthToken: !!tokens.authorizationToken,
+    });
+
     try {
       const response = await firstValueFrom(
-        this.httpService.get(
-          `${this.ZID_API_URL}/managers/account/profile`,
-          { headers: this.getHeaders(tokens) },
-        ),
+        this.httpService.request<T>({
+          method,
+          url: `${this.ZID_API_URL}${endpoint}`,
+          headers,
+          params: options.params,
+          data: options.body,
+        }),
       );
 
-      const raw = response.data;
-      const user = raw?.user || raw?.data || raw;
-      const storeData = user?.store || user;
+      this.logger.debug(`✅ Zid API: ${operationName} succeeded`);
+      return response.data;
 
-      const rawCurrency = storeData.currency;
-      const rawLanguage = storeData.language;
-
-      return {
-        id: String(storeData.id || storeData.store_id || ''),
-        uuid: String(storeData.uuid || storeData.id || ''),
-        name: storeData.name || storeData.store_name || storeData.title || '',
-        email: storeData.email || user?.email || '',
-        mobile: storeData.mobile || storeData.phone || user?.mobile || '',
-        url: storeData.url || storeData.domain || '',
-        logo: typeof storeData.logo === 'string' ? storeData.logo.substring(0, 490) : undefined,
-        currency: typeof rawCurrency === 'object' && rawCurrency !== null
-          ? (rawCurrency.code || 'SAR') : (rawCurrency || 'SAR'),
-        language: typeof rawLanguage === 'object' && rawLanguage !== null
-          ? (rawLanguage.code || 'ar') : (rawLanguage || 'ar'),
-      };
     } catch (error: any) {
-      this.logger.error('Failed to fetch Zid store info', {
-        error: error?.response?.data || error.message,
-        status: error?.response?.status,
+      const status = error?.response?.status;
+      const errorDetail = error?.response?.data?.detail || error?.response?.data?.message;
+
+      // ✅ Handle 401 "No such user" — retry without authorizationToken
+      if (
+        status === 401 &&
+        errorDetail?.includes('No such user') &&
+        tokens.authorizationToken &&
+        retryCount === 0
+      ) {
+        this.logger.warn(`⚠️ Zid API 401 "No such user" - retrying ${operationName} without authorization token`);
+        return this.callZidApi<T>(
+          method,
+          endpoint,
+          { managerToken: tokens.managerToken, authorizationToken: undefined },
+          options,
+          operationName,
+          1,
+        );
+      }
+
+      // ✅ Handle transient errors (network/5xx/429) — retry with exponential backoff
+      if (this.isRetryableError(error) && retryCount < maxRetries) {
+        const delay = Math.pow(2, retryCount) * 100; // 100ms, 200ms
+        this.logger.warn(
+          `⚠️ Zid API transient error on ${operationName} — retrying in ${delay}ms (attempt ${retryCount + 1}/${maxRetries})`,
+          { status, error: errorDetail },
+        );
+        await new Promise(resolve => setTimeout(resolve, delay));
+        return this.callZidApi<T>(method, endpoint, tokens, options, operationName, retryCount + 1);
+      }
+
+      this.logger.error(`❌ Zid API: ${operationName} failed`, {
+        status,
+        error: errorDetail,
+        endpoint,
+        hasAuthToken: !!tokens.authorizationToken,
       });
       throw error;
     }
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🛠️ Helpers — حسب وثائق زد الرسمية
-  //
-  // Authorization: Bearer {authorizationToken}  ← JWT
-  // X-Manager-Token: {managerToken}             ← access_token (encrypted blob)
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  private getHeaders(tokens: ZidAuthTokens): Record<string, string> {
+  /**
+   * Build headers for /managers/* endpoints
+   * Official Zid method: dual-header auth when authorizationToken is available
+   * @private
+   */
+  private getManagerHeaders(tokens: ZidAuthTokens): Record<string, string> {
     const headers: Record<string, string> = {
       'Accept': 'application/json',
       'Content-Type': 'application/json',
@@ -414,6 +392,32 @@ export class ZidApiService {
     }
 
     return headers;
+  }
+
+  /**
+   * Check if error is retryable (network/timeout/5xx/429)
+   * @private
+   */
+  private isRetryableError(error: any): boolean {
+    // Network errors
+    if (
+      error.code === 'ECONNRESET' ||
+      error.code === 'ETIMEDOUT' ||
+      error.code === 'ENOTFOUND'
+    ) {
+      return true;
+    }
+
+    const status = error?.response?.status;
+    if (!status) return false;
+
+    // 5xx server errors
+    if (status >= 500 && status < 600) return true;
+
+    // 429 rate limit
+    if (status === 429) return true;
+
+    return false;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -472,7 +476,7 @@ export class ZidApiService {
       await firstValueFrom(
         this.httpService.delete(
           `${this.ZID_API_URL}/managers/webhooks/subscribers/${appId}`,
-          { headers: this.getHeaders(tokens) },
+          { headers: this.getManagerHeaders(tokens) },
         ),
       );
       this.logger.log(`✅ Old Zid webhooks deleted for subscriber: ${appId}`);
@@ -506,7 +510,7 @@ export class ZidApiService {
               original_id: appId,
               subscriber: appId,
             },
-            { headers: this.getHeaders(tokens) },
+            { headers: this.getManagerHeaders(tokens) },
           ),
         );
 
@@ -550,7 +554,7 @@ export class ZidApiService {
       const response = await firstValueFrom(
         this.httpService.get(
           `${this.ZID_API_URL}/managers/webhooks`,
-          { headers: this.getHeaders(tokens) },
+          { headers: this.getManagerHeaders(tokens) },
         ),
       );
       const webhooks = response.data?.data || [];
