@@ -505,13 +505,24 @@ export class ZidWebhookProcessor extends WorkerHost {
     });
 
     // إطلاق حدث للإشعار بالتثبيت
+    // ✅ وثائق Zid: كل حقول payload الرسمية
     this.eventEmitter.emit('store.installed', {
       tenantId: context.tenantId,
       storeId: context.storeId,
       zidStoreId,
       storeUuid,
+      storeUrl: data.store_url,
       merchantEmail,
+      merchantPhone: data.merchant_phone_no,   // ✅ من الوثائق
       planName: data.plan_name,
+      planType: data.plan_type,                 // ✅ من الوثائق: Paid / Free
+      planId: data.plan_id,                     // ✅ من الوثائق
+      oldPlanName: data.old_plan_name,          // ✅ من الوثائق
+      status: data.status,
+      startDate: data.start_date,
+      endDate: data.end_date,
+      amountPaid: data.amount_paid,
+      paymentDate: data.payment_date,           // ✅ من الوثائق
       installedAt: new Date().toISOString(),
       raw: data,
     });
@@ -555,9 +566,18 @@ export class ZidWebhookProcessor extends WorkerHost {
       tenantId: context.tenantId,
       storeId: context.storeId,
       zidStoreId,
+      storeUrl: data.store_url,
+      merchantEmail: data.merchant_email,
+      merchantPhone: data.merchant_phone_no,   // ✅ من الوثائق
       planName: data.plan_name,
+      planType: data.plan_type,                 // ✅ من الوثائق
+      planId: data.plan_id,                     // ✅ من الوثائق
+      oldPlanName: data.old_plan_name,          // ✅ من الوثائق
+      status: data.status,
+      startDate: data.start_date,
       endDate: data.end_date,
       amountPaid: data.amount_paid,
+      paymentDate: data.payment_date,           // ✅ من الوثائق
       raw: data,
     });
 
@@ -598,9 +618,16 @@ export class ZidWebhookProcessor extends WorkerHost {
       tenantId: context.tenantId,
       storeId: context.storeId,
       zidStoreId,
+      storeUrl: data.store_url,
       merchantEmail,
+      merchantPhone: data.merchant_phone_no,   // ✅ من الوثائق
       planName: data.plan_name,
+      planType: data.plan_type,                 // ✅ من الوثائق
+      planId: data.plan_id,                     // ✅ من الوثائق
+      status: data.status,
+      startDate: data.start_date,
       expiredAt: data.end_date,
+      eventName: data.event_name,               // ✅ suspended vs expired
       raw: data,
     });
 
@@ -698,12 +725,23 @@ export class ZidWebhookProcessor extends WorkerHost {
       (eventType === 'product.publish')                                   ? 'product.published' :
       'product.updated';
 
+    // ✅ وثائق Zid: product.name هو object { ar, en } أو string
+    const rawName = data.name;
+    const productName = typeof rawName === 'object' && rawName !== null
+      ? ((rawName as Record<string, string>).ar || (rawName as Record<string, string>).en || '')
+      : (rawName as string | undefined);
+
     this.eventEmitter.emit(emitEvent, {
       tenantId: context.tenantId,
       storeId: context.storeId,
       productId: data.id,
-      productName: data.name,
+      productName,
+      productNameAr: typeof rawName === 'object' ? (rawName as Record<string, string>).ar : rawName,
+      productNameEn: typeof rawName === 'object' ? (rawName as Record<string, string>).en : rawName,
+      sku: data.sku,
       isPublished: data.is_published,
+      isDraft: data.is_draft,
+      price: data.price,
       raw: data,
       source: 'zid',
     });
@@ -932,15 +970,25 @@ export class ZidWebhookProcessor extends WorkerHost {
       eventType === 'category.delete' ? 'category.deleted'  :
       'category.updated';
 
+    // ✅ وثائق Zid: category.names هو object { ar, en } — نستخرج الاثنين
+    const rawNames = data.names as Record<string, string> | undefined;
+    const categoryNameAr = rawNames?.ar || (typeof data.name === 'string' ? data.name : '');
+    const categoryNameEn = rawNames?.en || '';
+
     this.eventEmitter.emit(emitEvent, {
       tenantId: context.tenantId,
       storeId: context.storeId,
       categoryId: data.id,
-      categoryName: data.name,
+      categoryName: categoryNameAr || categoryNameEn,
+      categoryNameAr,
+      categoryNameEn,
       categorySlug: data.slug,
+      flatName: data.flat_name,
       isPublished: data.is_published,
+      parentId: data.parent_id ?? null,
       subCategories: data.sub_categories,
       productsCount: data.products_count,
+      url: data.url,
       raw: data,
       source: 'zid',
     });
@@ -1102,7 +1150,12 @@ export class ZidWebhookProcessor extends WorkerHost {
       const nameParts = fullName.split(' ');
       const firstName = nameParts[0] || String(data.first_name || '');
       const lastName = nameParts.slice(1).join(' ') || String(data.last_name || '');
-      const phone = (data.mobile as string) || (data.phone as string) || undefined;
+      // ✅ وثائق Zid: Customer schema يستخدم telephone (ليس mobile)
+      // لكن order.customer يستخدم mobile — نتحقق من كلاهما
+      const phone = (data.telephone as string)
+                 || (data.mobile as string)
+                 || (data.phone as string)
+                 || undefined;
       const email = (data.email as string) || undefined;
 
       if (!customer) {
@@ -1176,95 +1229,124 @@ export class ZidWebhookProcessor extends WorkerHost {
    * أو display_status.slug كنص إنجليزي: "ready", "completed"
    * نغطي الاثنين
    */
+  /**
+   * ✅ v4 — محدّث ليشمل كل حالات وثائق Zid الرسمية
+   *
+   * حالات Zid الرسمية (من Order schema):
+   *   new, failed, refunded, reversed, chargeback, expired, processed, voided,
+   *   ready, processingReverse, preparing, inDelivery, delivered, cancelled,
+   *   denied, canceledReversal
+   *
+   * ⚠️ زد يرسل order_status كنص عربي أو display_status.code كإنجليزي
+   */
   private mapZidStatusToEvent(statusSlug: string): string | null {
     const map: Record<string, string> = {
-      // ═══ حالات بالإنجليزي ═══
-      
-      // طلب جديد
-      'new': 'order.created',
-      'pending': 'order.created',
-      'created': 'order.created',
+      // ═══ حالات Zid الرسمية (إنجليزي) ═══
 
-      // قيد التنفيذ
-      'processing': 'order.status.processing',
-      'confirmed': 'order.status.processing',
-      'in_progress': 'order.status.processing',
-      'accepted': 'order.status.processing',
-      'preparing': 'order.status.processing',
-      'preparation': 'order.status.processing',
+      // جديد
+      'new':                  'order.created',
+      'pending':              'order.created',
+      'created':              'order.created',
+
+      // قيد التحضير
+      'preparing':            'order.status.processing',
+      'processing':           'order.status.processing',
+      'confirmed':            'order.status.processing',
+      'processed':            'order.status.processing',
+      'in_progress':          'order.status.processing',
+      'accepted':             'order.status.processing',
+      'preparation':          'order.status.processing',
 
       // جاهز للشحن
-      'ready': 'order.status.ready_to_ship',
-      'ready_to_ship': 'order.status.ready_to_ship',
-      'ready_for_pickup': 'order.status.ready_to_ship',
+      'ready':                'order.status.ready_to_ship',
+      'ready_to_ship':        'order.status.ready_to_ship',
+      'ready_for_pickup':     'order.status.ready_to_ship',
 
       // تم الشحن
-      'shipped': 'order.shipped',
-      'shipping': 'order.shipped',
+      'shipped':              'order.shipped',
+      'shipping':             'order.shipped',
 
-      // جاري التوصيل
-      'indelivery': 'order.status.in_transit',
-      'in_delivery': 'order.status.in_transit',
-      'in_transit': 'order.status.in_transit',
-      'out_for_delivery': 'order.status.in_transit',
-      'delivering': 'order.status.in_transit',
-      'on_the_way': 'order.status.in_transit',
+      // جاري التوصيل — ✅ Zid يُرسل inDelivery (camelCase)
+      'indelivery':           'order.status.in_transit',
+      'inDelivery':           'order.status.in_transit',
+      'in_delivery':          'order.status.in_transit',
+      'in_transit':           'order.status.in_transit',
+      'out_for_delivery':     'order.status.in_transit',
+      'delivering':           'order.status.in_transit',
+      'on_the_way':           'order.status.in_transit',
 
       // تم التوصيل
-      'delivered': 'order.delivered',
+      'delivered':            'order.delivered',
 
       // مكتمل
-      'completed': 'order.status.completed',
-      'complete': 'order.status.completed',
-      'done': 'order.status.completed',
+      'completed':            'order.status.completed',
+      'complete':             'order.status.completed',
+      'done':                 'order.status.completed',
 
       // ملغي
-      'cancelled': 'order.cancelled',
-      'canceled': 'order.cancelled',
+      'cancelled':            'order.cancelled',
+      'canceled':             'order.cancelled',
+      'denied':               'order.cancelled',
 
-      // مسترجع
-      'refunded': 'order.refunded',
-      'refund': 'order.refunded',
+      // مسترجع / مُعاد
+      'refunded':             'order.refunded',
+      'refund':               'order.refunded',
+      'reversed':             'order.refunded',
+      'canceledReversal':     'order.refunded',
+      'cancelledreversal':    'order.refunded',
+
+      // قيد الاسترداد — ✅ Zid: processingReverse
+      'restoring':            'order.status.restoring',
+      'restored':             'order.status.restoring',
+      'processingReverse':    'order.status.restoring',
+      'processingreverse':    'order.status.restoring',
+      'reverse_in_progress':  'order.status.restoring',
 
       // معلق
-      'on_hold': 'order.status.on_hold',
-      'hold': 'order.status.on_hold',
-      'holded': 'order.status.on_hold',
+      'on_hold':              'order.status.on_hold',
+      'hold':                 'order.status.on_hold',
+      'holded':               'order.status.on_hold',
 
       // مدفوع
-      'paid': 'order.status.paid',
-      'payment_received': 'order.status.paid',
+      'paid':                 'order.status.paid',
+      'payment_received':     'order.status.paid',
 
       // بانتظار الدفع
-      'pending_payment': 'order.status.pending_payment',
-      'awaiting_payment': 'order.status.pending_payment',
-      'unpaid': 'order.status.pending_payment',
+      'pending_payment':      'order.status.pending_payment',
+      'awaiting_payment':     'order.status.pending_payment',
+      'unpaid':               'order.status.pending_payment',
 
       // بانتظار المراجعة
-      'under_review': 'order.status.under_review',
-      'awaiting_review': 'order.status.under_review',
-      'review': 'order.status.under_review',
+      'under_review':         'order.status.under_review',
+      'awaiting_review':      'order.status.under_review',
+      'review':               'order.status.under_review',
 
-      // استرداد
-      'restoring': 'order.status.restoring',
-      'restored': 'order.status.restoring',
+      // احتيال / تحديات — Zid: chargeback, expired, voided, failed
+      'chargeback':           'order.cancelled',
+      'expired':              'order.cancelled',
+      'voided':               'order.cancelled',
+      'failed':               'order.cancelled',
 
-      // ═══ حالات بالعربي (زد يرسل order_status كنص عربي) ═══
-      'جديد': 'order.created',
-      'بانتظار المراجعة': 'order.status.under_review',
-      'قيد التنفيذ': 'order.status.processing',
-      'جاهز': 'order.status.ready_to_ship',
-      'تم الشحن': 'order.shipped',
-      'جاري التوصيل': 'order.status.in_transit',
-      'تم التوصيل': 'order.delivered',
-      'مكتمل': 'order.status.completed',
-      'ملغي': 'order.cancelled',
-      'مسترجع': 'order.refunded',
-      'قيد الاسترجاع': 'order.status.restoring',
-      'معلق': 'order.status.on_hold',
-      'مدفوع': 'order.status.paid',
-      'بانتظار الدفع': 'order.status.pending_payment',
-      'تم التنفيذ': 'order.status.completed',
+      // ═══ حالات بالعربي (Zid يرسل order_status كنص عربي) ═══
+      'جديد':                 'order.created',
+      'قيد التنفيذ':          'order.status.processing',
+      'قيد التحضير':          'order.status.processing',
+      'جاهز':                 'order.status.ready_to_ship',
+      'تم الشحن':             'order.shipped',
+      'جاري التوصيل':         'order.status.in_transit',
+      'تم التوصيل':           'order.delivered',
+      'مكتمل':                'order.status.completed',
+      'تم التنفيذ':           'order.status.completed',
+      'ملغي':                 'order.cancelled',
+      'مرفوض':                'order.cancelled',
+      'مسترجع':               'order.refunded',
+      'قيد الاسترجاع':        'order.status.restoring',
+      'معلق':                 'order.status.on_hold',
+      'مدفوع':                'order.status.paid',
+      'بانتظار الدفع':        'order.status.pending_payment',
+      'بانتظار المراجعة':     'order.status.under_review',
+      'منتهي':                'order.cancelled',
+      'مُلغى':                'order.cancelled',
     };
 
     return map[statusSlug] || null;
@@ -1274,37 +1356,57 @@ export class ZidWebhookProcessor extends WorkerHost {
     const statusStr = this.extractZidStatusSlug(status);
 
     const statusMap: Record<string, OrderStatus> = {
-      // English
-      'new': OrderStatus.CREATED,
-      'pending': OrderStatus.CREATED,
-      'confirmed': OrderStatus.PROCESSING,
-      'processing': OrderStatus.PROCESSING,
-      'ready': OrderStatus.READY_TO_SHIP,
-      'ready_to_ship': OrderStatus.READY_TO_SHIP,
-      'shipped': OrderStatus.SHIPPED,
-      'in_transit': OrderStatus.SHIPPED,
-      'in_delivery': OrderStatus.SHIPPED,
-      'delivered': OrderStatus.DELIVERED,
-      'cancelled': OrderStatus.CANCELLED,
-      'canceled': OrderStatus.CANCELLED,
-      'refunded': OrderStatus.REFUNDED,
-      'completed': OrderStatus.COMPLETED,
-      'on_hold': OrderStatus.ON_HOLD,
-      'paid': OrderStatus.PAID,
-      'failed': OrderStatus.FAILED,
-      // Arabic
-      'جديد': OrderStatus.CREATED,
-      'قيد التنفيذ': OrderStatus.PROCESSING,
-      'جاهز': OrderStatus.READY_TO_SHIP,
-      'تم الشحن': OrderStatus.SHIPPED,
-      'جاري التوصيل': OrderStatus.SHIPPED,
-      'تم التوصيل': OrderStatus.DELIVERED,
-      'مكتمل': OrderStatus.COMPLETED,
-      'تم التنفيذ': OrderStatus.COMPLETED,
-      'ملغي': OrderStatus.CANCELLED,
-      'مسترجع': OrderStatus.REFUNDED,
-      'معلق': OrderStatus.ON_HOLD,
-      'مدفوع': OrderStatus.PAID,
+      // ✅ حالات Zid الرسمية (إنجليزي)
+      'new':                  OrderStatus.CREATED,
+      'pending':              OrderStatus.CREATED,
+      'confirmed':            OrderStatus.PROCESSING,
+      'processing':           OrderStatus.PROCESSING,
+      'processed':            OrderStatus.PROCESSING,
+      'preparing':            OrderStatus.PROCESSING,
+      'ready':                OrderStatus.READY_TO_SHIP,
+      'ready_to_ship':        OrderStatus.READY_TO_SHIP,
+      'shipped':              OrderStatus.SHIPPED,
+      'in_transit':           OrderStatus.SHIPPED,
+      'in_delivery':          OrderStatus.SHIPPED,
+      'indelivery':           OrderStatus.SHIPPED,
+      'inDelivery':           OrderStatus.SHIPPED,        // ✅ Zid camelCase
+      'delivered':            OrderStatus.DELIVERED,
+      'completed':            OrderStatus.COMPLETED,
+      'complete':             OrderStatus.COMPLETED,
+      'cancelled':            OrderStatus.CANCELLED,
+      'canceled':             OrderStatus.CANCELLED,
+      'denied':               OrderStatus.CANCELLED,      // ✅ Zid: denied
+      'chargeback':           OrderStatus.CANCELLED,      // ✅ Zid: chargeback
+      'expired':              OrderStatus.CANCELLED,      // ✅ Zid: expired
+      'voided':               OrderStatus.CANCELLED,      // ✅ Zid: voided
+      'refunded':             OrderStatus.REFUNDED,
+      'reversed':             OrderStatus.REFUNDED,       // ✅ Zid: reversed
+      'canceledReversal':     OrderStatus.REFUNDED,       // ✅ Zid: canceledReversal
+      'cancelledreversal':    OrderStatus.REFUNDED,
+      'on_hold':              OrderStatus.ON_HOLD,
+      'hold':                 OrderStatus.ON_HOLD,
+      'paid':                 OrderStatus.PAID,
+      'failed':               OrderStatus.FAILED,
+      'restoring':            OrderStatus.PROCESSING,     // قيد الاسترجاع
+      'processingReverse':    OrderStatus.PROCESSING,     // ✅ Zid: processingReverse
+      'processingreverse':    OrderStatus.PROCESSING,
+
+      // ✅ حالات بالعربي
+      'جديد':                 OrderStatus.CREATED,
+      'قيد التنفيذ':          OrderStatus.PROCESSING,
+      'قيد التحضير':          OrderStatus.PROCESSING,
+      'جاهز':                 OrderStatus.READY_TO_SHIP,
+      'تم الشحن':             OrderStatus.SHIPPED,
+      'جاري التوصيل':         OrderStatus.SHIPPED,
+      'تم التوصيل':           OrderStatus.DELIVERED,
+      'مكتمل':                OrderStatus.COMPLETED,
+      'تم التنفيذ':           OrderStatus.COMPLETED,
+      'ملغي':                 OrderStatus.CANCELLED,
+      'مرفوض':                OrderStatus.CANCELLED,
+      'مسترجع':               OrderStatus.REFUNDED,
+      'قيد الاسترجاع':        OrderStatus.PROCESSING,
+      'معلق':                 OrderStatus.ON_HOLD,
+      'مدفوع':                OrderStatus.PAID,
     };
 
     return statusMap[statusStr] || OrderStatus.CREATED;
