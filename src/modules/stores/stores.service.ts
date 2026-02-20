@@ -694,6 +694,15 @@ export class StoresService {
     });
   }
 
+  /**
+   * ✅ البحث عن متجر زد بـ UUID (fallback عندما يكون store_id غير موجود)
+   */
+  async findByZidStoreUuid(zidStoreUuid: string): Promise<Store | null> {
+    return this.storeRepository.findOne({
+      where: { zidStoreUuid },
+    });
+  }
+
   async update(storeId: string, updateData: DeepPartial<Store>): Promise<Store> {
     // First verify the store exists
     const existing = await this.storeRepository.findOne({ where: { id: storeId } });
