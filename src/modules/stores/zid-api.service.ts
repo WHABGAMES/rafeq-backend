@@ -30,6 +30,7 @@ import { firstValueFrom } from 'rxjs';
 export interface ZidAuthTokens {
   managerToken: string;
   authorizationToken?: string;
+  storeId?: string; // Zid numeric store ID — required for Products endpoint
 }
 
 export interface ZidApiResponse<T> {
@@ -280,7 +281,7 @@ export class ZidApiService {
   // 🛠️ Core HTTP Layer — CENTRALIZED
   //
   // Handles all Zid API calls with:
-  //   - Smart retry on 401 "No such user" (drops authorizationToken)
+  //   - 401 "No such user" logging (requires Authorization + Access-Token headers)
   //   - Exponential backoff for transient errors (network, 5xx, 429)
   //   - Centralized logging with operation context
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -329,22 +330,14 @@ export class ZidApiService {
       const status = error?.response?.status;
       const errorDetail = error?.response?.data?.detail || error?.response?.data?.message;
 
-      // ✅ Handle 401 "No such user" — retry without authorizationToken
-      if (
-        status === 401 &&
-        errorDetail?.includes('No such user') &&
-        tokens.authorizationToken &&
-        retryCount === 0
-      ) {
-        this.logger.warn(`⚠️ Zid API 401 "No such user" - retrying ${operationName} without authorization token`);
-        return this.callZidApi<T>(
-          method,
+      // ⚠️ Handle 401 "No such user" — يعني Authorization أو Store Token مفقود/خاطئ
+      // حسب وثائق زد: يجب إرسال Authorization + X-Manager-Token/Access-Token معاً
+      // لا نعيد المحاولة بدون authorizationToken لأن ذلك يجعل الأمر أسوأ
+      if (status === 401 && errorDetail?.includes('No such user')) {
+        this.logger.error(`❌ Zid 401 "No such user" on ${operationName} — missing/invalid Authorization token`, {
+          hasAuthToken: !!tokens.authorizationToken,
           endpoint,
-          { managerToken: tokens.managerToken, authorizationToken: undefined },
-          options,
-          operationName,
-          1,
-        );
+        });
       }
 
       // ✅ Handle transient errors (network/5xx/429) — retry with exponential backoff
@@ -389,6 +382,11 @@ export class ZidApiService {
       // Fallback: bearer فقط (ما يشتغل مع أغلب الـ endpoints)
       headers['Authorization'] = `Bearer ${tokens.managerToken}`;
       this.logger.warn('⚠️ Zid API call without authorizationToken — may fail');
+    }
+
+    // ✅ FIX: إرسال Store-Id في جميع الـ endpoints
+    if (tokens.storeId) {
+      headers['Store-Id'] = tokens.storeId;
     }
 
     return headers;
@@ -588,11 +586,24 @@ export class ZidApiService {
    *   Authorization + X-Manager-Token
    */
   private getProductHeaders(tokens: ZidAuthTokens): Record<string, string> {
-    return {
+    const headers: Record<string, string> = {
       'Accept': 'application/json',
       'Content-Type': 'application/json',
       'Accept-Language': 'ar',
       'Access-Token': tokens.managerToken,
     };
+
+    // ✅ حسب وثائق زد — Products API تحتاج Authorization + Access-Token معاً
+    if (tokens.authorizationToken) {
+      headers['Authorization'] = `Bearer ${tokens.authorizationToken}`;
+    }
+
+    // ✅ FIX: إرسال Store-Id header — حل لـ 401 "No such user"
+    // وثائق زد: "Make sure to send the Store ID in the headers parameters correctly"
+    if (tokens.storeId) {
+      headers['Store-Id'] = tokens.storeId;
+    }
+
+    return headers;
   }
 }
