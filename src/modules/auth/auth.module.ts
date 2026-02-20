@@ -8,7 +8,7 @@
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
-import { Module, Logger } from '@nestjs/common';
+import { Module, Logger, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
@@ -33,6 +33,9 @@ import { JwtStrategy } from './strategies/jwt.strategy';
 
 // Mail Module
 import { MailModule } from '../mail/mail.module';
+
+// Stores Module (forwardRef to break circular dependency)
+import { StoresModule } from '../stores/stores.module';
 
 @Module({
   imports: [
@@ -59,6 +62,9 @@ import { MailModule } from '../mail/mail.module';
       timeout: 15000,
       maxRedirects: 3,
     }),
+
+    // 🔗 StoresModule — forwardRef لكسر الاعتماد الدائري مع StoresModule
+    forwardRef(() => StoresModule),
   ],
   controllers: [AuthController],
   providers: [

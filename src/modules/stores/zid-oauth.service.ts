@@ -886,4 +886,146 @@ export class ZidOAuthService {
   calculateTokenExpiry(expiresIn: number): Date {
     return new Date(Date.now() + expiresIn * 1000);
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔗 connectZidStoreFromTokens — ربط متجر زد بتنانت موجود
+  //
+  // يُستخدم من AuthService بعد تسجيل الدخول أو إنشاء حساب جديد
+  // لربط المتجر بالتنانت دون الحاجة لإعادة استبدال الكود
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async connectZidStoreFromTokens(
+    tokens: ZidTokenResponse,
+    storeInfo: ZidStoreInfo,
+    tenantId: string,
+  ): Promise<Store> {
+    const zidStoreId = String(storeInfo.id);
+    this.logger.log(`🔗 connectZidStoreFromTokens: ${zidStoreId} → tenant ${tenantId}`);
+
+    let store = await this.storeRepository.findOne({
+      where: { zidStoreId },
+      withDeleted: true,
+    });
+
+    let isNewStore = false;
+
+    if (store) {
+      // ════════════════════════════════════════════════════════════════════
+      // 🔄 UPDATE existing store
+      // ════════════════════════════════════════════════════════════════════
+      this.logger.log(`🔄 Updating existing Zid store: ${zidStoreId} (DB ID: ${store.id})`);
+
+      if (store.deletedAt) {
+        await this.storeRepository.restore(store.id);
+        store.deletedAt = undefined;
+        this.logger.log(`♻️ Restoring soft-deleted Zid store: ${zidStoreId}`);
+      }
+
+      this.updateZidStoreFields(store, tokens, storeInfo);
+
+      if (!store.tenantId) {
+        store.tenantId = tenantId;
+        this.logger.log(`🔗 Linking store to tenant ${tenantId}`);
+      }
+    } else {
+      // ════════════════════════════════════════════════════════════════════
+      // 🆕 CREATE new store
+      // ════════════════════════════════════════════════════════════════════
+      isNewStore = true;
+      this.logger.log(`🆕 Creating new Zid store: ${zidStoreId}`);
+
+      store = this.storeRepository.create({
+        tenantId,
+        name: storeInfo.name || `متجر زد ${zidStoreId}`,
+        platform: StorePlatform.ZID,
+        status: StoreStatus.ACTIVE,
+        zidStoreId,
+        zidStoreUuid: storeInfo.uuid,
+        accessToken: encrypt(tokens.access_token) ?? undefined,
+        refreshToken: encrypt(tokens.refresh_token) ?? undefined,
+        tokenExpiresAt: this.calculateTokenExpiry(tokens.expires_in),
+        zidStoreName: storeInfo.name,
+        zidEmail: storeInfo.email,
+        zidMobile: storeInfo.mobile,
+        zidDomain: storeInfo.url,
+        zidLogo: storeInfo.logo,
+        zidCurrency: storeInfo.currency,
+        zidLanguage: storeInfo.language,
+        lastSyncedAt: new Date(),
+        lastTokenRefreshAt: new Date(),
+        settings: {
+          autoReply: true,
+          welcomeMessageEnabled: true,
+          orderNotificationsEnabled: true,
+          zidAuthorizationToken: tokens.authorization
+            ? encrypt(tokens.authorization)
+            : undefined,
+        },
+        subscribedEvents: [
+          'order.created',
+          'customer.created',
+          'order.status.updated',
+        ],
+      });
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // 💾 Save store (with duplicate key handling)
+    // ═════════════════════════════════════════════════════════════════════
+    let savedStore: Store;
+    try {
+      savedStore = await this.storeRepository.save(store);
+      this.logger.log(
+        `✅ Zid store ${isNewStore ? 'created' : 'updated'}: ${zidStoreId} → tenant ${tenantId}`,
+      );
+    } catch (saveError: any) {
+      if (saveError.code === '23505' || saveError.message?.includes('duplicate key')) {
+        this.logger.warn(`⚠️ Duplicate key for ${zidStoreId}, re-querying...`);
+
+        const existing = await this.storeRepository.findOne({
+          where: { zidStoreId },
+          withDeleted: true,
+        });
+
+        if (!existing) throw saveError;
+
+        if (existing.deletedAt) {
+          await this.storeRepository.restore(existing.id);
+          existing.deletedAt = undefined;
+        }
+
+        this.updateZidStoreFields(existing, tokens, storeInfo);
+        if (!existing.tenantId) existing.tenantId = tenantId;
+
+        savedStore = await this.storeRepository.save(existing);
+        this.logger.log(`✅ Zid store updated after retry: ${zidStoreId}`);
+      } else {
+        throw saveError;
+      }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // 🔔 Register Webhooks (non-fatal)
+    // ═════════════════════════════════════════════════════════════════════
+    try {
+      const baseUrl =
+        this.configService.get<string>('app.baseUrl') ||
+        this.configService.get<string>('APP_BASE_URL') ||
+        'https://api.rafeq.ai';
+      const webhookUrl = `${baseUrl}/api/webhooks/zid`;
+      const appId = this.configService.get<string>('zid.clientId') || 'rafeq-app';
+
+      const webhookTokens = {
+        managerToken: tokens.access_token,
+        authorizationToken: tokens.authorization || undefined,
+      };
+
+      await this.zidApiService.registerWebhooks(webhookTokens, webhookUrl, appId);
+      this.logger.log(`🔔 Webhooks registered for Zid store ${zidStoreId}`);
+    } catch (error: any) {
+      this.logger.warn(`⚠️ Webhook registration failed (non-fatal): ${error.message}`);
+    }
+
+    return savedStore;
+  }
 }
