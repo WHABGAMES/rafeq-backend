@@ -451,14 +451,16 @@ export class ZidApiService {
       'customer.create',
       'customer.update',
       
-      // Product events
-      'product.create',
-      'product.update',
-      
       // Cart events
       'abandoned_cart.created',
       
-      // ❌ REMOVED: Zid doesn't support app.uninstalled webhook (returns 422 validation error)
+      // ❌ REMOVED: product.create / product.update — Zid rate limiting is active on
+      //   product endpoints (60 req/min). Webhook delivery failures under high product
+      //   update frequency cause queue backlogs. Use polling/sync instead.
+      // 'product.create',
+      // 'product.update',
+      
+      // ❌ REMOVED: app.uninstalled — not a store-level webhook (registered via Partner Dashboard)
       // 'app.uninstalled',
     ];
 
@@ -470,14 +472,20 @@ export class ZidApiService {
     // هذا يحل مشكلة الـ webhooks المعطّلة (inactive/error)
     // ═══════════════════════════════════════════════════════════════════════════
     try {
-      this.logger.log(`🧹 Cleaning up old Zid webhooks for subscriber: ${appId}`);
+      this.logger.log(`🧹 Cleaning up old Zid webhooks for original_id: ${appId}`);
+      // ✅ FIX: Correct Zid API endpoint per official docs:
+      //   DELETE /v1/managers/webhooks?original_id={appId}
+      //   (NOT /managers/webhooks/subscribers/{appId} which returns 404)
       await firstValueFrom(
         this.httpService.delete(
-          `${this.ZID_API_URL}/managers/webhooks/subscribers/${appId}`,
-          { headers: this.getManagerHeaders(tokens) },
+          `${this.ZID_API_URL}/managers/webhooks`,
+          {
+            headers: this.getManagerHeaders(tokens),
+            params: { original_id: appId },
+          },
         ),
       );
-      this.logger.log(`✅ Old Zid webhooks deleted for subscriber: ${appId}`);
+      this.logger.log(`✅ Old Zid webhooks deleted for original_id: ${appId}`);
     } catch (deleteError: any) {
       const status = deleteError?.response?.status;
       // 404 = ما فيه webhooks قديمة — عادي
