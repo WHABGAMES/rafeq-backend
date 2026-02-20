@@ -203,6 +203,125 @@ export class TemplateDispatcherService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
+  // Zid-specific Events — وثائق Zid الرسمية
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * order.payment_status.update — يُطلق عند تغيير حالة الدفع إلى paid أو unpaid
+   * الوثائق: payment_status_change.old/new = 'paid' | 'unpaid'
+   */
+  @OnEvent('order.payment_status.updated')
+  async onOrderPaymentStatusUpdated(payload: Record<string, unknown>) {
+    await this.dispatch('order.payment_status.updated', payload);
+  }
+
+  /**
+   * abandoned_cart.completed — يُطلق عند استرداد السلة المهجورة وتحويلها لطلب
+   */
+  @OnEvent('cart.recovered')
+  async onCartRecovered(payload: Record<string, unknown>) {
+    await this.dispatch('cart.recovered', payload);
+  }
+
+  /**
+   * customer.login — يُطلق عند تسجيل دخول العميل
+   * الوثائق: Customer schema — id, name, email, telephone, is_active
+   */
+  @OnEvent('customer.login')
+  async onCustomerLogin(payload: Record<string, unknown>) {
+    await this.dispatch('customer.login', payload);
+  }
+
+  /**
+   * customer.merchant.update — يُطلق عند تحديث بيانات التاجر المرتبطة بالعميل
+   * الوثائق: business_name, tax_number, commercial_registration
+   */
+  @OnEvent('customer.merchant.updated')
+  async onCustomerMerchantUpdated(payload: Record<string, unknown>) {
+    await this.dispatch('customer.merchant.updated', payload);
+  }
+
+  /**
+   * product.publish — يُطلق عند نشر المنتج
+   * الوثائق: Product schema — is_published = true
+   */
+  @OnEvent('product.published')
+  async onProductPublished(payload: Record<string, unknown>) {
+    await this.dispatch('product.published', payload);
+  }
+
+  /**
+   * category.create/update/delete — وثائق Zid: Category schema
+   */
+  @OnEvent('category.created')
+  async onCategoryCreated(payload: Record<string, unknown>) {
+    await this.dispatch('category.created', payload);
+  }
+
+  @OnEvent('category.updated')
+  async onCategoryUpdated(payload: Record<string, unknown>) {
+    await this.dispatch('category.updated', payload);
+  }
+
+  @OnEvent('category.deleted')
+  async onCategoryDeleted(payload: Record<string, unknown>) {
+    await this.dispatch('category.deleted', payload);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ✅ زد: أحداث كانت مفقودة — customer.updated / product.updated / product.deleted
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @OnEvent('customer.updated')
+  async onCustomerUpdated(payload: Record<string, unknown>) {
+    await this.dispatch('customer.updated', payload);
+  }
+
+  @OnEvent('product.updated')
+  async onProductUpdated(payload: Record<string, unknown>) {
+    await this.dispatch('product.updated', payload);
+  }
+
+  @OnEvent('product.deleted')
+  async onProductDeleted(payload: Record<string, unknown>) {
+    await this.dispatch('product.deleted', payload);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ✅ زد App Market Events — أحداث دورة حياة التطبيق والاشتراك
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @OnEvent('store.installed')
+  async onStoreInstalled(payload: Record<string, unknown>) {
+    await this.dispatch('store.installed', payload);
+  }
+
+  @OnEvent('store.uninstalled')
+  async onStoreUninstalled(payload: Record<string, unknown>) {
+    await this.dispatch('store.uninstalled', payload);
+  }
+
+  @OnEvent('store.subscription.active')
+  async onSubscriptionActive(payload: Record<string, unknown>) {
+    await this.dispatch('store.subscription.active', payload);
+  }
+
+  @OnEvent('store.subscription.expired')
+  async onSubscriptionExpired(payload: Record<string, unknown>) {
+    await this.dispatch('store.subscription.expired', payload);
+  }
+
+  @OnEvent('store.subscription.refunded')
+  async onSubscriptionRefunded(payload: Record<string, unknown>) {
+    await this.dispatch('store.subscription.refunded', payload);
+  }
+
+  @OnEvent('store.subscription.warning')
+  async onSubscriptionWarning(payload: Record<string, unknown>) {
+    await this.dispatch('store.subscription.warning', payload);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
   // Main Dispatch Logic
   // ═══════════════════════════════════════════════════════════════════════════════
 
