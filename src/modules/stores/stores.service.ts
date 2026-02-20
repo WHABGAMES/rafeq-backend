@@ -813,6 +813,8 @@ export class StoresService {
 
     try {
       const zidTokens = this.getZidTokens(store, accessToken);
+
+      // ✅ Sync store info
       const storeInfo = await this.zidApiService.getStoreInfo(zidTokens);
 
       store.zidStoreName = storeInfo.name;
@@ -824,7 +826,46 @@ export class StoresService {
       store.zidLanguage = storeInfo.language;
       store.name = storeInfo.name || store.name;
 
-      this.logger.debug(`Zid store synced: ${storeInfo.name}`);
+      // ✅ Sync stats (orders, products, customers counts) and persist to DB
+      // This avoids hitting the Zid API on every dashboard load (respects rate limits)
+      const [ordersRes, productsRes, customersRes] = await Promise.allSettled([
+        this.zidApiService.getOrders(zidTokens, { page: 1, per_page: 1 }),
+        this.zidApiService.getProducts(zidTokens, { page: 1, per_page: 1 }),
+        this.zidApiService.getCustomers(zidTokens, { page: 1, per_page: 1 }),
+      ]);
+
+      if (ordersRes.status === 'fulfilled') {
+        const total = ordersRes.value.pagination?.total;
+        if (typeof total === 'number') {
+          store.zidOrdersCount = total;
+        } else {
+          this.logger.warn(`⚠️ Zid orders response missing pagination.total for store ${store.id}`);
+        }
+      }
+      if (productsRes.status === 'fulfilled') {
+        const total = productsRes.value.pagination?.total;
+        if (typeof total === 'number') {
+          store.zidProductsCount = total;
+        } else {
+          this.logger.warn(`⚠️ Zid products response missing pagination.total for store ${store.id}`);
+        }
+      }
+      if (customersRes.status === 'fulfilled') {
+        const total = customersRes.value.pagination?.total;
+        if (typeof total === 'number') {
+          store.zidCustomersCount = total;
+        } else {
+          this.logger.warn(`⚠️ Zid customers response missing pagination.total for store ${store.id}`);
+        }
+      }
+      store.zidLastSyncAt = new Date();
+
+      this.logger.log(`✅ Zid store synced: ${storeInfo.name}`, {
+        storeId: store.id,
+        orders: store.zidOrdersCount,
+        products: store.zidProductsCount,
+        customers: store.zidCustomersCount,
+      });
 
     } catch (error: any) {
       this.logger.error(`Failed to sync Zid store: ${store.id}`, error);
@@ -1038,7 +1079,21 @@ export class StoresService {
     }
 
     try {
-      // 🔐 جلب المتجر مع التوكنات إذا لم تكن محمّلة
+      // ✅ Zid: return cached stats from DB (no API call needed)
+      // Stats are refreshed when the user triggers POST /stores/:id/sync.
+      // After migration, these columns are always present (default 0).
+      if (store.platform === StorePlatform.ZID) {
+        stats.orders = store.zidOrdersCount ?? 0;
+        stats.products = store.zidProductsCount ?? 0;
+        stats.customers = store.zidCustomersCount ?? 0;
+
+        this.logger.debug(`Zid cached stats for store ${store.id}: orders=${stats.orders}, products=${stats.products}, customers=${stats.customers}`, {
+          lastSyncAt: store.zidLastSyncAt,
+        });
+        return stats;
+      }
+
+      // 🔐 جلب المتجر مع التوكنات إذا لم تكن محمّلة (Salla / Other)
       let storeWithTokens = store;
       if (!store.accessToken) {
         const loaded = await this.findWithTokens({ id: store.id });
@@ -1053,27 +1108,6 @@ export class StoresService {
           this.sallaApiService.getOrders(accessToken, { page: 1, perPage: 1 }),
           this.sallaApiService.getProducts(accessToken, { page: 1, perPage: 1 }),
           this.sallaApiService.getCustomers(accessToken, { page: 1, perPage: 1 }),
-        ]);
-
-        if (ordersRes.status === 'fulfilled') {
-          stats.orders = ordersRes.value.pagination?.total
-            ?? (Array.isArray(ordersRes.value.data) ? ordersRes.value.data.length : 0);
-        }
-        if (productsRes.status === 'fulfilled') {
-          stats.products = productsRes.value.pagination?.total
-            ?? (Array.isArray(productsRes.value.data) ? productsRes.value.data.length : 0);
-        }
-        if (customersRes.status === 'fulfilled') {
-          stats.customers = customersRes.value.pagination?.total
-            ?? (Array.isArray(customersRes.value.data) ? customersRes.value.data.length : 0);
-        }
-
-      } else if (storeWithTokens.platform === StorePlatform.ZID) {
-        const zidTokens = this.getZidTokens(storeWithTokens, accessToken);
-        const [ordersRes, productsRes, customersRes] = await Promise.allSettled([
-          this.zidApiService.getOrders(zidTokens, { page: 1, per_page: 1 }),
-          this.zidApiService.getProducts(zidTokens, { page: 1, per_page: 1 }),
-          this.zidApiService.getCustomers(zidTokens, { page: 1, per_page: 1 }),
         ]);
 
         if (ordersRes.status === 'fulfilled') {
