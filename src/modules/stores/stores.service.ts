@@ -151,6 +151,7 @@ export class StoresService {
     return {
       managerToken,
       authorizationToken: authorizationToken || undefined,
+      storeId: store.zidStoreId || undefined, // ✅ FIX: Store-Id header لحل 401 "No such user"
     };
   }
 
