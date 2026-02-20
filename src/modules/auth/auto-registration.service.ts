@@ -267,7 +267,7 @@ export class AutoRegistrationService {
   // 🔐 توليد الباسورد (مستخدم جديد فقط)
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  private generatePassword(mobile?: string): string {
+  generatePassword(mobile?: string): string {
     if (mobile && typeof mobile === 'string') {
       let cleanMobile = mobile.replace(/\D/g, '');
 
@@ -292,7 +292,7 @@ export class AutoRegistrationService {
   // 📧📱 إرسال بيانات الدخول (مستخدم جديد فقط)
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  private async sendWelcomeCredentials(data: {
+  async sendWelcomeCredentials(data: {
     email: string;
     password: string;
     name: string;
