@@ -1043,11 +1043,14 @@ export class ZidOAuthService {
       throw new Error(`Zid store not found: ${storeId}`);
     }
 
-    const accessToken = decrypt(store.accessToken ?? null);
+    const accessToken = decryptSafe(store.accessToken ?? null);
     const authToken = decryptSafe((store.settings as any)?.zidAuthorizationToken);
 
     if (!accessToken) {
-      throw new Error('Store access token not found');
+      this.logger.error(`❌ Store ${storeId} has no access token — store needs to be reconnected`);
+      throw new Error(
+        'لا يوجد access token للمتجر. يرجى فصل المتجر وإعادة ربطه من الداشبورد لتحديث التوكن.',
+      );
     }
 
     const baseUrl = this.configService.get<string>('app.baseUrl')
