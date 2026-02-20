@@ -27,6 +27,9 @@ import {
   Query,
   Req,
   Res,
+  Param,
+  HttpCode,
+  HttpStatus,
   Logger,
   BadRequestException,
   UseGuards,
@@ -344,4 +347,15 @@ export class ZidOAuthController {
       ip: req.headers['x-forwarded-for'] || req.ip || '(unknown)',
     });
   }
+  @Post(':storeId/reregister-webhooks')
+  @HttpCode(HttpStatus.OK)
+  async reRegisterWebhooks(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+  ) {
+    this.logger.log(`🔔 Re-registering Zid webhooks for store: ${storeId}`);
+    const result = await this.zidOAuthService.reRegisterWebhooks(storeId, req.user.tenantId);
+    return { success: true, ...result };
+  }
+
 }
