@@ -42,12 +42,14 @@ import { AuditService } from '../services/audit.service';
 import { AuditAction } from '../entities/audit-log.entity';
 
 // Argon2 hashing options — balanced security/performance for production
-const ARGON2_OPTIONS: argon2.Options = {
+// Note: no explicit type annotation to avoid raw:boolean overload ambiguity (TS2769)
+const ARGON2_OPTIONS = {
   type: argon2.argon2id,
   memoryCost: 65536,  // 64 MB
   timeCost: 3,
   parallelism: 4,
-};
+  raw: false,         // explicit false → always returns string, resolves overload
+} as const;
 
 @Controller('admin/auth')
 export class AdminAuthController {
