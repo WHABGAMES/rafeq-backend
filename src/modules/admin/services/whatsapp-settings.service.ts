@@ -1,3 +1,12 @@
+/**
+ * WhatsappSettingsService
+ * Audited 2026-02-21
+ *
+ * FIX [TS2741]: sendTestMessage now explicitly maps ApiCallResult → { success, message }
+ *   Previously returned `result` (ApiCallResult) directly, missing `message` field
+ * FIX [TS2339]: sendViaWhatsappApi response typed as Record<string, any>
+ *   Previously `{}` type had no properties — data?.error?.message caused TS2339
+ */
 import {
   Injectable,
   Logger,
@@ -9,6 +18,17 @@ import { Repository } from 'typeorm';
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'crypto';
 import { WhatsappSettings, WhatsappProvider } from '../entities/whatsapp-settings.entity';
 import { MessageLog, MessageStatus } from '../entities/message-log.entity';
+
+/**
+ * ✅ FIX [TS2741]: Interface مفصولة لكل return type
+ * sendViaWhatsappApi → ApiCallResult (has response?)
+ * sendTestMessage → { success, message } (different shape)
+ */
+interface ApiCallResult {
+  success: boolean;
+  response?: Record<string, any>;
+  error?: string;
+}
 
 @Injectable()
 export class WhatsappSettingsService {
@@ -24,37 +44,40 @@ export class WhatsappSettingsService {
   ) {
     const encKeySource = process.env.ENCRYPTION_KEY;
 
-    // ✅ Security: Refuse to start with default key in production
     if (!encKeySource) {
       if (process.env.NODE_ENV === 'production') {
         throw new Error(
           'FATAL: ENCRYPTION_KEY environment variable is not set. ' +
-          'This is required for encrypting WhatsApp tokens. ' +
-          'Set a strong random 32+ character value.',
+          'Required for encrypting WhatsApp access tokens. ' +
+          'Generate with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"',
         );
       }
-      // Allow in dev/test with a warning
-      this.logger.warn('⚠️  ENCRYPTION_KEY not set — using insecure default. Set it before production!');
+      this.logger.warn('⚠️  ENCRYPTION_KEY not set — using dev default. NOT for production!');
     }
 
+    // ✅ scryptSync توليد مفتاح AES-256 من الـ env var
     this.encKey = scryptSync(
       encKeySource || 'rafeq-dev-only-key-not-for-production',
       'rafeq-salt-v1',
       32,
-    );
+    ) as Buffer;
   }
 
-  async getSettings(): Promise<(Omit<WhatsappSettings, 'accessTokenEncrypted'> & { maskedToken: string }) | null> {
-    const settings = await this.settingsRepo.findOne({ where: {} });
+  // ─── Settings Management ──────────────────────────────────────────────────
 
-    if (!settings) {
-      return null;
-    }
+  async getSettings(): Promise<
+    (Omit<WhatsappSettings, 'accessTokenEncrypted'> & { maskedToken: string }) | null
+  > {
+    const settings = await this.settingsRepo.findOne({ where: {} });
+    if (!settings) return null;
 
     const { accessTokenEncrypted, ...rest } = settings;
     return {
       ...rest,
-      maskedToken: accessTokenEncrypted ? this.maskToken(this.decrypt(accessTokenEncrypted)) : '****',
+      // ✅ لا نُرجع الـ token الحقيقي أبدًا — masked فقط
+      maskedToken: accessTokenEncrypted
+        ? this.maskToken(this.decrypt(accessTokenEncrypted))
+        : '****',
     };
   }
 
@@ -69,7 +92,6 @@ export class WhatsappSettingsService {
     isActive?: boolean;
   }): Promise<WhatsappSettings> {
     let settings = await this.settingsRepo.findOne({ where: {} });
-
     const encrypted = this.encrypt(data.accessToken);
 
     if (settings) {
@@ -106,22 +128,42 @@ export class WhatsappSettingsService {
     await this.settingsRepo.save(settings);
   }
 
+  // ─── Send Test Message ────────────────────────────────────────────────────
+
+  /**
+   * ✅ FIX [TS2741]: دالة public ترجع { success: boolean; message: string }
+   * sendViaWhatsappApi (private) ترجع ApiCallResult { success, response?, error? }
+   * — نوعان مختلفان، نعمل explicit mapping بينهما
+   */
   async sendTestMessage(phoneNumber: string): Promise<{ success: boolean; message: string }> {
     const settings = await this.settingsRepo.findOne({ where: {} });
 
     if (!settings?.isActive) {
-      throw new BadRequestException('WhatsApp is not active');
+      throw new BadRequestException('WhatsApp integration is not active');
     }
 
     const token = this.decrypt(settings.accessTokenEncrypted);
-    const result = await this.sendViaWhatsappApi(settings, token, phoneNumber, 'Test message from Rafeq Admin Panel 🎉');
+    const result = await this.sendViaWhatsappApi(
+      settings,
+      token,
+      phoneNumber,
+      'Test message from Rafeq Admin Panel 🎉',
+    );
 
     settings.lastTestSentAt = new Date();
     settings.connectionStatus = result.success ? 'connected' : 'error';
     await this.settingsRepo.save(settings);
 
-    return result;
+    // ✅ Explicit mapping من ApiCallResult → { success, message }
+    return {
+      success: result.success,
+      message: result.success
+        ? 'Test message sent successfully'
+        : (result.error ?? 'Failed to send test message'),
+    };
   }
+
+  // ─── Send Message (via Processor) ─────────────────────────────────────────
 
   async sendMessage(
     recipientPhone: string,
@@ -135,10 +177,11 @@ export class WhatsappSettingsService {
     const settings = await this.settingsRepo.findOne({ where: {} });
 
     if (!settings?.isActive) {
-      this.logger.warn('WhatsApp not active, skipping message send');
+      this.logger.warn('WhatsApp not active — skipping send');
       return { success: false, messageLogId: null };
     }
 
+    // ✅ يُنشئ log record قبل الإرسال للتتبع
     const log = await this.messageLogRepo.save(
       this.messageLogRepo.create({
         recipientUserId: options?.recipientUserId,
@@ -175,13 +218,21 @@ export class WhatsappSettingsService {
     }
   }
 
+  // ─── API Call (Private) ───────────────────────────────────────────────────
+
+  /**
+   * ✅ FIX [TS2339]: data typed as Record<string, any>
+   * يدعم: META و TWILIO
+   * WhatsappProvider.CUSTOM → returns error (not implemented — extend as needed)
+   */
   private async sendViaWhatsappApi(
     settings: WhatsappSettings,
     token: string,
     to: string,
     message: string,
-  ): Promise<{ success: boolean; response?: any; error?: string }> {
+  ): Promise<ApiCallResult> {
     try {
+      // ── META (Graph API) ──────────────────────────────────────────────────
       if (settings.provider === WhatsappProvider.META) {
         const url = `https://graph.facebook.com/v18.0/${settings.phoneNumberId}/messages`;
         const resp = await fetch(url, {
@@ -198,16 +249,25 @@ export class WhatsappSettingsService {
           }),
         });
 
-        const data = await resp.json();
+        // ✅ FIX [TS2339]: typed as Record<string, any> → data?.error?.message works
+        const data = await resp.json() as Record<string, any>;
+
         if (!resp.ok) {
-          return { success: false, response: data, error: data?.error?.message };
+          const errorMsg = typeof data?.error?.message === 'string'
+            ? data.error.message
+            : `HTTP ${resp.status}`;
+          return { success: false, response: data, error: errorMsg };
         }
         return { success: true, response: data };
       }
 
-      // Twilio provider
+      // ── TWILIO ────────────────────────────────────────────────────────────
       if (settings.provider === WhatsappProvider.TWILIO) {
         const [accountSid, authToken] = token.split(':');
+        if (!accountSid || !authToken) {
+          return { success: false, error: 'Twilio token must be in format: accountSid:authToken' };
+        }
+
         const url = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`;
         const body = new URLSearchParams({
           From: `whatsapp:${settings.phoneNumber}`,
@@ -224,17 +284,22 @@ export class WhatsappSettingsService {
           body,
         });
 
-        const data = await resp.json();
+        const data = await resp.json() as Record<string, any>;
         return { success: resp.ok, response: data };
       }
 
-      return { success: false, error: 'Unsupported provider' };
+      // ── CUSTOM / Unsupported ──────────────────────────────────────────────
+      return { success: false, error: `Provider '${settings.provider}' is not yet implemented` };
+
     } catch (err) {
-      return { success: false, error: err instanceof Error ? err.message : 'Network error' };
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : 'Network error — check connectivity',
+      };
     }
   }
 
-  // ─── Encryption ─────────────────────────────────────────────────────────────
+  // ─── Encryption (AES-256-CBC) ─────────────────────────────────────────────
 
   private encrypt(text: string): string {
     const iv = randomBytes(16);
@@ -245,6 +310,9 @@ export class WhatsappSettingsService {
 
   private decrypt(encryptedText: string): string {
     const [ivHex, dataHex] = encryptedText.split(':');
+    if (!ivHex || !dataHex) {
+      throw new Error('Invalid encrypted token format');
+    }
     const iv = Buffer.from(ivHex, 'hex');
     const decipher = createDecipheriv('aes-256-cbc', this.encKey, iv);
     const decrypted = Buffer.concat([
@@ -256,6 +324,6 @@ export class WhatsappSettingsService {
 
   private maskToken(token: string): string {
     if (!token || token.length < 8) return '****';
-    return `${token.slice(0, 4)}${'*'.repeat(token.length - 8)}${token.slice(-4)}`;
+    return `${token.slice(0, 4)}${'*'.repeat(Math.max(0, token.length - 8))}${token.slice(-4)}`;
   }
 }
