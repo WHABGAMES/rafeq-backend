@@ -1,3 +1,11 @@
+/**
+ * AdminUser Entity
+ * Audited 2026-02-21
+ *
+ * FIX [TS2322]: refreshToken accepts null for session invalidation
+ * - string      → active session (hashed token stored)
+ * - null/undefined → session cleared (logout / security lockout)
+ */
 import {
   Entity,
   Column,
@@ -25,7 +33,7 @@ export const PERMISSIONS = {
   USERS_RESET_PASSWORD: 'users.reset_password',
   USERS_CHANGE_EMAIL: 'users.change_email',
   USERS_MERGE: 'users.merge',
-  USERS_DELETE: 'users.delete',        // ✅ Added: separate permission for soft-delete
+  USERS_DELETE: 'users.delete',
   STORES_TRANSFER: 'stores.transfer',
   AUDIT_READ: 'audit.read',
   SYSTEM_METRICS: 'system.metrics',
@@ -43,7 +51,7 @@ export const ROLE_PERMISSIONS: Record<AdminRole, Permission[]> = {
     PERMISSIONS.USERS_SUSPEND,
     PERMISSIONS.USERS_RESET_PASSWORD,
     PERMISSIONS.USERS_CHANGE_EMAIL,
-    PERMISSIONS.USERS_DELETE,           // ✅ Admin can soft-delete
+    PERMISSIONS.USERS_DELETE,
     PERMISSIONS.AUDIT_READ,
     PERMISSIONS.IMPERSONATE_ACCESS,
     PERMISSIONS.SYSTEM_METRICS,
@@ -66,6 +74,7 @@ export class AdminUser {
   @Index('idx_admin_email')
   email: string;
 
+  // select: false — لا يُرجع في الـ queries إلا بالتحديد الصريح في select array
   @Column({ name: 'password_hash', type: 'varchar', length: 255, select: false })
   passwordHash: string;
 
@@ -82,14 +91,22 @@ export class AdminUser {
   @Column({ type: 'enum', enum: AdminStatus, default: AdminStatus.ACTIVE })
   status: AdminStatus;
 
+  // select: false — لا يُرجع إلا عند الحاجة الصريحة (setup-2fa, confirm-2fa)
   @Column({ name: 'two_fa_secret', type: 'varchar', nullable: true, select: false })
   twoFaSecret?: string;
 
   @Column({ name: 'two_fa_enabled', type: 'boolean', default: false })
   twoFaEnabled: boolean;
 
+  /**
+   * ✅ [TS2322] FIX: string | null | undefined
+   * - select: false — لا يُرجع إلا بالتحديد الصريح
+   * - nullable: true — يقبل NULL في قاعدة البيانات
+   * - null يُستخدم في logout و security lockout:
+   *   await repo.update(id, { refreshToken: null })
+   */
   @Column({ name: 'refresh_token', type: 'varchar', length: 500, nullable: true, select: false })
-  refreshToken?: string;
+  refreshToken?: string | null;
 
   @Column({ name: 'last_login_at', type: 'timestamptz', nullable: true })
   lastLoginAt?: Date;
@@ -104,7 +121,7 @@ export class AdminUser {
   updatedAt: Date;
 
   get fullName(): string {
-    return `${this.firstName} ${this.lastName}`;
+    return `${this.firstName} ${this.lastName}`.trim();
   }
 
   hasPermission(permission: Permission): boolean {
