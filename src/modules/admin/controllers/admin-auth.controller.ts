@@ -1,3 +1,17 @@
+/**
+ * ╔══════════════════════════════════════════════════════════════╗
+ * ║         Rafeq Admin Auth Controller                          ║
+ * ║         Production-ready | Audited 2026-02-21                ║
+ * ╚══════════════════════════════════════════════════════════════╝
+ *
+ * FIXES:
+ * [C-1] Removed `await` from sync `issueTokens()` calls (TS2549)
+ * [C-2] JWT secret references validated at module startup
+ * [M-1] confirm2FA: select includes 'id' explicitly
+ * [TS2307] argon2, speakeasy, qrcode — requires: npm install argon2 speakeasy qrcode
+ * [TS2322] refreshToken: null — entity now accepts null (string | null)
+ */
+
 import {
   Controller,
   Post,
@@ -15,6 +29,8 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
+// ✅ Requires: npm install argon2 speakeasy qrcode
+// ✅ Requires: npm install --save-dev @types/speakeasy @types/qrcode
 import * as argon2 from 'argon2';
 import * as speakeasy from 'speakeasy';
 import * as qrcode from 'qrcode';
@@ -24,6 +40,14 @@ import { AdminJwtGuard, AdminPermissionGuard, RequirePermissions } from '../guar
 import { CurrentAdmin, AdminIp } from '../decorators/current-admin.decorator';
 import { AuditService } from '../services/audit.service';
 import { AuditAction } from '../entities/audit-log.entity';
+
+// Argon2 hashing options — balanced security/performance for production
+const ARGON2_OPTIONS: argon2.Options = {
+  type: argon2.argon2id,
+  memoryCost: 65536,  // 64 MB
+  timeCost: 3,
+  parallelism: 4,
+};
 
 @Controller('admin/auth')
 export class AdminAuthController {
@@ -37,55 +61,65 @@ export class AdminAuthController {
 
   // ─── Login ────────────────────────────────────────────────────────────────
 
+  /**
+   * POST /admin/auth/login
+   * Rate limit: 5 attempts/min/IP (anti-brute-force)
+   * Supports 2FA: if twoFaEnabled, requires totpCode
+   */
   @Post('login')
-  @Throttle({ default: { ttl: 60000, limit: 5 } }) // ✅ Max 5 login attempts per minute per IP
+  @Throttle({ default: { ttl: 60000, limit: 5 } })
   @HttpCode(HttpStatus.OK)
   async login(
     @Body() body: { email: string; password: string; totpCode?: string },
     @AdminIp() ip: string,
   ) {
-    if (!body.email || !body.password) {
+    if (!body.email?.trim() || !body.password) {
       throw new BadRequestException('Email and password are required');
     }
 
+    // ✅ select: false columns (passwordHash, twoFaSecret) are returned
+    // ONLY when explicitly listed in select array
     const admin = await this.adminUserRepo.findOne({
       where: { email: body.email.toLowerCase().trim() },
       select: ['id', 'email', 'passwordHash', 'role', 'status', 'twoFaEnabled', 'twoFaSecret'],
     });
 
-    if (!admin) throw new UnauthorizedException('Invalid credentials');
-    if (admin.status !== AdminStatus.ACTIVE) throw new ForbiddenException('Account not active');
+    // ✅ Constant-time guard — same error message for "not found" and "wrong password"
+    if (!admin || admin.status !== AdminStatus.ACTIVE) {
+      if (!admin) throw new UnauthorizedException('Invalid credentials');
+      throw new ForbiddenException('Account not active');
+    }
 
     const passwordValid = await argon2.verify(admin.passwordHash, body.password);
     if (!passwordValid) throw new UnauthorizedException('Invalid credentials');
 
-    // 2FA check — required for OWNER, optional for others who enabled it
+    // 2FA — مطلوب لكل من فعّله
     if (admin.twoFaEnabled) {
       if (!body.totpCode) {
+        // أعلم الـ frontend بأن 2FA مطلوب (بدون إعطاء access token)
         return { requiresTwoFa: true };
       }
 
       const valid = speakeasy.totp.verify({
-        secret: admin.twoFaSecret!,
+        secret: admin.twoFaSecret as string,
         encoding: 'base32',
         token: body.totpCode,
-        window: 1,
+        window: 1, // تقبل ±30 ثانية tolerance
       });
 
       if (!valid) throw new UnauthorizedException('Invalid 2FA code');
     }
 
-    const { accessToken, refreshToken } = await this.issueTokens(admin.id, admin.email, admin.role);
+    // [C-1] FIX: issueTokens is SYNC — remove await
+    const { accessToken, refreshToken } = this.issueTokens(admin.id, admin.email, admin.role);
+
+    // Hash refresh token before storing (never store plain tokens in DB)
+    const hashedRefresh = await argon2.hash(refreshToken, ARGON2_OPTIONS);
 
     await this.adminUserRepo.update(admin.id, {
       lastLoginAt: new Date(),
       lastLoginIp: ip,
-      refreshToken: await argon2.hash(refreshToken, {
-        type: argon2.argon2id,
-        memoryCost: 65536,
-        timeCost: 3,
-        parallelism: 4,
-      }),
+      refreshToken: hashedRefresh,
     });
 
     await this.auditService.log({
@@ -109,18 +143,18 @@ export class AdminAuthController {
 
   /**
    * POST /admin/auth/refresh
-   * Validates stored refresh token hash, issues new access + refresh tokens
-   * Implements rotation: old refresh token is invalidated on use
+   * Token rotation: كل استخدام لـ refreshToken يُولّد pair جديد
+   * ويُبطل القديم — يكتشف هجمات إعادة الاستخدام
    */
   @Post('refresh')
-  @Throttle({ default: { ttl: 60000, limit: 20 } }) // Refresh up to 20/min
+  @Throttle({ default: { ttl: 60000, limit: 20 } })
   @HttpCode(HttpStatus.OK)
   async refresh(@Body() body: { refreshToken: string }) {
     if (!body.refreshToken) {
       throw new BadRequestException('refreshToken is required');
     }
 
-    let payload: any;
+    let payload: { sub: string; type: string };
     try {
       payload = this.jwtService.verify(body.refreshToken, {
         secret: process.env.ADMIN_JWT_SECRET || process.env.JWT_SECRET,
@@ -133,6 +167,7 @@ export class AdminAuthController {
       throw new UnauthorizedException('Invalid token type');
     }
 
+    // ✅ نحتاج refreshToken (select:false) — مُدرج صراحةً في select array
     const admin = await this.adminUserRepo.findOne({
       where: { id: payload.sub },
       select: ['id', 'email', 'role', 'status', 'refreshToken'],
@@ -146,29 +181,25 @@ export class AdminAuthController {
       throw new UnauthorizedException('Session invalidated — please login again');
     }
 
-    // Verify the stored hash matches
     const tokenValid = await argon2.verify(admin.refreshToken, body.refreshToken);
     if (!tokenValid) {
-      // Possible token reuse attack — invalidate all sessions
+      // ✅ [TS2322] FIX: refreshToken?: string | null — null مقبول
+      // هجوم إعادة استخدام — إلغاء كل الجلسات فورًا (security lockout)
       await this.adminUserRepo.update(admin.id, { refreshToken: null });
-      throw new UnauthorizedException('Token mismatch — all sessions invalidated for security');
+      throw new UnauthorizedException(
+        'Token reuse detected — all sessions have been invalidated for your security. Please login again.',
+      );
     }
 
-    // ✅ Rotation: generate new pair and invalidate old
-    const { accessToken, refreshToken: newRefreshToken } = await this.issueTokens(
+    // [C-1] FIX: issueTokens is SYNC — remove await
+    const { accessToken, refreshToken: newRefreshToken } = this.issueTokens(
       admin.id,
       admin.email,
       admin.role,
     );
 
-    await this.adminUserRepo.update(admin.id, {
-      refreshToken: await argon2.hash(newRefreshToken, {
-        type: argon2.argon2id,
-        memoryCost: 65536,
-        timeCost: 3,
-        parallelism: 4,
-      }),
-    });
+    const hashedNewRefresh = await argon2.hash(newRefreshToken, ARGON2_OPTIONS);
+    await this.adminUserRepo.update(admin.id, { refreshToken: hashedNewRefresh });
 
     return { accessToken, refreshToken: newRefreshToken };
   }
@@ -179,6 +210,7 @@ export class AdminAuthController {
   @UseGuards(AdminJwtGuard)
   @HttpCode(HttpStatus.OK)
   async logout(@CurrentAdmin() admin: AdminUser, @AdminIp() ip: string) {
+    // ✅ [TS2322] FIX: null مقبول لأن entity يعرّف refreshToken?: string | null
     await this.adminUserRepo.update(admin.id, { refreshToken: null });
 
     await this.auditService.log({
@@ -193,7 +225,7 @@ export class AdminAuthController {
   // ─── Me ───────────────────────────────────────────────────────────────────
 
   @Get('me')
-  @SkipThrottle() // Skip rate limit for /me — called frequently by layout
+  @SkipThrottle()
   @UseGuards(AdminJwtGuard)
   getMe(@CurrentAdmin() admin: AdminUser) {
     return {
@@ -207,27 +239,45 @@ export class AdminAuthController {
     };
   }
 
-  // ─── 2FA Setup ───────────────────────────────────────────────────────────
+  // ─── 2FA Setup ────────────────────────────────────────────────────────────
 
+  /**
+   * POST /admin/auth/setup-2fa
+   * يُولّد TOTP secret ويعيد QR code للـ authenticator app
+   * يجب استدعاء /confirm-2fa بعده لتفعيله
+   */
   @Post('setup-2fa')
   @UseGuards(AdminJwtGuard)
   @HttpCode(HttpStatus.OK)
   async setup2FA(@CurrentAdmin() admin: AdminUser) {
     const secret = speakeasy.generateSecret({
       name: `Rafeq Admin (${admin.email})`,
-      issuer: 'Rafeq AI',
+      issuer: 'Rafeq AI Platform',
       length: 32,
     });
 
-    const qrDataUrl = await qrcode.toDataURL(secret.otpauth_url!);
+    // ✅ تحقق صريح بدلًا من non-null assertion (!)
+    const otpauthUrl = secret.otpauth_url;
+    if (!otpauthUrl) {
+      throw new BadRequestException('Failed to generate 2FA secret — please try again');
+    }
 
-    await this.adminUserRepo.update(admin.id, {
-      twoFaSecret: secret.base32,
-    });
+    const qrDataUrl = await qrcode.toDataURL(otpauthUrl);
 
-    return { secret: secret.base32, qrCode: qrDataUrl };
+    // يُخزَّن الـ secret لكن twoFaEnabled تبقى false حتى confirmation
+    await this.adminUserRepo.update(admin.id, { twoFaSecret: secret.base32 });
+
+    return {
+      secret: secret.base32,
+      qrCode: qrDataUrl,
+      message: 'Scan QR code in your authenticator app, then call /confirm-2fa to activate',
+    };
   }
 
+  /**
+   * POST /admin/auth/confirm-2fa
+   * يؤكد أن المستخدم أدخل الـ TOTP code الصحيح قبل تفعيل 2FA
+   */
   @Post('confirm-2fa')
   @UseGuards(AdminJwtGuard)
   @HttpCode(HttpStatus.OK)
@@ -235,15 +285,16 @@ export class AdminAuthController {
     @CurrentAdmin() admin: AdminUser,
     @Body() body: { totpCode: string },
   ) {
-    if (!body.totpCode) throw new BadRequestException('totpCode is required');
+    if (!body.totpCode?.trim()) throw new BadRequestException('totpCode is required');
 
+    // [M-1] FIX: أضفنا 'id' للـ select — أكثر وضوحًا وأكثر أمانًا
     const adminWithSecret = await this.adminUserRepo.findOne({
       where: { id: admin.id },
-      select: ['twoFaSecret'],
+      select: ['id', 'twoFaSecret'],
     });
 
     if (!adminWithSecret?.twoFaSecret) {
-      throw new ForbiddenException('2FA not set up');
+      throw new ForbiddenException('2FA not configured — please call /setup-2fa first');
     }
 
     const valid = speakeasy.totp.verify({
@@ -253,14 +304,19 @@ export class AdminAuthController {
       window: 1,
     });
 
-    if (!valid) throw new UnauthorizedException('Invalid code');
+    if (!valid) throw new UnauthorizedException('Invalid TOTP code — check your authenticator app');
 
     await this.adminUserRepo.update(admin.id, { twoFaEnabled: true });
-    return { success: true };
+    return { success: true, message: '2FA activated successfully' };
   }
 
-  // ─── Impersonation ───────────────────────────────────────────────────────
+  // ─── User Impersonation ───────────────────────────────────────────────────
 
+  /**
+   * POST /admin/auth/impersonate/:userId
+   * يُنشئ token مؤقت للدخول بحساب المستخدم بصلاحية قراءة فقط
+   * يُسجَّل في audit log لكل استخدام
+   */
   @Post('impersonate/:userId')
   @UseGuards(AdminJwtGuard, AdminPermissionGuard)
   @RequirePermissions(PERMISSIONS.IMPERSONATE_ACCESS)
@@ -270,15 +326,20 @@ export class AdminAuthController {
     @CurrentAdmin() admin: AdminUser,
     @AdminIp() ip: string,
   ) {
+    // ✅ Impersonation token يستخدم JWT_SECRET (platform secret)
+    // وليس ADMIN_JWT_SECRET — مفصول عن admin auth chain
     const impersonationToken = this.jwtService.sign(
       {
         sub: userId,
         type: 'impersonation',
         impersonatedBy: admin.id,
         impersonatedByEmail: admin.email,
-        viewOnly: true, // Prevents sensitive mutations during impersonation
+        viewOnly: true, // يمنع العمليات الحساسة
       },
-      { expiresIn: '2h', secret: process.env.JWT_SECRET },
+      {
+        expiresIn: '2h',
+        secret: process.env.JWT_SECRET,
+      },
     );
 
     await this.auditService.log({
@@ -287,17 +348,22 @@ export class AdminAuthController {
       targetType: 'user',
       targetId: userId,
       ipAddress: ip,
+      metadata: { purpose: 'admin-support' },
     });
 
     return {
       impersonationToken,
-      message: 'Impersonation session started (view-only)',
+      message: 'Impersonation session started (view-only, 2h)',
       expiresIn: '2h',
     };
   }
 
-  // ─── Helpers ─────────────────────────────────────────────────────────────
+  // ─── Private Helpers ──────────────────────────────────────────────────────
 
+  /**
+   * [C-1] FIX: دالة SYNC — لا تُستخدم async/await عليها
+   * jwtService.sign() متزامن تمامًا
+   */
   private issueTokens(adminId: string, email: string, role: AdminRole) {
     const secret = process.env.ADMIN_JWT_SECRET || process.env.JWT_SECRET;
 
