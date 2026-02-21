@@ -1,3 +1,10 @@
+/**
+ * Admin Guards
+ * Audited 2026-02-21
+ *
+ * FIX [TS6133]: Removed unused ROLE_PERMISSIONS import
+ * — permission checking is delegated to AdminUser.hasPermission()
+ */
 import {
   Injectable,
   CanActivate,
@@ -10,7 +17,8 @@ import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { AdminUser, AdminStatus, Permission, ROLE_PERMISSIONS } from '../entities/admin-user.entity';
+// ✅ FIX [TS6133]: Removed ROLE_PERMISSIONS — not used directly in guards
+import { AdminUser, AdminStatus, Permission } from '../entities/admin-user.entity';
 
 // ─── Metadata Keys ────────────────────────────────────────────────────────────
 export const PERMISSIONS_KEY = 'admin_permissions';
@@ -23,6 +31,11 @@ export const RequirePermissions = (...permissions: Permission[]) =>
 export const Require2FA = () => SetMetadata(REQUIRE_2FA_KEY, true);
 
 // ─── Admin JWT Auth Guard ─────────────────────────────────────────────────────
+
+/**
+ * يتحقق من صحة الـ JWT token ويضع admin في الـ request
+ * يجب استخدامه قبل AdminPermissionGuard
+ */
 @Injectable()
 export class AdminJwtGuard implements CanActivate {
   constructor(
@@ -46,8 +59,9 @@ export class AdminJwtGuard implements CanActivate {
         secret: process.env.ADMIN_JWT_SECRET || process.env.JWT_SECRET,
       });
 
+      // ✅ تحقق من نوع الـ token — يمنع استخدام platform tokens كـ admin tokens
       if (payload.type !== 'admin') {
-        throw new UnauthorizedException('Invalid admin token');
+        throw new UnauthorizedException('Invalid token type for admin access');
       }
 
       const admin = await this.adminUserRepository.findOne({
@@ -59,9 +73,10 @@ export class AdminJwtGuard implements CanActivate {
       }
 
       if (admin.status !== AdminStatus.ACTIVE) {
-        throw new ForbiddenException('Admin account is not active');
+        throw new ForbiddenException('Admin account is suspended or deleted');
       }
 
+      // ✅ يُضاف للـ request — يُستخدَم من @CurrentAdmin() decorator
       request.admin = admin;
       request.ipAddress = this.extractIp(request);
       return true;
@@ -76,13 +91,19 @@ export class AdminJwtGuard implements CanActivate {
   private extractIp(request: any): string {
     return (
       request.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
+      request.headers['x-real-ip'] ||
       request.ip ||
       'unknown'
     );
   }
 }
 
-// ─── Permission Guard ─────────────────────────────────────────────────────────
+// ─── Admin Permission Guard ───────────────────────────────────────────────────
+
+/**
+ * يتحقق من صلاحيات الأدمن باستخدام @RequirePermissions() decorator
+ * يجب استخدامه بعد AdminJwtGuard (يفترض وجود request.admin)
+ */
 @Injectable()
 export class AdminPermissionGuard implements CanActivate {
   constructor(private readonly reflector: Reflector) {}
@@ -93,6 +114,7 @@ export class AdminPermissionGuard implements CanActivate {
       [context.getHandler(), context.getClass()],
     );
 
+    // لا توجد صلاحيات مطلوبة → السماح بالمرور
     if (!requiredPermissions?.length) return true;
 
     const { admin } = context.switchToHttp().getRequest();
@@ -101,6 +123,7 @@ export class AdminPermissionGuard implements CanActivate {
       throw new UnauthorizedException('Not authenticated as admin');
     }
 
+    // ✅ AdminUser.hasPermission() يفحص ROLE_PERMISSIONS للـ role
     const hasAll = requiredPermissions.every((permission) =>
       admin.hasPermission(permission),
     );
