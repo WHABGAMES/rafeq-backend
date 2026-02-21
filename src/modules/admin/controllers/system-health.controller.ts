@@ -1,11 +1,11 @@
 /**
  * SystemHealthController
- * Audited 2026-02-21
+ * Fixed 2026-02-21
  *
- * FIX [TS6133]: Removed unused Inject, Optional imports
- * Redis health checked via BullMQ client (no separate IORedis needed)
+ * FIX [500]: Wrapped all DB queries in try/catch with fallback zeros
+ * Any missing table (message_logs, stores, subscriptions) returns 0 gracefully
+ * instead of crashing the entire /metrics endpoint with 500.
  */
-// ✅ FIX [TS6133]: Inject و Optional محذوفان — لم يكونا مستخدَمَين
 import { Controller, Get, UseGuards } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
@@ -22,7 +22,6 @@ export class SystemHealthController {
     @InjectDataSource()
     private readonly dataSource: DataSource,
 
-    // ✅ BullMQ client المدمج — لا حاجة لـ IORedis منفصل
     @InjectQueue('notifications')
     private readonly notificationQueue: Queue,
   ) {}
@@ -57,6 +56,7 @@ export class SystemHealthController {
 
   @Get('metrics')
   async getMetrics() {
+    // ✅ كل query مستقلة — فشل واحد لا يؤثر على البقية
     const [userStats, storeStats, messageStats, subscriptionStats] = await Promise.all([
       this.getUserStats(),
       this.getStoreStats(),
@@ -83,84 +83,100 @@ export class SystemHealthController {
 
   private async checkRedis() {
     const start = Date.now();
-    const client = await this.notificationQueue.client;
-    await client.ping();
+    try {
+      const client = await this.notificationQueue.client;
+      await client.ping();
 
-    const info = await client.info('server');
-    const version = info.match(/redis_version:(.+)/)?.[1]?.trim();
-    const memory = info.match(/used_memory_human:(.+)/)?.[1]?.trim();
+      const info = await client.info('server');
+      const version = info.match(/redis_version:(.+)/)?.[1]?.trim();
+      const memory = info.match(/used_memory_human:(.+)/)?.[1]?.trim();
 
-    return {
-      status: 'ok',
-      responseTimeMs: Date.now() - start,
-      version,
-      usedMemory: memory,
-    };
+      return {
+        status: 'ok',
+        responseTimeMs: Date.now() - start,
+        version,
+        usedMemory: memory,
+      };
+    } catch {
+      return { status: 'error', responseTimeMs: Date.now() - start };
+    }
   }
 
-  // ─── Private: Metrics Queries ─────────────────────────────────────────────
+  // ─── Private: Metrics Queries — كل query محاطة بـ try/catch ──────────────
 
   private async getUserStats() {
-    const [result] = await this.dataSource.query(`
-      SELECT
-        COUNT(*) FILTER (WHERE status = 'active')                       AS active,
-        COUNT(*) FILTER (WHERE status = 'inactive')                     AS suspended,
-        COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '7 days') AS new_this_week,
-        COUNT(*)                                                         AS total
-      FROM users
-    `);
-    return {
-      total: +result.total,
-      active: +result.active,
-      suspended: +result.suspended,
-      newThisWeek: +result.new_this_week,
-    };
-  }
-
-  private async getStoreStats() {
-    const [result] = await this.dataSource.query(`
-      SELECT
-        COUNT(*) FILTER (WHERE status = 'active')    AS active,
-        COUNT(*) FILTER (WHERE status = 'suspended') AS suspended,
-        COUNT(*)                                      AS total
-      FROM stores
-    `);
-    return {
-      total: +result.total,
-      active: +result.active,
-      suspended: +result.suspended,
-    };
-  }
-
-  private async getMessageStats() {
-    const [result] = await this.dataSource.query(`
-      SELECT
-        COUNT(*) FILTER (WHERE status = 'sent')                              AS sent,
-        COUNT(*) FILTER (WHERE status = 'failed')                            AS failed,
-        COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours')    AS last_24h
-      FROM message_logs
-    `);
-    return {
-      totalSent: +result.sent,
-      totalFailed: +result.failed,
-      last24h: +result.last_24h,
-    };
-  }
-
-  private async getSubscriptionStats() {
-    // ✅ graceful fallback — الـ table قد لا تكون موجودة في بيئات التطوير
     try {
       const [result] = await this.dataSource.query(`
         SELECT
-          COUNT(*) FILTER (WHERE status = 'active')                                      AS active,
-          COUNT(*) FILTER (WHERE status = 'trial')                                       AS trial,
-          COUNT(*) FILTER (WHERE end_date BETWEEN NOW() AND NOW() + INTERVAL '7 days')  AS expiring_soon
+          COUNT(*) FILTER (WHERE status = 'active')                       AS active,
+          COUNT(*) FILTER (WHERE status = 'inactive')                     AS suspended,
+          COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '7 days') AS new_this_week,
+          COUNT(*)                                                         AS total
+        FROM users
+      `);
+      return {
+        total:       +result.total       || 0,
+        active:      +result.active      || 0,
+        suspended:   +result.suspended   || 0,
+        newThisWeek: +result.new_this_week || 0,
+      };
+    } catch {
+      return { total: 0, active: 0, suspended: 0, newThisWeek: 0 };
+    }
+  }
+
+  private async getStoreStats() {
+    try {
+      const [result] = await this.dataSource.query(`
+        SELECT
+          COUNT(*) FILTER (WHERE status = 'active')    AS active,
+          COUNT(*) FILTER (WHERE status = 'suspended') AS suspended,
+          COUNT(*)                                      AS total
+        FROM stores
+      `);
+      return {
+        total:     +result.total     || 0,
+        active:    +result.active    || 0,
+        suspended: +result.suspended || 0,
+      };
+    } catch {
+      return { total: 0, active: 0, suspended: 0 };
+    }
+  }
+
+  private async getMessageStats() {
+    try {
+      const [result] = await this.dataSource.query(`
+        SELECT
+          COUNT(*) FILTER (WHERE status = 'sent')                           AS sent,
+          COUNT(*) FILTER (WHERE status = 'failed')                         AS failed,
+          COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours') AS last_24h
+        FROM message_logs
+      `);
+      return {
+        totalSent:   +result.sent    || 0,
+        totalFailed: +result.failed  || 0,
+        last24h:     +result.last_24h || 0,
+      };
+    } catch {
+      // message_logs قد لا تكون موجودة بعد
+      return { totalSent: 0, totalFailed: 0, last24h: 0 };
+    }
+  }
+
+  private async getSubscriptionStats() {
+    try {
+      const [result] = await this.dataSource.query(`
+        SELECT
+          COUNT(*) FILTER (WHERE status = 'active')                                     AS active,
+          COUNT(*) FILTER (WHERE status = 'trial')                                      AS trial,
+          COUNT(*) FILTER (WHERE end_date BETWEEN NOW() AND NOW() + INTERVAL '7 days') AS expiring_soon
         FROM subscriptions
       `);
       return {
-        active: +result.active,
-        trial: +result.trial,
-        expiringSoon: +result.expiring_soon,
+        active:        +result.active       || 0,
+        trial:         +result.trial        || 0,
+        expiringSoon:  +result.expiring_soon || 0,
       };
     } catch {
       return { active: 0, trial: 0, expiringSoon: 0 };
