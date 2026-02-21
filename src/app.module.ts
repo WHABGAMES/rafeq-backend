@@ -87,6 +87,7 @@ import { SettingsModule } from '@modules/settings/settings.module';
 import { GatewayModule } from '@modules/gateway/gateway.module';
 import { MailModule } from '@modules/mail/mail.module';
 import { EmployeeNotificationsModule } from '@modules/employee-notifications/employee-notifications.module';
+import { AdminModule } from '@modules/admin/admin.module';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // تعريف الوحدة
@@ -447,6 +448,9 @@ import { EmployeeNotificationsModule } from '@modules/employee-notifications/emp
 
     // 🔔 تنبيهات الموظفين
     EmployeeNotificationsModule,
+
+    // 🛡️ لوحة الأدمن — إدارة المنصة
+    AdminModule,
   ],
 
   // ═══════════════════════════════════════════════════════════════════════════════
