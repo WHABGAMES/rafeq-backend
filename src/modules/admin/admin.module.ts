@@ -1,3 +1,15 @@
+/**
+ * ╔══════════════════════════════════════════════════════════════╗
+ * ║           Rafeq Platform — Admin Module                      ║
+ * ║           Production-ready | Audited 2026-02-21              ║
+ * ╚══════════════════════════════════════════════════════════════╝
+ *
+ * FIX [C-2]: JWT Secret startup guard — يوقف التطبيق فورًا
+ * إذا لم تكن المتغيرات البيئية مضبوطة في production.
+ * بدون هذا الفحص يمكن لـ jsonwebtoken استخدام 'undefined'
+ * كـ secret → أي شخص يمكنه تزوير admin tokens.
+ */
+
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { BullModule } from '@nestjs/bullmq';
@@ -39,6 +51,30 @@ import { AdminJwtGuard, AdminPermissionGuard } from './guards/admin.guards';
 import { NotificationProcessor } from './processors/notification.processor';
 import { NotificationEventListener } from './listeners/notification-event.listener';
 
+// ─── [C-2] Startup Validation ─────────────────────────────────────────────────
+// يُنفَّذ قبل أي شيء عند تحميل الـ module
+const jwtSecret = process.env.ADMIN_JWT_SECRET || process.env.JWT_SECRET;
+
+if (!jwtSecret) {
+  // في production: throw → التطبيق لا يبدأ إطلاقًا
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error(
+      '\n\n' +
+      '╔══════════════════════════════════════════════════════════╗\n' +
+      '║  FATAL: Admin JWT Secret is not configured!              ║\n' +
+      '║                                                          ║\n' +
+      '║  Set one of these env vars before starting:              ║\n' +
+      '║    ADMIN_JWT_SECRET=<strong-random-64-chars>             ║\n' +
+      '║    JWT_SECRET=<strong-random-64-chars>                   ║\n' +
+      '║                                                          ║\n' +
+      '║  Without this, any attacker can forge admin tokens!      ║\n' +
+      '╚══════════════════════════════════════════════════════════╝\n',
+    );
+  }
+  // في development: تحذير فقط
+  console.warn('\n⚠️  WARNING: ADMIN_JWT_SECRET / JWT_SECRET not set — using insecure fallback for development only!\n');
+}
+
 @Module({
   imports: [
     TypeOrmModule.forFeature([
@@ -50,30 +86,31 @@ import { NotificationEventListener } from './listeners/notification-event.listen
       MessageLog,
     ]),
 
+    // ✅ JwtModule يستخدم نفس الـ secret المُتحقَّق منه أعلاه
     JwtModule.register({
-      secret: process.env.ADMIN_JWT_SECRET || process.env.JWT_SECRET,
+      secret: jwtSecret || 'rafeq-dev-insecure-fallback',
       signOptions: { expiresIn: '8h' },
     }),
 
-    // ✅ Required for @Cron() in NotificationEventListener
+    // ✅ مطلوب لـ @Cron() في NotificationEventListener
     ScheduleModule.forRoot(),
 
-    // ✅ Required for @OnEvent() in NotificationEventListener
-    // Without this, all event-driven notifications (user.created, account.suspended, etc.) silently fail
+    // ✅ مطلوب لـ @OnEvent() في NotificationEventListener
+    // بدونه الإشعارات التلقائية (user.created, account.suspended...) تصمت بدون خطأ
     EventEmitterModule.forRoot({
-      // Wildcard support: emit('user.*') matches @OnEvent('user.created')
       wildcard: false,
-      // Prevent unhandled errors from crashing the process
-      ignoreErrors: false,
+      ignoreErrors: false, // أخطاء الـ listeners تظهر في logs
     }),
 
-    // ✅ Rate limiting: 10 requests per minute on all admin endpoints
+    // ✅ Rate limiting: 60 طلب/دقيقة على كل endpoints الأدمن
+    // Login و Refresh لهما throttle خاص بهما (@Throttle decorator)
     ThrottlerModule.forRoot([{
       name: 'admin',
-      ttl: 60000,   // 1 minute window
-      limit: 60,    // max 60 requests per minute per IP
+      ttl: 60000,   // نافذة 1 دقيقة
+      limit: 60,    // 60 طلب/دقيقة/IP
     }]),
 
+    // ✅ BullMQ queue للإشعارات (WhatsApp + Email)
     BullModule.registerQueue({
       name: 'notifications',
       defaultJobOptions: {
@@ -106,19 +143,20 @@ import { NotificationEventListener } from './listeners/notification-event.listen
     AdminJwtGuard,
     AdminPermissionGuard,
 
-    // ✅ Global rate limiting guard
+    // ✅ ThrottlerGuard يطبَّق globally على كل routes في الـ app
     {
       provide: APP_GUARD,
       useClass: ThrottlerGuard,
     },
 
-    // Processor
+    // BullMQ Processor
     NotificationProcessor,
 
-    // Listeners
+    // Event Listeners
     NotificationEventListener,
   ],
 
+  // Exported for use in other modules (e.g., stores module, webhooks module)
   exports: [
     AuditService,
     NotificationService,
