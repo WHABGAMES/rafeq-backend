@@ -1,3 +1,14 @@
+/**
+ * AdminUsersService — Platform User Management
+ * Audited 2026-02-21
+ *
+ * FIX [TS2305]: Removed IsolationLevel import — not exported in all TypeORM versions
+ *   Used string literal 'SERIALIZABLE' directly (TypeORM accepts both)
+ * FIX [TS2307]: argon2 requires: npm install argon2
+ *
+ * NOTE: This service operates on the PLATFORM users table (not admin_users)
+ * Column names depend on the main app schema: users, tenants, stores
+ */
 import {
   Injectable,
   Logger,
@@ -7,7 +18,9 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { Repository, DataSource, IsolationLevel } from 'typeorm';
+// ✅ FIX [TS2305]: IsolationLevel removed — use string literal directly
+import { Repository, DataSource } from 'typeorm';
+// ✅ FIX [TS2307]: requires npm install argon2
 import * as argon2 from 'argon2';
 import { randomBytes } from 'crypto';
 import { AuditService } from './audit.service';
@@ -15,10 +28,13 @@ import { AuditAction } from '../entities/audit-log.entity';
 import { AdminUser } from '../entities/admin-user.entity';
 import { MergeHistory, MergeStatus } from '../entities/merge-history.entity';
 
-/**
- * Service for admin-level operations on platform users (tenants/stores/users)
- * Works on the main rafeq entities - Tenant, Store, User
- */
+const ARGON2_OPTIONS: argon2.Options = {
+  type: argon2.argon2id,
+  memoryCost: 65536,
+  timeCost: 3,
+  parallelism: 4,
+};
+
 @Injectable()
 export class AdminUsersService {
   private readonly logger = new Logger(AdminUsersService.name);
@@ -33,7 +49,7 @@ export class AdminUsersService {
     private readonly auditService: AuditService,
   ) {}
 
-  // ─── User Listing ───────────────────────────────────────────────────────────
+  // ─── User Listing ──────────────────────────────────────────────────────────
 
   async getAllUsers(filters: {
     page?: number;
@@ -47,10 +63,7 @@ export class AdminUsersService {
   }) {
     const { page = 1, limit = 50 } = filters;
 
-    // ✅ BUG FIX #1 & #2: Build WHERE conditions separately so both the main
-    // query AND the count query can apply the same filters. The newRegistrations
-    // filter belongs in WHERE (before GROUP BY), not after it.
-
+    // ✅ WHERE conditions مبنية بشكل منفصل لتُطبَّق على query و count
     const whereConditions: string[] = ['1=1'];
     const params: any[] = [];
     let idx = 1;
@@ -81,26 +94,23 @@ export class AdminUsersService {
       idx++;
     }
 
-    // ✅ newRegistrations: must be in WHERE, not after GROUP BY
+    // ✅ newRegistrations في WHERE — وليس HAVING (صحيح semantically)
     if (filters.newRegistrations) {
       whereConditions.push(`u.created_at > NOW() - INTERVAL '7 days'`);
     }
 
     const whereClause = whereConditions.join(' AND ');
 
-    // Main data query
-    // ✅ Returns stores as json array — required by the stores management page
+    // ✅ يُرجع stores كـ json array — لا يُرجع password أو refresh_token
     let dataQuery = `
-      SELECT 
+      SELECT
         u.id, u.email, u.first_name, u.last_name, u.role, u.status,
         u.email_verified, u.last_login_at, u.created_at,
-        t.id as tenant_id, t.name as tenant_name, t.status as tenant_status,
-        COUNT(DISTINCT s.id)::int as store_count,
+        t.id AS tenant_id, t.name AS tenant_name, t.status AS tenant_status,
+        COUNT(DISTINCT s.id)::int AS store_count,
         json_agg(
-          json_build_object(
-            'id', s.id, 'name', s.name, 'platform', s.platform, 'status', s.status
-          )
-        ) FILTER (WHERE s.id IS NOT NULL) as stores
+          json_build_object('id', s.id, 'name', s.name, 'platform', s.platform, 'status', s.status)
+        ) FILTER (WHERE s.id IS NOT NULL) AS stores
       FROM users u
       LEFT JOIN tenants t ON t.id = u.tenant_id
       LEFT JOIN stores s ON s.tenant_id = t.id
@@ -115,44 +125,44 @@ export class AdminUsersService {
     dataQuery += ` ORDER BY u.created_at DESC LIMIT $${idx} OFFSET $${idx + 1}`;
     const dataParams = [...params, limit, (page - 1) * limit];
 
-    // ✅ BUG FIX #1: Count query applies the same WHERE clause + same params
-    // so pagination total matches filtered results (not the entire table)
-    const countQuery = `
-      SELECT COUNT(DISTINCT u.id) as count
+    // ✅ Count query يطبّق نفس الـ WHERE — pagination صحيح
+    const baseCountQuery = `
+      SELECT COUNT(DISTINCT u.id) AS count
       FROM users u
       LEFT JOIN tenants t ON t.id = u.tenant_id
       LEFT JOIN stores s ON s.tenant_id = t.id
       WHERE ${whereClause}
-      ${filters.hasMultipleStores ? 'GROUP BY u.id HAVING COUNT(DISTINCT s.id) > 1' : ''}
     `;
 
-    // For count with HAVING, wrap in subquery
     const finalCountQuery = filters.hasMultipleStores
-      ? `SELECT COUNT(*) as count FROM (${countQuery}) sub`
-      : countQuery;
+      ? `SELECT COUNT(*) AS count FROM (${baseCountQuery} GROUP BY u.id HAVING COUNT(DISTINCT s.id) > 1) sub`
+      : baseCountQuery;
 
     const [results, countResult] = await Promise.all([
       this.dataSource.query(dataQuery, dataParams),
       this.dataSource.query(finalCountQuery, params),
     ]);
 
-    const total = parseInt(countResult[0]?.count || '0');
-
-    return { items: results, total, page, limit };
+    return {
+      items: results,
+      total: parseInt(countResult[0]?.count || '0'),
+      page,
+      limit,
+    };
   }
 
   async getUserById(userId: string) {
-    // ✅ Explicit column list — never select password or refresh_token
+    // ✅ أعمدة محددة صراحةً — لا password، لا refresh_token
     const [user] = await this.dataSource.query(
       `
-      SELECT 
+      SELECT
         u.id, u.email, u.first_name, u.last_name, u.role, u.status,
         u.email_verified, u.phone, u.last_login_at, u.created_at, u.updated_at,
         u.tenant_id,
-        t.name as tenant_name, t.status as tenant_status,
+        t.name AS tenant_name, t.status AS tenant_status,
         json_agg(json_build_object(
           'id', s.id, 'name', s.name, 'platform', s.platform, 'status', s.status
-        )) FILTER (WHERE s.id IS NOT NULL) as stores
+        )) FILTER (WHERE s.id IS NOT NULL) AS stores
       FROM users u
       LEFT JOIN tenants t ON t.id = u.tenant_id
       LEFT JOIN stores s ON s.tenant_id = t.id
@@ -166,14 +176,9 @@ export class AdminUsersService {
     return user;
   }
 
-  // ─── Suspend / Reactivate ───────────────────────────────────────────────────
+  // ─── Suspend / Reactivate ──────────────────────────────────────────────────
 
-  async suspendUser(
-    userId: string,
-    reason: string,
-    admin: AdminUser,
-    ipAddress: string,
-  ) {
+  async suspendUser(userId: string, reason: string, admin: AdminUser, ipAddress: string) {
     const user = await this.getUserById(userId);
 
     await this.dataSource.query(
@@ -181,7 +186,7 @@ export class AdminUsersService {
       [userId],
     );
 
-    // Invalidate all sessions by clearing refresh tokens
+    // ✅ إلغاء كل الجلسات النشطة — المستخدم لا يستطيع الدخول فورًا
     await this.dataSource.query(
       `UPDATE users SET refresh_token = NULL WHERE id = $1`,
       [userId],
@@ -201,7 +206,7 @@ export class AdminUsersService {
   }
 
   async reactivateUser(userId: string, admin: AdminUser, ipAddress: string) {
-    await this.getUserById(userId);
+    await this.getUserById(userId); // يرمي NotFoundException إذا لم يُوجد
 
     await this.dataSource.query(
       `UPDATE users SET status = 'active', updated_at = NOW() WHERE id = $1`,
@@ -219,18 +224,14 @@ export class AdminUsersService {
     return { success: true };
   }
 
-  // ─── Password Reset ─────────────────────────────────────────────────────────
+  // ─── Password Reset ────────────────────────────────────────────────────────
 
   async forcePasswordReset(userId: string, admin: AdminUser, ipAddress: string) {
     const user = await this.getUserById(userId);
 
+    // كلمة مرور مؤقتة آمنة — 16 حرف base64url
     const tempPassword = randomBytes(12).toString('base64url');
-    const hash = await argon2.hash(tempPassword, {
-      type: argon2.argon2id,
-      memoryCost: 65536,
-      timeCost: 3,
-      parallelism: 4,
-    });
+    const hash = await argon2.hash(tempPassword, ARGON2_OPTIONS);
 
     await this.dataSource.query(
       `UPDATE users SET password = $1, refresh_token = NULL, updated_at = NOW() WHERE id = $2`,
@@ -246,20 +247,17 @@ export class AdminUsersService {
       ipAddress,
     });
 
+    // ✅ tempPassword يُرسَل للمستخدم عبر قناة آمنة (WhatsApp/Email)
+    // لا يُخزَّن في قاعدة البيانات
     return { tempPassword };
   }
 
-  // ─── Email Change ────────────────────────────────────────────────────────────
+  // ─── Email Change ──────────────────────────────────────────────────────────
 
-  async changeUserEmail(
-    userId: string,
-    newEmail: string,
-    admin: AdminUser,
-    ipAddress: string,
-  ) {
+  async changeUserEmail(userId: string, newEmail: string, admin: AdminUser, ipAddress: string) {
     const user = await this.getUserById(userId);
 
-    // Check new email not already taken
+    // ✅ تحقق من عدم وجود حساب بنفس الإيميل
     const [existing] = await this.dataSource.query(
       `SELECT id FROM users WHERE email = $1 AND id != $2`,
       [newEmail, userId],
@@ -283,16 +281,17 @@ export class AdminUsersService {
     return { success: true };
   }
 
-  // ─── Soft Delete ─────────────────────────────────────────────────────────────
+  // ─── Soft Delete ───────────────────────────────────────────────────────────
 
   async softDeleteUser(userId: string, admin: AdminUser, ipAddress: string) {
     const user = await this.getUserById(userId);
 
+    // ✅ anonymize الإيميل — لا حذف حقيقي للبيانات (GDPR-friendly)
     const anonymizedEmail = `deleted_${Date.now()}@deleted.rafeq.ai`;
 
     await this.dataSource.query(
-      `UPDATE users SET 
-        status = 'inactive', 
+      `UPDATE users SET
+        status = 'inactive',
         email = $1,
         refresh_token = NULL,
         updated_at = NOW()
@@ -312,7 +311,7 @@ export class AdminUsersService {
     return { success: true };
   }
 
-  // ─── Account Merge (CRITICAL) ────────────────────────────────────────────────
+  // ─── Account Merge ─────────────────────────────────────────────────────────
 
   async previewMerge(sourceUserId: string, targetUserId: string) {
     if (sourceUserId === targetUserId) {
@@ -335,7 +334,6 @@ export class AdminUsersService {
        JOIN users u ON u.tenant_id = t.id
        WHERE u.id = $1`, [sourceUserId],
     );
-
     const targetStores = await this.dataSource.query(
       `SELECT s.id, s.name, s.platform FROM stores s
        JOIN tenants t ON t.id = s.tenant_id
@@ -344,7 +342,7 @@ export class AdminUsersService {
     );
 
     const conflicts: string[] = [];
-    if (source.status !== 'active') conflicts.push(`Source user status is ${source.status}`);
+    if (source.status !== 'active') conflicts.push(`Source user status is '${source.status}'`);
 
     return {
       source: { id: source.id, email: source.email, status: source.status, stores: sourceStores },
@@ -380,18 +378,14 @@ export class AdminUsersService {
 
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
-    await queryRunner.startTransaction('SERIALIZABLE' as IsolationLevel);
+    // ✅ FIX [TS2305]: string literal مباشرة — لا حاجة لاستيراد IsolationLevel
+    await queryRunner.startTransaction('SERIALIZABLE');
 
     try {
-      // Advisory lock to prevent concurrent merges on same users
-      await queryRunner.query(`SELECT pg_advisory_xact_lock($1)`, [
-        this.hashForLock(sourceUserId),
-      ]);
-      await queryRunner.query(`SELECT pg_advisory_xact_lock($1)`, [
-        this.hashForLock(targetUserId),
-      ]);
+      // ✅ Advisory lock يمنع الـ concurrent merges على نفس المستخدمين
+      await queryRunner.query(`SELECT pg_advisory_xact_lock($1)`, [this.hashForLock(sourceUserId)]);
+      await queryRunner.query(`SELECT pg_advisory_xact_lock($1)`, [this.hashForLock(targetUserId)]);
 
-      // Get source tenant
       const [sourceUser] = await queryRunner.query(
         `SELECT tenant_id FROM users WHERE id = $1`, [sourceUserId],
       );
@@ -399,28 +393,28 @@ export class AdminUsersService {
         `SELECT tenant_id FROM users WHERE id = $1`, [targetUserId],
       );
 
-      // Transfer stores from source tenant → target tenant
+      // نقل المتاجر من tenant المصدر → tenant الهدف
       const transferredStores = await queryRunner.query(
-        `UPDATE stores SET tenant_id = $1, updated_at = NOW() 
+        `UPDATE stores SET tenant_id = $1, updated_at = NOW()
          WHERE tenant_id = $2 RETURNING id`,
         [targetUser.tenant_id, sourceUser.tenant_id],
       );
 
-      const transferredIds = transferredStores.map((s: any) => s.id);
+      const transferredIds: string[] = transferredStores.map((s: any) => s.id);
 
-      // Mark source user as merged
+      // إلغاء تفعيل حساب المصدر وأنونيمايزيشن إيميله
       await queryRunner.query(
-        `UPDATE users SET status = 'inactive', 
-          email = $1, 
+        `UPDATE users SET
+          status = 'inactive',
+          email = $1,
           refresh_token = NULL,
-          updated_at = NOW() 
+          updated_at = NOW()
          WHERE id = $2`,
         [`merged_${Date.now()}_${preview.source.email}`, sourceUserId],
       );
 
       await queryRunner.commitTransaction();
 
-      // Update merge record
       await this.mergeHistoryRepository.update(savedMerge.id, {
         status: MergeStatus.COMPLETED,
         storesTransferred: transferredIds.length,
@@ -453,23 +447,18 @@ export class AdminUsersService {
         status: MergeStatus.FAILED,
         errorMessage: err instanceof Error ? err.message : 'Unknown error',
       });
-      this.logger.error('Merge failed, rolled back', { sourceUserId, targetUserId, err });
+      this.logger.error('Account merge failed — rolled back', { sourceUserId, targetUserId });
       throw err;
     } finally {
       await queryRunner.release();
     }
   }
 
-  // ─── Store Transfer ──────────────────────────────────────────────────────────
+  // ─── Store Transfer ────────────────────────────────────────────────────────
 
-  async transferStore(
-    storeId: string,
-    targetUserId: string,
-    admin: AdminUser,
-    ipAddress: string,
-  ) {
+  async transferStore(storeId: string, targetUserId: string, admin: AdminUser, ipAddress: string) {
     const [store] = await this.dataSource.query(
-      `SELECT s.id, s.name, s.tenant_id FROM stores s WHERE s.id = $1`,
+      `SELECT id, name, tenant_id FROM stores WHERE id = $1`,
       [storeId],
     );
     if (!store) throw new NotFoundException(`Store ${storeId} not found`);
@@ -502,6 +491,12 @@ export class AdminUsersService {
     return { success: true };
   }
 
+  // ─── Private Helpers ──────────────────────────────────────────────────────
+
+  /**
+   * يحوّل UUID إلى رقم int لاستخدامه في pg_advisory_xact_lock
+   * يضمن نفس الـ lock لنفس الـ UUID في كل مرة
+   */
   private hashForLock(uuid: string): number {
     let hash = 0;
     for (let i = 0; i < uuid.length; i++) {
