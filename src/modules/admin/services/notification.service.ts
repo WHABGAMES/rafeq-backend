@@ -1,10 +1,18 @@
+/**
+ * NotificationService — Template-based Notification System
+ * Audited 2026-02-21
+ *
+ * FIX [TS6133]: Removed unused MessageChannel import
+ * FIX [TS6138]: Removed unused WhatsappSettingsService injection
+ *   — sending is delegated to NotificationProcessor via BullMQ queue
+ */
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Repository } from 'typeorm';
 import { Queue } from 'bullmq';
-import { MessageTemplate, TriggerEvent, MessageChannel, MessageLanguage } from '../entities/message-template.entity';
-import { WhatsappSettingsService } from './whatsapp-settings.service';
+// ✅ FIX [TS6133]: MessageChannel removed (not used in service logic)
+import { MessageTemplate, TriggerEvent, MessageLanguage } from '../entities/message-template.entity';
 
 export interface TemplateVariables {
   merchant_name?: string;
@@ -17,6 +25,8 @@ export interface TemplateVariables {
   [key: string]: string | undefined;
 }
 
+// ✅ FIX [TS6138]: No WhatsappSettingsService here
+// Sending happens in NotificationProcessor which injects WhatsappSettingsService
 @Injectable()
 export class NotificationService {
   private readonly logger = new Logger(NotificationService.name);
@@ -28,10 +38,15 @@ export class NotificationService {
 
     @InjectQueue('notifications')
     private readonly notificationQueue: Queue,
-
-    private readonly whatsappService: WhatsappSettingsService,
   ) {}
 
+  // ─── Event-driven Send ────────────────────────────────────────────────────
+
+  /**
+   * يُضاف job للـ queue — NotificationProcessor هو من يُرسل فعليًا
+   * @param event TriggerEvent enum value
+   * @param recipientPhone رقم الهاتف بصيغة دولية (e.g. +966501234567)
+   */
   async sendByTriggerEvent(
     event: TriggerEvent,
     recipientPhone: string,
@@ -44,17 +59,12 @@ export class NotificationService {
   ): Promise<void> {
     const lang = options?.language || MessageLanguage.AR;
 
-    // Find active template for event
     const template = await this.templateRepo.findOne({
-      where: {
-        triggerEvent: event,
-        isActive: true,
-        language: lang,
-      },
+      where: { triggerEvent: event, isActive: true, language: lang },
     });
 
     if (!template) {
-      this.logger.warn(`No active template for event ${event} / lang ${lang}`);
+      this.logger.warn(`No active template for event=${event} lang=${lang}`);
       return;
     }
 
@@ -78,6 +88,8 @@ export class NotificationService {
     );
   }
 
+  // ─── Manual Send ──────────────────────────────────────────────────────────
+
   async sendManual(
     templateId: string,
     recipientPhone: string,
@@ -87,13 +99,11 @@ export class NotificationService {
     const template = await this.templateRepo.findOne({ where: { id: templateId } });
     if (!template) throw new NotFoundException(`Template ${templateId} not found`);
 
-    const content = this.injectVariables(template.content, variables);
-
     const job = await this.notificationQueue.add(
       'send-notification',
       {
         templateId,
-        content,
+        content: this.injectVariables(template.content, variables),
         channel: template.channel,
         recipientPhone,
         recipientEmail: options?.recipientEmail,
@@ -106,12 +116,9 @@ export class NotificationService {
     return { success: true, jobId: job.id as string };
   }
 
-  // ─── Template CRUD ───────────────────────────────────────────────────────────
+  // ─── Template CRUD ────────────────────────────────────────────────────────
 
-  async createTemplate(
-    data: Partial<MessageTemplate>,
-    adminId: string,
-  ): Promise<MessageTemplate> {
+  async createTemplate(data: Partial<MessageTemplate>, adminId: string): Promise<MessageTemplate> {
     const template = this.templateRepo.create({
       ...data,
       createdBy: adminId,
@@ -129,7 +136,7 @@ export class NotificationService {
     const template = await this.templateRepo.findOne({ where: { id } });
     if (!template) throw new NotFoundException(`Template ${id} not found`);
 
-    // Save version to history
+    // ✅ حفظ نسخة سابقة في التاريخ قبل التعديل
     template.versionHistory = [
       ...(template.versionHistory || []),
       {
@@ -151,25 +158,27 @@ export class NotificationService {
   }
 
   async getTemplateById(id: string): Promise<MessageTemplate> {
-    const t = await this.templateRepo.findOne({ where: { id } });
-    if (!t) throw new NotFoundException(`Template ${id} not found`);
-    return t;
+    const template = await this.templateRepo.findOne({ where: { id } });
+    if (!template) throw new NotFoundException(`Template ${id} not found`);
+    return template;
   }
 
   async deleteTemplate(id: string): Promise<void> {
     await this.templateRepo.delete(id);
   }
 
-  // ─── Variable injection ──────────────────────────────────────────────────────
+  // ─── Variable Injection ───────────────────────────────────────────────────
 
+  /**
+   * يستبدل {{variable}} بالقيم الفعلية في محتوى القالب
+   */
   injectVariables(content: string, variables: TemplateVariables): string {
     let result = content;
 
-    const defaults: TemplateVariables = {
+    const merged: TemplateVariables = {
       login_url: this.loginUrl,
+      ...variables,
     };
-
-    const merged = { ...defaults, ...variables };
 
     for (const [key, value] of Object.entries(merged)) {
       if (value !== undefined) {
@@ -177,9 +186,8 @@ export class NotificationService {
       }
     }
 
-    // Remove any remaining unresolved variables
+    // ✅ إزالة المتغيرات غير المحلولة — لا تظهر للمستخدم
     result = result.replace(/\{\{[^}]+\}\}/g, '');
-
     return result;
   }
 
