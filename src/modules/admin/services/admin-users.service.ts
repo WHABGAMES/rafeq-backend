@@ -28,12 +28,14 @@ import { AuditAction } from '../entities/audit-log.entity';
 import { AdminUser } from '../entities/admin-user.entity';
 import { MergeHistory, MergeStatus } from '../entities/merge-history.entity';
 
-const ARGON2_OPTIONS: argon2.Options = {
+// Note: no explicit type annotation to avoid raw:boolean overload ambiguity (TS2769)
+const ARGON2_OPTIONS = {
   type: argon2.argon2id,
   memoryCost: 65536,
   timeCost: 3,
   parallelism: 4,
-};
+  raw: false,         // explicit false → always returns string, resolves overload
+} as const;
 
 @Injectable()
 export class AdminUsersService {
