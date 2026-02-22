@@ -1,25 +1,31 @@
 /**
- * NotificationService — Template-based Notification System
- * Fixed: 2026-02-22
+ * NotificationService — Admin Notification Template System
  *
- * FIX [TS6133]: Removed unused MessageChannel import
- * FIX [TS6138]: Removed unused WhatsappSettingsService injection
- *   — sending is delegated to NotificationProcessor via BullMQ queue
- * FIX [500-BUG]: getAllTemplates — wrapped in try/catch with InternalServerErrorException
- *   for better error visibility and logging
+ * FIX [TABLE-AUTO-CREATE]: onModuleInit() creates admin_notification_templates
+ *   automatically on every app startup — no manual migration:run needed.
+ *   Uses IF NOT EXISTS → 100% idempotent and safe.
+ *
+ * FIX [TABLE-CONFLICT]: Renamed from 'message_templates' to
+ *   'admin_notification_templates' — the merchant platform uses
+ *   'message_templates' with a different schema (body, status, tenantId)
+ *   which caused: column "content" does not exist
  */
 import {
   Injectable,
   Logger,
   NotFoundException,
   InternalServerErrorException,
+  OnModuleInit,
 } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
+import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
 import { InjectQueue } from '@nestjs/bullmq';
-import { Repository } from 'typeorm';
+import { Repository, DataSource } from 'typeorm';
 import { Queue } from 'bullmq';
-// ✅ FIX [TS6133]: MessageChannel removed (not used in service logic)
-import { MessageTemplate, TriggerEvent, MessageLanguage } from '../entities/message-template.entity';
+import {
+  MessageTemplate,
+  TriggerEvent,
+  MessageLanguage,
+} from '../entities/message-template.entity';
 
 export interface TemplateVariables {
   merchant_name?: string;
@@ -32,10 +38,8 @@ export interface TemplateVariables {
   [key: string]: string | undefined;
 }
 
-// ✅ FIX [TS6138]: No WhatsappSettingsService here
-// Sending happens in NotificationProcessor which injects WhatsappSettingsService
 @Injectable()
-export class NotificationService {
+export class NotificationService implements OnModuleInit {
   private readonly logger = new Logger(NotificationService.name);
   private readonly loginUrl = process.env.FRONTEND_URL || 'https://app.rafeq.ai';
 
@@ -45,15 +49,139 @@ export class NotificationService {
 
     @InjectQueue('notifications')
     private readonly notificationQueue: Queue,
+
+    @InjectDataSource()
+    private readonly dataSource: DataSource,
   ) {}
+
+  // ─── Auto-create table on startup ────────────────────────────────────────
+  // Runs BEFORE any HTTP request — guarantees table exists
+  async onModuleInit(): Promise<void> {
+    try {
+      // Step 1: Create table (IF NOT EXISTS — safe to run multiple times)
+      await this.dataSource.query(`
+        CREATE TABLE IF NOT EXISTS admin_notification_templates (
+          id          UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+          name        VARCHAR(255) NOT NULL,
+          trigger_event VARCHAR(100) NOT NULL,
+          channel     VARCHAR(20)  NOT NULL DEFAULT 'whatsapp',
+          language    VARCHAR(5)   NOT NULL DEFAULT 'ar',
+          content     TEXT         NOT NULL,
+          subject     VARCHAR(500),
+          is_active   BOOLEAN      NOT NULL DEFAULT true,
+          version_history JSONB    NOT NULL DEFAULT '[]',
+          version     INT          NOT NULL DEFAULT 1,
+          created_by  UUID         NOT NULL,
+          updated_by  UUID,
+          created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+          updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+        )
+      `);
+
+      // Step 2: Create indexes (IF NOT EXISTS — safe)
+      await this.dataSource.query(`
+        CREATE INDEX IF NOT EXISTS idx_admin_notif_event_channel_lang
+          ON admin_notification_templates (trigger_event, channel, language, is_active)
+      `);
+
+      await this.dataSource.query(`
+        CREATE INDEX IF NOT EXISTS idx_admin_notif_active
+          ON admin_notification_templates (is_active)
+      `);
+
+      // Step 3: Seed default templates — only if table is empty
+      await this.dataSource.query(`
+        INSERT INTO admin_notification_templates
+          (name, trigger_event, channel, language, content, created_by)
+        SELECT name, trigger_event, channel, language, content, created_by
+        FROM (VALUES
+          (
+            'مرحبا بالتاجر الجديد',
+            'NEW_MERCHANT_REGISTERED', 'whatsapp', 'ar',
+            'مرحبًا {{merchant_name}} 👋
+
+تم إنشاء حسابك في منصة رفيق AI بنجاح.
+
+بيانات الدخول:
+📧 البريد: {{email}}
+🔑 كلمة المرور المؤقتة: {{temporary_password}}
+
+🔗 رابط الدخول:
+{{login_url}}
+
+فريق رفيق يتمنى لك تجربة ناجحة 🚀',
+            '00000000-0000-0000-0000-000000000000'::UUID
+          ),
+          (
+            'Welcome New Merchant',
+            'NEW_MERCHANT_REGISTERED', 'whatsapp', 'en',
+            'Hello {{merchant_name}} 👋
+
+Your account on Rafeq AI has been created successfully.
+
+Login Details:
+📧 Email: {{email}}
+🔑 Temp Password: {{temporary_password}}
+
+🔗 Login URL: {{login_url}}
+
+Rafeq Team 🚀',
+            '00000000-0000-0000-0000-000000000000'::UUID
+          ),
+          (
+            'اشتراك على وشك الانتهاء',
+            'SUBSCRIPTION_EXPIRING', 'whatsapp', 'ar',
+            'مرحبًا {{merchant_name}} 👋
+
+اشتراكك في خطة {{plan_name}} سينتهي في {{expiry_date}}.
+
+لتجنب انقطاع الخدمة جدد اشتراكك:
+{{login_url}}
+
+فريق رفيق AI 💙',
+            '00000000-0000-0000-0000-000000000000'::UUID
+          ),
+          (
+            'تم إيقاف الحساب',
+            'ACCOUNT_SUSPENDED', 'whatsapp', 'ar',
+            'مرحبًا {{merchant_name}} 👋
+
+تم إيقاف حسابك في منصة رفيق AI.
+
+للاستفسار تواصل مع الدعم الفني.
+
+فريق رفيق AI',
+            '00000000-0000-0000-0000-000000000000'::UUID
+          ),
+          (
+            'تم استلام الدفعة',
+            'PAYMENT_RECEIVED', 'whatsapp', 'ar',
+            'مرحبًا {{merchant_name}} 👋
+
+تم استلام دفعتك بنجاح ✅
+
+المبلغ: {{payment_amount}}
+الخطة: {{plan_name}}
+
+شكراً، فريق رفيق AI 💙',
+            '00000000-0000-0000-0000-000000000000'::UUID
+          )
+        ) AS v(name, trigger_event, channel, language, content, created_by)
+        WHERE NOT EXISTS (
+          SELECT 1 FROM admin_notification_templates LIMIT 1
+        )
+      `);
+
+      this.logger.log('✅ admin_notification_templates: ready');
+    } catch (err) {
+      // Log but don't crash the app — table might already exist from a previous run
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`[onModuleInit] admin_notification_templates setup failed: ${msg}`);
+    }
+  }
 
   // ─── Event-driven Send ────────────────────────────────────────────────────
 
-  /**
-   * يُضاف job للـ queue — NotificationProcessor هو من يُرسل فعليًا
-   * @param event TriggerEvent enum value
-   * @param recipientPhone رقم الهاتف بصيغة دولية (e.g. +966501234567)
-   */
   async sendByTriggerEvent(
     event: TriggerEvent,
     recipientPhone: string,
@@ -125,7 +253,10 @@ export class NotificationService {
 
   // ─── Template CRUD ────────────────────────────────────────────────────────
 
-  async createTemplate(data: Partial<MessageTemplate>, adminId: string): Promise<MessageTemplate> {
+  async createTemplate(
+    data: Partial<MessageTemplate>,
+    adminId: string,
+  ): Promise<MessageTemplate> {
     const template = this.templateRepo.create({
       ...data,
       createdBy: adminId,
@@ -143,7 +274,6 @@ export class NotificationService {
     const template = await this.templateRepo.findOne({ where: { id } });
     if (!template) throw new NotFoundException(`Template ${id} not found`);
 
-    // ✅ حفظ نسخة سابقة في التاريخ قبل التعديل
     template.versionHistory = [
       ...(template.versionHistory || []),
       {
@@ -155,18 +285,11 @@ export class NotificationService {
     ];
     template.version++;
     template.updatedBy = adminId;
-
     Object.assign(template, data);
+
     return this.templateRepo.save(template);
   }
 
-  /**
-   * [FIX 500-BUG]: أضفنا try/catch مع InternalServerErrorException
-   * يكشف الخطأ الحقيقي في الـ logs بدلاً من إخفائه
-   * السبب الأكثر احتمالاً للـ 500:
-   *   - جدول message_templates غير موجود في DB الإنتاج (migration لم تُشغَّل)
-   *   - أو migration AddTemplateStatusConstraint أفسدت قاعدة البيانات
-   */
   async getAllTemplates(): Promise<MessageTemplate[]> {
     try {
       return await this.templateRepo.find({ order: { createdAt: 'DESC' } });
@@ -177,8 +300,7 @@ export class NotificationService {
         err instanceof Error ? err.stack : undefined,
       );
       throw new InternalServerErrorException(
-        `فشل تحميل القوالب من admin_notification_templates: ${errorMsg}. ` +
-        'تأكد من تشغيل: npm run migration:run (ينشئ جدول admin_notification_templates)',
+        `فشل تحميل القوالب: ${errorMsg}`,
       );
     }
   }
@@ -195,16 +317,9 @@ export class NotificationService {
 
   // ─── Variable Injection ───────────────────────────────────────────────────
 
-  /**
-   * يستبدل {{variable}} بالقيم الفعلية في محتوى القالب
-   */
   injectVariables(content: string, variables: TemplateVariables): string {
     let result = content;
-
-    const merged: TemplateVariables = {
-      login_url: this.loginUrl,
-      ...variables,
-    };
+    const merged: TemplateVariables = { login_url: this.loginUrl, ...variables };
 
     for (const [key, value] of Object.entries(merged)) {
       if (value !== undefined) {
@@ -212,7 +327,7 @@ export class NotificationService {
       }
     }
 
-    // ✅ إزالة المتغيرات غير المحلولة — لا تظهر للمستخدم
+    // Remove any leftover unfilled variables
     result = result.replace(/\{\{[^}]+\}\}/g, '');
     return result;
   }
