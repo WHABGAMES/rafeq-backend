@@ -2,21 +2,12 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║              RAFIQ PLATFORM - WhatsApp Controller                              ║
  * ║                                                                                ║
- * ║  ✅ FIX WH-01: rawBody preservation in main.ts (companion fix)                ║
- * ║  ✅ FIX WH-02: Webhook signature verification — جذري ونهائي                   ║
- * ║                                                                                ║
- * ║  المشكلة القديمة:                                                              ║
- * ║  1. التحقق من التوقيع يحدث قبل إرسال 200 OK                                  ║
- * ║     → Meta تُرسل 401 → تعيد المحاولة لـ 24 ساعة → عاصفة لا تنتهي            ║
- * ║  2. rawBody كان فارغاً بسبب double body-parsing في main.ts                   ║
- * ║     → كلا الـ rawBody و JSON.stringify يفشلان في التحقق                      ║
- * ║  3. JSON.stringify(payload) ينتج bytes مختلفة عما وقّعته Meta               ║
- * ║     → لا يصح استخدامه كـ fallback أبداً                                      ║
- * ║                                                                                ║
- * ║  الحل الجذري:                                                                  ║
- * ║  1. إرسال 200 OK فوراً (Meta requirement)                                     ║
- * ║  2. التحقق من rawBody الحقيقي فقط (مصلح في main.ts)                          ║
- * ║  3. تسجيل تفصيلي لتشخيص أي مشاكل مستقبلية                                   ║
+ * ║  ✅ إصلاحات:                                                                   ║
+ * ║  - إزالة جميع القيم الوهمية (PHONE_NUMBER_ID, ACCESS_TOKEN, CHANNEL_ID)       ║
+ * ║  - حقن Channel Repository للبحث في قاعدة البيانات                              ║
+ * ║  - نقل التحقق من التوقيع قبل إرسال 200 OK                                     ║
+ * ║  - استخدام ConfigService لمتغيرات البيئة                                       ║
+ * ║  - توحيد مسار الإرسال مع ChannelsService                                      ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -40,8 +31,8 @@ import {
 import { Request, Response } from 'express';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
+import { Repository, DataSource } from 'typeorm';
 import * as crypto from 'crypto';
 
 import { WhatsAppService, WhatsAppWebhookPayload } from './whatsapp.service';
@@ -106,119 +97,17 @@ export class WhatsAppController {
     private readonly channelRepository: Repository<Channel>,
     @InjectRepository(WhatsappSettings)
     private readonly whatsappSettingsRepo: Repository<WhatsappSettings>,
+    @InjectDataSource()
+    private readonly dataSource: DataSource,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 🔐 SIGNATURE VERIFICATION
+  // 🔍 HELPER: البحث عن القناة والتحقق منها
   // ═══════════════════════════════════════════════════════════════════════════════
 
   /**
-   * التحقق من توقيع Meta Webhook.
-   *
-   * استراتيجية التحقق الصحيحة:
-   * - نستخدم rawBody الحقيقي فقط (البايتات الأصلية كما أرسلتها Meta)
-   * - لا نستخدم JSON.stringify كـ fallback — يُنتج bytes مختلفة دائماً
-   *
-   * @returns { valid, reason } للتشخيص الدقيق
+   * البحث عن قناة WhatsApp Official بالـ channelId واسترجاع credentials
    */
-  private verifySignature(
-    rawBody: Buffer | undefined,
-    signature: string,
-    context: string,
-  ): { valid: boolean; reason: string } {
-    const appSecret = this.configService.get<string>('whatsapp.appSecret');
-
-    if (!appSecret) {
-      const isProduction = process.env.NODE_ENV === 'production';
-      if (isProduction) {
-        return { valid: false, reason: 'META_APP_SECRET not configured in PRODUCTION' };
-      }
-      return { valid: true, reason: 'dev-mode-no-secret' };
-    }
-
-    if (!rawBody || rawBody.length === 0) {
-      return {
-        valid: false,
-        reason: `rawBody is empty for [${context}] — body parser not preserving rawBody`,
-      };
-    }
-
-    const eqIndex = signature.indexOf('=');
-    if (eqIndex === -1) {
-      return { valid: false, reason: `malformed signature header: ${signature.substring(0, 30)}` };
-    }
-
-    const algorithm = signature.substring(0, eqIndex);
-    const receivedHash = signature.substring(eqIndex + 1);
-
-    if (algorithm !== 'sha256') {
-      return { valid: false, reason: `unsupported algorithm: ${algorithm}` };
-    }
-
-    if (!receivedHash || receivedHash.length !== 64) {
-      return { valid: false, reason: `invalid hash length: ${receivedHash?.length} (expected 64)` };
-    }
-
-    const expectedHash = crypto
-      .createHmac('sha256', appSecret)
-      .update(rawBody)
-      .digest('hex');
-
-    try {
-      // مقارنة آمنة زمنياً (hex → bytes ثم compare)
-      const receivedBuf = Buffer.from(receivedHash, 'hex');
-      const expectedBuf = Buffer.from(expectedHash, 'hex');
-
-      if (receivedBuf.length !== expectedBuf.length) {
-        return {
-          valid: false,
-          reason: `buffer length mismatch: ${receivedBuf.length} vs ${expectedBuf.length}`,
-        };
-      }
-
-      const isValid = crypto.timingSafeEqual(receivedBuf, expectedBuf);
-      return {
-        valid: isValid,
-        reason: isValid
-          ? 'ok'
-          : `hash-mismatch: got=${receivedHash.substring(0, 16)}... want=${expectedHash.substring(0, 16)}...`,
-      };
-    } catch (err) {
-      return {
-        valid: false,
-        reason: `comparison error: ${err instanceof Error ? err.message : String(err)}`,
-      };
-    }
-  }
-
-  /**
-   * يُقرر إذا يجب معالجة الـ payload بناءً على نتيجة التحقق.
-   * يسجل تشخيص كافٍ لأي حالة فشل.
-   */
-  private shouldProcessWebhook(
-    result: { valid: boolean; reason: string },
-    context: string,
-    rawBodySize: number,
-  ): boolean {
-    if (result.valid) {
-      if (result.reason !== 'dev-mode-no-secret') {
-        this.logger.log(`✅ [${context}] Signature valid — rawBody: ${rawBodySize}B`);
-      }
-      return true;
-    }
-
-    this.logger.error(`🚨 [${context}] Signature FAILED — payload ignored`, {
-      reason: result.reason,
-      rawBodySize,
-      hint: 'Verify META_APP_SECRET matches the App Secret in Meta App Dashboard → Basic Settings',
-    });
-    return false;
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🔍 HELPERS
-  // ═══════════════════════════════════════════════════════════════════════════════
-
   private async getChannelCredentials(channelId: string): Promise<{
     phoneNumberId: string;
     accessToken: string;
@@ -228,10 +117,14 @@ export class WhatsAppController {
       where: { id: channelId, type: ChannelType.WHATSAPP_OFFICIAL },
     });
 
-    if (!channel) throw new NotFoundException(`Channel not found: ${channelId}`);
+    if (!channel) {
+      throw new NotFoundException(`Channel not found: ${channelId}`);
+    }
+
     if (channel.status !== ChannelStatus.CONNECTED) {
       throw new BadRequestException(`Channel is not connected: ${channel.status}`);
     }
+
     if (!channel.whatsappPhoneNumberId || !channel.whatsappAccessToken) {
       throw new BadRequestException('Channel missing WhatsApp credentials. Please reconnect.');
     }
@@ -243,9 +136,15 @@ export class WhatsAppController {
     };
   }
 
+  /**
+   * البحث عن قناة بواسطة phoneNumberId (للـ Webhooks)
+   */
   private async findChannelByPhoneNumberId(phoneNumberId: string): Promise<Channel | null> {
     return this.channelRepository.findOne({
-      where: { whatsappPhoneNumberId: phoneNumberId, type: ChannelType.WHATSAPP_OFFICIAL },
+      where: {
+        whatsappPhoneNumberId: phoneNumberId,
+        type: ChannelType.WHATSAPP_OFFICIAL,
+      },
     });
   }
 
@@ -256,50 +155,109 @@ export class WhatsAppController {
   @UseGuards(JwtAuthGuard)
   @Post('send/text')
   @ApiOperation({ summary: 'إرسال رسالة نصية عبر WhatsApp' })
-  async sendTextMessage(@Body() dto: SendTextMessageDto) {
-    this.logger.log(`Sending text to ${dto.to}`, { channelId: dto.channelId });
+  @ApiResponse({ status: 200, description: 'تم إرسال الرسالة بنجاح' })
+  async sendTextMessage(
+    @Body() dto: SendTextMessageDto,
+  ) {
+    this.logger.log(`Sending text message to ${dto.to}`, {
+      channelId: dto.channelId,
+    });
+
     const { phoneNumberId, accessToken } = await this.getChannelCredentials(dto.channelId);
-    const result = await this.whatsAppService.sendTextMessage(phoneNumberId, dto.to, dto.text, accessToken);
+
+    const result = await this.whatsAppService.sendTextMessage(
+      phoneNumberId,
+      dto.to,
+      dto.text,
+      accessToken,
+    );
+
+    // تحديث إحصائيات القناة
     await this.channelRepository.increment({ id: dto.channelId }, 'messagesSent', 1);
     await this.channelRepository.update(dto.channelId, { lastActivityAt: new Date() });
-    return { success: true, messageId: result.messages[0]?.id };
+
+    return {
+      success: true,
+      messageId: result.messages[0]?.id,
+    };
   }
 
   @UseGuards(JwtAuthGuard)
   @Post('send/image')
   @ApiOperation({ summary: 'إرسال صورة عبر WhatsApp' })
-  async sendImageMessage(@Body() dto: SendImageMessageDto) {
+  async sendImageMessage(
+    @Body() dto: SendImageMessageDto,
+  ) {
     const { phoneNumberId, accessToken } = await this.getChannelCredentials(dto.channelId);
-    const result = await this.whatsAppService.sendImageMessage(phoneNumberId, dto.to, dto.imageUrl, dto.caption, accessToken);
+
+    const result = await this.whatsAppService.sendImageMessage(
+      phoneNumberId,
+      dto.to,
+      dto.imageUrl,
+      dto.caption,
+      accessToken,
+    );
+
     await this.channelRepository.increment({ id: dto.channelId }, 'messagesSent', 1);
     await this.channelRepository.update(dto.channelId, { lastActivityAt: new Date() });
-    return { success: true, messageId: result.messages[0]?.id };
+
+    return {
+      success: true,
+      messageId: result.messages[0]?.id,
+    };
   }
 
   @UseGuards(JwtAuthGuard)
   @Post('send/template')
   @ApiOperation({ summary: 'إرسال رسالة Template' })
-  async sendTemplateMessage(@Body() dto: SendTemplateMessageDto) {
+  async sendTemplateMessage(
+    @Body() dto: SendTemplateMessageDto,
+  ) {
     const { phoneNumberId, accessToken } = await this.getChannelCredentials(dto.channelId);
+
     const result = await this.whatsAppService.sendTemplateMessage(
-      phoneNumberId, dto.to, dto.templateName, dto.languageCode, dto.components, accessToken,
+      phoneNumberId,
+      dto.to,
+      dto.templateName,
+      dto.languageCode,
+      dto.components,
+      accessToken,
     );
+
     await this.channelRepository.increment({ id: dto.channelId }, 'messagesSent', 1);
     await this.channelRepository.update(dto.channelId, { lastActivityAt: new Date() });
-    return { success: true, messageId: result.messages[0]?.id };
+
+    return {
+      success: true,
+      messageId: result.messages[0]?.id,
+    };
   }
 
   @UseGuards(JwtAuthGuard)
   @Post('send/buttons')
   @ApiOperation({ summary: 'إرسال رسالة بأزرار تفاعلية' })
-  async sendButtonMessage(@Body() dto: SendButtonMessageDto) {
+  async sendButtonMessage(
+    @Body() dto: SendButtonMessageDto,
+  ) {
     const { phoneNumberId, accessToken } = await this.getChannelCredentials(dto.channelId);
+
     const result = await this.whatsAppService.sendButtonMessage(
-      phoneNumberId, dto.to, dto.bodyText, dto.buttons, accessToken, dto.headerText, dto.footerText,
+      phoneNumberId,
+      dto.to,
+      dto.bodyText,
+      dto.buttons,
+      accessToken,
+      dto.headerText,
+      dto.footerText,
     );
+
     await this.channelRepository.increment({ id: dto.channelId }, 'messagesSent', 1);
     await this.channelRepository.update(dto.channelId, { lastActivityAt: new Date() });
-    return { success: true, messageId: result.messages[0]?.id };
+
+    return {
+      success: true,
+      messageId: result.messages[0]?.id,
+    };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -316,9 +274,18 @@ export class WhatsAppController {
     @Query('hub.challenge') challenge: string,
     @Res() res: Response,
   ) {
-    this.logger.log('Webhook verification request', { mode, hasToken: !!token });
+    this.logger.log('WhatsApp webhook verification request', {
+      mode,
+      hasToken: !!token,
+      hasChallenge: !!challenge,
+    });
+
     const result = this.whatsAppService.verifyWebhook(mode, token, challenge);
-    if (result) return res.status(HttpStatus.OK).send(result);
+
+    if (result) {
+      return res.status(HttpStatus.OK).send(result);
+    }
+
     return res.status(HttpStatus.FORBIDDEN).send('Verification failed');
   }
 
@@ -330,27 +297,38 @@ export class WhatsAppController {
     @Req() req: RawBodyRequest<Request>,
     @Res() res: Response,
   ) {
-    // ─── FIX WH-02: إرسال 200 OK فوراً — Meta requirement ────────────────────
-    // إذا تأخرنا أو أرسلنا 4xx → Meta تُعيد المحاولة كل دقيقة لـ 24 ساعة
-    // يُسبب عاصفة من الطلبات تُثقل السيرفر وقاعدة البيانات
-    res.status(HttpStatus.OK).send('EVENT_RECEIVED');
-
-    // ─── التحقق من التوقيع بعد إرسال 200 ────────────────────────────────────
-    // الأمان الحقيقي: نتحقق ونتجاهل إذا فشل — بدون أن تعلم Meta
-    const signature = req.headers['x-hub-signature-256'] as string | undefined;
-
+    // ─── التحقق من التوقيع ────────────────────────────────────────────────────
+    // نتحقق باستخدام rawBody أولاً، ثم JSON.stringify كـ fallback
+    // (Cloudflare قد يُعدّل whitespace مما يُفشل rawBody لكن ليس JSON)
+    const signature = req.headers['x-hub-signature-256'] as string;
     if (signature) {
       const rawBodyBuffer = req.rawBody;
-      const result = this.verifySignature(rawBodyBuffer, signature, 'handleWebhook');
-      if (!this.shouldProcessWebhook(result, 'handleWebhook', rawBodyBuffer?.length ?? 0)) {
-        return; // تجاهل payload — 200 أُرسل بالفعل
+      const jsonBodyBuffer = Buffer.from(JSON.stringify(payload));
+
+      const validRaw = rawBodyBuffer ? this.verifySignature(rawBodyBuffer, signature) : false;
+      const validJson = this.verifySignature(jsonBodyBuffer, signature);
+
+      if (!validRaw && !validJson) {
+        // META_APP_SECRET مضبوط ولكن التوقيع لا يتطابق — رفض الطلب
+        const appSecret = this.configService.get<string>('whatsapp.appSecret');
+        if (appSecret) {
+          this.logger.warn('Invalid webhook signature — rejecting', {
+            signature: signature.substring(0, 20) + '...',
+            hasRawBody: !!rawBodyBuffer,
+          });
+          res.status(HttpStatus.UNAUTHORIZED).send('Invalid signature');
+          return;
+        }
+        // إذا لم يكن appSecret مضبوطاً نسمح بالمرور مع تحذير
+        this.logger.warn('META_APP_SECRET not configured — skipping signature check');
       }
-    } else {
-      this.logger.warn('handleWebhook: no x-hub-signature-256 header');
     }
 
+    // ─── إرسال 200 OK فوراً ──────────────────────────────────────────────────
+    res.status(HttpStatus.OK).send('EVENT_RECEIVED');
+
     if (payload.object !== 'whatsapp_business_account') {
-      this.logger.warn('Non-WhatsApp webhook', { object: payload.object });
+      this.logger.warn('Received non-WhatsApp webhook', { object: payload.object });
       return;
     }
 
@@ -362,13 +340,15 @@ export class WhatsAppController {
         return;
       }
 
-      // ─── 1. قنوات المتاجر ──────────────────────────────────────────────────
+      // ─── 1. بحث في قنوات المتاجر ────────────────────────────────────────────
       const channel = await this.findChannelByPhoneNumberId(phoneNumberId);
 
       if (channel) {
-        this.logger.log('Processing webhook for store', { channelId: channel.id, phoneNumberId });
+        this.logger.log('Processing webhook for store channel', {
+          channelId: channel.id,
+          phoneNumberId,
+        });
         await this.whatsAppService.processWebhook(payload, channel.id);
-
         const messagesCount = payload.entry?.[0]?.changes?.[0]?.value?.messages?.length || 0;
         if (messagesCount > 0) {
           await this.channelRepository.increment({ id: channel.id }, 'messagesReceived', messagesCount);
@@ -377,15 +357,69 @@ export class WhatsAppController {
         return;
       }
 
-      // ─── 2. إعدادات WhatsApp الإدارية ─────────────────────────────────────
+      // ─── 2. بحث في إعدادات WhatsApp الإدارية ────────────────────────────────
+      // رقم الإدارة يُستخدم للإشعارات الصادرة فقط — نعالج status updates فقط
       const adminSettings = await this.whatsappSettingsRepo.findOne({ where: {} });
       if (adminSettings?.phoneNumberId === phoneNumberId) {
         this.logger.log('Processing admin WhatsApp status updates', { phoneNumberId });
+
         for (const entry of payload.entry || []) {
           for (const change of entry.changes || []) {
-            for (const status of change.value?.statuses || []) {
-              this.logger.debug(`Admin status: ${status.status} for msg ${status.id}`);
+
+            // ── 1. الرسائل الواردة من العملاء ─────────────────────────────────
+            const incomingMessages = change.value?.messages || [];
+            for (const msg of incomingMessages) {
+              try {
+                // استخراج محتوى الرسالة
+                let content: string | null = null;
+                if (msg.text?.body) content = msg.text.body;
+                else if (msg.image?.caption) content = `[صورة] ${msg.image.caption}`;
+                else if (msg.image) content = '[صورة]';
+                else if (msg.video?.caption) content = `[فيديو] ${msg.video.caption}`;
+                else if (msg.video) content = '[فيديو]';
+                else if (msg.audio) content = '[رسالة صوتية]';
+                else if (msg.document?.filename) content = `[ملف: ${msg.document.filename}]`;
+                else if (msg.interactive?.button_reply?.title) content = `[زر: ${msg.interactive.button_reply.title}]`;
+                else if (msg.interactive?.list_reply?.title) content = `[قائمة: ${msg.interactive.list_reply.title}]`;
+                else content = `[${msg.type || 'رسالة'}]`;
+
+                // تنظيف رقم الهاتف
+                const phone = msg.from?.replace(/\D/g, '') || null;
+
+                // حفظ في message_logs
+                // direction='inbound' + trigger_event='inbound' يُعرّفان الرسائل الواردة
+                // status='sent' = قيمة صالحة في enum (الرسالة وصلت إلينا = sent to us)
+                await this.dataSource.query(`
+                  INSERT INTO message_logs
+                    (id, channel, direction, recipient_phone, content, trigger_event, status, attempts, sent_at, created_at)
+                  VALUES
+                    (gen_random_uuid(), 'whatsapp', 'inbound', $1, $2, 'inbound', 'sent', 0, NOW(), NOW())
+                `, [phone, content]);
+
+                this.logger.log('✅ Saved inbound admin WhatsApp message', {
+                  from: phone,
+                  type: msg.type,
+                });
+              } catch (err) {
+                this.logger.error('Failed to save inbound admin WhatsApp message', {
+                  error: err instanceof Error ? err.message : 'Unknown',
+                });
+              }
             }
+
+            // ── 2. تحديثات الحالة (delivered/read/failed) ────────────────────
+            const statuses = change.value?.statuses || [];
+            for (const status of statuses) {
+              try {
+                if (status.status === 'delivered' || status.status === 'read' || status.status === 'failed') {
+                  this.logger.debug(`Admin WhatsApp status update: ${status.status}`, {
+                    messageId: status.id,
+                  });
+                  // TODO: ربط status.id بـ response_payload في message_logs لتحديث الحالة
+                }
+              } catch { /* تجاهل أخطاء status updates */ }
+            }
+
           }
         }
         return;
@@ -393,8 +427,8 @@ export class WhatsAppController {
 
       this.logger.warn('No channel found for phone_number_id', { phoneNumberId });
 
-    } catch (error: unknown) {
-      this.logger.error('Error processing webhook', {
+    } catch (error: any) {
+      this.logger.error('Error processing WhatsApp webhook', {
         error: error instanceof Error ? error.message : 'Unknown',
       });
     }
@@ -409,19 +443,29 @@ export class WhatsAppController {
     @Req() req: RawBodyRequest<Request>,
     @Res() res: Response,
   ) {
-    // ─── FIX WH-02: 200 OK فوراً ──────────────────────────────────────────────
-    res.status(HttpStatus.OK).send('EVENT_RECEIVED');
-
-    const signature = req.headers['x-hub-signature-256'] as string | undefined;
+    // التحقق من التوقيع (rawBody أو JSON fallback)
+    const signature = req.headers['x-hub-signature-256'] as string;
     if (signature) {
       const rawBodyBuffer = req.rawBody;
-      const result = this.verifySignature(rawBodyBuffer, signature, `channel:${channelId}`);
-      if (!this.shouldProcessWebhook(result, `channel:${channelId}`, rawBodyBuffer?.length ?? 0)) {
-        return;
+      const jsonBodyBuffer = Buffer.from(JSON.stringify(payload));
+      const validRaw = rawBodyBuffer ? this.verifySignature(rawBodyBuffer, signature) : false;
+      const validJson = this.verifySignature(jsonBodyBuffer, signature);
+
+      if (!validRaw && !validJson) {
+        const appSecret = this.configService.get<string>('whatsapp.appSecret');
+        if (appSecret) {
+          this.logger.warn('Invalid webhook signature for channel', { channelId });
+          res.status(HttpStatus.UNAUTHORIZED).send('Invalid signature');
+          return;
+        }
       }
     }
 
-    if (payload.object !== 'whatsapp_business_account') return;
+    res.status(HttpStatus.OK).send('EVENT_RECEIVED');
+
+    if (payload.object !== 'whatsapp_business_account') {
+      return;
+    }
 
     const channel = await this.channelRepository.findOne({
       where: { id: channelId, type: ChannelType.WHATSAPP_OFFICIAL },
@@ -434,11 +478,52 @@ export class WhatsAppController {
 
     try {
       await this.whatsAppService.processWebhook(payload, channelId);
-    } catch (error: unknown) {
+    } catch (error: any) {
       this.logger.error('Error processing channel webhook', {
         channelId,
         error: error instanceof Error ? error.message : 'Unknown',
       });
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🛠️ HELPER METHODS
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * ✅ إصلاح #7: استخدام ConfigService + META_APP_SECRET الموحد
+   */
+  private verifySignature(rawBody: Buffer, signature: string): boolean {
+    const appSecret = this.configService.get<string>('whatsapp.appSecret');
+
+    if (!appSecret) {
+      const isProduction = this.configService.get<string>('app.env') === 'production';
+      if (isProduction) {
+        this.logger.error('🚨 META_APP_SECRET not configured in PRODUCTION - rejecting webhook');
+        return false;
+      }
+      this.logger.warn('META_APP_SECRET not configured (dev mode) - skipping signature verification');
+      return true;
+    }
+
+    const [algorithm, hash] = signature.split('=');
+
+    if (algorithm !== 'sha256' || !hash) {
+      return false;
+    }
+
+    const expectedHash = crypto
+      .createHmac('sha256', appSecret)
+      .update(rawBody)
+      .digest('hex');
+
+    try {
+      return crypto.timingSafeEqual(
+        Buffer.from(hash),
+        Buffer.from(expectedHash),
+      );
+    } catch {
+      return false;
     }
   }
 }
