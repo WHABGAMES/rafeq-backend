@@ -177,8 +177,8 @@ export class NotificationService {
         err instanceof Error ? err.stack : undefined,
       );
       throw new InternalServerErrorException(
-        `فشل تحميل القوالب من قاعدة البيانات: ${errorMsg}. ` +
-        'تأكد من تشغيل: npm run migration:run',
+        `فشل تحميل القوالب من admin_notification_templates: ${errorMsg}. ` +
+        'تأكد من تشغيل: npm run migration:run (ينشئ جدول admin_notification_templates)',
       );
     }
   }
