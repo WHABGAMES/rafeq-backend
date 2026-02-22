@@ -169,7 +169,7 @@ export class SystemHealthController {
       const [result] = await this.dataSource.query(`
         SELECT
           COUNT(*) FILTER (WHERE status = 'active')                                     AS active,
-          COUNT(*) FILTER (WHERE status = 'trial')                                      AS trial,
+          COUNT(*) FILTER (WHERE status = 'trialing')                                   AS trial,
           COUNT(*) FILTER (WHERE end_date BETWEEN NOW() AND NOW() + INTERVAL '7 days') AS expiring_soon
         FROM subscriptions
       `);
