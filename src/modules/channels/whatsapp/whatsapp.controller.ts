@@ -38,6 +38,7 @@ import * as crypto from 'crypto';
 import { WhatsAppService, WhatsAppWebhookPayload } from './whatsapp.service';
 import { Channel, ChannelType, ChannelStatus } from '../entities/channel.entity';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
+import { WhatsappSettings } from '../../admin/entities/whatsapp-settings.entity';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 📌 DTOs
@@ -94,6 +95,8 @@ export class WhatsAppController {
     private readonly configService: ConfigService,
     @InjectRepository(Channel)
     private readonly channelRepository: Repository<Channel>,
+    @InjectRepository(WhatsappSettings)
+    private readonly whatsappSettingsRepo: Repository<WhatsappSettings>,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -292,26 +295,38 @@ export class WhatsAppController {
     @Req() req: RawBodyRequest<Request>,
     @Res() res: Response,
   ) {
-    // ✅ إصلاح #3: التحقق من التوقيع أولاً قبل إرسال 200 OK
+    // ─── التحقق من التوقيع ────────────────────────────────────────────────────
+    // نتحقق باستخدام rawBody أولاً، ثم JSON.stringify كـ fallback
+    // (Cloudflare قد يُعدّل whitespace مما يُفشل rawBody لكن ليس JSON)
     const signature = req.headers['x-hub-signature-256'] as string;
-    if (signature && req.rawBody) {
-      const isValid = this.verifySignature(req.rawBody, signature);
-      if (!isValid) {
-        this.logger.warn('Invalid webhook signature - rejecting', {
-          signature: signature.substring(0, 20) + '...',
-        });
-        res.status(HttpStatus.UNAUTHORIZED).send('Invalid signature');
-        return;
+    if (signature) {
+      const rawBodyBuffer = req.rawBody;
+      const jsonBodyBuffer = Buffer.from(JSON.stringify(payload));
+
+      const validRaw = rawBodyBuffer ? this.verifySignature(rawBodyBuffer, signature) : false;
+      const validJson = this.verifySignature(jsonBodyBuffer, signature);
+
+      if (!validRaw && !validJson) {
+        // META_APP_SECRET مضبوط ولكن التوقيع لا يتطابق — رفض الطلب
+        const appSecret = this.configService.get<string>('whatsapp.appSecret');
+        if (appSecret) {
+          this.logger.warn('Invalid webhook signature — rejecting', {
+            signature: signature.substring(0, 20) + '...',
+            hasRawBody: !!rawBodyBuffer,
+          });
+          res.status(HttpStatus.UNAUTHORIZED).send('Invalid signature');
+          return;
+        }
+        // إذا لم يكن appSecret مضبوطاً نسمح بالمرور مع تحذير
+        this.logger.warn('META_APP_SECRET not configured — skipping signature check');
       }
     }
 
-    // ✅ إرسال 200 OK بعد التحقق من التوقيع
+    // ─── إرسال 200 OK فوراً ──────────────────────────────────────────────────
     res.status(HttpStatus.OK).send('EVENT_RECEIVED');
 
     if (payload.object !== 'whatsapp_business_account') {
-      this.logger.warn('Received non-WhatsApp webhook', {
-        object: payload.object,
-      });
+      this.logger.warn('Received non-WhatsApp webhook', { object: payload.object });
       return;
     }
 
@@ -323,27 +338,43 @@ export class WhatsAppController {
         return;
       }
 
-      // ✅ إصلاح #1,2: البحث عن القناة في قاعدة البيانات بدلاً من القيمة الوهمية
+      // ─── 1. بحث في قنوات المتاجر ────────────────────────────────────────────
       const channel = await this.findChannelByPhoneNumberId(phoneNumberId);
 
-      if (!channel) {
-        this.logger.warn('No channel found for phone_number_id', { phoneNumberId });
+      if (channel) {
+        this.logger.log('Processing webhook for store channel', {
+          channelId: channel.id,
+          phoneNumberId,
+        });
+        await this.whatsAppService.processWebhook(payload, channel.id);
+        const messagesCount = payload.entry?.[0]?.changes?.[0]?.value?.messages?.length || 0;
+        if (messagesCount > 0) {
+          await this.channelRepository.increment({ id: channel.id }, 'messagesReceived', messagesCount);
+          await this.channelRepository.update(channel.id, { lastActivityAt: new Date() });
+        }
         return;
       }
 
-      this.logger.log('Processing webhook for channel', {
-        channelId: channel.id,
-        phoneNumberId,
-      });
+      // ─── 2. بحث في إعدادات WhatsApp الإدارية ────────────────────────────────
+      // رقم الإدارة يُستخدم للإشعارات الصادرة فقط — نعالج status updates فقط
+      const adminSettings = await this.whatsappSettingsRepo.findOne({ where: {} });
+      if (adminSettings?.phoneNumberId === phoneNumberId) {
+        this.logger.log('Processing status updates for admin WhatsApp', { phoneNumberId });
 
-      await this.whatsAppService.processWebhook(payload, channel.id);
-
-      // تحديث إحصائيات الرسائل المستلمة
-      const messagesCount = payload.entry?.[0]?.changes?.[0]?.value?.messages?.length || 0;
-      if (messagesCount > 0) {
-        await this.channelRepository.increment({ id: channel.id }, 'messagesReceived', messagesCount);
-        await this.channelRepository.update(channel.id, { lastActivityAt: new Date() });
+        // معالجة status updates فقط (delivered/read/failed للإشعارات المُرسَلة)
+        for (const entry of payload.entry || []) {
+          for (const change of entry.changes || []) {
+            const statuses = change.value?.statuses || [];
+            for (const status of statuses) {
+              this.logger.debug(`Admin WhatsApp status: ${status.status} for message ${status.id}`);
+              // TODO: تحديث message_logs عند توفر messageId
+            }
+          }
+        }
+        return;
       }
+
+      this.logger.warn('No channel found for phone_number_id', { phoneNumberId });
 
     } catch (error: any) {
       this.logger.error('Error processing WhatsApp webhook', {
@@ -361,12 +392,22 @@ export class WhatsAppController {
     @Req() req: RawBodyRequest<Request>,
     @Res() res: Response,
   ) {
-    // ✅ التحقق من التوقيع أولاً
+    // التحقق من التوقيع (rawBody أو JSON fallback)
     const signature = req.headers['x-hub-signature-256'] as string;
-    if (signature && req.rawBody && !this.verifySignature(req.rawBody, signature)) {
-      this.logger.warn('Invalid webhook signature for channel', { channelId });
-      res.status(HttpStatus.UNAUTHORIZED).send('Invalid signature');
-      return;
+    if (signature) {
+      const rawBodyBuffer = req.rawBody;
+      const jsonBodyBuffer = Buffer.from(JSON.stringify(payload));
+      const validRaw = rawBodyBuffer ? this.verifySignature(rawBodyBuffer, signature) : false;
+      const validJson = this.verifySignature(jsonBodyBuffer, signature);
+
+      if (!validRaw && !validJson) {
+        const appSecret = this.configService.get<string>('whatsapp.appSecret');
+        if (appSecret) {
+          this.logger.warn('Invalid webhook signature for channel', { channelId });
+          res.status(HttpStatus.UNAUTHORIZED).send('Invalid signature');
+          return;
+        }
+      }
     }
 
     res.status(HttpStatus.OK).send('EVENT_RECEIVED');
@@ -375,7 +416,6 @@ export class WhatsAppController {
       return;
     }
 
-    // التحقق من وجود القناة
     const channel = await this.channelRepository.findOne({
       where: { id: channelId, type: ChannelType.WHATSAPP_OFFICIAL },
     });
