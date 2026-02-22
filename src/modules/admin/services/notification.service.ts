@@ -1,12 +1,19 @@
 /**
  * NotificationService — Template-based Notification System
- * Audited 2026-02-21
+ * Fixed: 2026-02-22
  *
  * FIX [TS6133]: Removed unused MessageChannel import
  * FIX [TS6138]: Removed unused WhatsappSettingsService injection
  *   — sending is delegated to NotificationProcessor via BullMQ queue
+ * FIX [500-BUG]: getAllTemplates — wrapped in try/catch with InternalServerErrorException
+ *   for better error visibility and logging
  */
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  InternalServerErrorException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Repository } from 'typeorm';
@@ -153,8 +160,27 @@ export class NotificationService {
     return this.templateRepo.save(template);
   }
 
+  /**
+   * [FIX 500-BUG]: أضفنا try/catch مع InternalServerErrorException
+   * يكشف الخطأ الحقيقي في الـ logs بدلاً من إخفائه
+   * السبب الأكثر احتمالاً للـ 500:
+   *   - جدول message_templates غير موجود في DB الإنتاج (migration لم تُشغَّل)
+   *   - أو migration AddTemplateStatusConstraint أفسدت قاعدة البيانات
+   */
   async getAllTemplates(): Promise<MessageTemplate[]> {
-    return this.templateRepo.find({ order: { createdAt: 'DESC' } });
+    try {
+      return await this.templateRepo.find({ order: { createdAt: 'DESC' } });
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'Unknown DB error';
+      this.logger.error(
+        `[getAllTemplates] DB query failed: ${errorMsg}`,
+        err instanceof Error ? err.stack : undefined,
+      );
+      throw new InternalServerErrorException(
+        `فشل تحميل القوالب من قاعدة البيانات: ${errorMsg}. ` +
+        'تأكد من تشغيل: npm run migration:run',
+      );
+    }
   }
 
   async getTemplateById(id: string): Promise<MessageTemplate> {
