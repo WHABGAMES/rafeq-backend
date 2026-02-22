@@ -408,40 +408,166 @@ export class WhatsappSettingsService implements OnModuleInit {
    * استرجاع سجلات الرسائل المُرسَلة عبر واتساب الإداري
    * تُستخدم في صفحة الـ Inbox بلوحة تحكم السوبر أدمن
    */
+  // ─────────────────────────────────────────────────────────────────────────
+  // 📬 صندوق رسائل واتساب الحقيقي
+  //
+  //  يجمع من مصدرين:
+  //  1. conversations + messages + channels  → محادثات العملاء (inbound + outbound)
+  //  2. message_logs                         → إشعارات النظام الإدارية
+  //
+  //  الفلاتر المدعومة:
+  //  - phone: بحث جزئي بالأرقام فقط
+  //  - status: sent | failed | pending | inbound (رسائل واردة)
+  // ─────────────────────────────────────────────────────────────────────────
   async getMessageLogs(opts: {
     page: number;
     limit: number;
     status?: string;
     phone?: string;
-  }): Promise<{ data: MessageLog[]; total: number; page: number; limit: number }> {
+  }): Promise<{
+    data: Array<{
+      id: string;
+      recipientPhone: string | null;
+      content: string | null;
+      direction: 'inbound' | 'outbound';
+      status: string;
+      attempts: number;
+      errorMessage: string | null;
+      sentAt: Date | null;
+      createdAt: Date;
+      source: 'conversation' | 'notification';
+    }>;
+    total: number;
+    page: number;
+    limit: number;
+  }> {
     try {
-      const qb = this.messageLogRepo
-        .createQueryBuilder('ml')
-        .where('ml.channel = :channel', { channel: 'whatsapp' })
-        .orderBy('ml.createdAt', 'DESC')
-        .skip((opts.page - 1) * opts.limit)
-        .take(opts.limit);
+      const phoneDigits = opts.phone ? opts.phone.replace(/\D/g, '') : null;
 
-      if (opts.status) {
-        qb.andWhere('ml.status = :status', { status: opts.status });
-      }
+      // ── 1. رسائل المحادثات الحقيقية (واردة + صادرة) ──────────────────────
+      let convRows: Record<string, unknown>[] = [];
+      try {
+        const convParams: unknown[] = [];
+        let convWhere = `ch.type IN ('whatsapp_official', 'whatsapp_qr')`;
 
-      if (opts.phone) {
-        qb.andWhere('ml.recipientPhone LIKE :phone', {
-          phone: `%${opts.phone.replace(/\D/g, '')}%`,
+        if (phoneDigits) {
+          convParams.push(`%${phoneDigits}%`);
+          convWhere += ` AND REGEXP_REPLACE(COALESCE(c.customer_phone,''), '[^0-9]', '', 'g') LIKE $${convParams.length}`;
+        }
+
+        // فلتر الحالة
+        if (opts.status === 'inbound') {
+          convWhere += ` AND m.direction = 'inbound'`;
+        } else if (opts.status === 'failed') {
+          convWhere += ` AND m.status = 'failed'`;
+        } else if (opts.status === 'sent') {
+          convWhere += ` AND m.status IN ('sent','delivered','read') AND m.direction = 'outbound'`;
+        }
+        // 'pending' and 'all' → no extra filter
+
+        convRows = await this.dataSource.query(`
+          SELECT
+            m.id                    AS id,
+            c.customer_phone        AS "recipientPhone",
+            m.content               AS content,
+            m.direction             AS direction,
+            m.status                AS status,
+            0                       AS attempts,
+            m.error_message         AS "errorMessage",
+            m.sent_at               AS "sentAt",
+            m.created_at            AS "createdAt",
+            'conversation'          AS source
+          FROM messages m
+          JOIN conversations c ON c.id = m.conversation_id
+          JOIN channels ch     ON ch.id = c.channel_id
+          WHERE ${convWhere}
+          ORDER BY m.created_at DESC
+        `, convParams);
+      } catch (convErr) {
+        this.logger.warn('Could not fetch conversation messages', {
+          error: convErr instanceof Error ? convErr.message : 'Unknown',
         });
       }
 
-      const [data, total] = await qb.getManyAndCount();
-      return { data, total, page: opts.page, limit: opts.limit };
+      // ── 2. إشعارات النظام الإدارية (message_logs) ─────────────────────────
+      let notifRows: Record<string, unknown>[] = [];
+      try {
+        const notifParams: unknown[] = [];
+        let notifWhere = `ml.channel = 'whatsapp'`;
+
+        if (phoneDigits) {
+          notifParams.push(`%${phoneDigits}%`);
+          notifWhere += ` AND REGEXP_REPLACE(COALESCE(ml.recipient_phone,''), '[^0-9]', '', 'g') LIKE $${notifParams.length}`;
+        }
+
+        if (opts.status === 'inbound') {
+          // لا يوجد واردة في message_logs → تخطّي
+          notifRows = [];
+        } else {
+          if (opts.status === 'sent')    notifWhere += ` AND ml.status = 'sent'`;
+          if (opts.status === 'failed')  notifWhere += ` AND ml.status = 'failed'`;
+          if (opts.status === 'pending') notifWhere += ` AND ml.status IN ('pending','retrying')`;
+
+          notifRows = await this.dataSource.query(`
+            SELECT
+              ml.id               AS id,
+              ml.recipient_phone  AS "recipientPhone",
+              ml.content          AS content,
+              'outbound'          AS direction,
+              ml.status           AS status,
+              ml.attempts         AS attempts,
+              ml.error_message    AS "errorMessage",
+              ml.sent_at          AS "sentAt",
+              ml.created_at       AS "createdAt",
+              'notification'      AS source
+            FROM message_logs ml
+            WHERE ${notifWhere}
+            ORDER BY ml.created_at DESC
+          `, notifParams);
+        }
+      } catch (notifErr) {
+        this.logger.warn('Could not fetch notification logs', {
+          error: notifErr instanceof Error ? notifErr.message : 'Unknown',
+        });
+      }
+
+      // ── دمج + ترتيب + تقسيم صفحات ─────────────────────────────────────────
+      type RawRow = Record<string, unknown>;
+      const combined: RawRow[] = [...convRows, ...notifRows].sort((a, b) => {
+        const dateA = new Date(a.createdAt as string).getTime();
+        const dateB = new Date(b.createdAt as string).getTime();
+        return dateB - dateA; // الأحدث أولاً
+      });
+
+      const total = combined.length;
+      const offset = (opts.page - 1) * opts.limit;
+      const page = combined.slice(offset, offset + opts.limit);
+
+      return {
+        data: page.map((r) => ({
+          id:            String(r.id),
+          recipientPhone: (r.recipientPhone as string) || null,
+          content:        (r.content as string) || null,
+          direction:      (r.direction as string) === 'inbound' ? 'inbound' : 'outbound',
+          status:         String(r.status),
+          attempts:       Number(r.attempts) || 0,
+          errorMessage:   (r.errorMessage as string) || null,
+          sentAt:         r.sentAt ? new Date(r.sentAt as string) : null,
+          createdAt:      new Date(r.createdAt as string),
+          source:         r.source as 'conversation' | 'notification',
+        })),
+        total,
+        page: opts.page,
+        limit: opts.limit,
+      };
     } catch (err) {
-      this.logger.error('Failed to fetch message logs', {
+      this.logger.error('Failed to fetch WhatsApp messages', {
         error: err instanceof Error ? err.message : 'Unknown',
       });
-      // إرجاع نتيجة فارغة بدل 500
       return { data: [], total: 0, page: opts.page, limit: opts.limit };
     }
   }
+
 
   private encrypt(text: string): string {
     const iv = randomBytes(16);
