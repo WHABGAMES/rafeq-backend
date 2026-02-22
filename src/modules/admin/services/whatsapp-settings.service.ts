@@ -12,9 +12,10 @@ import {
   Logger,
   NotFoundException,
   BadRequestException,
+  OnModuleInit,
 } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
+import { Repository, DataSource } from 'typeorm';
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'crypto';
 import { WhatsappSettings, WhatsappProvider } from '../entities/whatsapp-settings.entity';
 import { MessageLog, MessageStatus } from '../entities/message-log.entity';
@@ -31,7 +32,7 @@ interface ApiCallResult {
 }
 
 @Injectable()
-export class WhatsappSettingsService {
+export class WhatsappSettingsService implements OnModuleInit {
   private readonly logger = new Logger(WhatsappSettingsService.name);
   private readonly encKey: Buffer;
 
@@ -41,6 +42,9 @@ export class WhatsappSettingsService {
 
     @InjectRepository(MessageLog)
     private readonly messageLogRepo: Repository<MessageLog>,
+
+    @InjectDataSource()
+    private readonly dataSource: DataSource,
   ) {
     const encKeySource = process.env.ENCRYPTION_KEY;
 
@@ -61,6 +65,53 @@ export class WhatsappSettingsService {
       'rafeq-salt-v1',
       32,
     ) as Buffer;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // 🚀 تأكد من وجود جدول message_logs عند بدء التطبيق
+  // ─────────────────────────────────────────────────────────────────────────
+  async onModuleInit(): Promise<void> {
+    try {
+      // إنشاء enum إذا لم يكن موجوداً
+      await this.dataSource.query(`
+        DO $$ BEGIN
+          IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'message_logs_status_enum') THEN
+            CREATE TYPE message_logs_status_enum AS ENUM ('sent', 'failed', 'pending', 'retrying');
+          END IF;
+        END $$;
+      `);
+
+      await this.dataSource.query(`
+        CREATE TABLE IF NOT EXISTS message_logs (
+          id                 UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+          recipient_user_id  UUID,
+          recipient_phone    VARCHAR(30),
+          recipient_email    VARCHAR(255),
+          channel            VARCHAR(50)  NOT NULL,
+          template_id        UUID,
+          trigger_event      VARCHAR(100),
+          content            TEXT,
+          status             VARCHAR(20)  NOT NULL DEFAULT 'pending',
+          attempts           INT          NOT NULL DEFAULT 0,
+          response_payload   JSONB,
+          error_message      TEXT,
+          sent_at            TIMESTAMPTZ,
+          created_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+        );
+      `);
+
+      await this.dataSource.query(`
+        CREATE INDEX IF NOT EXISTS idx_msglog_recipient ON message_logs (recipient_user_id);
+        CREATE INDEX IF NOT EXISTS idx_msglog_status    ON message_logs (status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_msglog_created   ON message_logs (recipient_user_id, created_at);
+      `);
+
+      this.logger.log('✅ message_logs table ready');
+    } catch (err) {
+      this.logger.error('❌ Failed to initialize message_logs table', {
+        error: err instanceof Error ? err.message : 'Unknown',
+      });
+    }
   }
 
   // ─── Settings Management ──────────────────────────────────────────────────
@@ -311,29 +362,34 @@ export class WhatsappSettingsService {
     status?: string;
     phone?: string;
   }): Promise<{ data: MessageLog[]; total: number; page: number; limit: number }> {
-    const qb = this.messageLogRepo
-      .createQueryBuilder('ml')
-      .where('ml.channel = :channel', { channel: 'whatsapp' })
-      .orderBy('ml.createdAt', 'DESC')
-      .skip((opts.page - 1) * opts.limit)
-      .take(opts.limit);
+    try {
+      const qb = this.messageLogRepo
+        .createQueryBuilder('ml')
+        .where('ml.channel = :channel', { channel: 'whatsapp' })
+        .orderBy('ml.createdAt', 'DESC')
+        .skip((opts.page - 1) * opts.limit)
+        .take(opts.limit);
 
-    if (opts.status) {
-      qb.andWhere('ml.status = :status', { status: opts.status });
-    }
+      if (opts.status) {
+        qb.andWhere('ml.status = :status', { status: opts.status });
+      }
 
-    if (opts.phone) {
-      qb.andWhere('ml.recipientPhone LIKE :phone', {
-        phone: `%${opts.phone.replace(/\D/g, '')}%`,
+      if (opts.phone) {
+        qb.andWhere('ml.recipientPhone LIKE :phone', {
+          phone: `%${opts.phone.replace(/\D/g, '')}%`,
+        });
+      }
+
+      const [data, total] = await qb.getManyAndCount();
+      return { data, total, page: opts.page, limit: opts.limit };
+    } catch (err) {
+      this.logger.error('Failed to fetch message logs', {
+        error: err instanceof Error ? err.message : 'Unknown',
       });
+      // إرجاع نتيجة فارغة بدل 500
+      return { data: [], total: 0, page: opts.page, limit: opts.limit };
     }
-
-    const [data, total] = await qb.getManyAndCount();
-
-    return { data, total, page: opts.page, limit: opts.limit };
   }
-
-  // ─── Encryption (AES-256-CBC) ─────────────────────────────────────────────
 
   private encrypt(text: string): string {
     const iv = randomBytes(16);
