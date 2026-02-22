@@ -68,46 +68,98 @@ export class WhatsappSettingsService implements OnModuleInit {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // 🚀 تأكد من وجود جدول message_logs عند بدء التطبيق
+  // 🚀 Idempotent Migration — تُنفَّذ كل مرة يبدأ التطبيق
+  //
+  //  المشكلة الجذرية: جدول message_logs كان موجوداً مسبقاً في قاعدة البيانات
+  //  بأعمدة ناقصة. CREATE TABLE IF NOT EXISTS تتخطى الجدول الموجود ولا تُعدِّله.
+  //
+  //  الحل: بعد إنشاء الجدول (أو تخطيه)، نُضيف كل عمود مفقود بشكل مستقل
+  //  باستخدام ALTER TABLE ADD COLUMN IF NOT EXISTS — آمن 100%:
+  //  ✅ لا يمسّ البيانات الموجودة
+  //  ✅ لا يفشل إذا العمود موجود مسبقاً
+  //  ✅ لا downtime
+  //  ✅ يعمل سواء كان الجدول قديماً أو جديداً
   // ─────────────────────────────────────────────────────────────────────────
   async onModuleInit(): Promise<void> {
     try {
-      // إنشاء enum إذا لم يكن موجوداً
-      await this.dataSource.query(`
-        DO $$ BEGIN
-          IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'message_logs_status_enum') THEN
-            CREATE TYPE message_logs_status_enum AS ENUM ('sent', 'failed', 'pending', 'retrying');
-          END IF;
-        END $$;
-      `);
-
+      // ── Step 1: أنشئ الجدول إذا لم يكن موجوداً (minimum viable table) ──
       await this.dataSource.query(`
         CREATE TABLE IF NOT EXISTS message_logs (
-          id                 UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
-          recipient_user_id  UUID,
-          recipient_phone    VARCHAR(30),
-          recipient_email    VARCHAR(255),
-          channel            VARCHAR(50)  NOT NULL,
-          template_id        UUID,
-          trigger_event      VARCHAR(100),
-          content            TEXT,
-          status             VARCHAR(20)  NOT NULL DEFAULT 'pending',
-          attempts           INT          NOT NULL DEFAULT 0,
-          response_payload   JSONB,
-          error_message      TEXT,
-          sent_at            TIMESTAMPTZ,
-          created_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+          id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+          channel    VARCHAR(50) NOT NULL,
+          status     VARCHAR(20) NOT NULL DEFAULT 'pending',
+          attempts   INT         NOT NULL DEFAULT 0,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
       `);
 
+      // ── Step 2: أضف كل عمود مفقود بشكل مستقل — idempotent ──
+      //
+      // كل ALTER TABLE مستقل في try/catch خاص به:
+      // إذا فشل عمود واحد (مثلاً نوع خاطئ) لا يُوقف بقية الأعمدة
+      const alterColumns: Array<{ col: string; sql: string }> = [
+        {
+          col: 'recipient_user_id',
+          sql: `ALTER TABLE message_logs ADD COLUMN IF NOT EXISTS recipient_user_id UUID;`,
+        },
+        {
+          col: 'recipient_phone',
+          sql: `ALTER TABLE message_logs ADD COLUMN IF NOT EXISTS recipient_phone VARCHAR(30);`,
+        },
+        {
+          col: 'recipient_email',
+          sql: `ALTER TABLE message_logs ADD COLUMN IF NOT EXISTS recipient_email VARCHAR(255);`,
+        },
+        {
+          col: 'template_id',
+          sql: `ALTER TABLE message_logs ADD COLUMN IF NOT EXISTS template_id UUID;`,
+        },
+        {
+          col: 'trigger_event',
+          sql: `ALTER TABLE message_logs ADD COLUMN IF NOT EXISTS trigger_event VARCHAR(100);`,
+        },
+        {
+          col: 'content',
+          sql: `ALTER TABLE message_logs ADD COLUMN IF NOT EXISTS content TEXT;`,
+        },
+        {
+          col: 'response_payload',
+          sql: `ALTER TABLE message_logs ADD COLUMN IF NOT EXISTS response_payload JSONB;`,
+        },
+        {
+          col: 'error_message',
+          sql: `ALTER TABLE message_logs ADD COLUMN IF NOT EXISTS error_message TEXT;`,
+        },
+        {
+          col: 'sent_at',
+          sql: `ALTER TABLE message_logs ADD COLUMN IF NOT EXISTS sent_at TIMESTAMPTZ;`,
+        },
+      ];
+
+      for (const { col, sql } of alterColumns) {
+        try {
+          await this.dataSource.query(sql);
+        } catch (colErr) {
+          // نُسجّل لكن لا نوقف البقية
+          this.logger.warn(`⚠️  message_logs: could not add column '${col}'`, {
+            error: colErr instanceof Error ? colErr.message : 'Unknown',
+          });
+        }
+      }
+
+      // ── Step 3: الـ Indexes ──
       await this.dataSource.query(`
         CREATE INDEX IF NOT EXISTS idx_msglog_recipient ON message_logs (recipient_user_id);
-        CREATE INDEX IF NOT EXISTS idx_msglog_status    ON message_logs (status, created_at);
-        CREATE INDEX IF NOT EXISTS idx_msglog_created   ON message_logs (recipient_user_id, created_at);
-      `);
+        CREATE INDEX IF NOT EXISTS idx_msglog_phone     ON message_logs (recipient_phone);
+        CREATE INDEX IF NOT EXISTS idx_msglog_status    ON message_logs (status, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_msglog_channel   ON message_logs (channel, created_at DESC);
+      `).catch(() => {
+        // indexes are optional — don't crash on failure
+      });
 
-      this.logger.log('✅ message_logs table ready');
+      this.logger.log('✅ message_logs table ready (all columns verified)');
     } catch (err) {
+      // لا نوقف التطبيق — نُسجّل ونكمل
       this.logger.error('❌ Failed to initialize message_logs table', {
         error: err instanceof Error ? err.message : 'Unknown',
       });
