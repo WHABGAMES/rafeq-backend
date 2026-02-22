@@ -47,10 +47,6 @@ export class AdminStoresController {
 // ============================================================
 // WhatsApp Settings Controller
 // ============================================================
-// FIXED:
-//   [BUG-2] accessToken أصبح optional في body — للتحديث بدون تغيير الـ token
-//   [BUG-3] إضافة validation لـ phoneNumberId عند provider = META
-// ============================================================
 @Controller('admin/whatsapp')
 @UseGuards(AdminJwtGuard, AdminPermissionGuard)
 export class WhatsappController {
@@ -70,26 +66,23 @@ export class WhatsappController {
     body: {
       phoneNumber: string;
       provider: WhatsappProvider;
-      accessToken?: string;        // [BUG-2 FIX] optional — عند التحديث يمكن تركه للاحتفاظ بالقديم
+      accessToken: string;
       businessAccountId?: string;
       phoneNumberId?: string;
       webhookUrl?: string;
       webhookVerifyToken?: string;
     },
   ) {
+    // ✅ Validate required fields before reaching the service layer
     if (!body.phoneNumber?.trim()) {
       throw new BadRequestException('phoneNumber is required');
+    }
+    if (!body.accessToken?.trim()) {
+      throw new BadRequestException('accessToken is required — cannot encrypt an empty token');
     }
     if (!body.provider) {
       throw new BadRequestException('provider is required');
     }
-    // [BUG-3 FIX] phoneNumberId مطلوب لـ META
-    if (body.provider === WhatsappProvider.META && !body.phoneNumberId?.trim()) {
-      throw new BadRequestException(
-        'phoneNumberId is required for Meta provider',
-      );
-    }
-    // accessToken validation مُفوَّض للـ service (يعرف هل هو create أم update)
     return this.whatsappService.upsertSettings(body);
   }
 
@@ -98,6 +91,22 @@ export class WhatsappController {
   @HttpCode(HttpStatus.OK)
   toggle(@Body() body: { isActive: boolean }) {
     return this.whatsappService.toggleActive(body.isActive);
+  }
+
+  @Get('messages')
+  @RequirePermissions(PERMISSIONS.WHATSAPP_MANAGE)
+  getMessages(
+    @Query('page') page = 1,
+    @Query('limit') limit = 20,
+    @Query('status') status?: string,
+    @Query('phone') phone?: string,
+  ) {
+    return this.whatsappService.getMessageLogs({
+      page: +page,
+      limit: Math.min(+limit, 100),
+      status,
+      phone,
+    });
   }
 
   @Post('test')
