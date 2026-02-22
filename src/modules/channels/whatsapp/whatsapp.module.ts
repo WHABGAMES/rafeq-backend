@@ -18,11 +18,12 @@ import { ConfigModule } from '@nestjs/config';
 import { WhatsAppService } from './whatsapp.service';
 import { WhatsAppController } from './whatsapp.controller';
 import { Channel } from '../entities/channel.entity';
+import { WhatsappSettings } from '../../admin/entities/whatsapp-settings.entity';
 
 @Module({
   imports: [
-    // ✅ إضافة Channel Entity للوصول لقاعدة البيانات
-    TypeOrmModule.forFeature([Channel]),
+    // ✅ إضافة Channel و WhatsappSettings للوصول لقاعدة البيانات
+    TypeOrmModule.forFeature([Channel, WhatsappSettings]),
 
     // ✅ إضافة ConfigModule للوصول لمتغيرات البيئة
     ConfigModule,
