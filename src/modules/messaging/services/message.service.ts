@@ -4,7 +4,7 @@
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, In } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -141,7 +141,7 @@ export interface MessageStatusUpdate {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 @Injectable()
-export class MessageService {
+export class MessageService implements OnModuleInit {
   private readonly logger = new Logger(MessageService.name);
 
   constructor(
@@ -163,6 +163,132 @@ export class MessageService {
     // ✅ إرسال مباشر — لا نحفظ إلا بعد تأكيد الوصول
     private readonly channelsService: ChannelsService,
   ) {}
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🚀 Idempotent DB Migration — تُنفَّذ عند كل بدء تشغيل
+  //
+  //  تُنشئ جداول conversations + messages إذا لم تكن موجودة،
+  //  وتُضيف أي أعمدة ناقصة بـ ALTER TABLE ADD COLUMN IF NOT EXISTS
+  //  آمن 100%: لا يمسّ بيانات موجودة، لا يفشل إذا الجدول قائم
+  // ═══════════════════════════════════════════════════════════════════════════
+  async onModuleInit(): Promise<void> {
+    await this.ensureConversationsTable();
+    await this.ensureMessagesTable();
+  }
+
+  private async ensureConversationsTable(): Promise<void> {
+    try {
+      // ── Step 1: إنشاء الجدول الأساسي ──────────────────────────────────────
+      await this.dataSource.query(`
+        CREATE TABLE IF NOT EXISTS conversations (
+          id                   UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+          tenant_id            UUID        NOT NULL,
+          channel_id           UUID        NOT NULL,
+          status               VARCHAR(30) NOT NULL DEFAULT 'open',
+          priority             VARCHAR(20) NOT NULL DEFAULT 'normal',
+          handler              VARCHAR(20) NOT NULL DEFAULT 'ai',
+          customer_external_id VARCHAR(255) NOT NULL DEFAULT '',
+          messages_count       INTEGER     NOT NULL DEFAULT 0,
+          created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          deleted_at           TIMESTAMPTZ
+        );
+      `);
+
+      // ── Step 2: أضف أعمدة قد تكون ناقصة ──────────────────────────────────
+      const cols = [
+        `ALTER TABLE conversations ADD COLUMN IF NOT EXISTS assigned_to_id UUID;`,
+        `ALTER TABLE conversations ADD COLUMN IF NOT EXISTS customer_id UUID;`,
+        `ALTER TABLE conversations ADD COLUMN IF NOT EXISTS customer_name VARCHAR(255);`,
+        `ALTER TABLE conversations ADD COLUMN IF NOT EXISTS customer_phone VARCHAR(20);`,
+        `ALTER TABLE conversations ADD COLUMN IF NOT EXISTS customer_email VARCHAR(255);`,
+        `ALTER TABLE conversations ADD COLUMN IF NOT EXISTS subject VARCHAR(500);`,
+        `ALTER TABLE conversations ADD COLUMN IF NOT EXISTS tags JSONB DEFAULT '[]';`,
+        `ALTER TABLE conversations ADD COLUMN IF NOT EXISTS summary TEXT;`,
+        `ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_message_at TIMESTAMPTZ;`,
+        `ALTER TABLE conversations ADD COLUMN IF NOT EXISTS first_response_at TIMESTAMPTZ;`,
+        `ALTER TABLE conversations ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ;`,
+      ];
+      for (const sql of cols) {
+        try { await this.dataSource.query(sql); } catch { /* عمود موجود مسبقاً */ }
+      }
+
+      // ── Step 3: indexes ────────────────────────────────────────────────────
+      const indexes = [
+        `CREATE INDEX IF NOT EXISTS idx_conv_tenant    ON conversations (tenant_id);`,
+        `CREATE INDEX IF NOT EXISTS idx_conv_channel   ON conversations (channel_id);`,
+        `CREATE INDEX IF NOT EXISTS idx_conv_status    ON conversations (status);`,
+        `CREATE INDEX IF NOT EXISTS idx_conv_ext_id    ON conversations (customer_external_id);`,
+        `CREATE INDEX IF NOT EXISTS idx_conv_phone     ON conversations (customer_phone);`,
+        `CREATE INDEX IF NOT EXISTS idx_conv_last_msg  ON conversations (last_message_at DESC);`,
+      ];
+      for (const sql of indexes) {
+        try { await this.dataSource.query(sql); } catch { /* index موجود */ }
+      }
+
+      this.logger.log('✅ conversations table ready');
+    } catch (err) {
+      this.logger.error('❌ conversations table init failed', {
+        error: err instanceof Error ? err.message : 'Unknown',
+      });
+    }
+  }
+
+  private async ensureMessagesTable(): Promise<void> {
+    try {
+      // ── Step 1: إنشاء الجدول الأساسي ──────────────────────────────────────
+      await this.dataSource.query(`
+        CREATE TABLE IF NOT EXISTS messages (
+          id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+          tenant_id       UUID        NOT NULL,
+          conversation_id UUID        NOT NULL,
+          direction       VARCHAR(20) NOT NULL DEFAULT 'inbound',
+          type            VARCHAR(30) NOT NULL DEFAULT 'text',
+          status          VARCHAR(20) NOT NULL DEFAULT 'pending',
+          sender          VARCHAR(20) NOT NULL DEFAULT 'customer',
+          created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          deleted_at      TIMESTAMPTZ
+        );
+      `);
+
+      // ── Step 2: أضف أعمدة قد تكون ناقصة ──────────────────────────────────
+      const cols = [
+        `ALTER TABLE messages ADD COLUMN IF NOT EXISTS external_id VARCHAR(255);`,
+        `ALTER TABLE messages ADD COLUMN IF NOT EXISTS content TEXT;`,
+        `ALTER TABLE messages ADD COLUMN IF NOT EXISTS media JSONB;`,
+        `ALTER TABLE messages ADD COLUMN IF NOT EXISTS interactive JSONB;`,
+        `ALTER TABLE messages ADD COLUMN IF NOT EXISTS reply_to JSONB;`,
+        `ALTER TABLE messages ADD COLUMN IF NOT EXISTS ai_metadata JSONB;`,
+        `ALTER TABLE messages ADD COLUMN IF NOT EXISTS error_message TEXT;`,
+        `ALTER TABLE messages ADD COLUMN IF NOT EXISTS sent_at TIMESTAMPTZ;`,
+        `ALTER TABLE messages ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ;`,
+        `ALTER TABLE messages ADD COLUMN IF NOT EXISTS read_at TIMESTAMPTZ;`,
+      ];
+      for (const sql of cols) {
+        try { await this.dataSource.query(sql); } catch { /* عمود موجود */ }
+      }
+
+      // ── Step 3: indexes ────────────────────────────────────────────────────
+      const indexes = [
+        `CREATE INDEX IF NOT EXISTS idx_msg_tenant       ON messages (tenant_id);`,
+        `CREATE INDEX IF NOT EXISTS idx_msg_conversation ON messages (conversation_id);`,
+        `CREATE INDEX IF NOT EXISTS idx_msg_direction    ON messages (direction);`,
+        `CREATE INDEX IF NOT EXISTS idx_msg_status       ON messages (status);`,
+        `CREATE INDEX IF NOT EXISTS idx_msg_created      ON messages (created_at DESC);`,
+        `CREATE INDEX IF NOT EXISTS idx_msg_external     ON messages (external_id);`,
+      ];
+      for (const sql of indexes) {
+        try { await this.dataSource.query(sql); } catch { /* index موجود */ }
+      }
+
+      this.logger.log('✅ messages table ready');
+    } catch (err) {
+      this.logger.error('❌ messages table init failed', {
+        error: err instanceof Error ? err.message : 'Unknown',
+      });
+    }
+  }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // 📥 PROCESS INCOMING MESSAGE
