@@ -47,6 +47,10 @@ export class AdminStoresController {
 // ============================================================
 // WhatsApp Settings Controller
 // ============================================================
+// FIXED:
+//   [BUG-2] accessToken أصبح optional في body — للتحديث بدون تغيير الـ token
+//   [BUG-3] إضافة validation لـ phoneNumberId عند provider = META
+// ============================================================
 @Controller('admin/whatsapp')
 @UseGuards(AdminJwtGuard, AdminPermissionGuard)
 export class WhatsappController {
@@ -66,23 +70,26 @@ export class WhatsappController {
     body: {
       phoneNumber: string;
       provider: WhatsappProvider;
-      accessToken: string;
+      accessToken?: string;        // [BUG-2 FIX] optional — عند التحديث يمكن تركه للاحتفاظ بالقديم
       businessAccountId?: string;
       phoneNumberId?: string;
       webhookUrl?: string;
       webhookVerifyToken?: string;
     },
   ) {
-    // ✅ Validate required fields before reaching the service layer
     if (!body.phoneNumber?.trim()) {
       throw new BadRequestException('phoneNumber is required');
-    }
-    if (!body.accessToken?.trim()) {
-      throw new BadRequestException('accessToken is required — cannot encrypt an empty token');
     }
     if (!body.provider) {
       throw new BadRequestException('provider is required');
     }
+    // [BUG-3 FIX] phoneNumberId مطلوب لـ META
+    if (body.provider === WhatsappProvider.META && !body.phoneNumberId?.trim()) {
+      throw new BadRequestException(
+        'phoneNumberId is required for Meta provider',
+      );
+    }
+    // accessToken validation مُفوَّض للـ service (يعرف هل هو create أم update)
     return this.whatsappService.upsertSettings(body);
   }
 
