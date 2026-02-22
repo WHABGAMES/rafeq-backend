@@ -19,7 +19,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DeepPartial } from 'typeorm';
+import { Repository, DeepPartial, Not } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ConfigService } from '@nestjs/config';
 
@@ -466,9 +466,18 @@ export class StoresService {
   // 📊 Common Operations
   // ═══════════════════════════════════════════════════════════════════════════════
 
+  /**
+   * ✅ جلب متاجر الـ tenant — يُخفي المتاجر المُلغى تثبيتها (UNINSTALLED)
+   *
+   * السبب: عند إلغاء التاجر تثبيت التطبيق من سلة أو زد، نحتفظ بسجل المتجر
+   * في DB (soft-delete logic) لكن نُخفيه من الداشبورد.
+   * عند إعادة التثبيت، يُحدَّث status → ACTIVE ويظهر تلقائياً.
+   *
+   * Not(StoreStatus.UNINSTALLED) → يشمل تلقائياً أي status جديد يُضاف مستقبلاً
+   */
   async findByTenant(tenantId: string): Promise<Store[]> {
     return this.storeRepository.find({
-      where: { tenantId },
+      where: { tenantId, status: Not(StoreStatus.UNINSTALLED) },
       order: { createdAt: 'DESC' },
     });
   }
