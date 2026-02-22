@@ -7,6 +7,26 @@ import {
   Index,
 } from 'typeorm';
 
+/**
+ * ╔══════════════════════════════════════════════════════════════════╗
+ * ║  Admin Notification Template Entity                              ║
+ * ║                                                                  ║
+ * ║  FIX: Table renamed from 'message_templates' to                 ║
+ * ║       'admin_notification_templates'                             ║
+ * ║                                                                  ║
+ * ║  WHY: 'message_templates' is already used by the merchant       ║
+ * ║       platform (different schema: body, status, tenantId...)    ║
+ * ║       Sharing the same table caused: column "content" does      ║
+ * ║       not exist                                                  ║
+ * ║                                                                  ║
+ * ║  This table is EXCLUSIVELY for Super Admin system notifications: ║
+ * ║  - New merchant welcome messages                                  ║
+ * ║  - Subscription expiry alerts                                    ║
+ * ║  - Account suspension notices                                    ║
+ * ║  - Payment received confirmations                                ║
+ * ╚══════════════════════════════════════════════════════════════════╝
+ */
+
 export enum TriggerEvent {
   NEW_MERCHANT_REGISTERED = 'NEW_MERCHANT_REGISTERED',
   SUBSCRIPTION_EXPIRING = 'SUBSCRIPTION_EXPIRING',
@@ -28,7 +48,8 @@ export enum MessageLanguage {
   EN = 'en',
 }
 
-@Entity('message_templates')
+// ─── FIX: Use 'admin_notification_templates' — separate from merchant 'message_templates' ───
+@Entity('admin_notification_templates')
 @Index(['triggerEvent', 'channel', 'language', 'isActive'])
 export class MessageTemplate {
   @PrimaryGeneratedColumn('uuid')
@@ -37,13 +58,14 @@ export class MessageTemplate {
   @Column({ type: 'varchar', length: 255 })
   name: string;
 
-  @Column({ name: 'trigger_event', type: 'enum', enum: TriggerEvent })
+  // FIX: Use varchar instead of enum to avoid enum name conflicts with merchant table
+  @Column({ name: 'trigger_event', type: 'varchar', length: 100 })
   triggerEvent: TriggerEvent;
 
-  @Column({ type: 'enum', enum: MessageChannel, default: MessageChannel.WHATSAPP })
+  @Column({ type: 'varchar', length: 20, default: MessageChannel.WHATSAPP })
   channel: MessageChannel;
 
-  @Column({ type: 'enum', enum: MessageLanguage, default: MessageLanguage.AR })
+  @Column({ type: 'varchar', length: 5, default: MessageLanguage.AR })
   language: MessageLanguage;
 
   /**
@@ -53,15 +75,12 @@ export class MessageTemplate {
   content: string;
 
   @Column({ name: 'subject', type: 'varchar', length: 500, nullable: true })
-  subject?: string; // For email templates
+  subject?: string;
 
   @Column({ name: 'is_active', type: 'boolean', default: true })
-  @Index('idx_template_active')
+  @Index('idx_admin_notif_template_active')
   isActive: boolean;
 
-  /**
-   * Store version snapshots for rollback / history
-   */
   @Column({ name: 'version_history', type: 'jsonb', default: [] })
   versionHistory: Array<{
     version: number;
