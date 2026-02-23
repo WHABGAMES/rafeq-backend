@@ -6,6 +6,9 @@
  * ║  زد لا يرسل "event" — يرسل بيانات الطلب/العميل مباشرة                         ║
  * ║  الـ Controller يكتشف نوع الحدث من بنية البيانات                               ║
  * ║                                                                                ║
+ * ║  🔧 FIX: generateIdempotencyKey يستخدم deliveryId لأحداث App Market           ║
+ * ║  deliveryId = فريد لكل إرسال من زد → لا تكرار مهما أُعيد التثبيت/الإلغاء     ║
+ * ║                                                                                ║
  * ║  🔐 SECURITY LAYERS:                                                           ║
  * ║  1. WebhookIpGuard - IP allowlisting (primary security)                        ║
  * ║  2. OAuth 2.0 - Webhook registration authentication                            ║
@@ -159,7 +162,8 @@ export class ZidWebhooksController {
     // ═══════════════════════════════════════════════════════════════════════════
     // 🔁 التحقق من التكرار
     // ═══════════════════════════════════════════════════════════════════════════
-    const idempotencyKey = this.generateIdempotencyKey(body, detectedEvent);
+    const resolvedDeliveryId = deliveryId || `zid_${Date.now()}_${body.store_id || body.id || 'unknown'}`;
+    const idempotencyKey = this.generateIdempotencyKey(body, detectedEvent, resolvedDeliveryId);
     const isDuplicate = await this.webhooksService.checkDuplicate(idempotencyKey);
 
     if (isDuplicate) {
@@ -175,7 +179,7 @@ export class ZidWebhooksController {
       storeId,
       data: body,  // ✅ كل بيانات الطلب/العميل كما جاءت من زد
       triggeredAt: (body.updated_at as string) || (body.created_at as string) || new Date().toISOString(),
-      deliveryId: deliveryId || `zid_${Date.now()}_${body.id || 'unknown'}`,
+      deliveryId: resolvedDeliveryId,
       idempotencyKey,
       signature,
       headers: this.extractHeaders(req),
@@ -435,13 +439,33 @@ export class ZidWebhooksController {
     }
   }
 
-  private generateIdempotencyKey(body: Record<string, any>, eventType: string): string {
-    // ✅ FIX: App Market events use event_name + store_id + status + payment_date
+  /**
+   * ✅ FIX: توليد idempotencyKey آمن لجميع أنواع أحداث زد
+   *
+   * المشكلة القديمة (App Market events):
+   *   hash = zid + event_name + store_id + status + start_date
+   *   → نفس المتجر يُلغي ويُثبّت ويُلغي مجدداً في نفس فترة الاشتراك
+   *   → نفس الـ hash → يُعتبر duplicate → يُحجب إلى الأبد
+   *   + UNIQUE INDEX في DB → 500 Error لو حاول يُدرج مرة ثانية
+   *
+   * الحل الجذري — deliveryId-based لأحداث App Market:
+   *   deliveryId = x-zid-delivery-id header (فريد لكل إرسال HTTP من زد)
+   *   fallback = zid_ + timestamp (فريد بطبيعته)
+   *   → كل delivery من زد = hash فريد = لا تكرار أبداً
+   *   → Zid retry لنفس الـ delivery: نفس deliveryId → محجوب بشكل صحيح ✅
+   *   → إلغاء جديد بعد إعادة التثبيت: deliveryId جديد → يُعالَج ✅
+   *   → لا UNIQUE constraint violation في DB ✅
+   *
+   * Regular events (orders/customers) → content-based hash (لم يتغير)
+   *   → يمنع معالجة نفس تحديث الطلب مرتين إذا أعاد زد الإرسال بنفس البيانات ✅
+   */
+  private generateIdempotencyKey(body: Record<string, any>, eventType: string, deliveryId: string): string {
+    // App Market events → deliveryId-based (فريد لكل إرسال من زد)
     if (body.event_name) {
-      const data = `zid_${body.event_name}_${body.store_id || ''}_${body.status || ''}_${body.payment_date || body.start_date || ''}`;
+      const data = `zid_${body.event_name}_${body.store_id || ''}_${deliveryId}`;
       return crypto.createHash('sha256').update(data).digest('hex');
     }
-    // Merchant events: use orderId + status + store_id + updatedAt
+    // Merchant events (orders/customers/products) → content-based hash
     const orderId = body.id || '';
     const status = typeof body.order_status === 'object' && body.order_status !== null
       ? (body.order_status.code || body.order_status.slug || '')
