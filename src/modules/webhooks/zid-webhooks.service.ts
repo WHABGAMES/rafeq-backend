@@ -131,7 +131,6 @@ export class ZidWebhooksService {
       where: { idempotencyKey },
       select: ['id'],
     });
-
     return !!existing;
   }
 
