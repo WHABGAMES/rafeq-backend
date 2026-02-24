@@ -480,3 +480,131 @@ export class SallaWebhookJobDto {
  *   }
  * }
  */
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 📡 Communication Webhooks DTOs
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * أنواع الأحداث التجارية في Communication Webhooks
+ * يُرسَل في data.type للتعبير عن سبب الرسالة
+ */
+export enum CommunicationEventType {
+  AUTH_OTP_VERIFICATION    = 'auth.otp.verification',
+  ORDER_STATUS_CONFIRMATION = 'order.status.confirmation',
+  ORDER_STATUS_UPDATED     = 'order.status.updated',
+  ORDER_INVOICE_ISSUED     = 'order.invoice.issued',
+  ORDER_SHIPMENT_CREATED   = 'order.shipment.created',
+  ORDER_REFUND_PROCESSED   = 'order.refund.processed',
+  ORDER_GIFT_PLACED        = 'order.gift.placed',
+  PAYMENT_REMINDER_DUE     = 'payment.reminder.due',
+  PRODUCT_AVAILABILITY_ALERT = 'product.availability.alert',
+  PRODUCT_DIGITAL_CODE     = 'product.digital.code',
+  CUSTOMER_CART_ABANDONED  = 'customer.cart.abandoned',
+  CUSTOMER_LOYALTY_EARNED  = 'customer.loyalty.earned',
+  CUSTOMER_FEEDBACK_REPLY  = 'customer.feedback.reply',
+  CUSTOMER_RATING_REQUEST  = 'customer.rating.request',
+  MARKETING_CAMPAIGN_BROADCAST = 'marketing.campaign.broadcast',
+  SYSTEM_ALERT_GENERAL     = 'system.alert.general',
+  SYSTEM_MESSAGE_CUSTOM    = 'system.message.custom',
+}
+
+/**
+ * الكيان المرتبط بالحدث (قد يكون null)
+ * entity.type: 'order' | 'cart' | 'shipment' | 'product' | 'feedback'
+ */
+export class CommunicationEntityDto {
+  @ApiPropertyOptional({ example: 1741773897 })
+  @IsNumber()
+  @IsOptional()
+  id?: number;
+
+  @ApiPropertyOptional({ example: 'order', enum: ['order', 'cart', 'shipment', 'product', 'feedback'] })
+  @IsString()
+  @IsOptional()
+  type?: string;
+}
+
+/**
+ * بيانات meta في Communication Webhooks
+ * customer_id: معرّف العميل في سلة (موجود في معظم الأحداث)
+ * code: كود OTP (فقط في auth.otp.verification)
+ */
+export class CommunicationMetaDto {
+  @ApiPropertyOptional({ description: 'معرف العميل في سلة', example: 239462497 })
+  @IsNumber()
+  @IsOptional()
+  customer_id?: number;
+
+  @ApiPropertyOptional({ description: 'كود OTP (فقط في auth.otp.verification)', example: '1234' })
+  @IsString()
+  @IsOptional()
+  code?: string;
+}
+
+/**
+ * 📡 بيانات الـ Communication Webhook
+ *
+ * هذا الـ DTO يمثّل بيانات الحدث الكاملة من سلة.
+ * الفرق الجوهري عن الأحداث التقليدية:
+ *   - notifiable: أرقام/إيميلات المستلمين جاهزة ✅
+ *   - content:    نص الرسالة مُصيَّغ مسبقاً ✅
+ *   - type:       نوع الحدث التجاري (لأغراض التصنيف)
+ *   - entity:     الكيان المرتبط (قد يكون null)
+ *   - meta:       بيانات إضافية (customer_id, code)
+ *
+ * مثال:
+ * {
+ *   "event": "communication.whatsapp.send",
+ *   "merchant": 292111819,
+ *   "data": {
+ *     "notifiable": ["+96656000000"],
+ *     "type": "order.status.updated",
+ *     "content": "أصبحت حالة طلبك #218103278 [تم التنفيذ]",
+ *     "entity": { "id": 1741773897, "type": "order" },
+ *     "meta": { "customer_id": 239462497 }
+ *   }
+ * }
+ */
+export class SallaCommunicationDataDto {
+  @ApiProperty({
+    description: 'قائمة أرقام الهاتف (SMS/WhatsApp) أو الإيميلات (Email) للمستلمين',
+    type: [String],
+    example: ['+96656000000'],
+  })
+  @IsOptional()
+  notifiable?: string[];
+
+  @ApiProperty({
+    description: 'نوع الحدث التجاري',
+    enum: CommunicationEventType,
+    example: 'order.status.updated',
+  })
+  @IsString()
+  @IsOptional()
+  type?: string;
+
+  @ApiPropertyOptional({
+    description: 'نص الرسالة المُصيَّغ جاهزاً من سلة',
+    example: 'أصبحت حالة طلبك #218103278 [تم التنفيذ]',
+  })
+  @IsString()
+  @IsOptional()
+  content?: string;
+
+  @ApiPropertyOptional({
+    description: 'الكيان المرتبط بالحدث (قد يكون null)',
+    type: CommunicationEntityDto,
+    nullable: true,
+  })
+  @IsOptional()
+  entity?: CommunicationEntityDto | null;
+
+  @ApiPropertyOptional({
+    description: 'بيانات إضافية (customer_id, code)',
+    type: CommunicationMetaDto,
+    nullable: true,
+  })
+  @IsOptional()
+  meta?: CommunicationMetaDto | null;
+}
