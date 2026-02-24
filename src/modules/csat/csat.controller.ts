@@ -139,13 +139,21 @@ export class CsatController {
   async getSurveys(
     @CurrentUser() user: any,
     @Query('type')    type?: string,
-    @Query('rating')  rating?: number,
+    @Query('rating')  ratingRaw?: string,
     @Query('agentId') agentId?: string,
     @Query('from')    from?: string,
     @Query('to')      to?: string,
     @Query('page')    page = 1,
     @Query('limit')   limit = 20,
   ) {
+    // ✅ FIX NaN: Query params تصل دائماً كـ string من HTTP
+    // Number("") = NaN, Number("null") = NaN → يكسر PostgreSQL smallint
+    // نحوّل فقط إذا كانت قيمة رقمية صالحة فعلاً
+    const parsedRating = (ratingRaw !== undefined && ratingRaw !== '' && ratingRaw !== 'null')
+      ? Number(ratingRaw)
+      : undefined;
+    const rating = (parsedRating !== undefined && !isNaN(parsedRating)) ? parsedRating : undefined;
+
     return this.csatService.getSurveys(user.tenantId, {
       type, rating, agentId, from, to, page, limit,
     });
