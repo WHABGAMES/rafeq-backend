@@ -95,8 +95,10 @@ export class CsatService {
   // ═══════════════════════════════════════════════════════════
 
   async getSurveys(tenantId: string, filters: SurveyFilters) {
-    const { page, limit } = filters;
-    const skip = (Number(page) - 1) * Number(limit);
+    // ✅ FIX: page/limit — guard NaN (قد يصل من query string)
+    const safePage  = Math.max(1, Number(filters.page)  || 1);
+    const safeLimit = Math.min(100, Math.max(1, Number(filters.limit) || 20));
+    const skip = (safePage - 1) * safeLimit;
 
     const qb = this.surveyRepository
       .createQueryBuilder('s')
@@ -108,7 +110,8 @@ export class CsatService {
       qb.andWhere('s.type = :type', { type: filters.type });
     }
 
-    if (filters.rating !== undefined && filters.rating !== null) {
+    // ✅ FIX NaN: طبقة حماية ثانية — isNaN يصدّ أي NaN وصل من Controller
+    if (filters.rating !== undefined && filters.rating !== null && !isNaN(Number(filters.rating))) {
       qb.andWhere('s.rating = :rating', { rating: Number(filters.rating) });
     }
 
@@ -116,17 +119,24 @@ export class CsatService {
       qb.andWhere('s.agentId = :agentId', { agentId: filters.agentId });
     }
 
+    // ✅ FIX: validate dates before passing to DB (invalid date → skip filter)
     if (filters.from) {
-      qb.andWhere('s.respondedAt >= :from', { from: new Date(filters.from) });
+      const fromDate = new Date(filters.from);
+      if (!isNaN(fromDate.getTime())) {
+        qb.andWhere('s.respondedAt >= :from', { from: fromDate });
+      }
     }
 
     if (filters.to) {
-      qb.andWhere('s.respondedAt <= :to', { to: new Date(filters.to) });
+      const toDate = new Date(filters.to);
+      if (!isNaN(toDate.getTime())) {
+        qb.andWhere('s.respondedAt <= :to', { to: toDate });
+      }
     }
 
     qb.orderBy('s.respondedAt', 'DESC');
 
-    const [data, total] = await qb.skip(skip).take(Number(limit)).getManyAndCount();
+    const [data, total] = await qb.skip(skip).take(safeLimit).getManyAndCount();
 
     // حساب متوسط التقييم
     const avgResult = await this.surveyRepository
@@ -143,10 +153,10 @@ export class CsatService {
       responses: data.map((s) => this.formatSurvey(s)),
       avgRating,
       pagination: {
-        page: Number(page),
-        limit: Number(limit),
+        page: safePage,
+        limit: safeLimit,
         total,
-        totalPages: Math.ceil(total / Number(limit)),
+        totalPages: Math.ceil(total / safeLimit),
       },
     };
   }
