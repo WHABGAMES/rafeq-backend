@@ -286,13 +286,26 @@ export class SallaWebhooksService {
 
   private getEventPriority(eventType: string): number {
     const priorities: Record<string, number> = {
+      // ─── Priority 1: إرسال فوري للعميل ───
       [SallaEventType.ORDER_CREATED]: 1,
       [SallaEventType.ORDER_PAYMENT_UPDATED]: 1,
+      // ✅ Communication webhooks: الأولوية الأعلى — سلة طلبت الإرسال للعميل الآن
+      [SallaEventType.COMMUNICATION_WHATSAPP_SEND]: 1,
+      [SallaEventType.COMMUNICATION_SMS_SEND]: 1,
+      [SallaEventType.COMMUNICATION_EMAIL_SEND]: 1,
+
+      // ─── Priority 2 ───
       [SallaEventType.CUSTOMER_CREATED]: 2,
       [SallaEventType.ABANDONED_CART]: 2,
+
+      // ─── Priority 4 ───
       [SallaEventType.ORDER_STATUS_UPDATED]: 4,
       [SallaEventType.SHIPMENT_CREATED]: 4,
+
+      // ─── Priority 5 (default) ───
       [SallaEventType.TRACKING_REFRESHED]: 5,
+
+      // ─── Priority 7-8 (low) ───
       [SallaEventType.PRODUCT_UPDATED]: 7,
       [SallaEventType.REVIEW_ADDED]: 8,
     };
