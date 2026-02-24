@@ -103,6 +103,26 @@ export enum SallaEventType {
   // Specialoffer Events
   SPECIALOFFER_CREATED = 'specialoffer.created',
   SPECIALOFFER_UPDATED = 'specialoffer.updated',
+
+  // ═══════════════════════════════════════════════════════════════
+  // 📡 Communication Webhooks (النمط السهل - Communication App)
+  // ═══════════════════════════════════════════════════════════════
+  // هذه الأحداث تصل من سلة عندما تريد إرسال رسالة للعميل
+  // الميزة: الرقم والمحتوى موجودان مسبقاً — لا حاجة لقوالب أو بحث
+  //
+  // event: communication.sms.send       → رسالة SMS للعميل
+  // event: communication.email.send     → بريد إلكتروني للعميل
+  // event: communication.whatsapp.send  → واتساب للعميل
+  //
+  // البيانات القادمة:
+  // data.notifiable[]  → أرقام الهاتف أو الإيميلات (جاهزة)
+  // data.content       → نص الرسالة (مُصيَّغ مسبقاً)
+  // data.type          → نوع الحدث (order.status.updated, etc.)
+  // data.entity        → الكيان المرتبط (order/cart/shipment/product)
+  // data.meta.customer_id → معرف العميل في سلة
+  COMMUNICATION_SMS_SEND = 'communication.sms.send',
+  COMMUNICATION_EMAIL_SEND = 'communication.email.send',
+  COMMUNICATION_WHATSAPP_SEND = 'communication.whatsapp.send',
 }
 
 /**
