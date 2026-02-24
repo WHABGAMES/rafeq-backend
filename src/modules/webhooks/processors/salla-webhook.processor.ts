@@ -187,6 +187,18 @@ export class SallaWebhookProcessor extends WorkerHost {
       case SallaEventType.PRODUCT_CREATED:        return this.handleProductCreated(data, context);
       case SallaEventType.CUSTOMER_OTP_REQUEST:   return this.handleCustomerOtpRequest(data, context);
       case SallaEventType.INVOICE_CREATED:        return this.handleInvoiceCreated(data, context);
+
+      // ═══════════════════════════════════════════════════════════════════════
+      // 📡 Communication Webhooks — النمط السهل (Communication App)
+      // سلة ترسل الرقم والمحتوى جاهزين — رفيق يُرسل فقط
+      // ═══════════════════════════════════════════════════════════════════════
+      case SallaEventType.COMMUNICATION_WHATSAPP_SEND:
+        return this.handleCommunicationEvent('whatsapp', data, context);
+      case SallaEventType.COMMUNICATION_SMS_SEND:
+        return this.handleCommunicationEvent('sms', data, context);
+      case SallaEventType.COMMUNICATION_EMAIL_SEND:
+        return this.handleCommunicationEvent('email', data, context);
+
       default: this.logger.warn(`Unhandled event: ${eventType}`); return { handled: false, eventType };
     }
   }
@@ -832,4 +844,100 @@ export class SallaWebhookProcessor extends WorkerHost {
   @OnWorkerEvent('completed') onCompleted(job: Job) { this.logger.debug(`Job completed: ${job.id}`); }
   @OnWorkerEvent('failed') onFailed(job: Job, error: Error) { this.logger.error(`Job failed: ${job.id}`, { error: error.message, attempts: job.attemptsMade }); }
   @OnWorkerEvent('stalled') onStalled(jobId: string) { this.logger.warn(`Job stalled: ${jobId}`); }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 📡 Communication Webhooks Handler
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * معالجة Communication Webhooks من سلة
+   *
+   * النمط الجديد (السهل): سلة ترسل الرقم والمحتوى جاهزين
+   * رفيق يأخذ البيانات ويُحوّلها لـ event ليُرسلها خدمة الـ relay
+   *
+   * بنية البيانات الواردة:
+   * {
+   *   "notifiable": ["+96656000000"],   ← رقم المستلم جاهز ✅
+   *   "type": "order.status.updated",   ← نوع الحدث
+   *   "content": "حالة طلبك ...",        ← نص الرسالة جاهز ✅
+   *   "entity": { "id": 123, "type": "order" },
+   *   "meta": { "customer_id": 456 }
+   * }
+   *
+   * @param channelType - 'whatsapp' | 'sms' | 'email'
+   */
+  private async handleCommunicationEvent(
+    channelType: 'whatsapp' | 'sms' | 'email',
+    data: Record<string, unknown>,
+    context: { tenantId?: string; storeId?: string; webhookEventId: string },
+  ): Promise<Record<string, unknown>> {
+    // استخراج البيانات الأساسية
+    const notifiable = Array.isArray(data.notifiable)
+      ? (data.notifiable as string[]).filter(Boolean)
+      : [];
+
+    const content = typeof data.content === 'string' ? data.content.trim() : '';
+    const businessType = typeof data.type === 'string' ? data.type : 'unknown';
+    const entity = data.entity as { id: number; type: string } | null | undefined;
+    const meta = data.meta as Record<string, unknown> | null | undefined;
+    const customerId = meta?.customer_id ? Number(meta.customer_id) : undefined;
+
+    this.logger.log(
+      `📡 Communication ${channelType}: type=${businessType}, recipients=${notifiable.length}`,
+      {
+        tenantId: context.tenantId || '❌ MISSING',
+        storeId: context.storeId || '❌ MISSING',
+        entityType: entity?.type,
+        entityId: entity?.id,
+        customerId,
+        hasContent: content.length > 0,
+        contentPreview: content.substring(0, 60),
+      },
+    );
+
+    // ─── التحقق من البيانات الأساسية ───
+    if (!notifiable.length) {
+      this.logger.warn(`⚠️ Communication ${channelType}: no recipients in notifiable[]`);
+      return { handled: false, reason: 'no_recipients', channelType, businessType };
+    }
+
+    if (!content) {
+      this.logger.warn(`⚠️ Communication ${channelType}: empty content`);
+      return { handled: false, reason: 'empty_content', channelType, businessType };
+    }
+
+    // ─── إطلاق الحدث لـ TemplateDispatcherService ليُرسل الرسالة ───
+    // نُطلق حدثاً داخلياً يُعيد استخدام البنية الحالية
+    const eventPayload = {
+      tenantId: context.tenantId,
+      storeId: context.storeId,
+      webhookEventId: context.webhookEventId,
+      channelType,
+      notifiable,
+      content,
+      businessType,
+      entity: entity ?? null,
+      customerId,
+      raw: data,
+    };
+
+    // الحدث الداخلي → communication.relay.whatsapp / sms / email
+    this.eventEmitter.emit(`communication.relay.${channelType}`, eventPayload);
+
+    this.logger.log(`✅ Communication ${channelType} queued for relay: ${businessType}`, {
+      recipients: notifiable.length,
+      entityId: entity?.id,
+    });
+
+    return {
+      handled: true,
+      action: `communication_${channelType}_relay`,
+      channelType,
+      businessType,
+      recipients: notifiable.length,
+      entityType: entity?.type,
+      entityId: entity?.id,
+      customerId,
+    };
+  }
 }
