@@ -205,6 +205,16 @@ export class EmployeeNotificationsService {
 
     this.logger.debug(`Processing event for notifications: ${eventType}`, { tenantId });
 
+    // ✅ GUARD: التحقق أن الحدث موجود في enum قبل إرسال الاستعلام للـ DB
+    // بعض الأحداث مثل app.installed / app.uninstalled هي أحداث lifecycle
+    // غير موجودة في notification_rules_triggerevent_enum
+    // إرسالها للـ DB يُسبب: "invalid input value for enum"
+    const validTriggerEvents = Object.values(NotificationTriggerEvent) as string[];
+    if (!validTriggerEvents.includes(eventType)) {
+      this.logger.debug(`Event '${eventType}' is not a notification trigger — skipping`, { tenantId });
+      return 0;
+    }
+
     // 1. جلب القواعد المُفعّلة المطابقة للحدث
     const matchingRules = await this.ruleRepository.find({
       where: {
