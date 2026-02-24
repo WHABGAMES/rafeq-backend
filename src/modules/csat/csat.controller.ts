@@ -1,17 +1,19 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║              RAFIQ PLATFORM - CSAT Controller                                  ║
- * ║                                                                                ║
- * ║  📌 إدارة تقييم رضا العملاء                                                    ║
+ * ║              RAFIQ PLATFORM - CSAT Controller (Fixed)                          ║
  * ║                                                                                ║
  * ║  الـ Endpoints:                                                                ║
- * ║  GET    /csat/settings          → إعدادات التقييم                             ║
- * ║  PUT    /csat/settings          → تحديث الإعدادات                             ║
- * ║  GET    /csat/surveys           → قائمة التقييمات                             ║
- * ║  GET    /csat/surveys/:id       → تفاصيل تقييم                                ║
- * ║  POST   /csat/surveys/:id/submit → إرسال تقييم (عام)                          ║
- * ║  GET    /csat/analytics         → تحليلات التقييم                             ║
- * ║  GET    /csat/export            → تصدير التقييمات                             ║
+ * ║  GET    /csat/settings            → إعدادات التقييم                           ║
+ * ║  PUT    /csat/settings            → تحديث الإعدادات                           ║
+ * ║  GET    /csat/types               → أنواع التقييم                             ║
+ * ║  GET    /csat/surveys             → قائمة التقييمات {responses, avgRating}    ║
+ * ║  GET    /csat/surveys/:id         → تفاصيل تقييم                              ║
+ * ║  POST   /csat/surveys/:token/submit → إرسال تقييم (بدون JWT)                  ║
+ * ║  GET    /csat/overview            → ✅ إحصائيات سريعة للـ frontend            ║
+ * ║  GET    /csat/analytics           → تحليلات مفصّلة                            ║
+ * ║  GET    /csat/analytics/agents    → تقييمات الوكلاء                           ║
+ * ║  GET    /csat/analytics/trends    → اتجاهات التقييم                           ║
+ * ║  GET    /csat/export              → تصدير التقييمات                           ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -31,7 +33,6 @@ import {
 import {
   ApiTags,
   ApiOperation,
-  
   ApiBearerAuth,
   ApiQuery,
 } from '@nestjs/swagger';
@@ -49,44 +50,35 @@ import { UpdateCsatSettingsDto, SubmitCsatDto } from './dto';
 export class CsatController {
   constructor(private readonly csatService: CsatService) {}
 
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════
   // Settings
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════
 
   @Get('settings')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth('JWT-auth')
-  @ApiOperation({
-    summary: 'إعدادات التقييم',
-    description: 'جلب إعدادات نظام تقييم رضا العملاء',
-  })
+  @ApiOperation({ summary: 'إعدادات التقييم' })
   async getSettings(@CurrentUser() user: any) {
-    const tenantId = user.tenantId;
-    return this.csatService.getSettings(tenantId);
+    return this.csatService.getSettings(user.tenantId);
   }
 
   @Put('settings')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth('JWT-auth')
-  @ApiOperation({
-    summary: 'تحديث الإعدادات',
-    description: 'تحديث إعدادات نظام التقييم',
-  })
-  async updateSettings(@CurrentUser() user: any,
-    @Body() dto: UpdateCsatSettingsDto) {
-    const tenantId = user.tenantId;
-    return this.csatService.updateSettings(tenantId, dto);
+  @ApiOperation({ summary: 'تحديث الإعدادات' })
+  async updateSettings(
+    @CurrentUser() user: any,
+    @Body() dto: UpdateCsatSettingsDto,
+  ) {
+    return this.csatService.updateSettings(user.tenantId, dto);
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // Survey Types
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════
+  // Survey Types (Public — no auth needed)
+  // ═══════════════════════════════════════════════════════════
 
   @Get('types')
-  @ApiOperation({
-    summary: 'أنواع التقييم',
-    description: 'أنواع استطلاعات رضا العملاء المدعومة',
-  })
+  @ApiOperation({ summary: 'أنواع التقييم المدعومة' })
   getSurveyTypes() {
     return {
       types: [
@@ -106,11 +98,7 @@ export class CsatController {
           description: 'مقياس 0-10 لقياس احتمالية التوصية',
           scale: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
           question: 'ما مدى احتمالية أن توصي بنا لصديق أو زميل؟',
-          categories: {
-            detractors: [0, 6],
-            passives: [7, 8],
-            promoters: [9, 10],
-          },
+          categories: { detractors: [0, 6], passives: [7, 8], promoters: [9, 10] },
         },
         {
           id: 'ces',
@@ -133,154 +121,140 @@ export class CsatController {
     };
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // Surveys
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════
+  // Surveys — List
+  // ═══════════════════════════════════════════════════════════
 
   @Get('surveys')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth('JWT-auth')
-  @ApiOperation({
-    summary: 'قائمة التقييمات',
-    description: 'جلب جميع تقييمات العملاء',
-  })
-  @ApiQuery({ name: 'type', required: false, enum: ['csat', 'nps', 'ces', 'thumbs'] })
-  @ApiQuery({ name: 'rating', required: false, description: 'فلترة حسب التقييم' })
+  @ApiOperation({ summary: 'قائمة التقييمات — يُرجع { responses, avgRating, pagination }' })
+  @ApiQuery({ name: 'type',    required: false, enum: ['csat', 'nps', 'ces', 'thumbs'] })
+  @ApiQuery({ name: 'rating',  required: false })
   @ApiQuery({ name: 'agentId', required: false })
-  @ApiQuery({ name: 'from', required: false })
-  @ApiQuery({ name: 'to', required: false })
-  @ApiQuery({ name: 'page', required: false })
-  @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({ name: 'from',    required: false })
+  @ApiQuery({ name: 'to',      required: false })
+  @ApiQuery({ name: 'page',    required: false })
+  @ApiQuery({ name: 'limit',   required: false })
   async getSurveys(
     @CurrentUser() user: any,
-    @Query('type') type?: string,
-    @Query('rating') rating?: number,
+    @Query('type')    type?: string,
+    @Query('rating')  rating?: number,
     @Query('agentId') agentId?: string,
-    @Query('from') from?: string,
-    @Query('to') to?: string,
-    @Query('page') page = 1,
-    @Query('limit') limit = 20,
+    @Query('from')    from?: string,
+    @Query('to')      to?: string,
+    @Query('page')    page = 1,
+    @Query('limit')   limit = 20,
   ) {
-    const tenantId = user.tenantId;
-    return this.csatService.getSurveys(tenantId, {
-      type,
-      rating,
-      agentId,
-      from,
-      to,
-      page,
-      limit,
+    return this.csatService.getSurveys(user.tenantId, {
+      type, rating, agentId, from, to, page, limit,
     });
   }
 
   @Get('surveys/:id')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth('JWT-auth')
-  @ApiOperation({
-    summary: 'تفاصيل تقييم',
-    description: 'جلب تفاصيل تقييم معين',
-  })
-  async getSurvey(@CurrentUser() user: any,
-    @Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = user.tenantId;
-    return this.csatService.getSurveyById(id, tenantId);
+  @ApiOperation({ summary: 'تفاصيل تقييم' })
+  async getSurvey(
+    @CurrentUser() user: any,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.csatService.getSurveyById(id, user.tenantId);
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // Submit Survey (Public)
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════
+  // Submit Survey — PUBLIC (no JWT, uses token)
+  // ═══════════════════════════════════════════════════════════
 
   @Post('surveys/:token/submit')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'إرسال تقييم',
-    description: 'إرسال تقييم من العميل (بدون تسجيل دخول)',
+    summary: 'إرسال تقييم من العميل',
+    description: 'Endpoint عام — لا يحتاج JWT — العميل يُرسل تقييمه عبر رابط التوكن',
   })
   async submitSurvey(
-    @CurrentUser() _user: any,
     @Param('token') token: string,
     @Body() dto: SubmitCsatDto,
   ) {
     return this.csatService.submitSurvey(token, dto);
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════
+  // Overview — ✅ يُغذّي الـ frontend /csat/overview
+  // ═══════════════════════════════════════════════════════════
+
+  @Get('overview')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary: 'نظرة عامة على رضا العملاء',
+    description: 'يُرجع: totalSurveys, avgRating, satisfactionRate, improvementRate',
+  })
+  async getOverview(@CurrentUser() user: any) {
+    return this.csatService.getOverview(user.tenantId);
+  }
+
+  // ═══════════════════════════════════════════════════════════
   // Analytics
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════
 
   @Get('analytics')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth('JWT-auth')
-  @ApiOperation({
-    summary: 'تحليلات التقييم',
-    description: 'إحصائيات وتحليلات تقييمات العملاء',
-  })
+  @ApiOperation({ summary: 'تحليلات التقييم المفصّلة' })
   @ApiQuery({ name: 'period', required: false, enum: ['day', 'week', 'month', 'quarter', 'year'] })
-  @ApiQuery({ name: 'from', required: false })
-  @ApiQuery({ name: 'to', required: false })
+  @ApiQuery({ name: 'from',   required: false })
+  @ApiQuery({ name: 'to',     required: false })
   async getAnalytics(
     @CurrentUser() user: any,
     @Query('period') period = 'month',
-    @Query('from') from?: string,
-    @Query('to') to?: string,
+    @Query('from')   from?: string,
+    @Query('to')     to?: string,
   ) {
-    const tenantId = user.tenantId;
-    return this.csatService.getAnalytics(tenantId, { period, from, to });
+    return this.csatService.getAnalytics(user.tenantId, { period, from, to });
   }
 
   @Get('analytics/agents')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth('JWT-auth')
-  @ApiOperation({
-    summary: 'تقييمات الوكلاء',
-    description: 'تقييمات كل وكيل من فريق الدعم',
-  })
+  @ApiOperation({ summary: 'تقييمات الوكلاء' })
   async getAgentRatings(
     @CurrentUser() user: any,
     @Query('from') from?: string,
-    @Query('to') to?: string,
+    @Query('to')   to?: string,
   ) {
-    const tenantId = user.tenantId;
-    return this.csatService.getAgentRatings(tenantId, { from, to });
+    return this.csatService.getAgentRatings(user.tenantId, { from, to });
   }
 
   @Get('analytics/trends')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth('JWT-auth')
-  @ApiOperation({
-    summary: 'اتجاهات التقييم',
-    description: 'تطور التقييمات عبر الزمن',
-  })
+  @ApiOperation({ summary: 'اتجاهات التقييم عبر الزمن' })
   async getTrends(
     @CurrentUser() user: any,
-    @Query('period') period = 'month',
+    @Query('period')  period = 'month',
     @Query('groupBy') groupBy: 'day' | 'week' | 'month' = 'day',
   ) {
-    const tenantId = user.tenantId;
-    return this.csatService.getTrends(tenantId, { period, groupBy });
+    return this.csatService.getTrends(user.tenantId, { period, groupBy });
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════
   // Export
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════
 
   @Get('export')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth('JWT-auth')
-  @ApiOperation({
-    summary: 'تصدير التقييمات',
-    description: 'تصدير التقييمات إلى ملف CSV/Excel',
-  })
+  @ApiOperation({ summary: 'تصدير التقييمات' })
   @ApiQuery({ name: 'format', required: false, enum: ['csv', 'xlsx'] })
-  @ApiQuery({ name: 'from', required: false })
-  @ApiQuery({ name: 'to', required: false })
+  @ApiQuery({ name: 'from',   required: false })
+  @ApiQuery({ name: 'to',     required: false })
   async exportSurveys(
     @CurrentUser() user: any,
     @Query('format') format = 'csv',
-    @Query('from') from?: string,
-    @Query('to') to?: string,
+    @Query('from')   from?: string,
+    @Query('to')     to?: string,
   ) {
-    const tenantId = user.tenantId;
-    return this.csatService.exportSurveys(tenantId, { format, from, to });
+    return this.csatService.exportSurveys(user.tenantId, { format, from, to });
   }
 }
