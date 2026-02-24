@@ -188,6 +188,10 @@ export class StoresService {
       sallaDomain: merchantInfo.domain,
       sallaAvatar: merchantInfo.avatar,
       sallaPlan: merchantInfo.plan,
+      // ✅ تهيئة الإحصائيات بـ 0 عند الربط — تُحدَّث عند أول sync
+      sallaOrdersCount: 0,
+      sallaProductsCount: 0,
+      sallaCustomersCount: 0,
       settings: {
         autoReply: true,
         welcomeMessageEnabled: true,
@@ -808,20 +812,82 @@ export class StoresService {
     this.logger.debug(`Syncing Salla store: ${store.sallaMerchantId}`);
 
     try {
+      // ✅ Step 1: جلب معلومات المتجر من سلة
       const response = await this.sallaApiService.getStoreInfo(accessToken);
       const merchantInfo = response.data;
 
       store.sallaStoreName = merchantInfo.name;
-      store.sallaEmail = merchantInfo.email;
-      store.sallaMobile = merchantInfo.mobile;
-      store.sallaDomain = merchantInfo.domain;
-      store.sallaAvatar = merchantInfo.avatar;
-      store.sallaPlan = merchantInfo.plan;
-      store.name = merchantInfo.name || store.name;
+      store.sallaEmail     = merchantInfo.email;
+      store.sallaMobile    = merchantInfo.mobile;
+      store.sallaDomain    = merchantInfo.domain;
+      store.sallaAvatar    = merchantInfo.avatar;
+      store.sallaPlan      = merchantInfo.plan;
+      store.name           = merchantInfo.name || store.name;
 
-      this.logger.debug(`Salla store synced: ${merchantInfo.name}`);
+      // ✅ Step 2: جلب الإحصائيات وتخزينها في DB
+      // بعد هذا، كل GET /stores يقرأ من DB مباشرة — لا API calls
+      const [ordersRes, productsRes, customersRes] = await Promise.allSettled([
+        this.sallaApiService.getOrders(accessToken,   { page: 1, perPage: 1 }),
+        this.sallaApiService.getProducts(accessToken, { page: 1, perPage: 1 }),
+        this.sallaApiService.getCustomers(accessToken, { page: 1, perPage: 1 }),
+      ]);
+
+      if (ordersRes.status === 'fulfilled') {
+        const total = ordersRes.value.pagination?.total;
+        if (typeof total === 'number') {
+          store.sallaOrdersCount = total;
+        } else {
+          this.logger.warn(`⚠️ Salla orders response missing pagination.total for store ${store.id}`);
+        }
+      } else {
+        this.logger.warn(`⚠️ Failed to fetch Salla orders count for store ${store.id}: ${ordersRes.reason?.message}`);
+      }
+
+      if (productsRes.status === 'fulfilled') {
+        const total = productsRes.value.pagination?.total;
+        if (typeof total === 'number') {
+          store.sallaProductsCount = total;
+        } else {
+          this.logger.warn(`⚠️ Salla products response missing pagination.total for store ${store.id}`);
+        }
+      } else {
+        this.logger.warn(`⚠️ Failed to fetch Salla products count for store ${store.id}: ${productsRes.reason?.message}`);
+      }
+
+      if (customersRes.status === 'fulfilled') {
+        const total = customersRes.value.pagination?.total;
+        if (typeof total === 'number') {
+          store.sallaCustomersCount = total;
+        } else {
+          this.logger.warn(`⚠️ Salla customers response missing pagination.total for store ${store.id}`);
+        }
+      } else {
+        this.logger.warn(`⚠️ Failed to fetch Salla customers count for store ${store.id}: ${customersRes.reason?.message}`);
+      }
+
+      store.sallaLastSyncAt = new Date();
+
+      this.logger.log(`✅ Salla store synced: ${merchantInfo.name}`, {
+        storeId:   store.id,
+        orders:    store.sallaOrdersCount,
+        products:  store.sallaProductsCount,
+        customers: store.sallaCustomersCount,
+      });
 
     } catch (error: any) {
+      const status = error?.status || error?.response?.status;
+
+      // ✅ 401 → Token منتهي أو ملغي → نحدّث status ونوقف المحاولات
+      if (status === 401 || status === 403) {
+        this.logger.error(`❌ Salla 401 during sync — token invalid for store ${store.id}`, {
+          storeName: store.name || store.sallaStoreName,
+          merchantId: store.sallaMerchantId,
+          hint: 'Store needs OAuth re-authorization from Salla dashboard',
+        });
+        // نرمي الخطأ → syncStore() سيُحدّث status إلى TOKEN_EXPIRED
+        throw Object.assign(new Error('Salla token expired or revoked — re-authorization required'), { status });
+      }
+
       this.logger.error(`Failed to sync Salla store: ${store.id}`, error);
       throw error;
     }
@@ -939,15 +1005,29 @@ export class StoresService {
       throw new BadRequestException('مفتاح API المتجر غير موجود. يرجى إعادة ربط المتجر.');
     }
 
+    // ✅ التحقق من وجود Refresh Token قبل المحاولة
+    const refreshToken = this.getDecryptedRefreshToken(store);
+
+    if (!refreshToken || refreshToken.trim() === '') {
+      // المتجر ربط بـ API Key مباشرة (بدون OAuth) → لا يوجد refresh token
+      // نُعلّم المتجر كـ TOKEN_EXPIRED حتى لا نحاول مجدداً
+      this.logger.error(`❌ Store ${store.id} (${store.platform}) has no refresh token — was connected via API Key`, {
+        storeName: store.name,
+        platform: store.platform,
+        hint: 'User must reconnect the store via OAuth or provide a new API key',
+      });
+
+      store.status = StoreStatus.TOKEN_EXPIRED;
+      store.lastError = 'Token expired — no refresh token available (API Key connection)';
+      store.lastErrorAt = new Date();
+      await this.storeRepository.save(store);
+
+      throw new BadRequestException('انتهت صلاحية مفتاح API. يرجى إعادة ربط المتجر.');
+    }
+
     this.logger.log(`Refreshing token for store: ${store.id} (${store.platform})`);
 
     try {
-      // 🔐 فك تشفير refresh token
-      const refreshToken = this.getDecryptedRefreshToken(store);
-      if (!refreshToken) {
-        throw new Error('No refresh token available');
-      }
-
       let tokens;
 
       if (store.platform === StorePlatform.SALLA) {
@@ -1097,71 +1177,44 @@ export class StoresService {
       return stats;
     }
 
-    try {
-      // ✅ Zid: return cached stats from DB (no API call needed)
-      // Stats are refreshed when the user triggers POST /stores/:id/sync.
-      // After migration, these columns are always present (default 0).
-      if (store.platform === StorePlatform.ZID) {
-        stats.orders = store.zidOrdersCount ?? 0;
-        stats.products = store.zidProductsCount ?? 0;
-        stats.customers = store.zidCustomersCount ?? 0;
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ✅ SALLA: قراءة من DB cache — لا API calls عند تحميل الداشبورد
+    //
+    // الإحصائيات تُحدَّث فقط عند:
+    //   - ربط المتجر لأول مرة (connectSallaStore)
+    //   - POST /stores/:id/sync (المستخدم يطلب مزامنة)
+    //
+    // لماذا هذا الحل ضروري:
+    //   - 1000 تاجر × 3 API calls = 3000 طلب في كل GET /stores
+    //   - Token منتهي = 3 errors في السجل لكل تاجر
+    //   - نفس نمط Zid الذي يعمل بشكل ممتاز في الإنتاج
+    // ═══════════════════════════════════════════════════════════════════════════
+    if (store.platform === StorePlatform.SALLA) {
+      stats.orders    = store.sallaOrdersCount   ?? 0;
+      stats.products  = store.sallaProductsCount ?? 0;
+      stats.customers = store.sallaCustomersCount ?? 0;
 
-        this.logger.debug(`Zid cached stats for store ${store.id}: orders=${stats.orders}, products=${stats.products}, customers=${stats.customers}`, {
-          lastSyncAt: store.zidLastSyncAt,
-        });
-        return stats;
-      }
-
-      // 🔐 جلب المتجر مع التوكنات إذا لم تكن محمّلة (Salla / Other)
-      let storeWithTokens = store;
-      if (!store.accessToken) {
-        const loaded = await this.findWithTokens({ id: store.id });
-        if (!loaded) return stats;
-        storeWithTokens = loaded;
-      }
-
-      const accessToken = await this.ensureValidToken(storeWithTokens);
-
-      if (storeWithTokens.platform === StorePlatform.SALLA) {
-        const [ordersRes, productsRes, customersRes] = await Promise.allSettled([
-          this.sallaApiService.getOrders(accessToken, { page: 1, perPage: 1 }),
-          this.sallaApiService.getProducts(accessToken, { page: 1, perPage: 1 }),
-          this.sallaApiService.getCustomers(accessToken, { page: 1, perPage: 1 }),
-        ]);
-
-        if (ordersRes.status === 'fulfilled') {
-          stats.orders = ordersRes.value.pagination?.total
-            ?? (Array.isArray(ordersRes.value.data) ? ordersRes.value.data.length : 0);
-        }
-        if (productsRes.status === 'fulfilled') {
-          stats.products = productsRes.value.pagination?.total
-            ?? (Array.isArray(productsRes.value.data) ? productsRes.value.data.length : 0);
-        }
-        if (customersRes.status === 'fulfilled') {
-          stats.customers = customersRes.value.pagination?.total
-            ?? (Array.isArray(customersRes.value.data) ? customersRes.value.data.length : 0);
-        }
-      }
-      // 🆕 OTHER: لا نجلب إحصائيات (ما نعرف بنية API)
-
-      this.logger.debug(`Store stats for ${store.id}: orders=${stats.orders}, products=${stats.products}, customers=${stats.customers}`);
-
-    } catch (error: any) {
-      const status = error?.response?.status;
-      const errorDetail = error?.response?.data?.detail || error?.response?.data?.message;
-
-      if (status === 401) {
-        this.logger.error(`❌ Zid authentication failed for store ${store.id}`, {
-          platform: store.platform,
-          error: errorDetail,
-          storeName: store.name || store.zidStoreName,
-          hint: 'Store may need reconnection',
-        });
-      } else {
-        this.logger.warn(`Failed to fetch stats for store ${store.id}: ${error.message}`);
-      }
+      this.logger.debug(`Salla cached stats for store ${store.id}: orders=${stats.orders}, products=${stats.products}, customers=${stats.customers}`, {
+        lastSyncAt: store.sallaLastSyncAt ?? 'never',
+        note: 'Refresh via POST /stores/:id/sync',
+      });
+      return stats;
     }
 
+    // ✅ ZID: قراءة من DB cache (نفس النمط)
+    if (store.platform === StorePlatform.ZID) {
+      stats.orders    = store.zidOrdersCount   ?? 0;
+      stats.products  = store.zidProductsCount ?? 0;
+      stats.customers = store.zidCustomersCount ?? 0;
+
+      this.logger.debug(`Zid cached stats for store ${store.id}: orders=${stats.orders}, products=${stats.products}, customers=${stats.customers}`, {
+        lastSyncAt: store.zidLastSyncAt,
+      });
+      return stats;
+    }
+
+    // 🆕 OTHER: لا نجلب إحصائيات (ما نعرف بنية API الخارجي)
+    // Stats = 0, يظهر للمستخدم كـ "غير متاح"
     return stats;
   }
 
