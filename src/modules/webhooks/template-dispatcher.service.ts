@@ -322,6 +322,133 @@ export class TemplateDispatcherService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
+  // 📡 Communication Webhooks Relay — النمط السهل
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // سلة ترسل الرقم والمحتوى جاهزين — رفيق يُرسلها فقط بدون قوالب
+
+  @OnEvent('communication.relay.whatsapp')
+  async onCommunicationWhatsapp(payload: Record<string, unknown>) {
+    await this.relayCommunicationMessage('whatsapp', payload);
+  }
+
+  @OnEvent('communication.relay.sms')
+  async onCommunicationSms(payload: Record<string, unknown>) {
+    // SMS: نسجّله فقط (الإرسال مستقبلاً عبر SMS provider)
+    await this.relayCommunicationMessage('sms', payload);
+  }
+
+  @OnEvent('communication.relay.email')
+  async onCommunicationEmail(payload: Record<string, unknown>) {
+    // Email: نسجّله فقط (الإرسال مستقبلاً)
+    await this.relayCommunicationMessage('email', payload);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 📡 Communication Relay Logic
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * إرسال رسالة Communication Webhook عبر القناة المناسبة
+   *
+   * النمط الجديد من سلة:
+   * - المحتوى جاهز تماماً (content مُصيَّغ)
+   * - الأرقام جاهزة (notifiable[])
+   * - لا حاجة لقوالب أو استبدال متغيرات
+   *
+   * WhatsApp: يُرسَل فوراً عبر القناة المتصلة
+   * SMS/Email: يُسجَّل (الإرسال مستقبلاً)
+   */
+  private async relayCommunicationMessage(
+    channelType: 'whatsapp' | 'sms' | 'email',
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    const tenantId = payload.tenantId as string | undefined;
+    const storeId = payload.storeId as string | undefined;
+    const notifiable = (payload.notifiable as string[]) || [];
+    const content = (payload.content as string) || '';
+    const businessType = (payload.businessType as string) || 'unknown';
+    const entity = payload.entity as { id: number; type: string } | null;
+    const customerId = payload.customerId as number | undefined;
+
+    // ─── تشخيص شامل ───
+    this.logger.warn(
+      `🔍 COMM RELAY [${channelType}]: type=${businessType}, tenant=${tenantId || '❌'}, ` +
+      `store=${storeId || '❌'}, recipients=${notifiable.length}, hasContent=${content.length > 0}`,
+    );
+
+    // ─── SMS و Email: نسجّلهم فقط في الوقت الحالي ───
+    if (channelType !== 'whatsapp') {
+      this.logger.log(
+        `📝 Communication ${channelType} logged (relay not yet implemented):`,
+        {
+          businessType,
+          recipients: notifiable,
+          contentPreview: content.substring(0, 100),
+          entityType: entity?.type,
+          entityId: entity?.id,
+        },
+      );
+      return;
+    }
+
+    // ─── WhatsApp Relay ───
+    if (!tenantId) {
+      this.logger.warn(`⚠️ Communication relay skipped: no tenantId`);
+      return;
+    }
+
+    if (!notifiable.length || !content) {
+      this.logger.warn(`⚠️ Communication relay skipped: no recipients or empty content`);
+      return;
+    }
+
+    // البحث عن قناة واتساب متصلة
+    const channel = await this.findActiveWhatsAppChannel(storeId, tenantId);
+    if (!channel) {
+      this.logger.warn(
+        `⚠️ Communication relay: no active WhatsApp channel`,
+        { storeId, tenantId, businessType },
+      );
+      return;
+    }
+
+    this.logger.log(`📱 Communication relay channel: ${channel.id}`);
+
+    // إرسال لكل مستلم (عادةً مستلم واحد)
+    let sentCount = 0;
+    let failedCount = 0;
+
+    for (const recipient of notifiable) {
+      if (!recipient) continue;
+
+      // تنظيف الرقم (إزالة الرموز والمسافات)
+      const cleanPhone = this.normalizePhone(recipient);
+      if (!cleanPhone) continue;
+
+      try {
+        await this.channelsService.sendWhatsAppMessage(channel.id, cleanPhone, content);
+
+        this.logger.log(
+          `✅ Communication relay sent: [${businessType}] → ${cleanPhone}`,
+          { entityType: entity?.type, entityId: entity?.id, customerId },
+        );
+
+        sentCount++;
+      } catch (error: unknown) {
+        failedCount++;
+        this.logger.error(
+          `❌ Communication relay failed: [${businessType}] → ${cleanPhone}`,
+          { error: error instanceof Error ? error.message : 'Unknown', customerId },
+        );
+      }
+    }
+
+    this.logger.log(
+      `📊 Communication relay summary: ${sentCount} sent, ${failedCount} failed | type=${businessType}`,
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
   // Main Dispatch Logic
   // ═══════════════════════════════════════════════════════════════════════════════
 
