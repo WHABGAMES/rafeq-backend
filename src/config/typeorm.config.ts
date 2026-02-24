@@ -35,12 +35,13 @@ import { StoreSettings } from '../modules/settings/entities/store-settings.entit
 import { NotificationRule } from '../modules/employee-notifications/entities/notification-rule.entity';
 import { EmployeeNotification } from '../modules/employee-notifications/entities/employee-notification.entity';
 import { KnowledgeBase } from '../modules/ai/entities/knowledge-base.entity';
+import { CsatSurvey } from '../modules/csat/entities/csat-survey.entity';
 
 const entities = [
   User, Tenant, Store, Channel, Message, Conversation, Campaign, Customer,
   Order, WebhookEvent, WebhookLog, MessageTemplate, Subscription, SubscriptionPlan,
   Automation, StoreSettings, ScheduledTemplateSend, NotificationRule,
-  EmployeeNotification, KnowledgeBase,
+  EmployeeNotification, KnowledgeBase, CsatSurvey,
 ];
 
 /**
