@@ -81,9 +81,13 @@ export class SubmitCsatDto {
   @IsString()
   type?: 'csat' | 'nps' | 'ces' | 'thumbs';
 
-  @ApiProperty({ description: 'التقييم', minimum: 1, maximum: 10 })
+  @ApiProperty({
+    description: 'التقييم — CSAT: 1-5 | NPS: 0-10 | CES: 1-7 | Thumbs: 0(down)/1(up)',
+    minimum: 0,
+    maximum: 10,
+  })
   @IsNumber()
-  @Min(1)
+  @Min(0)   // ✅ FIX: NPS يبدأ من 0، Thumbs-down = 0
   @Max(10)
   rating: number;
 
