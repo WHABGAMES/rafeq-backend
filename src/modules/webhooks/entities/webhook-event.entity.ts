@@ -102,6 +102,13 @@ export enum SallaEventType {
   // Specialoffer Events
   SPECIALOFFER_CREATED = 'specialoffer.created',
   SPECIALOFFER_UPDATED = 'specialoffer.updated',
+
+  // ═══════════════════════════════════════════════════════════════
+  // 📡 Communication Webhooks (النمط السهل - Communication App)
+  // ═══════════════════════════════════════════════════════════════
+  COMMUNICATION_SMS_SEND = 'communication.sms.send',
+  COMMUNICATION_EMAIL_SEND = 'communication.email.send',
+  COMMUNICATION_WHATSAPP_SEND = 'communication.whatsapp.send',
 }
 
 /**
