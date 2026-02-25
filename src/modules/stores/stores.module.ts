@@ -1,10 +1,11 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║                    RAFIQ PLATFORM - Stores Module                              ║
+ * ║                    RAFIQ PLATFORM — Stores Module                              ║
  * ║                                                                                ║
- * ║  Module لإدارة المتاجر المرتبطة بالمنصة (سلة + زد + API)                       ║
- * ║  ✅ مع دعم Auto Registration للتجار                                            ║
- * ║  🆕 مع دعم الربط عبر API Key                                                  ║
+ * ║  البنية الجديدة (مفصولة):                                                      ║
+ * ║    • SallaStoreService  ← كل ما يخص سلة                                      ║
+ * ║    • ZidStoreService    ← كل ما يخص زد                                        ║
+ * ║    • StoresService      ← Facade مشترك                                        ║
  * ║                                                                                ║
  * ║  📁 src/modules/stores/stores.module.ts                                       ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
@@ -21,10 +22,16 @@ import { AuthModule } from '../auth/auth.module';
 import { StoresController } from './stores.controller';
 import { SallaOAuthController } from './salla-oauth.controller';
 import { ZidOAuthController } from './zid-oauth.controller';
-import { ApiConnectController } from './api-connect.controller';  // 🆕
+import { ApiConnectController } from './api-connect.controller';
 
-// Services
+// Shared Facade
 import { StoresService } from './stores.service';
+
+// ✅ Platform-specific services (معزولة عن بعض)
+import { SallaStoreService } from './salla-store.service';
+import { ZidStoreService } from './zid-store.service';
+
+// OAuth & API
 import { SallaApiService } from './salla-api.service';
 import { SallaOAuthService } from './salla-oauth.service';
 import { ZidApiService } from './zid-api.service';
@@ -39,32 +46,35 @@ import { Store } from './entities/store.entity';
     ConfigModule,
     TenantsModule,
     forwardRef(() => AuthModule),
-    
-    HttpModule.register({
-      timeout: 30000,
-      maxRedirects: 5,
-    }),
+    HttpModule.register({ timeout: 30000, maxRedirects: 5 }),
   ],
 
   controllers: [
     StoresController,
     SallaOAuthController,
     ZidOAuthController,
-    ApiConnectController,    // 🆕
+    ApiConnectController,
   ],
 
   providers: [
+    // ✅ Facade (يستخدمه باقي الـ modules)
     StoresService,
-    // Salla
+
+    // ✅ Platform-specific (معزولة)
+    SallaStoreService,
+    ZidStoreService,
+
+    // OAuth & API
     SallaApiService,
     SallaOAuthService,
-    // Zid
     ZidApiService,
     ZidOAuthService,
   ],
 
   exports: [
-    StoresService,
+    StoresService,       // الواجهة الموحدة للخارج
+    SallaStoreService,   // لو module آخر احتاج Salla مباشرة
+    ZidStoreService,     // لو module آخر احتاج Zid مباشرة
     SallaApiService,
     SallaOAuthService,
     ZidApiService,
