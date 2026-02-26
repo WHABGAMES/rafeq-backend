@@ -159,6 +159,7 @@ export class ZidOAuthService {
               'Content-Type': 'application/json',
               Accept: 'application/json',
             },
+            timeout: 8000, // ✅ FIX: 8s max — must respond before Zid session expires (~10s)
           },
         ),
       );
@@ -212,6 +213,7 @@ export class ZidOAuthService {
               'Content-Type': 'application/json',
               Accept: 'application/json',
             },
+            timeout: 6000, // ✅ 6s max for token exchange (Zid responds in <3s normally)
           },
         ),
       );
@@ -240,59 +242,14 @@ export class ZidOAuthService {
         authorization: tokenData.authorization,
       };
 
-      // ✅ FIX: If authorization token is missing from OAuth response, try to retrieve it
-      // from the Zid account endpoint. This handles the reactivation scenario where Zid
-      // may not include the authorization field in the token response.
+      // ✅ PERF FIX: authorization fallback moved to BACKGROUND (void IIFE below)
+      // Rationale: if Zid OAuth response doesn't include 'authorization' field,
+      // fetching it from /managers/account/profile can take 4-8s extra,
+      // pushing total callback time > Zid's session timeout (~10s).
+      // We proceed with access_token only for the critical path.
+      // The authorization token will be fetched and saved in the background.
       if (!tokens.authorization) {
-        this.logger.warn('⚠️ Authorization token not in OAuth response - attempting to retrieve from Zid account');
-        try {
-          // ✅ FIX: نجرب /managers/account/profile أولاً (الـ endpoint الرسمي)
-          // مع X-Manager-Token لأن زد تحتاجه حتى بدون authorization
-          let accountResp: any = null;
-
-          // محاولة 1: /managers/account/profile مع X-Manager-Token
-          try {
-            accountResp = await firstValueFrom(
-              this.httpService.get(`${this.ZID_API_URL}/managers/account/profile`, {
-                headers: {
-                  'Authorization': `Bearer ${tokens.access_token}`,
-                  'X-Manager-Token': tokens.access_token,
-                  'Accept': 'application/json',
-                  'Content-Type': 'application/json',
-                  'Accept-Language': 'ar',
-                },
-              }),
-            );
-          } catch (_ignored) {
-            // محاولة 2: /account (القديمة)
-            accountResp = await firstValueFrom(
-              this.httpService.get(`${this.ZID_API_URL}/account`, {
-                headers: {
-                  'Authorization': `Bearer ${tokens.access_token}`,
-                  'X-Manager-Token': tokens.access_token,
-                  'Accept': 'application/json',
-                  'Content-Type': 'application/json',
-                },
-              }),
-            );
-          }
-
-          const authToken = accountResp?.data?.authorization
-            || accountResp?.data?.data?.authorization
-            || accountResp?.data?.user?.authorization
-            || accountResp?.data?.user?.store?.authorization
-            || accountResp?.data?.manager?.authorization;
-          if (authToken) {
-            tokens.authorization = authToken;
-            this.logger.log('✅ Retrieved authorization token from Zid account endpoint');
-          } else {
-            this.logger.warn('⚠️ Authorization token not available from Zid account endpoint - will proceed with access token only');
-          }
-        } catch (error: any) {
-          this.logger.warn('⚠️ Could not fetch authorization from Zid account endpoint', {
-            error: error?.response?.data || error.message,
-          });
-        }
+        this.logger.warn('⚠️ Authorization token not in OAuth response — will fetch in background');
       }
 
       // ═══════════════════════════════════════════════════════════════════════
@@ -474,9 +431,68 @@ export class ZidOAuthService {
         storeId: String(storeInfo.id || ''),
       };
 
-      // ✅ تشغيل في الـ background — fire-and-forget بدون await
-      // void لمنع unhandled promise warning في NestJS
+      // ✅ BACKGROUND: fire-and-forget — does NOT block user redirect
+      // Runs AFTER the response is sent. Handles:
+      //   (a) authorization token fetch (if missing from OAuth response)
+      //   (b) webhook registration with the (potentially enriched) tokens
       void (async () => {
+        // ── (a) Fetch authorization token if missing ──────────────────────
+        if (!webhookTokens.authorizationToken) {
+          try {
+            let accountResp: any = null;
+            try {
+              accountResp = await firstValueFrom(
+                this.httpService.get(`${this.ZID_API_URL}/managers/account/profile`, {
+                  headers: {
+                    'Authorization': `Bearer ${tokens.access_token}`,
+                    'X-Manager-Token': tokens.access_token,
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json',
+                    'Accept-Language': 'ar',
+                  },
+                  timeout: 6000,
+                }),
+              );
+            } catch (_ignored) {
+              accountResp = await firstValueFrom(
+                this.httpService.get(`${this.ZID_API_URL}/account`, {
+                  headers: {
+                    'Authorization': `Bearer ${tokens.access_token}`,
+                    'X-Manager-Token': tokens.access_token,
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json',
+                  },
+                  timeout: 6000,
+                }),
+              );
+            }
+            const fetchedAuth = accountResp?.data?.authorization
+              || accountResp?.data?.data?.authorization
+              || accountResp?.data?.user?.authorization
+              || accountResp?.data?.user?.store?.authorization
+              || accountResp?.data?.manager?.authorization;
+            if (fetchedAuth && savedStore?.id) {
+              // ✅ حفظ authorization token في المتجر
+              await this.storeRepository.update(
+                { id: savedStore.id },
+                {
+                  settings: {
+                    ...(savedStore.settings || {}),
+                    zidAuthorizationToken: encrypt(fetchedAuth) ?? undefined,
+                  },
+                },
+              );
+              webhookTokens.authorizationToken = fetchedAuth;
+              this.logger.log(`[BG] ✅ Authorization token fetched and saved for store ${zidStoreId}`);
+            } else {
+              this.logger.warn(`[BG] ⚠️ Could not retrieve authorization token — webhooks may use access_token only`);
+            }
+          } catch (authErr: any) {
+            this.logger.warn(`[BG] ⚠️ Authorization fetch failed (non-fatal): ${authErr.message}`);
+          }
+        }
+
+        // ── (b) Register webhooks ──────────────────────────────────────────
         try {
           const result = await this.zidApiService.registerWebhooks(webhookTokens, webhookUrl, appId);
           this.logger.log(`🔔 [BG] Zid webhooks registered: ${result.registered.join(',')} | failed: ${result.failed.join(',') || 'none'}`);
