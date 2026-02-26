@@ -581,7 +581,25 @@ export class ZidOAuthService {
   //   Authorization: Bearer {authorization}     ← حقل authorization من token response
   //   X-Manager-Token: {access_token}           ← حقل access_token من token response
   //
-  // 🗑️ getStoreInfo (legacy multi-attempt) removed — use zidApiService.getStoreInfo directly
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔍 getStoreInfo — Public method (used by AuthService)
+  // Delegates to zidApiService.getStoreInfo with proper ZidStoreInfo shape
+  // Returns null on failure (compatible with AuthService null-check pattern)
+  // ═══════════════════════════════════════════════════════════════════════════════
+  async getStoreInfo(managerToken: string, authorizationToken?: string): Promise<ZidStoreInfo | null> {
+    try {
+      const raw = await this.zidApiService.getStoreInfo({
+        managerToken,
+        authorizationToken: authorizationToken || undefined,
+        storeId: undefined,
+      });
+      // zidApiService لا تُعيد created_at — نُضيفها
+      return { ...raw, created_at: new Date().toISOString() } as ZidStoreInfo;
+    } catch (err: any) {
+      this.logger.warn(`⚠️ getStoreInfo failed: ${err.message}`);
+      return null;
+    }
+  }
 
   /**
    * Normalize store info response from different Zid API endpoints
