@@ -252,7 +252,7 @@ export class ZidApiService {
       'GET',
       '/managers/account/profile',
       tokens,
-      {},
+      { timeoutMs: 2000 },  // ✅ PERF: 2s max — critical path must complete in <5s total
       'get store info',
     );
 
@@ -298,6 +298,7 @@ export class ZidApiService {
       params?: Record<string, any>;
       body?: any;
       useProductHeaders?: boolean;
+      timeoutMs?: number;   // ✅ per-request timeout override (default: 8000ms)
     } = {},
     operationName: string,
     retryCount = 0,
@@ -320,6 +321,8 @@ export class ZidApiService {
           headers,
           params: options.params,
           data: options.body,
+          // ✅ FIX: timeout per-request — prevents 30s hangs that cause Zid callback timeout
+          timeout: options.timeoutMs ?? 8000,
         }),
       );
 
