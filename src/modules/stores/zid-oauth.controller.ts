@@ -1,3 +1,4 @@
+/// <reference types="node" />
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                RAFIQ PLATFORM - Zid OAuth Controller                           ║
@@ -46,6 +47,7 @@ import { StoresService } from './stores.service';
 // Auth
 import { JwtAuthGuard, Public } from '../auth/guards/jwt-auth.guard';
 import { User } from '@database/entities';
+import { ZidApiService } from './zid-api.service';
 
 interface RequestWithUser extends Request {
   user: User;
@@ -65,6 +67,7 @@ export class ZidOAuthController {
     private readonly zidOAuthService: ZidOAuthService,
     private readonly storesService: StoresService,
     private readonly configService: ConfigService,
+    private readonly zidApiService: ZidApiService,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -112,6 +115,7 @@ export class ZidOAuthController {
     @Query('state') state: string,
     @Query('error') error: string,
     @Query('error_description') errorDescription: string,
+    @Query('store_id') storeIdParam: string,
     @Res() res: Response,
   ): Promise<void> {
     this.logFullRequest(req, 'GET');
@@ -145,7 +149,7 @@ export class ZidOAuthController {
       return;
     }
 
-    return this.processOAuthCallback({ code, state, error, errorDescription }, res);
+    return this.processOAuthCallback({ code, state, error, errorDescription, storeId: storeIdParam }, res);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -172,6 +176,7 @@ export class ZidOAuthController {
     const state = (body.state || query.state) as string | undefined;
     const error = (body.error || query.error) as string | undefined;
     const errorDescription = (body.error_description || query.error_description) as string | undefined;
+    const storeIdParam = (body.store_id || query.store_id || body.storeId) as string | undefined;
 
     // ═════════════════════════════════════════════════════════
     // ✅ Install Flow — POST بدون بيانات → redirect to OAuth
@@ -201,7 +206,7 @@ export class ZidOAuthController {
       return;
     }
 
-    return this.processOAuthCallback({ code, state, error, errorDescription }, res);
+    return this.processOAuthCallback({ code, state, error, errorDescription, storeId: storeIdParam }, res);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -214,6 +219,7 @@ export class ZidOAuthController {
       state?: string;
       error?: string;
       errorDescription?: string;
+      storeId?: string;  // ✅ FIX: store_id من Zid callback URL
     },
     res: Response,
   ): Promise<void> {
@@ -265,7 +271,13 @@ export class ZidOAuthController {
           params.code,
           params.state!,
         );
-        const storeInfo = await this.zidOAuthService.getStoreInfo(tokens.access_token);
+        // ✅ FIX: استخدام zidApiService.getStoreInfo بدل زيد OAuth القديمة
+        const rawStoreInfo = await this.zidApiService.getStoreInfo({
+          managerToken: tokens.access_token,
+          authorizationToken: tokens.authorization || undefined,
+          storeId: undefined,
+        });
+        const storeInfo = { ...rawStoreInfo, created_at: new Date().toISOString() };
 
         const store = await this.storesService.connectZidStore(tenantId, {
           tokens: {
@@ -293,7 +305,7 @@ export class ZidOAuthController {
         // ════════════════════════════════════════════════════════════
         this.logger.log(`🆕 Zid store install flow — creating account`);
 
-        const result = await this.zidOAuthService.exchangeCodeAndAutoRegister(params.code);
+        const result = await this.zidOAuthService.exchangeCodeAndAutoRegister(params.code, params.storeId);
 
         this.logger.log(`✅ Zid Auto-registration completed`, {
           zidStoreId: result.zidStoreId,
