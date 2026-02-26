@@ -573,7 +573,9 @@ export class AuthService implements OnModuleInit {
         tokens.access_token,
         tokens.authorization,
       );
-      this.logger.log(`📊 Zid store info: id=${storeInfo.id}, name=${storeInfo.name}`);
+      if (storeInfo) {
+        this.logger.log(`📊 Zid store info: id=${storeInfo.id}, name=${storeInfo.name}`);
+      }
     } catch (infoError: any) {
       this.logger.warn(`⚠️ Could not fetch Zid store info via ZidOAuthService: ${infoError.message} — falling back to /account`);
     }
