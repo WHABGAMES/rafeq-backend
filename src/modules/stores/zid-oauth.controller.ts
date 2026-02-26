@@ -271,12 +271,22 @@ export class ZidOAuthController {
           params.code,
           params.state!,
         );
-        // ✅ FIX: استخدام zidApiService.getStoreInfo بدل زيد OAuth القديمة
-        const rawStoreInfo = await this.zidApiService.getStoreInfo({
-          managerToken: tokens.access_token,
-          authorizationToken: tokens.authorization || undefined,
-          storeId: undefined,
-        });
+        // ✅ FIX: استخدام zidApiService.getStoreInfo مع fallback
+        // إذا فشل getStoreInfo → نستمر بـ minimal info (لا نُوقف الـ flow)
+        let rawStoreInfo: Awaited<ReturnType<typeof this.zidApiService.getStoreInfo>>;
+        try {
+          rawStoreInfo = await this.zidApiService.getStoreInfo({
+            managerToken: tokens.access_token,
+            authorizationToken: tokens.authorization || undefined,
+            storeId: undefined,
+          });
+        } catch (storeInfoErr: any) {
+          this.logger.warn(`⚠️ getStoreInfo failed in dashboard flow: ${storeInfoErr.message} — using minimal info`);
+          rawStoreInfo = {
+            id: '', uuid: '', name: 'متجر زد', email: '', mobile: '',
+            url: '', currency: 'SAR', language: 'ar', logo: undefined,
+          };
+        }
         const storeInfo = { ...rawStoreInfo, created_at: new Date().toISOString() };
 
         const store = await this.storesService.connectZidStore(tenantId, {
