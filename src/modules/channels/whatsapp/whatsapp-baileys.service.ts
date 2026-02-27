@@ -2,7 +2,7 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - WhatsApp Baileys Service                   ║
  * ║                                                                                ║
- * ║  ✅ v16 — إصلاح نهائي ومضمون لـ phone pairing "Couldn't link device"                ║
+ * ║  ✅ v17 — الإصلاح الجذري الحقيقي لـ phone pairing "Couldn't link device"                ║
  * ║                                                                                ║
  * ║  FIX-1: @lid Resolution — حفظ lid→phone في DB يُستعاد عند كل restart           ║
  * ║  FIX-2: resolveJidForSending — حُذفت onWhatsApp(lid) الخاطئة                   ║
@@ -16,7 +16,7 @@
  * ║         • browser: Browsers.ubuntu (كان custom string يكسر البروتوكول)          ║
  * ║         • انتظار حدث 'connecting' (كان delay ثابت 5 ثوانٍ)                     ║
  * ║         • retry تلقائي مرة واحدة عند الفشل                                     ║
- * ║  FIX-8: 🔥 السبب الجذري لـ "Couldn't link device" (v3 النهائي):                             ║
+ * ║  FIX-8: 🔥 السبب الجذري لـ "Couldn't link device" (v4 النهائي):                             ║
  * ║         WhatsApp يرسل connection:close (515/428) بعد requestPairingCode        ║
  * ║         كان الكود يُعيد الاتصال → يُنشئ socket جديد بـ method:'qr'             ║
  * ║         → يُفسد رمز الربط الأصلي → المستخدم يحصل على "Couldn't link device"   ║
@@ -295,7 +295,7 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
   /**
    * FIX-5: restoreSession — يُعيد تحميل lid→phone من DB قبل الاتصال
    */
-  private async restoreSession(channelId: string): Promise<void> {
+  private async restoreSession(channelId: string, forPairing = false): Promise<void> {
     const sessionPath = path.join(this.sessionsPath, `wa_${channelId}`);
 
     // FIX-5: تأكد من وجود lid mappings في الذاكرة قبل أي إرسال
@@ -333,7 +333,10 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
       },
       version,
       printQRInTerminal: false,
-      browser: ['Rafiq Platform', 'Chrome', '126.0.0'],
+      // ✅ FIX-9: phone pairing reconnect MUST use Browsers.ubuntu — same as original socket
+      // WhatsApp verifies browser fingerprint against what was sent in requestPairingCode()
+      // Using a different browser string = 'Couldn't link device'
+      browser: forPairing ? Browsers.ubuntu('Chrome') : ['Rafiq Platform', 'Chrome', '126.0.0'],
       connectTimeoutMs: 60_000,
       defaultQueryTimeoutMs: 60_000,
       keepAliveIntervalMs: 25_000,
@@ -345,9 +348,7 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
 
     const session: WhatsAppSession = {
       socket: sock, channelId, status: 'connecting', retryCount: 0,
-      // 'qr' is correct here — restoreSession is for reconnecting already-authenticated sessions
-      // (pairing_code sessions are protected by the guard in handleConnectionUpdate and never reach here)
-      connectionMethod: 'qr',
+      connectionMethod: forPairing ? 'phone_code' : 'qr',
     };
     this.sessions.set(channelId, session);
 
@@ -704,18 +705,15 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
         await this.saveSessionToDB(channelId, sessionPath).catch(() => {});
 
         // أعد الاتصال بنفس ملفات الـ auth (cleanupSession لا تحذف ملفات القرص)
+        // forPairing=true → Browsers.ubuntu + connectionMethod=phone_code + status=connecting
         setTimeout(async () => {
           try {
             await this.cleanupSession(channelId);
-            await this.restoreSession(channelId);
-            // أبقِ الحالة pairing_code + connectionMethod phone_code بعد الاستعادة
-            // حتى لا يُنشئ handleConnectionUpdate QR code عند reconnect
+            await this.restoreSession(channelId, true); // ✅ forPairing: Browsers.ubuntu + phone_code
+            // بعد restoreSession، غيّر الحالة إلى pairing_code لانتظار المستخدم
             const restored = this.sessions.get(channelId);
-            if (restored) {
-              restored.status = 'pairing_code';
-              restored.connectionMethod = 'phone_code';
-            }
-            this.logger.log(`📱 [${channelId}] Socket reconnected — waiting for user to enter pairing code`);
+            if (restored) restored.status = 'pairing_code';
+            this.logger.log(`📱 [${channelId}] Socket reconnected (Browsers.ubuntu) — waiting for user to enter pairing code`);
           } catch (e) {
             this.logger.error(`❌ Failed to reconnect during pairing: ${e instanceof Error ? e.message : 'Unknown'}`);
             const s = this.sessions.get(channelId);
