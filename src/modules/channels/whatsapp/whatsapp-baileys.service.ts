@@ -2,7 +2,7 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - WhatsApp Baileys Service                   ║
  * ║                                                                                ║
- * ║  ✅ v13 — إصلاحات جذرية ونهائية                                                ║
+ * ║  ✅ v14 — إصلاح جذر مشكلة phone pairing "Couldn't link device"                ║
  * ║                                                                                ║
  * ║  FIX-1: @lid Resolution — حفظ lid→phone في DB يُستعاد عند كل restart           ║
  * ║  FIX-2: resolveJidForSending — حُذفت onWhatsApp(lid) الخاطئة                   ║
@@ -12,10 +12,15 @@
  * ║  FIX-5: restoreSession — يُعيد تحميل lid→phone من DB قبل الاتصال              ║
  * ║  FIX-6: 🔐 تشفير بيانات الجلسة (مفاتيح واتساب الخاصة) قبل الحفظ في DB       ║
  * ║         يدعم الترحيل: البيانات القديمة (غير مشفرة) تُقرأ وتُشفَّر تلقائياً   ║
- * ║  FIX-7: 📱 Phone Pairing Code — 3 أخطاء أساسية:                               ║
+ * ║  FIX-7: 📱 Phone Pairing Code (3 إصلاحات):                                    ║
  * ║         • browser: Browsers.ubuntu (كان custom string يكسر البروتوكول)          ║
- * ║         • انتظار حدث 'connecting' (كان delay ثابت 5 ثوانٍ — يفشل أحياناً)     ║
- * ║         • retry تلقائي مرة واحدة عند الفشل (3 ثوانٍ بين المحاولتين)           ║
+ * ║         • انتظار حدث 'connecting' (كان delay ثابت 5 ثوانٍ)                     ║
+ * ║         • retry تلقائي مرة واحدة عند الفشل                                     ║
+ * ║  FIX-8: 🔥 السبب الجذري لـ "Couldn't link device":                             ║
+ * ║         WhatsApp يرسل connection:close (515/428) بعد requestPairingCode        ║
+ * ║         كان الكود يُعيد الاتصال → يُنشئ socket جديد بـ method:'qr'             ║
+ * ║         → يُفسد رمز الربط الأصلي → المستخدم يحصل على "Couldn't link device"   ║
+ * ║         الحل: guard في handleConnectionUpdate يمنع إعادة الاتصال أثناء pairing ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -339,7 +344,10 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
     });
 
     const session: WhatsAppSession = {
-      socket: sock, channelId, status: 'connecting', retryCount: 0, connectionMethod: 'qr',
+      socket: sock, channelId, status: 'connecting', retryCount: 0,
+      // 'qr' is correct here — restoreSession is for reconnecting already-authenticated sessions
+      // (pairing_code sessions are protected by the guard in handleConnectionUpdate and never reach here)
+      connectionMethod: 'qr',
     };
     this.sessions.set(channelId, session);
 
@@ -675,6 +683,14 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
       let statusCode: number | undefined;
       if (error && 'output' in error) statusCode = (error as Boom).output?.statusCode;
       this.logger.warn(`⚠️ Disconnected: ${channelId}, code: ${statusCode}`);
+
+      // ✅ FIX: رمز الربط نشط — لا تُعيد الاتصال أو تُنشئ socket جديد
+      // WhatsApp يرسل close (515/428) بعد requestPairingCode مباشرة أحياناً
+      // إعادة الاتصال هنا تُفسد رمز الربط وتُحوّل الجلسة إلى QR
+      if (session.status === 'pairing_code') {
+        this.logger.log(`📱 [${channelId}] Connection event during pairing — preserving pairing session, not reconnecting`);
+        return;
+      }
 
       try {
         await this.channelRepository.update(channelId, {
