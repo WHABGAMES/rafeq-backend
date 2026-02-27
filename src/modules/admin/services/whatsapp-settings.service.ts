@@ -510,7 +510,7 @@ export class WhatsappSettingsService implements OnModuleInit {
       );
 
       return {
-        data: rows.map((r) => ({
+        data: rows.map((r: any) => ({
           id:             String(r.id),
           recipientPhone: (r.recipientPhone as string) || null,
           content:        (r.content        as string) || null,
