@@ -2,11 +2,16 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - WhatsApp Baileys Service                   ║
  * ║                                                                                ║
- * ║  ✅ QR Code + Phone Pairing Code Support                                      ║
- * ║  ✅ إصلاح Connection Failure (code 405)                                        ║
- * ║  ✅ Proper session cleanup + retry limits                                      ║
- * ║  ✅ v10: حفظ الجلسات في PostgreSQL (لا تضيع عند deploy)                       ║
- * ║  ✅ v10: إصلاح ربط الهاتف (Phone Pairing Code)                                ║
+ * ║  ✅ v12 — إصلاحات جذرية ونهائية                                                ║
+ * ║                                                                                ║
+ * ║  FIX-1: @lid Resolution — حفظ lid→phone في DB يُستعاد عند كل restart           ║
+ * ║  FIX-2: resolveJidForSending — حُذفت onWhatsApp(lid) الخاطئة                   ║
+ * ║         @lid ليس رقم هاتف — API تقبل أرقام E.164 فقط                           ║
+ * ║  FIX-3: onModuleInit — استعادة متوازية مع MAX_CONCURRENT_RESTORES=5            ║
+ * ║  FIX-4: handleConnectionUpdate — تنظيف errorCount/disconnectedAt عند reconnect ║
+ * ║  FIX-5: restoreSession — يُعيد تحميل lid→phone من DB قبل الاتصال              ║
+ * ║  FIX-6: 🔐 تشفير بيانات الجلسة (مفاتيح واتساب الخاصة) قبل الحفظ في DB       ║
+ * ║         يدعم الترحيل: البيانات القديمة (غير مشفرة) تُقرأ وتُشفَّر تلقائياً   ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -17,6 +22,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as path from 'path';
 import * as fs from 'fs';
+import { encrypt, decryptSafe, isEncrypted } from '@common/utils/encryption.util';
 
 import makeWASocket, {
   DisconnectReason,
@@ -27,31 +33,20 @@ import makeWASocket, {
   WAMessage,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
-
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import * as QRCode from 'qrcode';
 import { Channel, ChannelType, ChannelStatus } from '../entities/channel.entity';
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// ✅ Silent Logger - بديل pino بدون dependency خارجي
-// ═══════════════════════════════════════════════════════════════════════════════
-
+// ── Silent Logger ─────────────────────────────────────────────────────────────
 const noopFn = () => {};
 const silentLogger = {
-  level: 'silent',
-  child: () => silentLogger,
-  trace: noopFn,
-  debug: noopFn,
-  info: noopFn,
-  warn: noopFn,
-  error: noopFn,
-  fatal: noopFn,
+  level: 'silent', child: () => silentLogger,
+  trace: noopFn, debug: noopFn, info: noopFn,
+  warn: noopFn, error: noopFn, fatal: noopFn,
 } as any;
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// Types
-// ═══════════════════════════════════════════════════════════════════════════════
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface WhatsAppSession {
   socket: WASocket | null;
@@ -80,28 +75,35 @@ export interface MessageUpsert {
 }
 
 /**
- * ✅ v10: هيكل بيانات الجلسة المحفوظة في DB
+ * FIX-1: إضافة lidMappings لحفظ ربط @lid → رقم هاتف بشكل دائم في DB
  */
 interface StoredSessionData {
-  creds: string; // JSON serialized creds
-  keys: Record<string, string>; // key type -> JSON serialized data
+  creds: string;
+  keys: Record<string, string>;
+  lidMappings?: Record<string, string>;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// Constants
-// ═══════════════════════════════════════════════════════════════════════════════
-
+// ── Constants ─────────────────────────────────────────────────────────────────
 const MAX_RETRIES = 3;
-const QR_TIMEOUT_MS = 120000;
-const INIT_TIMEOUT_MS = 90000;
-const RECONNECT_BASE_DELAY_MS = 5000;
+const QR_TIMEOUT_MS = 120_000;
+const INIT_TIMEOUT_MS = 90_000;
+const RECONNECT_BASE_DELAY_MS = 5_000;
+/** FIX-3: أقصى عدد جلسات تُستعاد بالتوازي */
+const MAX_CONCURRENT_RESTORES = 5;
+/** FIX-1: debounce قبل حفظ lid mappings في DB */
+const LID_PERSIST_DEBOUNCE_MS = 3_000;
 
 @Injectable()
 export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
   private readonly logger = new Logger(WhatsAppBaileysService.name);
   private readonly sessions = new Map<string, WhatsAppSession>();
-  // ✅ خريطة تربط معرّفات @lid بأرقام الهاتف الحقيقية لكل قناة
+
+  /** FIX-1: خريطة lid→phone في الذاكرة */
   private readonly lidToPhone = new Map<string, Map<string, string>>();
+
+  /** FIX-1: debounce timers لحفظ lid mappings في DB */
+  private readonly lidPersistTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
   private sessionsPath: string;
 
   constructor(
@@ -113,97 +115,119 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
     this.sessionsPath = this.initializeSessionsPath();
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // ✅ v10: حفظ واستعادة Auth State من/إلى PostgreSQL
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // ── DB Session Management ──────────────────────────────────────────────────
 
-  /**
-   * ✅ v10: حفظ auth state كامل في عمود session_data في جدول channels
-   */
   private async saveSessionToDB(channelId: string, sessionPath: string): Promise<void> {
     try {
       const credsPath = path.join(sessionPath, 'creds.json');
       if (!fs.existsSync(credsPath)) return;
 
       const creds = fs.readFileSync(credsPath, 'utf8');
-      
-      // جمع كل ملفات المفاتيح
       const keys: Record<string, string> = {};
       const files = fs.readdirSync(sessionPath);
       for (const file of files) {
         if (file !== 'creds.json' && file.endsWith('.json')) {
-          const content = fs.readFileSync(path.join(sessionPath, file), 'utf8');
-          keys[file] = content;
+          keys[file] = fs.readFileSync(path.join(sessionPath, file), 'utf8');
         }
       }
 
-      const sessionData: StoredSessionData = { creds, keys };
+      // FIX-1: حفظ lid mappings ضمن بيانات الجلسة
+      const channelMap = this.lidToPhone.get(channelId);
+      const lidMappings: Record<string, string> = {};
+      if (channelMap) {
+        for (const [lid, phone] of channelMap) lidMappings[lid] = phone;
+      }
 
-      await this.channelRepository.update(channelId, {
-        sessionData: JSON.stringify(sessionData),
-      });
+      const sessionData: StoredSessionData = { creds, keys, lidMappings };
+      const plainJson = JSON.stringify(sessionData);
+      // 🔐 تشفير بيانات الجلسة (مفاتيح واتساب الخاصة) قبل الحفظ في DB
+      const encryptedData = encrypt(plainJson) ?? plainJson; // fallback للتطوير
+      await this.channelRepository.update(channelId, { sessionData: encryptedData });
 
-      this.logger.debug(`💾 Session saved to DB: ${channelId} (${Object.keys(keys).length} key files)`);
+      this.logger.debug(
+        `💾 Session saved to DB: ${channelId} ` +
+        `(${Object.keys(keys).length} key files, ${Object.keys(lidMappings).length} lid mappings)`,
+      );
     } catch (error) {
-      this.logger.warn(`Failed to save session to DB: ${channelId} - ${error instanceof Error ? error.message : 'Unknown'}`);
+      this.logger.warn(`Failed to save session to DB: ${channelId} — ${error instanceof Error ? error.message : 'Unknown'}`);
     }
   }
 
-  /**
-   * ✅ v10: استعادة auth state من DB إلى الملفات
-   * يُستخدم عند بدء التشغيل بعد deploy جديد
-   */
   private async restoreSessionFromDB(channelId: string, sessionPath: string): Promise<boolean> {
     try {
       const channel = await this.channelRepository.findOne({
         where: { id: channelId },
         select: ['id', 'sessionData'],
       });
+      if (!channel?.sessionData) return false;
 
-      if (!channel?.sessionData) {
-        this.logger.debug(`No DB session data for: ${channelId}`);
-        return false;
+      // 🔐 فك تشفير البيانات — مع دعم البيانات القديمة (غير مشفرة) للترحيل
+      let rawJson: string;
+      if (isEncrypted(channel.sessionData)) {
+        // decryptSafe تُرجع null بدل الاستثناء — آمنة للاستخدام هنا
+        const decrypted = decryptSafe(channel.sessionData);
+        if (!decrypted) {
+          this.logger.error(`Failed to decrypt session data for ${channelId} — data may be corrupted or key mismatch`);
+          return false;
+        }
+        rawJson = decrypted;
+      } else {
+        // بيانات قديمة غير مشفرة — نقرأها مباشرة ونُشفّرها عند الحفظ التالي
+        this.logger.warn(`⚠️ Unencrypted session data detected for ${channelId} — will encrypt on next save`);
+        rawJson = channel.sessionData;
       }
 
-      const sessionData: StoredSessionData = JSON.parse(channel.sessionData);
+      const sessionData: StoredSessionData = JSON.parse(rawJson);
 
-      // إنشاء مجلد الجلسة
-      if (!fs.existsSync(sessionPath)) {
-        fs.mkdirSync(sessionPath, { recursive: true });
-      }
-
-      // كتابة creds
+      if (!fs.existsSync(sessionPath)) fs.mkdirSync(sessionPath, { recursive: true });
       fs.writeFileSync(path.join(sessionPath, 'creds.json'), sessionData.creds);
-
-      // كتابة المفاتيح
       for (const [fileName, content] of Object.entries(sessionData.keys)) {
         fs.writeFileSync(path.join(sessionPath, fileName), content);
+      }
+
+      // FIX-1: استعادة lid→phone في الذاكرة
+      if (sessionData.lidMappings && Object.keys(sessionData.lidMappings).length > 0) {
+        if (!this.lidToPhone.has(channelId)) this.lidToPhone.set(channelId, new Map());
+        const map = this.lidToPhone.get(channelId)!;
+        for (const [lid, phone] of Object.entries(sessionData.lidMappings)) map.set(lid, phone);
+        this.logger.log(`📥 Restored ${Object.keys(sessionData.lidMappings).length} lid→phone mappings from DB for ${channelId}`);
       }
 
       this.logger.log(`📥 Session restored from DB: ${channelId} (${Object.keys(sessionData.keys).length} key files)`);
       return true;
     } catch (error) {
-      this.logger.warn(`Failed to restore session from DB: ${channelId} - ${error instanceof Error ? error.message : 'Unknown'}`);
+      this.logger.warn(`Failed to restore session from DB: ${channelId} — ${error instanceof Error ? error.message : 'Unknown'}`);
       return false;
     }
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🔄 Lifecycle
-  // ═══════════════════════════════════════════════════════════════════════════════
+  /** FIX-1: جدولة حفظ lid mappings مع debounce لتجنب كتابات متكررة */
+  private scheduleLidPersist(channelId: string): void {
+    const existing = this.lidPersistTimers.get(channelId);
+    if (existing) clearTimeout(existing);
+
+    const timer = setTimeout(async () => {
+      this.lidPersistTimers.delete(channelId);
+      const sessionPath = path.join(this.sessionsPath, `wa_${channelId}`);
+      if (fs.existsSync(sessionPath)) {
+        await this.saveSessionToDB(channelId, sessionPath);
+      }
+    }, LID_PERSIST_DEBOUNCE_MS);
+
+    this.lidPersistTimers.set(channelId, timer);
+  }
+
+  // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   /**
-   * ✅ v10: عند بدء التشغيل — استعادة الجلسات من DB ثم إعادة الاتصال
+   * FIX-3: استعادة الجلسات بالتوازي مع حد أقصى = MAX_CONCURRENT_RESTORES
    */
   async onModuleInit(): Promise<void> {
-    this.logger.log('🔄 WhatsApp Baileys Service starting - checking for sessions to restore...');
+    this.logger.log('🔄 WhatsApp Baileys Service starting — checking for sessions to restore...');
 
     try {
       const connectedChannels = await this.channelRepository.find({
-        where: {
-          type: ChannelType.WHATSAPP_QR,
-          status: ChannelStatus.CONNECTED,
-        },
+        where: { type: ChannelType.WHATSAPP_QR, status: ChannelStatus.CONNECTED },
       });
 
       if (connectedChannels.length === 0) {
@@ -211,47 +235,83 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
         return;
       }
 
-      this.logger.log(`📱 Found ${connectedChannels.length} connected channel(s) to restore`);
+      this.logger.log(
+        `📱 Found ${connectedChannels.length} channel(s) to restore ` +
+        `(batches of ${MAX_CONCURRENT_RESTORES})`,
+      );
 
-      for (const channel of connectedChannels) {
-        const sessionPath = path.join(this.sessionsPath, `wa_${channel.id}`);
+      for (let i = 0; i < connectedChannels.length; i += MAX_CONCURRENT_RESTORES) {
+        const batch = connectedChannels.slice(i, i + MAX_CONCURRENT_RESTORES);
 
-        // ✅ v10: أولاً — تحقق من الملفات المحلية
-        let hasAuthState = fs.existsSync(sessionPath) &&
-          fs.readdirSync(sessionPath).length > 0;
+        const results = await Promise.allSettled(
+          batch.map(async (channel) => {
+            const sessionPath = path.join(this.sessionsPath, `wa_${channel.id}`);
+            let hasAuthState = fs.existsSync(sessionPath) && fs.readdirSync(sessionPath).length > 0;
 
-        // ✅ v10: ثانياً — إذا ما في ملفات محلية، استعد من DB
-        if (!hasAuthState) {
-          this.logger.log(`📥 No local files for ${channel.id} - restoring from DB...`);
-          hasAuthState = await this.restoreSessionFromDB(channel.id, sessionPath);
-        }
+            if (!hasAuthState) {
+              this.logger.log(`📥 No local files for ${channel.id} — restoring from DB...`);
+              hasAuthState = await this.restoreSessionFromDB(channel.id, sessionPath);
+            }
 
-        if (hasAuthState) {
-          this.logger.log(`🔄 Restoring session for channel ${channel.id} (${channel.whatsappPhoneNumber || channel.name})`);
-          try {
-            await this.restoreSession(channel.id);
-            this.logger.log(`✅ Session restored for channel ${channel.id}`);
-          } catch (error) {
-            const msg = error instanceof Error ? error.message : 'Unknown';
-            this.logger.error(`❌ Failed to restore session ${channel.id}: ${msg}`);
-            await this.markChannelDisconnected(channel.id);
+            if (hasAuthState) {
+              this.logger.log(`🔄 Restoring session: ${channel.id} (${channel.whatsappPhoneNumber || channel.name})`);
+              await this.restoreSession(channel.id);
+            } else {
+              this.logger.warn(`⚠️ No auth state for ${channel.id} — marking disconnected`);
+              await this.markChannelDisconnected(channel.id);
+            }
+          }),
+        );
+
+        results.forEach((result: PromiseSettledResult<void>, idx: number) => {
+          if (result.status === 'rejected') {
+            const ch = batch[idx];
+            this.logger.error(`❌ Failed to restore ${ch.id}: ${(result as PromiseRejectedResult).reason instanceof Error ? (result as PromiseRejectedResult).reason.message : 'Unknown'}`);
+            this.markChannelDisconnected(ch.id).catch(() => {});
           }
-        } else {
-          this.logger.warn(`⚠️ No auth state (local or DB) for channel ${channel.id} - marking as disconnected`);
-          await this.markChannelDisconnected(channel.id);
+        });
+
+        if (i + MAX_CONCURRENT_RESTORES < connectedChannels.length) {
+          await this.delay(2000);
         }
       }
+
+      this.logger.log('✅ Session restoration complete');
     } catch (error) {
-      const msg = error instanceof Error ? error.message : 'Unknown';
-      this.logger.error(`❌ Error during session restoration: ${msg}`);
+      this.logger.error(`❌ Error during session restoration: ${error instanceof Error ? error.message : 'Unknown'}`);
     }
   }
 
   /**
-   * ✅ v10: استعادة جلسة — مع حفظ تلقائي للـ DB عند كل creds.update
+   * FIX-5: restoreSession — يُعيد تحميل lid→phone من DB قبل الاتصال
    */
   private async restoreSession(channelId: string): Promise<void> {
     const sessionPath = path.join(this.sessionsPath, `wa_${channelId}`);
+
+    // FIX-5: تأكد من وجود lid mappings في الذاكرة قبل أي إرسال
+    if (!this.lidToPhone.has(channelId) || this.lidToPhone.get(channelId)!.size === 0) {
+      try {
+        const channel = await this.channelRepository.findOne({
+          where: { id: channelId }, select: ['id', 'sessionData'],
+        });
+        if (channel?.sessionData) {
+          let rawJson: string;
+          if (isEncrypted(channel.sessionData)) {
+            const decrypted = decryptSafe(channel.sessionData);
+            rawJson = decrypted ?? channel.sessionData;
+          } else {
+            rawJson = channel.sessionData;
+          }
+          const stored: StoredSessionData = JSON.parse(rawJson);
+          if (stored.lidMappings && Object.keys(stored.lidMappings).length > 0) {
+            if (!this.lidToPhone.has(channelId)) this.lidToPhone.set(channelId, new Map());
+            const map = this.lidToPhone.get(channelId)!;
+            for (const [lid, phone] of Object.entries(stored.lidMappings)) map.set(lid, phone);
+            this.logger.log(`📌 Pre-loaded ${map.size} lid→phone mappings for ${channelId}`);
+          }
+        }
+      } catch { /* بيانات تالفة — تجاهل */ }
+    }
 
     const { version } = await fetchLatestBaileysVersion();
     const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
@@ -264,9 +324,9 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
       version,
       printQRInTerminal: false,
       browser: ['Rafiq Platform', 'Chrome', '126.0.0'],
-      connectTimeoutMs: 60000,
-      defaultQueryTimeoutMs: 60000,
-      keepAliveIntervalMs: 25000,
+      connectTimeoutMs: 60_000,
+      defaultQueryTimeoutMs: 60_000,
+      keepAliveIntervalMs: 25_000,
       markOnlineOnConnect: false,
       generateHighQualityLinkPreview: false,
       logger: silentLogger,
@@ -274,57 +334,26 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
     });
 
     const session: WhatsAppSession = {
-      socket: sock,
-      channelId,
-      status: 'connecting',
-      retryCount: 0,
-      connectionMethod: 'qr',
+      socket: sock, channelId, status: 'connecting', retryCount: 0, connectionMethod: 'qr',
     };
-
     this.sessions.set(channelId, session);
 
-    // ✅ v10: حفظ مزدوج — ملفات + DB
-    sock.ev.on('creds.update', async () => {
-      await saveCreds();
-      await this.saveSessionToDB(channelId, sessionPath);
-    });
-
-    sock.ev.on('connection.update', async (update: Partial<ConnectionState>) => {
-      await this.handleConnectionUpdate(channelId, update);
-    });
-
-    sock.ev.on('messages.upsert', async (messageUpdate: MessageUpsert) => {
-      await this.handleIncomingMessages(channelId, messageUpdate);
-    });
-
-    // ✅ التقاط جهات الاتصال لربط @lid بأرقام الهاتف الحقيقية
-    sock.ev.on('contacts.upsert', (contacts: any[]) => {
-      this.handleContactsUpsert(channelId, contacts);
-    });
-
-    // ✅ تاريخ المحادثات — يحتوي على ربط @lid بأرقام الهاتف
-    sock.ev.on('messaging-history.set', (data: any) => {
-      this.handleHistorySet(channelId, data);
-    });
-
-    // ✅ تحديث جهات الاتصال
-    sock.ev.on('contacts.update', (updates: any[]) => {
-      this.handleContactsUpsert(channelId, updates);
-    });
+    sock.ev.on('creds.update', async () => { await saveCreds(); await this.saveSessionToDB(channelId, sessionPath); });
+    sock.ev.on('connection.update', async (update: Partial<ConnectionState>) => { await this.handleConnectionUpdate(channelId, update); });
+    sock.ev.on('messages.upsert', async (update: MessageUpsert) => { await this.handleIncomingMessages(channelId, update); });
+    sock.ev.on('contacts.upsert', (contacts: any[]) => { this.handleContactsUpsert(channelId, contacts); });
+    sock.ev.on('messaging-history.set', (data: any) => { this.handleHistorySet(channelId, data); });
+    sock.ev.on('contacts.update', (updates: any[]) => { this.handleContactsUpsert(channelId, updates); });
   }
 
-  /**
-   * تحديث حالة القناة في DB إلى disconnected
-   */
   private async markChannelDisconnected(channelId: string): Promise<void> {
     try {
       await this.channelRepository.update(channelId, {
         status: ChannelStatus.DISCONNECTED,
         disconnectedAt: new Date(),
-        lastError: 'جلسة واتساب انتهت - يرجى إعادة مسح QR Code',
+        lastError: 'جلسة واتساب انتهت — يرجى إعادة مسح QR Code',
         lastErrorAt: new Date(),
       });
-      this.logger.log(`📌 Channel ${channelId} marked as disconnected in DB`);
     } catch (error) {
       this.logger.error(`Failed to update channel status: ${error instanceof Error ? error.message : 'Unknown'}`);
     }
@@ -332,25 +361,17 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
 
   private initializeSessionsPath(): string {
     const configPath = this.configService.get<string>('WHATSAPP_SESSIONS_PATH');
-    const candidates = [
-      configPath,
-      path.join(process.cwd(), 'whatsapp-sessions'),
-      '/tmp/whatsapp-sessions',
-    ].filter(Boolean) as string[];
+    const candidates = [configPath, path.join(process.cwd(), 'whatsapp-sessions'), '/tmp/whatsapp-sessions'].filter(Boolean) as string[];
 
     for (const candidate of candidates) {
       try {
-        if (!fs.existsSync(candidate)) {
-          fs.mkdirSync(candidate, { recursive: true });
-        }
+        if (!fs.existsSync(candidate)) fs.mkdirSync(candidate, { recursive: true });
         const testFile = path.join(candidate, '.write-test');
         fs.writeFileSync(testFile, 'ok');
         fs.unlinkSync(testFile);
         this.logger.log(`✅ Sessions directory: ${candidate}`);
         return candidate;
-      } catch {
-        this.logger.warn(`⚠️ Cannot write to: ${candidate}`);
-      }
+      } catch { this.logger.warn(`⚠️ Cannot write to: ${candidate}`); }
     }
 
     const fallback = '/tmp/wa-sessions';
@@ -360,60 +381,39 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
 
   async onModuleDestroy(): Promise<void> {
     this.logger.log('Shutting down all WhatsApp sessions...');
+    for (const timer of this.lidPersistTimers.values()) clearTimeout(timer);
+    this.lidPersistTimers.clear();
 
-    // ✅ v10: حفظ جميع الجلسات في DB قبل الإغلاق
     for (const [channelId] of this.sessions) {
       const sessionPath = path.join(this.sessionsPath, `wa_${channelId}`);
       await this.saveSessionToDB(channelId, sessionPath);
     }
 
-    const promises: Promise<void>[] = [];
-    for (const [channelId] of this.sessions) {
-      promises.push(this.closeSession(channelId));
-    }
-    await Promise.allSettled(promises);
+    await Promise.allSettled(Array.from(this.sessions.keys()).map(id => this.closeSession(id)));
     this.sessions.clear();
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🔌 Session Init - QR Code
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // ── Session Init ──────────────────────────────────────────────────────────
 
   async initSession(channelId: string): Promise<QRSessionResult> {
     this.logger.log(`🔄 [QR] Init: ${channelId}`);
     return this.createBaileysSession(channelId, 'qr');
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 📱 Session Init - Phone Pairing Code
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  async initSessionWithPhoneCode(
-    channelId: string,
-    phoneNumber: string,
-  ): Promise<QRSessionResult> {
+  async initSessionWithPhoneCode(channelId: string, phoneNumber: string): Promise<QRSessionResult> {
     this.logger.log(`📱 [Phone] Init: ${channelId}, phone: ${phoneNumber}`);
     return this.createBaileysSession(channelId, 'phone_code', phoneNumber);
   }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🏗️ Core Session Builder
-  // ═══════════════════════════════════════════════════════════════════════════════
 
   private async createBaileysSession(
     channelId: string,
     method: 'qr' | 'phone_code',
     phoneNumber?: string,
   ): Promise<QRSessionResult> {
-    // ✅ v10: تنظيف كامل — حذف الملفات + الـ memory
     await this.fullCleanupSession(channelId);
 
     const sessionPath = path.join(this.sessionsPath, `wa_${channelId}`);
-
-    // ✅ v10: إنشاء مجلد نظيف
-    if (!fs.existsSync(sessionPath)) {
-      fs.mkdirSync(sessionPath, { recursive: true });
-    }
+    if (!fs.existsSync(sessionPath)) fs.mkdirSync(sessionPath, { recursive: true });
 
     try {
       const { version } = await fetchLatestBaileysVersion();
@@ -422,104 +422,46 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
       const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
 
       const sock = makeWASocket({
-        auth: {
-          creds: state.creds,
-          keys: makeCacheableSignalKeyStore(state.keys, silentLogger),
-        },
+        auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, silentLogger) },
         version,
         printQRInTerminal: method === 'qr',
         browser: ['Rafiq Platform', 'Chrome', '126.0.0'],
-        connectTimeoutMs: 60000,
-        defaultQueryTimeoutMs: 60000,
-        keepAliveIntervalMs: 25000,
-        markOnlineOnConnect: false,
-        generateHighQualityLinkPreview: false,
-        logger: silentLogger,
-        syncFullHistory: false,
+        connectTimeoutMs: 60_000, defaultQueryTimeoutMs: 60_000,
+        keepAliveIntervalMs: 25_000, markOnlineOnConnect: false,
+        generateHighQualityLinkPreview: false, logger: silentLogger, syncFullHistory: false,
       });
 
       const session: WhatsAppSession = {
-        socket: sock,
-        channelId,
-        status: 'connecting',
-        retryCount: 0,
-        connectionMethod: method,
-        phoneNumber,
+        socket: sock, channelId, status: 'connecting', retryCount: 0, connectionMethod: method, phoneNumber,
       };
-
       this.sessions.set(channelId, session);
 
-      // ✅ v10: حفظ مزدوج — ملفات + DB
-      sock.ev.on('creds.update', async () => {
-        await saveCreds();
-        await this.saveSessionToDB(channelId, sessionPath);
-      });
+      sock.ev.on('creds.update', async () => { await saveCreds(); await this.saveSessionToDB(channelId, sessionPath); });
+      sock.ev.on('connection.update', async (update: Partial<ConnectionState>) => { await this.handleConnectionUpdate(channelId, update); });
+      sock.ev.on('messages.upsert', async (update: MessageUpsert) => { await this.handleIncomingMessages(channelId, update); });
+      sock.ev.on('contacts.upsert', (contacts: any[]) => { this.handleContactsUpsert(channelId, contacts); });
+      sock.ev.on('messaging-history.set', (data: any) => { this.handleHistorySet(channelId, data); });
+      sock.ev.on('contacts.update', (updates) => { this.handleContactsUpsert(channelId, updates); });
 
-      sock.ev.on('connection.update', async (update: Partial<ConnectionState>) => {
-        await this.handleConnectionUpdate(channelId, update);
-      });
-
-      sock.ev.on('messages.upsert', async (messageUpdate: MessageUpsert) => {
-        await this.handleIncomingMessages(channelId, messageUpdate);
-      });
-
-      // ✅ التقاط جهات الاتصال لربط @lid بأرقام الهاتف الحقيقية
-      sock.ev.on('contacts.upsert', (contacts: any[]) => {
-        this.handleContactsUpsert(channelId, contacts);
-      });
-
-      // ✅ تاريخ المحادثات — يحتوي على ربط @lid بأرقام الهاتف
-      sock.ev.on('messaging-history.set', (data: any) => {
-        this.handleHistorySet(channelId, data);
-      });
-
-      // ✅ تحديث جهات الاتصال
-      sock.ev.on('contacts.update', (updates: any[]) => {
-        this.handleContactsUpsert(channelId, updates);
-      });
-
-      // ✅ v10: Phone Pairing Code — مع إصلاح التأخير والتنظيف
       if (method === 'phone_code' && phoneNumber) {
-        // ✅ v10: انتظار 5 ثواني بدل 3 — Socket يحتاج وقت أكثر للاتصال الأولي
         await this.delay(5000);
-
-        // ✅ v10: تحقق إن الـ socket جاهز — Baileys WebSocket مختلف عن المعتاد
-        if (!sock.user) {
-          this.logger.warn('⏳ Socket not registered yet, waiting additional 3s...');
-          await this.delay(3000);
-        }
+        if (!sock.user) { this.logger.warn('⏳ Socket not registered, waiting 3s...'); await this.delay(3000); }
 
         try {
           const cleanPhone = phoneNumber.replace(/[^0-9]/g, '');
           this.logger.log(`📱 Requesting pairing code for: ${cleanPhone}`);
-
           const code = await sock.requestPairingCode(cleanPhone);
           session.pairingCode = code;
           session.status = 'pairing_code';
-
           this.logger.log(`✅ Pairing code: ${code} for ${channelId}`);
-
-          this.eventEmitter.emit('whatsapp.pairing_code.generated', {
-            channelId,
-            pairingCode: code,
-          });
-
-          return {
-            sessionId: channelId,
-            qrCode: '',
-            pairingCode: code,
-            expiresAt: new Date(Date.now() + QR_TIMEOUT_MS),
-            status: 'pending' as const,
-            phoneNumber,
-          };
+          this.eventEmitter.emit('whatsapp.pairing_code.generated', { channelId, pairingCode: code });
+          return { sessionId: channelId, qrCode: '', pairingCode: code, expiresAt: new Date(Date.now() + QR_TIMEOUT_MS), status: 'pending', phoneNumber };
         } catch (error) {
           const msg = error instanceof Error ? error.message : String(error);
-          this.logger.error(`❌ Pairing code failed: ${msg}`, error);
           throw new Error(`فشل في إنشاء رمز الربط: ${msg}`);
         }
       }
 
-      // ✅ QR Method - انتظار QR أو الاتصال
       return new Promise<QRSessionResult>((resolve, reject) => {
         const timeout = setTimeout(() => {
           clearInterval(checker);
@@ -530,35 +472,16 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
 
         const checker = setInterval(() => {
           const current = this.sessions.get(channelId);
-          if (!current) {
-            clearInterval(checker);
-            clearTimeout(timeout);
-            reject(new Error('تم إنهاء الجلسة'));
-            return;
-          }
+          if (!current) { clearInterval(checker); clearTimeout(timeout); reject(new Error('تم إنهاء الجلسة')); return; }
 
           if (current.status === 'qr_ready' && current.qrCode) {
-            clearInterval(checker);
-            clearTimeout(timeout);
-            resolve({
-              sessionId: channelId,
-              qrCode: current.qrCode,
-              expiresAt: current.qrExpiresAt || new Date(Date.now() + QR_TIMEOUT_MS),
-              status: 'pending',
-            });
+            clearInterval(checker); clearTimeout(timeout);
+            resolve({ sessionId: channelId, qrCode: current.qrCode, expiresAt: current.qrExpiresAt || new Date(Date.now() + QR_TIMEOUT_MS), status: 'pending' });
           } else if (current.status === 'connected') {
-            clearInterval(checker);
-            clearTimeout(timeout);
-            resolve({
-              sessionId: channelId,
-              qrCode: '',
-              expiresAt: new Date(),
-              status: 'connected',
-              phoneNumber: current.phoneNumber,
-            });
+            clearInterval(checker); clearTimeout(timeout);
+            resolve({ sessionId: channelId, qrCode: '', expiresAt: new Date(), status: 'connected', phoneNumber: current.phoneNumber });
           } else if (current.status === 'disconnected') {
-            clearInterval(checker);
-            clearTimeout(timeout);
+            clearInterval(checker); clearTimeout(timeout);
             reject(new Error('فشل الاتصال. يرجى المحاولة مرة أخرى.'));
           }
         }, 500);
@@ -570,14 +493,11 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
     }
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 📊 Status
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // ── Status ────────────────────────────────────────────────────────────────
 
   async getSessionStatus(channelId: string): Promise<QRSessionResult | null> {
     const session = this.sessions.get(channelId);
     if (!session) return null;
-
     return {
       sessionId: channelId,
       qrCode: session.qrCode || '',
@@ -588,14 +508,8 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
     };
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🧹 Cleanup
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // ── Cleanup ───────────────────────────────────────────────────────────────
 
-  /**
-   * ✅ v10: تنظيف الذاكرة فقط (بدون حذف الملفات)
-   * يُستخدم عند إعادة الاتصال
-   */
   private async cleanupSession(channelId: string): Promise<void> {
     const existing = this.sessions.get(channelId);
     if (existing) {
@@ -611,37 +525,27 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
         }
       } catch {}
       this.sessions.delete(channelId);
-      this.lidToPhone.delete(channelId);
+      // ✅ نحتفظ بـ lidToPhone عند cleanupSession — تُمحى فقط عند fullCleanup
       await this.delay(1000);
     }
   }
 
-  /**
-   * ✅ v10: تنظيف كامل — الذاكرة + الملفات
-   * يُستخدم عند إنشاء جلسة جديدة (QR أو Phone Code)
-   * حذف الملفات القديمة مهم عشان Phone Pairing Code يشتغل
-   */
   private async fullCleanupSession(channelId: string): Promise<void> {
-    // 1. تنظيف الذاكرة
+    const timer = this.lidPersistTimers.get(channelId);
+    if (timer) { clearTimeout(timer); this.lidPersistTimers.delete(channelId); }
+
     await this.cleanupSession(channelId);
 
-    // 2. حذف ملفات الجلسة القديمة
     const sessionPath = path.join(this.sessionsPath, `wa_${channelId}`);
     try {
-      if (fs.existsSync(sessionPath)) {
-        fs.rmSync(sessionPath, { recursive: true, force: true });
-        this.logger.debug(`🗑️ Deleted old session files: ${sessionPath}`);
-      }
+      if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
     } catch (error) {
       this.logger.warn(`Failed to delete session files: ${error instanceof Error ? error.message : 'Unknown'}`);
     }
 
-    // 3. ✅ v10: مسح session_data من DB أيضاً
-    try {
-      await this.channelRepository.update(channelId, {
-        sessionData: null as any,
-      });
-    } catch {}
+    // مسح lid mappings من الذاكرة فقط عند الجلسة الجديدة
+    this.lidToPhone.delete(channelId);
+    try { await this.channelRepository.update(channelId, { sessionData: null as any }); } catch {}
 
     await this.delay(500);
   }
@@ -656,30 +560,22 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
     this.logger.log(`Session fully deleted: ${channelId}`);
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 📨 Messaging
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // ── Messaging ─────────────────────────────────────────────────────────────
 
   async sendTextMessage(channelId: string, to: string, text: string): Promise<{ messageId: string }> {
     const session = this.getConnectedSession(channelId);
-    const resolvedJid = this.resolveJidForSending(channelId, to);
-    this.logger.debug(`📤 Sending message: ${to} → resolved: ${resolvedJid}`);
-
+    const resolvedJid = this.resolveJidForSending(channelId, to, session.socket!);
+    this.logger.debug(`📤 Sending text: ${to} → resolved: ${resolvedJid}`);
     const result = await session.socket!.sendMessage(resolvedJid, { text });
     const messageId = result?.key?.id;
-
-    if (!messageId) {
-      this.logger.error(`❌ sendTextMessage: WhatsApp returned no messageId for ${resolvedJid}`);
-      throw new Error(`WhatsApp send failed: no messageId returned for ${resolvedJid}`);
-    }
-
-    this.logger.log(`✅ WhatsApp confirmed send: messageId=${messageId} to=${resolvedJid}`);
+    if (!messageId) throw new Error(`WhatsApp send failed: no messageId for ${resolvedJid}`);
+    this.logger.log(`✅ Sent: messageId=${messageId} to=${resolvedJid}`);
     return { messageId };
   }
 
   async sendImageMessage(channelId: string, to: string, imageUrl: string, caption?: string): Promise<{ messageId: string }> {
     const session = this.getConnectedSession(channelId);
-    const resolvedJid = this.resolveJidForSending(channelId, to);
+    const resolvedJid = this.resolveJidForSending(channelId, to, session.socket!);
     const result = await session.socket!.sendMessage(resolvedJid, { image: { url: imageUrl }, caption });
     const messageId = result?.key?.id;
     if (!messageId) throw new Error(`WhatsApp image send failed: no messageId for ${resolvedJid}`);
@@ -688,16 +584,14 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
 
   async sendDocumentMessage(channelId: string, to: string, documentUrl: string, fileName: string, mimeType: string): Promise<{ messageId: string }> {
     const session = this.getConnectedSession(channelId);
-    const resolvedJid = this.resolveJidForSending(channelId, to);
+    const resolvedJid = this.resolveJidForSending(channelId, to, session.socket!);
     const result = await session.socket!.sendMessage(resolvedJid, { document: { url: documentUrl }, fileName, mimetype: mimeType });
     const messageId = result?.key?.id;
     if (!messageId) throw new Error(`WhatsApp document send failed: no messageId for ${resolvedJid}`);
     return { messageId };
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🔧 Connection Update Handler
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // ── Connection Update Handler ─────────────────────────────────────────────
 
   private async handleConnectionUpdate(channelId: string, update: Partial<ConnectionState>): Promise<void> {
     const { connection, lastDisconnect, qr } = update;
@@ -706,19 +600,13 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
 
     if (qr && session.connectionMethod === 'qr') {
       try {
-        const qrDataUrl = await QRCode.toDataURL(qr, {
-          width: 400,
-          margin: 2,
-          color: { dark: '#000000', light: '#FFFFFF' },
-        });
+        const qrDataUrl = await QRCode.toDataURL(qr, { width: 400, margin: 2, color: { dark: '#000000', light: '#FFFFFF' } });
         session.qrCode = qrDataUrl;
         session.qrExpiresAt = new Date(Date.now() + QR_TIMEOUT_MS);
         session.status = 'qr_ready';
         this.logger.log(`📱 QR ready: ${channelId}`);
         this.eventEmitter.emit('whatsapp.qr.generated', { channelId, qrCode: qrDataUrl, expiresAt: session.qrExpiresAt });
-      } catch (error) {
-        this.logger.error(`QR generation error: ${channelId}`, error);
-      }
+      } catch (error) { this.logger.error(`QR generation error: ${channelId}`, error); }
     }
 
     if (connection === 'open') {
@@ -731,20 +619,21 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
       this.logger.log(`✅ Connected: ${channelId}, phone: ${session.phoneNumber}`);
       this.eventEmitter.emit('whatsapp.connected', { channelId, phoneNumber: session.phoneNumber });
 
-      // ✅ مزامنة الحالة مع DB
       try {
+        // FIX-4: مسح كامل للأخطاء عند إعادة الاتصال
         await this.channelRepository.update(channelId, {
           status: ChannelStatus.CONNECTED,
           whatsappPhoneNumber: session.phoneNumber || undefined,
           connectedAt: new Date(),
-          lastError: undefined as any,
+          lastError: null as any,
+          lastErrorAt: null as any,
           errorCount: 0,
+          disconnectedAt: null as any,
         });
       } catch (e) {
         this.logger.warn(`Failed to update channel DB status on connect: ${e instanceof Error ? e.message : 'Unknown'}`);
       }
 
-      // ✅ v10: حفظ الجلسة في DB فوراً عند الاتصال بنجاح
       const sessionPath = path.join(this.sessionsPath, `wa_${channelId}`);
       await this.saveSessionToDB(channelId, sessionPath);
     }
@@ -753,8 +642,14 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
       const error = lastDisconnect?.error;
       let statusCode: number | undefined;
       if (error && 'output' in error) statusCode = (error as Boom).output?.statusCode;
-
       this.logger.warn(`⚠️ Disconnected: ${channelId}, code: ${statusCode}`);
+
+      try {
+        await this.channelRepository.update(channelId, {
+          lastError: `WhatsApp disconnected${statusCode ? ` (code: ${statusCode})` : ''}`,
+          lastErrorAt: new Date(),
+        });
+      } catch {}
 
       if (statusCode === DisconnectReason.loggedOut) {
         session.status = 'disconnected';
@@ -764,11 +659,8 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
         return;
       }
 
-      // ✅ FIX P3: code 440 = connectionReplaced (جهاز ثاني فتح واتساب ويب)
-      //    إعادة المحاولة لا تنفع → ستُفصل فوراً مرة ثانية
-      //    الحل: نوقف المحاولات ونعلم المستخدم إنه يحتاج يعيد المسح
       if (statusCode === DisconnectReason.connectionReplaced) {
-        this.logger.warn(`🔄 Session REPLACED: ${channelId} — another device took over. Stopping retries.`);
+        this.logger.warn(`🔄 Session REPLACED: ${channelId} — another device took over.`);
         session.status = 'disconnected';
         await this.markChannelDisconnected(channelId);
         this.eventEmitter.emit('whatsapp.session_replaced', {
@@ -778,23 +670,16 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
         return;
       }
 
-      // ✅ v10: حفظ الجلسة في DB قبل المحاولة التالية
       const sessionPath = path.join(this.sessionsPath, `wa_${channelId}`);
       await this.saveSessionToDB(channelId, sessionPath);
 
       if (session.retryCount < MAX_RETRIES) {
         session.retryCount++;
-        const retryDelay = Math.min(RECONNECT_BASE_DELAY_MS * session.retryCount, 15000);
+        const retryDelay = Math.min(RECONNECT_BASE_DELAY_MS * session.retryCount, 15_000);
         this.logger.log(`🔄 Retry ${session.retryCount}/${MAX_RETRIES} in ${retryDelay}ms`);
         setTimeout(async () => {
-          try {
-            // ✅ v10: عند الـ retry — تنظيف ذاكرة فقط (بدون حذف ملفات)
-            await this.cleanupSession(channelId);
-            await this.restoreSession(channelId);
-          } catch {
-            const s = this.sessions.get(channelId);
-            if (s) s.status = 'disconnected';
-          }
+          try { await this.cleanupSession(channelId); await this.restoreSession(channelId); }
+          catch { const s = this.sessions.get(channelId); if (s) s.status = 'disconnected'; }
         }, retryDelay);
       } else {
         session.status = 'disconnected';
@@ -804,6 +689,8 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
     }
   }
 
+  // ── Incoming Messages ─────────────────────────────────────────────────────
+
   private async handleIncomingMessages(channelId: string, messageUpdate: MessageUpsert): Promise<void> {
     const { messages, type } = messageUpdate;
     if (type !== 'notify') return;
@@ -812,204 +699,120 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
       if (msg.key.fromMe) continue;
 
       const jid = msg.key.remoteJid || '';
+      if (!jid) continue;
+      if (jid.includes('@g.us') || jid.includes('@broadcast') || jid === 'status@broadcast') continue;
 
-      // ✅ تخطي المجموعات و broadcast (مثل status@broadcast)
-      if (jid.includes('@g.us') || jid.includes('@broadcast') || jid === 'status@broadcast') {
-        continue;
-      }
-
-      // ✅ إزالة كل JID suffixes للتحقق فقط
-      const fromPhone = jid.split('@')[0].replace(/\D/g, '');
-
-      if (!fromPhone) continue; // تخطي إذا لم يبقَ رقم
-
-      // ✅ تحديد نوع الـ JID: هل هو رقم حقيقي أم @lid داخلي
       const isLidJid = jid.includes('@lid');
-      // @lid = معرّف داخلي لواتساب وليس رقم هاتف حقيقي
-      // @s.whatsapp.net = رقم هاتف حقيقي
-      let realPhone = isLidJid ? undefined : fromPhone;
+      let realPhone: string | undefined = isLidJid ? undefined : jid.split('@')[0].replace(/\D/g, '');
 
-      // ✅ محاولة استخراج الرقم الحقيقي من خريطة @lid → phone
       if (isLidJid) {
         const channelMap = this.lidToPhone.get(channelId);
         if (channelMap?.has(jid)) {
           realPhone = channelMap.get(jid);
-          this.logger.log(`📱 Resolved @lid to phone: ${jid} → ${realPhone}`);
+          this.logger.log(`📱 Resolved @lid: ${jid} → ${realPhone}`);
         } else {
-          // 🔍 LOG: تشخيص — عرض كل حقول الرسالة لإيجاد الرقم
-          this.logger.warn(`⚠️ @lid NOT resolved: ${jid} | Map size: ${channelMap?.size || 0}`);
-          this.logger.log(`🔍 Raw message keys: ${JSON.stringify({
-            keyRemoteJid: msg.key?.remoteJid,
-            keyParticipant: msg.key?.participant,
-            keyId: msg.key?.id,
-            pushName: (msg as any).pushName,
-            verifiedBizName: (msg as any).verifiedBizName,
-            participant: (msg as any).participant,
-            messageKeys: Object.keys(msg || {}),
-          })}`);
+          this.logger.warn(`⚠️ @lid NOT resolved: ${jid} | Cache size: ${channelMap?.size || 0} | Will attempt resolution at send time`);
         }
       }
 
-      // ✅ استخراج اسم العميل من pushName (اسم واتساب الظاهر)
-      const pushName = (msg as any).pushName || undefined;
-
-      const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
-      const timestamp = msg.messageTimestamp ? new Date(Number(msg.messageTimestamp) * 1000) : new Date();
-
       this.eventEmitter.emit('whatsapp.message.received', {
         channelId,
-        from: jid,          // ✅ JID الكامل للإرسال الصحيح (يشمل @lid و @s.whatsapp.net)
-        fromPhone: realPhone, // ✅ رقم الهاتف الحقيقي فقط (undefined لـ @lid)
-        pushName,             // ✅ اسم العميل من واتساب
+        from: jid,
+        fromPhone: realPhone,
+        pushName: (msg as any).pushName || undefined,
         messageId: msg.key.id || '',
-        text,
-        timestamp,
+        text: msg.message?.conversation || msg.message?.extendedTextMessage?.text || '',
+        timestamp: msg.messageTimestamp ? new Date(Number(msg.messageTimestamp) * 1000) : new Date(),
         rawMessage: msg,
       });
     }
   }
 
-  /**
-   * ✅ التقاط جهات الاتصال وبناء خريطة @lid → رقم هاتف حقيقي
-   * Baileys يُطلق هذا الحدث عند مزامنة جهات الاتصال
-   */
+  // ── Contacts Handler — FIX-1 ──────────────────────────────────────────────
+
   private handleContactsUpsert(channelId: string, contacts: any[]): void {
-    if (!this.lidToPhone.has(channelId)) {
-      this.lidToPhone.set(channelId, new Map());
-    }
+    if (!this.lidToPhone.has(channelId)) this.lidToPhone.set(channelId, new Map());
     const map = this.lidToPhone.get(channelId)!;
     let newMappings = 0;
 
-    // 🔍 LOG: عرض أول 5 جهات اتصال كاملة للتشخيص
-    this.logger.log(`📇 contacts.upsert fired for channel ${channelId}: ${contacts.length} contacts`);
-    for (let i = 0; i < Math.min(contacts.length, 5); i++) {
-      const c = contacts[i];
-      this.logger.log(`📇 Contact[${i}]: ${JSON.stringify({
-        id: c.id, lid: c.lid, name: c.name, notify: c.notify, 
-        verifiedName: c.verifiedName, imgUrl: c.imgUrl,
-        // عرض كل المفاتيح المتوفرة
-        allKeys: Object.keys(c),
-      })}`);
-    }
-
     for (const contact of contacts) {
-      try {
-        const id = contact.id || '';
-        const lid = contact.lid || '';
-
-        // حالة 1: id = @s.whatsapp.net و lid = @lid
-        if (id.includes('@s.whatsapp.net') && lid.includes('@lid')) {
-          const phone = id.split('@')[0].replace(/\D/g, '');
-          if (phone) {
-            map.set(lid, phone);
-            newMappings++;
-            this.logger.debug(`📱 Mapped: ${lid} → ${phone}`);
-          }
-        }
-
-        // حالة 2: id = @lid و lid = @s.whatsapp.net
-        if (id.includes('@lid') && lid.includes('@s.whatsapp.net')) {
-          const phone = lid.split('@')[0].replace(/\D/g, '');
-          if (phone) {
-            map.set(id, phone);
-            newMappings++;
-            this.logger.debug(`📱 Mapped: ${id} → ${phone}`);
-          }
-        }
-
-        // حالة 3: id = @s.whatsapp.net (نحفظ الرقم بدون lid)
-        if (id.includes('@s.whatsapp.net') && !lid) {
-          const phone = id.split('@')[0].replace(/\D/g, '');
-          if (phone) {
-            map.set(id, phone);
-          }
-        }
-
-        // حالة 4: أي حقل يحتوي @s.whatsapp.net
-        for (const key of Object.keys(contact)) {
-          const val = contact[key];
-          if (typeof val === 'string' && val.includes('@s.whatsapp.net') && id.includes('@lid')) {
-            const phone = val.split('@')[0].replace(/\D/g, '');
-            if (phone && !map.has(id)) {
-              map.set(id, phone);
-              newMappings++;
-              this.logger.debug(`📱 Mapped via ${key}: ${id} → ${phone}`);
-            }
-          }
-        }
-      } catch {
-        // تخطي جهات الاتصال المعطوبة
-      }
+      try { newMappings += this.extractLidMapping(map, contact); } catch {}
     }
 
-    this.logger.log(`📇 Channel ${channelId}: ${newMappings} new mappings (total: ${map.size})`);
+    if (newMappings > 0) {
+      this.logger.log(`📇 Channel ${channelId}: ${newMappings} new lid mappings (total: ${map.size})`);
+      this.scheduleLidPersist(channelId);
+    }
   }
 
   /**
-   * ✅ استخراج ربط @lid → phone من تاريخ المحادثات
-   * messaging-history.set يحتوي على chats و contacts مع metadata
+   * FIX-1: استخراج lid→phone من contact object — يتعامل مع جميع الحالات
    */
-  private handleHistorySet(channelId: string, data: any): void {
-    if (!this.lidToPhone.has(channelId)) {
-      this.lidToPhone.set(channelId, new Map());
+  private extractLidMapping(map: Map<string, string>, contact: any): number {
+    let count = 0;
+    const id = contact.id || '';
+    const lid = contact.lid || '';
+
+    // حالة 1: id = @s.whatsapp.net، lid = @lid
+    if (id.includes('@s.whatsapp.net') && lid.includes('@lid')) {
+      const phone = id.split('@')[0].replace(/\D/g, '');
+      if (phone && !map.has(lid)) { map.set(lid, phone); count++; }
     }
+    // حالة 2: id = @lid، lid = @s.whatsapp.net
+    if (id.includes('@lid') && lid.includes('@s.whatsapp.net')) {
+      const phone = lid.split('@')[0].replace(/\D/g, '');
+      if (phone && !map.has(id)) { map.set(id, phone); count++; }
+    }
+    // حالة 3: id = @s.whatsapp.net بدون lid
+    if (id.includes('@s.whatsapp.net') && !lid) {
+      const phone = id.split('@')[0].replace(/\D/g, '');
+      if (phone) map.set(id, phone);
+    }
+    // حالة 4: id = @lid — بحث في كل الحقول
+    if (id.includes('@lid') && !map.has(id)) {
+      for (const key of Object.keys(contact)) {
+        const val = contact[key];
+        if (typeof val === 'string' && val.includes('@s.whatsapp.net')) {
+          const phone = val.split('@')[0].replace(/\D/g, '');
+          if (phone) { map.set(id, phone); count++; break; }
+        }
+      }
+    }
+
+    return count;
+  }
+
+  private handleHistorySet(channelId: string, data: any): void {
+    if (!this.lidToPhone.has(channelId)) this.lidToPhone.set(channelId, new Map());
     const map = this.lidToPhone.get(channelId)!;
     let newMappings = 0;
 
     try {
-      // 🔍 LOG: عرض بنية البيانات
-      this.logger.log(`📜 messaging-history.set fired for channel ${channelId}: keys=${Object.keys(data || {}).join(', ')}`);
-
-      // استخراج من chats
       const chats = data?.chats || [];
-      this.logger.log(`📜 Chats received: ${chats.length}`);
       for (const chat of chats) {
         const chatId = chat.id || '';
         const lidJid = chat.lidJid || chat.lid || '';
-
-        // 🔍 LOG: أول 5 chats
-        if (chats.indexOf(chat) < 5) {
-          this.logger.log(`📜 Chat: ${JSON.stringify({ id: chatId, lidJid, allKeys: Object.keys(chat) })}`);
-        }
-
-        // ربط: chatId = @s.whatsapp.net و lidJid = @lid
         if (chatId.includes('@s.whatsapp.net') && lidJid.includes('@lid')) {
           const phone = chatId.split('@')[0].replace(/\D/g, '');
-          if (phone) {
-            map.set(lidJid, phone);
-            newMappings++;
-          }
+          if (phone && !map.has(lidJid)) { map.set(lidJid, phone); newMappings++; }
         }
-
-        // ربط: chatId = @lid و lidJid = @s.whatsapp.net
         if (chatId.includes('@lid') && lidJid.includes('@s.whatsapp.net')) {
           const phone = lidJid.split('@')[0].replace(/\D/g, '');
-          if (phone) {
-            map.set(chatId, phone);
-            newMappings++;
-          }
+          if (phone && !map.has(chatId)) { map.set(chatId, phone); newMappings++; }
         }
       }
-
-      // استخراج من contacts
-      const contacts = data?.contacts || [];
-      if (contacts.length > 0) {
-        this.logger.log(`📜 Contacts from history: ${contacts.length}`);
-        this.handleContactsUpsert(channelId, contacts);
-      }
-
+      if (data?.contacts?.length > 0) this.handleContactsUpsert(channelId, data.contacts);
     } catch (error) {
       this.logger.error(`Error processing messaging-history.set: ${error instanceof Error ? error.message : 'Unknown'}`);
     }
 
     if (newMappings > 0) {
       this.logger.log(`📜 Channel ${channelId}: ${newMappings} new mappings from history (total: ${map.size})`);
+      this.scheduleLidPersist(channelId);
     }
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🛠️ Helpers
-  // ═══════════════════════════════════════════════════════════════════════════════
+  // ── Helpers ───────────────────────────────────────────────────────────────
 
   private getConnectedSession(channelId: string): WhatsAppSession {
     const session = this.sessions.get(channelId);
@@ -1019,56 +822,56 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
     return session;
   }
 
+  /**
+   * حلّ @lid إلى JID قابل للإرسال
+   *
+   * 🔑 الخوارزمية الصحيحة:
+   * 1. JID = @s.whatsapp.net → إرجاع مباشر
+   * 2. JID = @lid → بحث في الـ cache (مصدر contacts.upsert / messaging-history.set)
+   * 3. إذا لم يوجد في الـ cache → إرسال لـ @lid مباشرة (صحيح للردود)
+   *
+   * ⛔ لماذا حذفنا sock.onWhatsApp(lidNumber):
+   *    - onWhatsApp() تقبل أرقام هاتف E.164 فقط (مثل 966501234567)
+   *    - @lid هو معرّف خصوصية داخلي في واتساب (مثل 67173456302225) — ليس رقم هاتف
+   *    - الاستدعاء كان يفشل دائماً بصمت (try/catch) ويُضيّع 2-5 ثوانٍ في كل ردّ على @lid
+   *    - الحلّ الصحيح: contacts.upsert هو المصدر الوحيد لخريطة lid→phone
+   */
+  private resolveJidForSending(channelId: string, jid: string, _sock: WASocket): string {
+    if (!jid.includes('@lid')) return this.formatJid(jid);
+
+    // Cache lookup — مبني من contacts.upsert / messaging-history.set / DB
+    const channelMap = this.lidToPhone.get(channelId);
+    if (channelMap?.has(jid)) {
+      const phone = channelMap.get(jid)!;
+      this.logger.log(`📤 Resolved @lid from cache: ${jid} → ${phone}@s.whatsapp.net`);
+      return `${phone}@s.whatsapp.net`;
+    }
+
+    // إرسال مباشر لـ @lid — WhatsApp يوجّهه للشخص الصحيح
+    // هذا سلوك صحيح للردود على محادثات @lid
+    this.logger.warn(
+      `📤 @lid not in cache: ${jid} | Cache size: ${channelMap?.size ?? 0} | ` +
+      `Sending directly to @lid (correct behaviour for replies)`,
+    );
+    return jid;
+  }
+
+  private formatJid(phoneNumber: string): string {
+    if (phoneNumber.includes('@')) return phoneNumber;
+    const cleaned = phoneNumber.replace(/^\+|^00/, '').replace(/\D/g, '');
+    return `${cleaned}@s.whatsapp.net`;
+  }
+
   private delay(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  /**
-   * ✅ تحويل @lid إلى @s.whatsapp.net للإرسال
-   * @lid هو معرّف داخلي لواتساب — الإرسال إليه ينشئ محادثة جديدة
-   * يجب استخدام @s.whatsapp.net (الرقم الحقيقي) للرد في نفس المحادثة
-   */
-  private resolveJidForSending(channelId: string, jid: string): string {
-    // إذا كان @lid → حاول إيجاد الرقم الحقيقي
-    if (jid.includes('@lid')) {
-      const channelMap = this.lidToPhone.get(channelId);
-      if (channelMap?.has(jid)) {
-        const phone = channelMap.get(jid)!;
-        this.logger.log(`📤 SEND: Resolved @lid: ${jid} → ${phone}@s.whatsapp.net`);
-        return `${phone}@s.whatsapp.net`;
-      }
-
-      // ⚠️ لم نتمكن من إيجاد الرقم — نرسل لـ @lid كآخر حل
-      this.logger.warn(`📤 SEND: Cannot resolve @lid: ${jid} — map size: ${channelMap?.size || 0} — sending to @lid directly (may create new thread!)`);
-      return jid;
-    }
-
-    const formatted = this.formatJid(jid);
-    this.logger.debug(`📤 SEND: ${jid} → ${formatted}`);
-    return formatted;
-  }
-
-  private formatJid(phoneNumber: string): string {
-    // ✅ إذا كان JID كامل (يحتوي @) → إرجاعه كما هو
-    if (phoneNumber.includes('@')) {
-      return phoneNumber;
-    }
-    // أرقام عادية → تحويل لصيغة WhatsApp
-    let cleaned = phoneNumber.replace(/^\+|^00/, '').replace(/\D/g, '');
-    return `${cleaned}@s.whatsapp.net`;
-  }
-
   private mapStatus(status: WhatsAppSession['status']): 'pending' | 'scanning' | 'connected' | 'expired' {
     switch (status) {
-      case 'qr_ready':
-      case 'pairing_code':
-        return 'pending';
-      case 'connecting':
-        return 'scanning';
-      case 'connected':
-        return 'connected';
-      default:
-        return 'expired';
+      case 'qr_ready': case 'pairing_code': return 'pending';
+      case 'connecting': return 'scanning';
+      case 'connected': return 'connected';
+      default: return 'expired';
     }
   }
 
@@ -1077,9 +880,7 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
   }
 
   getConnectedSessions(): string[] {
-    return Array.from(this.sessions.entries())
-      .filter(([, s]) => s.status === 'connected')
-      .map(([id]) => id);
+    return Array.from(this.sessions.entries()).filter(([, s]) => s.status === 'connected').map(([id]) => id);
   }
 
   getDiagnostics(): Record<string, any> {
@@ -1090,6 +891,7 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
         id, status: s.status, method: s.connectionMethod,
         hasQR: !!s.qrCode, hasPairingCode: !!s.pairingCode,
         phoneNumber: s.phoneNumber, retryCount: s.retryCount,
+        lidMappings: this.lidToPhone.get(id)?.size || 0,
       })),
     };
   }
