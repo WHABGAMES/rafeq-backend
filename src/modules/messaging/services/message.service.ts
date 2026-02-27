@@ -326,6 +326,9 @@ export class MessageService implements OnModuleInit {
 
     // 3️⃣ FIND OR CREATE CONVERSATION
     // ✅ البحث بالـ JID الكامل + الرقم المجرّد لتوافق البيانات القديمة
+    // ⚠️  استثناء: إذا كان الـ JID من نوع @lid، فالرقم المجرّد ليس رقم هاتف
+    //              (مثل 67173456302225 من 67173456302225@lid) — لا نبحث به
+    const isLidSender = data.senderExternalId.includes('@lid');
     const bareNumber = data.senderExternalId.split('@')[0].replace(/\D/g, '');
     const activeStatuses = In([
       ConversationStatus.OPEN,
@@ -344,7 +347,8 @@ export class MessageService implements OnModuleInit {
           status: activeStatuses,
         },
         // البحث بالرقم المجرّد (البيانات القديمة) — backward compatibility
-        ...(bareNumber !== data.senderExternalId ? [{
+        // ⛔ لا نفعّل هذا لعملاء @lid لأن الرقم المجرّد ليس رقم هاتف
+        ...(!isLidSender && bareNumber !== data.senderExternalId ? [{
           tenantId: data.tenantId,
           channelId: data.channelId,
           customerExternalId: bareNumber,
