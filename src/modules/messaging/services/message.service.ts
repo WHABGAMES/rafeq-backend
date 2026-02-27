@@ -842,7 +842,7 @@ export class MessageService implements OnModuleInit {
       })
       .getRawOne();
 
-    const directionMap = directionStats.reduce((acc, item) => {
+    const directionMap = directionStats.reduce((acc: Record<string, number>, item: any) => {
       acc[item.direction] = parseInt(item.count);
       return acc;
     }, {} as Record<string, number>);
@@ -851,15 +851,15 @@ export class MessageService implements OnModuleInit {
       total: (directionMap.inbound || 0) + (directionMap.outbound || 0),
       inbound: directionMap.inbound || 0,
       outbound: directionMap.outbound || 0,
-      byStatus: statusStats.reduce((acc, item) => {
+      byStatus: statusStats.reduce((acc: Record<string, number>, item: any) => {
         acc[item.status] = parseInt(item.count);
         return acc;
       }, {} as Record<string, number>),
-      bySender: senderStats.reduce((acc, item) => {
+      bySender: senderStats.reduce((acc: Record<string, number>, item: any) => {
         acc[item.sender] = parseInt(item.count);
         return acc;
       }, {} as Record<string, number>),
-      byType: typeStats.reduce((acc, item) => {
+      byType: typeStats.reduce((acc: Record<string, number>, item: any) => {
         acc[item.type] = parseInt(item.count);
         return acc;
       }, {} as Record<string, number>),
