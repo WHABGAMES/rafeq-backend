@@ -2,7 +2,7 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - WhatsApp Baileys Service                   ║
  * ║                                                                                ║
- * ║  ✅ v12 — إصلاحات جذرية ونهائية                                                ║
+ * ║  ✅ v13 — إصلاحات جذرية ونهائية                                                ║
  * ║                                                                                ║
  * ║  FIX-1: @lid Resolution — حفظ lid→phone في DB يُستعاد عند كل restart           ║
  * ║  FIX-2: resolveJidForSending — حُذفت onWhatsApp(lid) الخاطئة                   ║
@@ -12,6 +12,10 @@
  * ║  FIX-5: restoreSession — يُعيد تحميل lid→phone من DB قبل الاتصال              ║
  * ║  FIX-6: 🔐 تشفير بيانات الجلسة (مفاتيح واتساب الخاصة) قبل الحفظ في DB       ║
  * ║         يدعم الترحيل: البيانات القديمة (غير مشفرة) تُقرأ وتُشفَّر تلقائياً   ║
+ * ║  FIX-7: 📱 Phone Pairing Code — 3 أخطاء أساسية:                               ║
+ * ║         • browser: Browsers.ubuntu (كان custom string يكسر البروتوكول)          ║
+ * ║         • انتظار حدث 'connecting' (كان delay ثابت 5 ثوانٍ — يفشل أحياناً)     ║
+ * ║         • retry تلقائي مرة واحدة عند الفشل (3 ثوانٍ بين المحاولتين)           ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -33,6 +37,7 @@ import makeWASocket, {
   WAMessage,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
+  Browsers,
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import * as QRCode from 'qrcode';
@@ -244,7 +249,7 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
         const batch = connectedChannels.slice(i, i + MAX_CONCURRENT_RESTORES);
 
         const results = await Promise.allSettled(
-          batch.map(async (channel) => {
+          batch.map(async (channel: Channel) => {
             const sessionPath = path.join(this.sessionsPath, `wa_${channel.id}`);
             let hasAuthState = fs.existsSync(sessionPath) && fs.readdirSync(sessionPath).length > 0;
 
@@ -425,7 +430,8 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
         auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, silentLogger) },
         version,
         printQRInTerminal: method === 'qr',
-        browser: ['Rafiq Platform', 'Chrome', '126.0.0'],
+        // ✅ FIX: phone pairing requires Ubuntu browser string (Chrome custom breaks WhatsApp protocol)
+        browser: method === 'phone_code' ? Browsers.ubuntu('Chrome') : ['Rafiq Platform', 'Chrome', '126.0.0'],
         connectTimeoutMs: 60_000, defaultQueryTimeoutMs: 60_000,
         keepAliveIntervalMs: 25_000, markOnlineOnConnect: false,
         generateHighQualityLinkPreview: false, logger: silentLogger, syncFullHistory: false,
@@ -441,25 +447,51 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
       sock.ev.on('messages.upsert', async (update: MessageUpsert) => { await this.handleIncomingMessages(channelId, update); });
       sock.ev.on('contacts.upsert', (contacts: any[]) => { this.handleContactsUpsert(channelId, contacts); });
       sock.ev.on('messaging-history.set', (data: any) => { this.handleHistorySet(channelId, data); });
-      sock.ev.on('contacts.update', (updates) => { this.handleContactsUpsert(channelId, updates); });
+      sock.ev.on('contacts.update', (updates: any[]) => { this.handleContactsUpsert(channelId, updates); });
 
       if (method === 'phone_code' && phoneNumber) {
-        await this.delay(5000);
-        if (!sock.user) { this.logger.warn('⏳ Socket not registered, waiting 3s...'); await this.delay(3000); }
+        // ✅ FIX: Wait for 'connecting' event (socket handshake complete) BEFORE requesting code
+        //    NOT a blind delay — WhatsApp server must complete the challenge first
+        await new Promise<void>((resolve) => {
+          let fallbackTimer: ReturnType<typeof setTimeout>;
+          const onUpdate = (update: Partial<ConnectionState>) => {
+            // 'connecting' = server handshake done, ready for pairing code
+            if (update.connection === 'connecting' || update.connection === 'open') {
+              clearTimeout(fallbackTimer);
+              sock.ev.off('connection.update', onUpdate);
+              resolve();
+            }
+          };
+          sock.ev.on('connection.update', onUpdate);
+          // Safety fallback: if no event in 8s, proceed anyway (cleans up listener too)
+          fallbackTimer = setTimeout(() => {
+            sock.ev.off('connection.update', onUpdate);
+            resolve();
+          }, 8000);
+        });
 
-        try {
-          const cleanPhone = phoneNumber.replace(/[^0-9]/g, '');
-          this.logger.log(`📱 Requesting pairing code for: ${cleanPhone}`);
-          const code = await sock.requestPairingCode(cleanPhone);
-          session.pairingCode = code;
-          session.status = 'pairing_code';
-          this.logger.log(`✅ Pairing code: ${code} for ${channelId}`);
-          this.eventEmitter.emit('whatsapp.pairing_code.generated', { channelId, pairingCode: code });
-          return { sessionId: channelId, qrCode: '', pairingCode: code, expiresAt: new Date(Date.now() + QR_TIMEOUT_MS), status: 'pending', phoneNumber };
-        } catch (error) {
-          const msg = error instanceof Error ? error.message : String(error);
-          throw new Error(`فشل في إنشاء رمز الربط: ${msg}`);
+        const cleanPhone = phoneNumber.replace(/[^0-9]/g, '');
+        this.logger.log(`📱 Requesting pairing code for: ${cleanPhone}`);
+
+        // ✅ FIX: Retry once if first attempt fails (network hiccup)
+        let code: string | undefined;
+        for (let attempt = 1; attempt <= 2; attempt++) {
+          try {
+            code = await sock.requestPairingCode(cleanPhone);
+            break;
+          } catch (error) {
+            const msg = error instanceof Error ? error.message : String(error);
+            this.logger.warn(`⚠️ Pairing code attempt ${attempt} failed: ${msg}`);
+            if (attempt < 2) await this.delay(3000);
+            else throw new Error(`فشل في إنشاء رمز الربط بعد محاولتين: ${msg}`);
+          }
         }
+
+        session.pairingCode = code;
+        session.status = 'pairing_code';
+        this.logger.log(`✅ Pairing code: ${code} for ${channelId}`);
+        this.eventEmitter.emit('whatsapp.pairing_code.generated', { channelId, pairingCode: code });
+        return { sessionId: channelId, qrCode: '', pairingCode: code!, expiresAt: new Date(Date.now() + QR_TIMEOUT_MS), status: 'pending', phoneNumber };
       }
 
       return new Promise<QRSessionResult>((resolve, reject) => {
@@ -696,35 +728,42 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
     if (type !== 'notify') return;
 
     for (const msg of messages) {
-      if (msg.key.fromMe) continue;
+      try {
+        if (msg.key.fromMe) continue;
 
-      const jid = msg.key.remoteJid || '';
-      if (!jid) continue;
-      if (jid.includes('@g.us') || jid.includes('@broadcast') || jid === 'status@broadcast') continue;
+        const jid = msg.key.remoteJid || '';
+        if (!jid) continue;
+        if (jid.includes('@g.us') || jid.includes('@broadcast') || jid === 'status@broadcast') continue;
 
-      const isLidJid = jid.includes('@lid');
-      let realPhone: string | undefined = isLidJid ? undefined : jid.split('@')[0].replace(/\D/g, '');
+        const isLidJid = jid.includes('@lid');
+        let realPhone: string | undefined = isLidJid ? undefined : jid.split('@')[0].replace(/\D/g, '');
 
-      if (isLidJid) {
-        const channelMap = this.lidToPhone.get(channelId);
-        if (channelMap?.has(jid)) {
-          realPhone = channelMap.get(jid);
-          this.logger.log(`📱 Resolved @lid: ${jid} → ${realPhone}`);
-        } else {
-          this.logger.warn(`⚠️ @lid NOT resolved: ${jid} | Cache size: ${channelMap?.size || 0} | Will attempt resolution at send time`);
+        if (isLidJid) {
+          const channelMap = this.lidToPhone.get(channelId);
+          if (channelMap?.has(jid)) {
+            realPhone = channelMap.get(jid);
+            this.logger.log(`📱 Resolved @lid: ${jid} → ${realPhone}`);
+          } else {
+            this.logger.warn(`⚠️ @lid NOT resolved: ${jid} | Cache size: ${channelMap?.size || 0} | Will attempt resolution at send time`);
+          }
         }
-      }
 
-      this.eventEmitter.emit('whatsapp.message.received', {
-        channelId,
-        from: jid,
-        fromPhone: realPhone,
-        pushName: (msg as any).pushName || undefined,
-        messageId: msg.key.id || '',
-        text: msg.message?.conversation || msg.message?.extendedTextMessage?.text || '',
-        timestamp: msg.messageTimestamp ? new Date(Number(msg.messageTimestamp) * 1000) : new Date(),
-        rawMessage: msg,
-      });
+        this.eventEmitter.emit('whatsapp.message.received', {
+          channelId,
+          from: jid,
+          fromPhone: realPhone,
+          pushName: (msg as any).pushName || undefined,
+          messageId: msg.key.id || '',
+          text: msg.message?.conversation || msg.message?.extendedTextMessage?.text || '',
+          timestamp: msg.messageTimestamp ? new Date(Number(msg.messageTimestamp) * 1000) : new Date(),
+          rawMessage: msg,
+        });
+      } catch (err) {
+        // ✅ FIX: catch per-message errors — one bad message won't crash the whole session
+        this.logger.error(
+          `❌ Failed to process incoming message on channel ${channelId}: ${err instanceof Error ? err.message : 'Unknown error'}`,
+        );
+      }
     }
   }
 
