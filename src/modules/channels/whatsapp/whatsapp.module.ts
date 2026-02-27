@@ -2,16 +2,16 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║              RAFIQ PLATFORM - WhatsApp Module                                  ║
  * ║                                                                                ║
- * ║  ✅ إصلاحات:                                                                   ║
- * ║  - إضافة TypeOrmModule مع Channel Entity                                      ║
- * ║  - إضافة ConfigModule للوصول لمتغيرات البيئة                                   ║
- * ║  - ربط كامل مع نظام القنوات                                                    ║
+ * ║  ✅ v3 — إصلاحات:                                                              ║
+ * ║  FIX-1: حذف طابوري 'whatsapp' و'whatsapp-outgoing' الفارغَين                   ║
+ * ║         لم يكن لهما Processor — الرسائل كانت تتراكم في Redis بلا معالجة       ║
+ * ║         الإرسال يتم مباشرة عبر ChannelsService.sendWhatsAppMessage             ║
+ * ║  FIX-2: ChannelsModule يُصدّر WhatsAppBaileysService — لا داعي لإعادة تسجيله  ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
 import { Module } from '@nestjs/common';
 import { HttpModule } from '@nestjs/axios';
-import { BullModule } from '@nestjs/bullmq';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule } from '@nestjs/config';
 
@@ -22,58 +22,22 @@ import { WhatsappSettings } from '../../admin/entities/whatsapp-settings.entity'
 
 @Module({
   imports: [
-    // ✅ إضافة Channel و WhatsappSettings للوصول لقاعدة البيانات
     TypeOrmModule.forFeature([Channel, WhatsappSettings]),
-
-    // ✅ إضافة ConfigModule للوصول لمتغيرات البيئة
     ConfigModule,
 
     HttpModule.register({
-      timeout: 30000,
+      timeout: 30_000,
       maxRedirects: 5,
-      headers: {
-        'User-Agent': 'Rafiq-Platform/1.0',
-      },
+      headers: { 'User-Agent': 'Rafiq-Platform/1.0' },
     }),
 
-    BullModule.registerQueue({
-      name: 'whatsapp',
-      defaultJobOptions: {
-        attempts: 3,
-        backoff: {
-          type: 'exponential',
-          delay: 1000,
-        },
-        removeOnComplete: {
-          age: 86400,
-          count: 1000,
-        },
-        removeOnFail: {
-          age: 604800,
-        },
-      },
-    }),
-
-    BullModule.registerQueue({
-      name: 'whatsapp-outgoing',
-      defaultJobOptions: {
-        attempts: 5,
-        backoff: {
-          type: 'exponential',
-          delay: 2000,
-        },
-        removeOnComplete: true,
-        removeOnFail: {
-          age: 172800,
-        },
-      },
-    }),
+    // ✅ لا BullMQ queues هنا — حُذفت لأنها لم تكن لها processors
+    //    الإرسال يتم مباشرة عبر WhatsAppService/ChannelsService
+    //    طابور 'messaging' في MessagingModule هو المسؤول عن retry logic
   ],
 
   controllers: [WhatsAppController],
-
   providers: [WhatsAppService],
-
   exports: [WhatsAppService],
 })
 export class WhatsAppModule {}
