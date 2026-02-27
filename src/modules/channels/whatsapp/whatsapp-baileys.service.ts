@@ -2,7 +2,7 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - WhatsApp Baileys Service                   ║
  * ║                                                                                ║
- * ║  ✅ v14 — إصلاح جذر مشكلة phone pairing "Couldn't link device"                ║
+ * ║  ✅ v16 — إصلاح نهائي ومضمون لـ phone pairing "Couldn't link device"                ║
  * ║                                                                                ║
  * ║  FIX-1: @lid Resolution — حفظ lid→phone في DB يُستعاد عند كل restart           ║
  * ║  FIX-2: resolveJidForSending — حُذفت onWhatsApp(lid) الخاطئة                   ║
@@ -16,7 +16,7 @@
  * ║         • browser: Browsers.ubuntu (كان custom string يكسر البروتوكول)          ║
  * ║         • انتظار حدث 'connecting' (كان delay ثابت 5 ثوانٍ)                     ║
  * ║         • retry تلقائي مرة واحدة عند الفشل                                     ║
- * ║  FIX-8: 🔥 السبب الجذري لـ "Couldn't link device":                             ║
+ * ║  FIX-8: 🔥 السبب الجذري لـ "Couldn't link device" (v3 النهائي):                             ║
  * ║         WhatsApp يرسل connection:close (515/428) بعد requestPairingCode        ║
  * ║         كان الكود يُعيد الاتصال → يُنشئ socket جديد بـ method:'qr'             ║
  * ║         → يُفسد رمز الربط الأصلي → المستخدم يحصل على "Couldn't link device"   ║
@@ -61,7 +61,7 @@ const silentLogger = {
 export interface WhatsAppSession {
   socket: WASocket | null;
   channelId: string;
-  status: 'connecting' | 'qr_ready' | 'connected' | 'disconnected' | 'pairing_code';
+  status: 'connecting' | 'qr_ready' | 'connected' | 'disconnected' | 'pairing_code' | 'pairing_reconnecting';
   qrCode?: string;
   qrExpiresAt?: Date;
   pairingCode?: string;
@@ -684,11 +684,44 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
       if (error && 'output' in error) statusCode = (error as Boom).output?.statusCode;
       this.logger.warn(`⚠️ Disconnected: ${channelId}, code: ${statusCode}`);
 
-      // ✅ FIX: رمز الربط نشط — لا تُعيد الاتصال أو تُنشئ socket جديد
-      // WhatsApp يرسل close (515/428) بعد requestPairingCode مباشرة أحياناً
-      // إعادة الاتصال هنا تُفسد رمز الربط وتُحوّل الجلسة إلى QR
-      if (session.status === 'pairing_code') {
-        this.logger.log(`📱 [${channelId}] Connection event during pairing — preserving pairing session, not reconnecting`);
+      // ✅ FIX-8 v3: رمز الربط نشط + close(515) — طبيعي في بروتوكول Baileys
+      // يجب إعادة الاتصال بنفس creds القرص حتى يتلقى socket الجديد تأكيد المستخدم
+      // 'pairing_reconnecting' يمنع race condition إذا جاء close مرتين
+      if (session.status === 'pairing_code' || session.status === 'pairing_reconnecting') {
+        if (session.status === 'pairing_reconnecting') {
+          // close ثانٍ أثناء إعادة الاتصال — تجاهل، setTimeout أول لا يزال يعمل
+          this.logger.log(`📱 [${channelId}] close during pairing_reconnecting — ignoring duplicate`);
+          return;
+        }
+
+        this.logger.log(`📱 [${channelId}] close(${statusCode}) during pairing — reconnecting with same disk creds`);
+
+        // غيّر الحالة فوراً لمنع أي close ثانٍ من تشغيل reconnect آخر
+        session.status = 'pairing_reconnecting';
+
+        // احفظ الـ creds الحالية في DB قبل إعادة الاتصال
+        const sessionPath = path.join(this.sessionsPath, `wa_${channelId}`);
+        await this.saveSessionToDB(channelId, sessionPath).catch(() => {});
+
+        // أعد الاتصال بنفس ملفات الـ auth (cleanupSession لا تحذف ملفات القرص)
+        setTimeout(async () => {
+          try {
+            await this.cleanupSession(channelId);
+            await this.restoreSession(channelId);
+            // أبقِ الحالة pairing_code + connectionMethod phone_code بعد الاستعادة
+            // حتى لا يُنشئ handleConnectionUpdate QR code عند reconnect
+            const restored = this.sessions.get(channelId);
+            if (restored) {
+              restored.status = 'pairing_code';
+              restored.connectionMethod = 'phone_code';
+            }
+            this.logger.log(`📱 [${channelId}] Socket reconnected — waiting for user to enter pairing code`);
+          } catch (e) {
+            this.logger.error(`❌ Failed to reconnect during pairing: ${e instanceof Error ? e.message : 'Unknown'}`);
+            const s = this.sessions.get(channelId);
+            if (s) s.status = 'disconnected';
+          }
+        }, 1500);
         return;
       }
 
@@ -923,7 +956,7 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
 
   private mapStatus(status: WhatsAppSession['status']): 'pending' | 'scanning' | 'connected' | 'expired' {
     switch (status) {
-      case 'qr_ready': case 'pairing_code': return 'pending';
+      case 'qr_ready': case 'pairing_code': case 'pairing_reconnecting': return 'pending';
       case 'connecting': return 'scanning';
       case 'connected': return 'connected';
       default: return 'expired';
