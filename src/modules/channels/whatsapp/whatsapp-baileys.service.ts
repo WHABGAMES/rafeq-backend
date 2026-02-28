@@ -685,41 +685,37 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
       if (error && 'output' in error) statusCode = (error as Boom).output?.statusCode;
       this.logger.warn(`⚠️ Disconnected: ${channelId}, code: ${statusCode}`);
 
-      // ✅ FIX-8 v3: رمز الربط نشط + close(515) — طبيعي في بروتوكول Baileys
-      // يجب إعادة الاتصال بنفس creds القرص حتى يتلقى socket الجديد تأكيد المستخدم
-      // 'pairing_reconnecting' يمنع race condition إذا جاء close مرتين
+      // ✅ FIX (DigitalOcean/App Platform friendly): أثناء phone pairing قد يرسل Baileys close(515/...) بسرعة.
+      // إعادة الاتصال فقط قد تغيّر socket fingerprint/timing وتُبطل الكود في تطبيق واتساب (Couldn't link device).
+      // الحل الأكثر ثباتاً: إعادة توليد pairing code تلقائياً وإرساله للواجهة.
+      // 'pairing_reconnecting' يمنع race condition إذا جاء close مرتين.
       if (session.status === 'pairing_code' || session.status === 'pairing_reconnecting') {
         if (session.status === 'pairing_reconnecting') {
-          // close ثانٍ أثناء إعادة الاتصال — تجاهل، setTimeout أول لا يزال يعمل
           this.logger.log(`📱 [${channelId}] close during pairing_reconnecting — ignoring duplicate`);
           return;
         }
 
-        this.logger.log(`📱 [${channelId}] close(${statusCode}) during pairing — reconnecting with same disk creds`);
-
-        // غيّر الحالة فوراً لمنع أي close ثانٍ من تشغيل reconnect آخر
+        const phone = session.phoneNumber;
+        if (!phone) {
+          this.logger.error(`❌ [${channelId}] pairing disconnect but phoneNumber is missing — cannot regenerate code`);
+          session.status = 'disconnected';
+          return;
+        }
+        this.logger.log(`📱 [${channelId}] close(${statusCode}) during pairing — regenerating pairing code`);
         session.status = 'pairing_reconnecting';
 
-        // احفظ الـ creds الحالية في DB قبل إعادة الاتصال
-        const sessionPath = path.join(this.sessionsPath, `wa_${channelId}`);
-        await this.saveSessionToDB(channelId, sessionPath).catch(() => {});
-
-        // أعد الاتصال بنفس ملفات الـ auth (cleanupSession لا تحذف ملفات القرص)
-        // forPairing=true → Browsers.ubuntu + connectionMethod=phone_code + status=connecting
         setTimeout(async () => {
           try {
-            await this.cleanupSession(channelId);
-            await this.restoreSession(channelId, true); // ✅ forPairing: Browsers.ubuntu + phone_code
-            // بعد restoreSession، غيّر الحالة إلى pairing_code لانتظار المستخدم
-            const restored = this.sessions.get(channelId);
-            if (restored) restored.status = 'pairing_code';
-            this.logger.log(`📱 [${channelId}] Socket reconnected (Browsers.ubuntu) — waiting for user to enter pairing code`);
+            // نبدأ جلسة جديدة بالكامل للحصول على كود جديد صالح.
+            // (الواجهة ستلتقطه عبر polling بعد تعديلها لتحديث pairingCode)
+            await this.createBaileysSession(channelId, 'phone_code', phone);
           } catch (e) {
-            this.logger.error(`❌ Failed to reconnect during pairing: ${e instanceof Error ? e.message : 'Unknown'}`);
+            this.logger.error(`❌ Failed to regenerate pairing code: ${e instanceof Error ? e.message : 'Unknown'}`);
             const s = this.sessions.get(channelId);
             if (s) s.status = 'disconnected';
           }
-        }, 1500);
+        }, 800);
+
         return;
       }
 
