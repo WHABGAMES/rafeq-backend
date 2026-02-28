@@ -2,7 +2,7 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - WhatsApp Baileys Service                   ║
  * ║                                                                                ║
- * ║  ✅ v18 — إصلاح race condition: نفس auth state من الذاكرة لـ phone pairing "Couldn't link device"                ║
+ * ║  ✅ v19 — حل حلقة 401 اللانهائية أثناء phone pairing لـ phone pairing "Couldn't link device"                ║
  * ║                                                                                ║
  * ║  FIX-1: @lid Resolution — حفظ lid→phone في DB يُستعاد عند كل restart           ║
  * ║  FIX-2: resolveJidForSending — حُذفت onWhatsApp(lid) الخاطئة                   ║
@@ -738,30 +738,37 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
       if (error && 'output' in error) statusCode = (error as Boom).output?.statusCode;
       this.logger.warn(`⚠️ Disconnected: ${channelId}, code: ${statusCode}`);
 
-      // ✅ FIX-8 v3: رمز الربط نشط + close(515) — طبيعي في بروتوكول Baileys
-      // يجب إعادة الاتصال بنفس creds القرص حتى يتلقى socket الجديد تأكيد المستخدم
-      // 'pairing_reconnecting' يمنع race condition إذا جاء close مرتين
+      // ✅ FIX-8 v4: phone pairing — فرّق بين 515 (طبيعي) و 401 (رفض WA = حلقة لانهائية)
       if (session.status === 'pairing_code' || session.status === 'pairing_reconnecting') {
-        if (session.status === 'pairing_reconnecting') {
-          // close ثانٍ أثناء إعادة الاتصال — تجاهل، setTimeout أول لا يزال يعمل
-          this.logger.log(`📱 [${channelId}] close during pairing_reconnecting — ignoring duplicate`);
+        // 401 = WhatsApp رفض الـ credentials — إعادة الاتصال تخلق حلقة لانهائية
+        // يحدث إذا: رقم خاطئ، IP محظور، أو الحساب محدود مؤقتاً
+        if (statusCode === 401 || statusCode === DisconnectReason.loggedOut) {
+          this.logger.warn(`📱 [${channelId}] ❌ close(401) during pairing — WA rejected auth. Stopping reconnect loop.`);
+          session.status = 'disconnected';
+          await this.cleanupSession(channelId);
+          await this.channelRepository.update(channelId, {
+            status: ChannelStatus.DISCONNECTED,
+            lastError: 'رفض واتساب ربط الجهاز — تأكد من صحة الرقم أو حاول مرة أخرى بعد دقيقة',
+            lastErrorAt: new Date(),
+          }).catch(() => {});
+          this.eventEmitter.emit('whatsapp.pairing_failed', { channelId, reason: 'auth_rejected_401' });
           return;
         }
 
-        this.logger.log(`📱 [${channelId}] close(${statusCode}) during pairing — reconnecting with same disk creds`);
+        // 515 = restartRequired — طبيعي بعد requestPairingCode، أعد الاتصال
+        if (session.status === 'pairing_reconnecting') {
+          this.logger.log(`📱 [${channelId}] close(${statusCode}) during pairing_reconnecting — ignoring duplicate`);
+          return;
+        }
 
-        // غيّر الحالة فوراً لمنع أي close ثانٍ من تشغيل reconnect آخر
+        this.logger.log(`📱 [${channelId}] close(${statusCode}) during pairing — reconnecting with same auth state`);
         session.status = 'pairing_reconnecting';
 
-        // احفظ الـ creds الحالية في DB قبل إعادة الاتصال
         const sessionPath = path.join(this.sessionsPath, `wa_${channelId}`);
         await this.saveSessionToDB(channelId, sessionPath).catch(() => {});
 
-        // أعد الاتصال بنفس auth state من الذاكرة (FIX-10: لا تقرأ من disk)
-        // forPairing=true → Browsers.ubuntu + connectionMethod=phone_code + status=connecting
         setTimeout(async () => {
           try {
-            // احتفظ بـ authState قبل cleanupSession تحذفه
             const savedAuthState = session.authState;
             const savedSessionPath = session.sessionPath || path.join(this.sessionsPath, `wa_${channelId}`);
             await this.cleanupSession(channelId);
@@ -772,7 +779,7 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
             }
             const restored = this.sessions.get(channelId);
             if (restored) restored.status = 'pairing_code';
-            this.logger.log(`📱 [${channelId}] Socket reconnected (same auth state) — waiting for pairing code entry`);
+            this.logger.log(`📱 [${channelId}] Socket reconnected — waiting for pairing code entry`);
           } catch (e) {
             this.logger.error(`❌ Failed to reconnect during pairing: ${e instanceof Error ? e.message : 'Unknown'}`);
             const s = this.sessions.get(channelId);
