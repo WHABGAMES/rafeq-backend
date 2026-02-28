@@ -2,7 +2,7 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - WhatsApp Baileys Service                   ║
  * ║                                                                                ║
- * ║  ✅ v17 — الإصلاح الجذري الحقيقي لـ phone pairing "Couldn't link device"                ║
+ * ║  ✅ v18 — إصلاح race condition: نفس auth state من الذاكرة لـ phone pairing "Couldn't link device"                ║
  * ║                                                                                ║
  * ║  FIX-1: @lid Resolution — حفظ lid→phone في DB يُستعاد عند كل restart           ║
  * ║  FIX-2: resolveJidForSending — حُذفت onWhatsApp(lid) الخاطئة                   ║
@@ -68,6 +68,11 @@ export interface WhatsAppSession {
   phoneNumber?: string;
   retryCount: number;
   connectionMethod: 'qr' | 'phone_code';
+  // ✅ FIX-10: نحتفظ بـ state و saveCreds من الـ socket الأصلي
+  // لإعادة الاتصال بنفس auth state من الذاكرة (لا من الـ disk)
+  // يحل مشكلة race condition بين saveCreds و useMultiFileAuthState
+  authState?: { state: any; saveCreds: () => Promise<void> };
+  sessionPath?: string;
 }
 
 export interface QRSessionResult {
@@ -360,6 +365,51 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
     sock.ev.on('contacts.update', (updates: any[]) => { this.handleContactsUpsert(channelId, updates); });
   }
 
+  /**
+   * ✅ FIX-10: إعادة الاتصال لـ phone pairing بنفس auth state من الذاكرة
+   * يحل race condition: saveCreds يكتب على disk بشكل async
+   * لما نقرأ من disk في restoreSession قد لا تكون الكتابة اكتملت بعد
+   * الحل: استخدم نفس state object الذي أنشأه requestPairingCode
+   */
+  private async reconnectWithSameAuth(
+    channelId: string,
+    authState: { state: any; saveCreds: () => Promise<void> },
+    sessionPath: string,
+  ): Promise<void> {
+    const { version } = await fetchLatestBaileysVersion();
+    const { state, saveCreds } = authState;
+
+    const sock = makeWASocket({
+      auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, silentLogger) },
+      version,
+      printQRInTerminal: false,
+      // ✅ نفس browser string من requestPairingCode
+      browser: Browsers.ubuntu('Chrome'),
+      connectTimeoutMs: 60_000,
+      defaultQueryTimeoutMs: 60_000,
+      keepAliveIntervalMs: 25_000,
+      markOnlineOnConnect: false,
+      generateHighQualityLinkPreview: false,
+      logger: silentLogger,
+      syncFullHistory: false,
+    });
+
+    const session: WhatsAppSession = {
+      socket: sock, channelId, status: 'connecting', retryCount: 0,
+      connectionMethod: 'phone_code',
+      authState: { state, saveCreds },
+      sessionPath,
+    };
+    this.sessions.set(channelId, session);
+
+    sock.ev.on('creds.update', async () => { await saveCreds(); await this.saveSessionToDB(channelId, sessionPath); });
+    sock.ev.on('connection.update', async (update: Partial<ConnectionState>) => { await this.handleConnectionUpdate(channelId, update); });
+    sock.ev.on('messages.upsert', async (update: MessageUpsert) => { await this.handleIncomingMessages(channelId, update); });
+    sock.ev.on('contacts.upsert', (contacts: any[]) => { this.handleContactsUpsert(channelId, contacts); });
+    sock.ev.on('messaging-history.set', (data: any) => { this.handleHistorySet(channelId, data); });
+    sock.ev.on('contacts.update', (updates: any[]) => { this.handleContactsUpsert(channelId, updates); });
+  }
+
   private async markChannelDisconnected(channelId: string): Promise<void> {
     try {
       await this.channelRepository.update(channelId, {
@@ -448,6 +498,9 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
 
       const session: WhatsAppSession = {
         socket: sock, channelId, status: 'connecting', retryCount: 0, connectionMethod: method, phoneNumber,
+        // ✅ FIX-10: احتفظ بـ state و saveCreds لإعادة الاتصال بنفس auth state
+        authState: { state, saveCreds },
+        sessionPath,
       };
       this.sessions.set(channelId, session);
 
@@ -685,37 +738,47 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
       if (error && 'output' in error) statusCode = (error as Boom).output?.statusCode;
       this.logger.warn(`⚠️ Disconnected: ${channelId}, code: ${statusCode}`);
 
-      // ✅ FIX (DigitalOcean/App Platform friendly): أثناء phone pairing قد يرسل Baileys close(515/...) بسرعة.
-      // إعادة الاتصال فقط قد تغيّر socket fingerprint/timing وتُبطل الكود في تطبيق واتساب (Couldn't link device).
-      // الحل الأكثر ثباتاً: إعادة توليد pairing code تلقائياً وإرساله للواجهة.
-      // 'pairing_reconnecting' يمنع race condition إذا جاء close مرتين.
+      // ✅ FIX-8 v3: رمز الربط نشط + close(515) — طبيعي في بروتوكول Baileys
+      // يجب إعادة الاتصال بنفس creds القرص حتى يتلقى socket الجديد تأكيد المستخدم
+      // 'pairing_reconnecting' يمنع race condition إذا جاء close مرتين
       if (session.status === 'pairing_code' || session.status === 'pairing_reconnecting') {
         if (session.status === 'pairing_reconnecting') {
+          // close ثانٍ أثناء إعادة الاتصال — تجاهل، setTimeout أول لا يزال يعمل
           this.logger.log(`📱 [${channelId}] close during pairing_reconnecting — ignoring duplicate`);
           return;
         }
 
-        const phone = session.phoneNumber;
-        if (!phone) {
-          this.logger.error(`❌ [${channelId}] pairing disconnect but phoneNumber is missing — cannot regenerate code`);
-          session.status = 'disconnected';
-          return;
-        }
-        this.logger.log(`📱 [${channelId}] close(${statusCode}) during pairing — regenerating pairing code`);
+        this.logger.log(`📱 [${channelId}] close(${statusCode}) during pairing — reconnecting with same disk creds`);
+
+        // غيّر الحالة فوراً لمنع أي close ثانٍ من تشغيل reconnect آخر
         session.status = 'pairing_reconnecting';
 
+        // احفظ الـ creds الحالية في DB قبل إعادة الاتصال
+        const sessionPath = path.join(this.sessionsPath, `wa_${channelId}`);
+        await this.saveSessionToDB(channelId, sessionPath).catch(() => {});
+
+        // أعد الاتصال بنفس auth state من الذاكرة (FIX-10: لا تقرأ من disk)
+        // forPairing=true → Browsers.ubuntu + connectionMethod=phone_code + status=connecting
         setTimeout(async () => {
           try {
-            // نبدأ جلسة جديدة بالكامل للحصول على كود جديد صالح.
-            // (الواجهة ستلتقطه عبر polling بعد تعديلها لتحديث pairingCode)
-            await this.createBaileysSession(channelId, 'phone_code', phone);
+            // احتفظ بـ authState قبل cleanupSession تحذفه
+            const savedAuthState = session.authState;
+            const savedSessionPath = session.sessionPath || path.join(this.sessionsPath, `wa_${channelId}`);
+            await this.cleanupSession(channelId);
+            if (savedAuthState) {
+              await this.reconnectWithSameAuth(channelId, savedAuthState, savedSessionPath);
+            } else {
+              await this.restoreSession(channelId, true);
+            }
+            const restored = this.sessions.get(channelId);
+            if (restored) restored.status = 'pairing_code';
+            this.logger.log(`📱 [${channelId}] Socket reconnected (same auth state) — waiting for pairing code entry`);
           } catch (e) {
-            this.logger.error(`❌ Failed to regenerate pairing code: ${e instanceof Error ? e.message : 'Unknown'}`);
+            this.logger.error(`❌ Failed to reconnect during pairing: ${e instanceof Error ? e.message : 'Unknown'}`);
             const s = this.sessions.get(channelId);
             if (s) s.status = 'disconnected';
           }
-        }, 800);
-
+        }, 1500);
         return;
       }
 
