@@ -217,20 +217,13 @@ export class ChannelsService {
 
   async initWhatsAppSession(storeId: string): Promise<QRSessionResult> {
     this.logger.log(`[QR] Init for store ${storeId}`);
-    return this.createWhatsAppQRChannel(storeId, 'qr');
+    return this.createWhatsAppQRChannel(storeId);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
   // 📱 WhatsApp Phone Code (Baileys)
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  async initWhatsAppSessionWithPhoneCode(
-    storeId: string,
-    phoneNumber: string,
-  ): Promise<QRSessionResult> {
-    this.logger.log(`[Phone] Init for store ${storeId}, phone: ${phoneNumber}`);
-    return this.createWhatsAppQRChannel(storeId, 'phone_code', phoneNumber);
-  }
 
   /**
    * ✅ Fix: إنشاء قناة WhatsApp QR/Phone مع منع التكرار
@@ -243,8 +236,6 @@ export class ChannelsService {
    */
   private async createWhatsAppQRChannel(
     storeId: string,
-    method: 'qr' | 'phone_code',
-    phoneNumber?: string,
   ): Promise<QRSessionResult> {
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -295,34 +286,6 @@ export class ChannelsService {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // ✅ خطوة 3: تحقق إذا كان الرقم مستخدم في متجر آخر (phone_code فقط)
-    //
-    // 🔧 Fix BUG#2+#3: استبدال QueryBuilder بفلترة على مستوى التطبيق
-    // لتجنب مشاكل TypeORM alias داخل دوال SQL مثل REPLACE()
-    // ═══════════════════════════════════════════════════════════════════════════
-    if (method === 'phone_code' && phoneNumber) {
-      const normalizedInput = this.normalizePhone(phoneNumber);
-
-      if (normalizedInput) {
-        const connectedQRChannels = await this.channelRepository.find({
-          where: {
-            type: ChannelType.WHATSAPP_QR,
-            status: ChannelStatus.CONNECTED,
-          },
-        });
-
-        const usedElsewhere = connectedQRChannels.find(ch => {
-          if (ch.storeId === storeId) return false;
-          return this.phonesMatch(ch.whatsappPhoneNumber || '', normalizedInput);
-        });
-
-        if (usedElsewhere) {
-          throw new BadRequestException(
-            'هذا الرقم مربوط بالفعل بمتجر آخر. افصله من المتجر الآخر أولاً.',
-          );
-        }
-      }
-    }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // ✅ خطوة 4: إنشاء قناة جديدة نظيفة
@@ -330,7 +293,7 @@ export class ChannelsService {
     const channel = this.channelRepository.create({
       storeId,
       type: ChannelType.WHATSAPP_QR,
-      name: method === 'phone_code' ? `WhatsApp (${phoneNumber})` : 'WhatsApp (QR)',
+      name: 'WhatsApp (QR)',
       status: ChannelStatus.PENDING,
       isOfficial: false,
     });
@@ -340,19 +303,11 @@ export class ChannelsService {
     try {
       let session: QRSessionResult;
 
-      if (method === 'phone_code' && phoneNumber) {
-        session = await this.whatsappBaileysService.initSessionWithPhoneCode(
-          savedChannel.id,
-          phoneNumber,
-        );
-      } else {
-        session = await this.whatsappBaileysService.initSession(savedChannel.id);
-      }
+      session = await this.whatsappBaileysService.initSession(savedChannel.id);
 
       await this.channelRepository.update(savedChannel.id, {
         status: session.status === 'connected' ? ChannelStatus.CONNECTED : ChannelStatus.PENDING,
         sessionId: session.sessionId,
-        whatsappPhoneNumber: phoneNumber,
       });
 
       return session;
