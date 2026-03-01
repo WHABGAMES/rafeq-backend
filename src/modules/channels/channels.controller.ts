@@ -63,18 +63,6 @@ export class ChannelsController {
     return { success: true, data: session };
   }
 
-  // 📱 WhatsApp Phone Code Init
-  @Post('whatsapp/phone/init')
-  @ApiOperation({ summary: 'Initialize WhatsApp session with phone pairing code' })
-  async initWhatsAppPhoneCode(
-    @Body() body: { storeId: string; phoneNumber: string },
-  ) {
-    const session = await this.channelsService.initWhatsAppSessionWithPhoneCode(
-      body.storeId,
-      body.phoneNumber,
-    );
-    return { success: true, data: session };
-  }
 
   // 📊 Diagnostics
   @Get('whatsapp/qr/diagnostics')
