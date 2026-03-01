@@ -494,7 +494,7 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
     return {
       sessionId: channelId,
       qrCode: session.qrCode || '',
-      pairingCode: session.pairingCode,
+      pairingCode: undefined,
       expiresAt: session.qrExpiresAt || new Date(),
       status: this.mapStatus(session.status),
       phoneNumber: session.phoneNumber,
@@ -605,7 +605,6 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
     if (connection === 'open') {
       session.status = 'connected';
       session.qrCode = undefined;
-      session.pairingCode = undefined;
       session.retryCount = 0;
       const user = session.socket?.user;
       if (user?.id) session.phoneNumber = user.id.split(':')[0].split('@')[0];
@@ -890,7 +889,7 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
       activeSessions: this.sessions.size,
       sessions: Array.from(this.sessions.entries()).map(([id, s]) => ({
         id, status: s.status, method: s.connectionMethod,
-        hasQR: !!s.qrCode, hasPairingCode: !!s.pairingCode,
+        hasQR: !!s.qrCode,
         phoneNumber: s.phoneNumber, retryCount: s.retryCount,
         lidMappings: this.lidToPhone.get(id)?.size || 0,
       })),
