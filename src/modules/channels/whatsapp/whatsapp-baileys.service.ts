@@ -42,7 +42,6 @@ import makeWASocket, {
   WAMessage,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
-  Browsers,
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import * as QRCode from 'qrcode';
@@ -61,18 +60,12 @@ const silentLogger = {
 export interface WhatsAppSession {
   socket: WASocket | null;
   channelId: string;
-  status: 'connecting' | 'qr_ready' | 'connected' | 'disconnected' | 'pairing_code' | 'pairing_reconnecting';
+  status: 'connecting' | 'qr_ready' | 'connected' | 'disconnected';
   qrCode?: string;
   qrExpiresAt?: Date;
-  pairingCode?: string;
   phoneNumber?: string;
   retryCount: number;
-  connectionMethod: 'qr' | 'phone_code';
-  // ✅ FIX-10: نحتفظ بـ state و saveCreds من الـ socket الأصلي
-  // لإعادة الاتصال بنفس auth state من الذاكرة (لا من الـ disk)
-  // يحل مشكلة race condition بين saveCreds و useMultiFileAuthState
-  authState?: { state: any; saveCreds: () => Promise<void> };
-  sessionPath?: string;
+  connectionMethod: 'qr';
 }
 
 export interface QRSessionResult {
@@ -300,7 +293,7 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
   /**
    * FIX-5: restoreSession — يُعيد تحميل lid→phone من DB قبل الاتصال
    */
-  private async restoreSession(channelId: string, forPairing = false): Promise<void> {
+  private async restoreSession(channelId: string): Promise<void> {
     const sessionPath = path.join(this.sessionsPath, `wa_${channelId}`);
 
     // FIX-5: تأكد من وجود lid mappings في الذاكرة قبل أي إرسال
@@ -338,10 +331,7 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
       },
       version,
       printQRInTerminal: false,
-      // ✅ FIX-9: phone pairing reconnect MUST use Browsers.ubuntu — same as original socket
-      // WhatsApp verifies browser fingerprint against what was sent in requestPairingCode()
-      // Using a different browser string = 'Couldn't link device'
-      browser: forPairing ? Browsers.ubuntu('Chrome') : ['Rafiq Platform', 'Chrome', '126.0.0'],
+      browser: ['Rafiq Platform', 'Chrome', '126.0.0'],
       connectTimeoutMs: 60_000,
       defaultQueryTimeoutMs: 60_000,
       keepAliveIntervalMs: 25_000,
@@ -353,7 +343,7 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
 
     const session: WhatsAppSession = {
       socket: sock, channelId, status: 'connecting', retryCount: 0,
-      connectionMethod: forPairing ? 'phone_code' : 'qr',
+      connectionMethod: 'qr',
     };
     this.sessions.set(channelId, session);
 
@@ -371,44 +361,6 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
    * لما نقرأ من disk في restoreSession قد لا تكون الكتابة اكتملت بعد
    * الحل: استخدم نفس state object الذي أنشأه requestPairingCode
    */
-  private async reconnectWithSameAuth(
-    channelId: string,
-    authState: { state: any; saveCreds: () => Promise<void> },
-    sessionPath: string,
-  ): Promise<void> {
-    const { version } = await fetchLatestBaileysVersion();
-    const { state, saveCreds } = authState;
-
-    const sock = makeWASocket({
-      auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, silentLogger) },
-      version,
-      printQRInTerminal: false,
-      // ✅ نفس browser string من requestPairingCode
-      browser: Browsers.ubuntu('Chrome'),
-      connectTimeoutMs: 60_000,
-      defaultQueryTimeoutMs: 60_000,
-      keepAliveIntervalMs: 25_000,
-      markOnlineOnConnect: false,
-      generateHighQualityLinkPreview: false,
-      logger: silentLogger,
-      syncFullHistory: false,
-    });
-
-    const session: WhatsAppSession = {
-      socket: sock, channelId, status: 'connecting', retryCount: 0,
-      connectionMethod: 'phone_code',
-      authState: { state, saveCreds },
-      sessionPath,
-    };
-    this.sessions.set(channelId, session);
-
-    sock.ev.on('creds.update', async () => { await saveCreds(); await this.saveSessionToDB(channelId, sessionPath); });
-    sock.ev.on('connection.update', async (update: Partial<ConnectionState>) => { await this.handleConnectionUpdate(channelId, update); });
-    sock.ev.on('messages.upsert', async (update: MessageUpsert) => { await this.handleIncomingMessages(channelId, update); });
-    sock.ev.on('contacts.upsert', (contacts: any[]) => { this.handleContactsUpsert(channelId, contacts); });
-    sock.ev.on('messaging-history.set', (data: any) => { this.handleHistorySet(channelId, data); });
-    sock.ev.on('contacts.update', (updates: any[]) => { this.handleContactsUpsert(channelId, updates); });
-  }
 
   private async markChannelDisconnected(channelId: string): Promise<void> {
     try {
@@ -464,14 +416,9 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
     return this.createBaileysSession(channelId, 'qr');
   }
 
-  async initSessionWithPhoneCode(channelId: string, phoneNumber: string): Promise<QRSessionResult> {
-    this.logger.log(`📱 [Phone] Init: ${channelId}, phone: ${phoneNumber}`);
-    return this.createBaileysSession(channelId, 'phone_code', phoneNumber);
-  }
-
   private async createBaileysSession(
     channelId: string,
-    method: 'qr' | 'phone_code',
+    method: 'qr',
     phoneNumber?: string,
   ): Promise<QRSessionResult> {
     await this.fullCleanupSession(channelId);
@@ -490,17 +437,14 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
         version,
         printQRInTerminal: method === 'qr',
         // ✅ FIX: phone pairing requires Ubuntu browser string (Chrome custom breaks WhatsApp protocol)
-        browser: method === 'phone_code' ? Browsers.ubuntu('Chrome') : ['Rafiq Platform', 'Chrome', '126.0.0'],
+        browser: ['Rafiq Platform', 'Chrome', '126.0.0'],
         connectTimeoutMs: 60_000, defaultQueryTimeoutMs: 60_000,
         keepAliveIntervalMs: 25_000, markOnlineOnConnect: false,
         generateHighQualityLinkPreview: false, logger: silentLogger, syncFullHistory: false,
       });
 
       const session: WhatsAppSession = {
-        socket: sock, channelId, status: 'connecting', retryCount: 0, connectionMethod: method, phoneNumber,
-        // ✅ FIX-10: احتفظ بـ state و saveCreds لإعادة الاتصال بنفس auth state
-        authState: { state, saveCreds },
-        sessionPath,
+        socket: sock, channelId, status: 'connecting', retryCount: 0, connectionMethod: 'qr', phoneNumber,
       };
       this.sessions.set(channelId, session);
 
@@ -510,51 +454,6 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
       sock.ev.on('contacts.upsert', (contacts: any[]) => { this.handleContactsUpsert(channelId, contacts); });
       sock.ev.on('messaging-history.set', (data: any) => { this.handleHistorySet(channelId, data); });
       sock.ev.on('contacts.update', (updates: any[]) => { this.handleContactsUpsert(channelId, updates); });
-
-      if (method === 'phone_code' && phoneNumber) {
-        // ✅ FIX: Wait for 'connecting' event (socket handshake complete) BEFORE requesting code
-        //    NOT a blind delay — WhatsApp server must complete the challenge first
-        await new Promise<void>((resolve) => {
-          let fallbackTimer: ReturnType<typeof setTimeout>;
-          const onUpdate = (update: Partial<ConnectionState>) => {
-            // 'connecting' = server handshake done, ready for pairing code
-            if (update.connection === 'connecting' || update.connection === 'open') {
-              clearTimeout(fallbackTimer);
-              sock.ev.off('connection.update', onUpdate);
-              resolve();
-            }
-          };
-          sock.ev.on('connection.update', onUpdate);
-          // Safety fallback: if no event in 8s, proceed anyway (cleans up listener too)
-          fallbackTimer = setTimeout(() => {
-            sock.ev.off('connection.update', onUpdate);
-            resolve();
-          }, 8000);
-        });
-
-        const cleanPhone = phoneNumber.replace(/[^0-9]/g, '');
-        this.logger.log(`📱 Requesting pairing code for: ${cleanPhone}`);
-
-        // ✅ FIX: Retry once if first attempt fails (network hiccup)
-        let code: string | undefined;
-        for (let attempt = 1; attempt <= 2; attempt++) {
-          try {
-            code = await sock.requestPairingCode(cleanPhone);
-            break;
-          } catch (error) {
-            const msg = error instanceof Error ? error.message : String(error);
-            this.logger.warn(`⚠️ Pairing code attempt ${attempt} failed: ${msg}`);
-            if (attempt < 2) await this.delay(3000);
-            else throw new Error(`فشل في إنشاء رمز الربط بعد محاولتين: ${msg}`);
-          }
-        }
-
-        session.pairingCode = code;
-        session.status = 'pairing_code';
-        this.logger.log(`✅ Pairing code: ${code} for ${channelId}`);
-        this.eventEmitter.emit('whatsapp.pairing_code.generated', { channelId, pairingCode: code });
-        return { sessionId: channelId, qrCode: '', pairingCode: code!, expiresAt: new Date(Date.now() + QR_TIMEOUT_MS), status: 'pending', phoneNumber };
-      }
 
       return new Promise<QRSessionResult>((resolve, reject) => {
         const timeout = setTimeout(() => {
@@ -738,56 +637,6 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
       if (error && 'output' in error) statusCode = (error as Boom).output?.statusCode;
       this.logger.warn(`⚠️ Disconnected: ${channelId}, code: ${statusCode}`);
 
-      // ✅ FIX-8 v4: phone pairing — فرّق بين 515 (طبيعي) و 401 (رفض WA = حلقة لانهائية)
-      if (session.status === 'pairing_code' || session.status === 'pairing_reconnecting') {
-        // 401 = WhatsApp رفض الـ credentials — إعادة الاتصال تخلق حلقة لانهائية
-        // يحدث إذا: رقم خاطئ، IP محظور، أو الحساب محدود مؤقتاً
-        if (statusCode === 401 || statusCode === DisconnectReason.loggedOut) {
-          this.logger.warn(`📱 [${channelId}] ❌ close(401) during pairing — WA rejected auth. Stopping reconnect loop.`);
-          session.status = 'disconnected';
-          await this.cleanupSession(channelId);
-          await this.channelRepository.update(channelId, {
-            status: ChannelStatus.DISCONNECTED,
-            lastError: 'رفض واتساب ربط الجهاز — تأكد من صحة الرقم أو حاول مرة أخرى بعد دقيقة',
-            lastErrorAt: new Date(),
-          }).catch(() => {});
-          this.eventEmitter.emit('whatsapp.pairing_failed', { channelId, reason: 'auth_rejected_401' });
-          return;
-        }
-
-        // 515 = restartRequired — طبيعي بعد requestPairingCode، أعد الاتصال
-        if (session.status === 'pairing_reconnecting') {
-          this.logger.log(`📱 [${channelId}] close(${statusCode}) during pairing_reconnecting — ignoring duplicate`);
-          return;
-        }
-
-        this.logger.log(`📱 [${channelId}] close(${statusCode}) during pairing — reconnecting with same auth state`);
-        session.status = 'pairing_reconnecting';
-
-        const sessionPath = path.join(this.sessionsPath, `wa_${channelId}`);
-        await this.saveSessionToDB(channelId, sessionPath).catch(() => {});
-
-        setTimeout(async () => {
-          try {
-            const savedAuthState = session.authState;
-            const savedSessionPath = session.sessionPath || path.join(this.sessionsPath, `wa_${channelId}`);
-            await this.cleanupSession(channelId);
-            if (savedAuthState) {
-              await this.reconnectWithSameAuth(channelId, savedAuthState, savedSessionPath);
-            } else {
-              await this.restoreSession(channelId, true);
-            }
-            const restored = this.sessions.get(channelId);
-            if (restored) restored.status = 'pairing_code';
-            this.logger.log(`📱 [${channelId}] Socket reconnected — waiting for pairing code entry`);
-          } catch (e) {
-            this.logger.error(`❌ Failed to reconnect during pairing: ${e instanceof Error ? e.message : 'Unknown'}`);
-            const s = this.sessions.get(channelId);
-            if (s) s.status = 'disconnected';
-          }
-        }, 1500);
-        return;
-      }
 
       try {
         await this.channelRepository.update(channelId, {
@@ -1020,7 +869,7 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
 
   private mapStatus(status: WhatsAppSession['status']): 'pending' | 'scanning' | 'connected' | 'expired' {
     switch (status) {
-      case 'qr_ready': case 'pairing_code': case 'pairing_reconnecting': return 'pending';
+      case 'qr_ready': return 'pending';
       case 'connecting': return 'scanning';
       case 'connected': return 'connected';
       default: return 'expired';
