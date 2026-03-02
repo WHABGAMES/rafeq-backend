@@ -895,6 +895,15 @@ export class SallaWebhookProcessor extends WorkerHost {
       },
     );
 
+    // ─── FIX #2: إذا غاب tenantId → throw لإعادة المحاولة من BullMQ ───
+    // (بدل الإرجاع الصامت الذي كان يخفي المشكلة ويضيّع الإشعار)
+    if (!context.tenantId) {
+      throw new Error(
+        `Communication ${channelType}: tenantId is missing for merchant — store not linked yet. ` +
+        `Check if merchant is properly registered and app.store.authorize was processed.`
+      );
+    }
+
     // ─── التحقق من البيانات الأساسية ───
     if (!notifiable.length) {
       this.logger.warn(`⚠️ Communication ${channelType}: no recipients in notifiable[]`);
