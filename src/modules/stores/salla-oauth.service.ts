@@ -599,32 +599,37 @@ export class SallaOAuthService {
     const savedStore = await this.storeRepository.save(store);
 
     // 👤 إنشاء/تحديث المستخدم + إرسال بيانات الدخول
-    try {
-      const result = await this.autoRegistrationService.handleAppInstallation(
-        {
+    // ✅ FIX PERF: يُنفَّذ بشكل غير متزامن بعد الرد على سلة فوراً
+    // هذا يمنع تأخر الـ webhook response (كانت 3200ms بسبب إرسال الإيميل)
+    // سلة تحتاج ردًا سريعًا وإلا تعيد المحاولة — الإيميل يُرسل بشكل مستقل
+    setImmediate(async () => {
+      try {
+        const result = await this.autoRegistrationService.handleAppInstallation(
+          {
+            merchantId,
+            email: merchantInfo.email,
+            mobile: merchantInfo.mobile,
+            name: merchantInfo.name || merchantInfo.username || 'تاجر',
+            storeName: merchantInfo.name,
+            avatar: merchantInfo.avatar,
+            platform: 'salla',
+          },
+          savedStore,
+        );
+
+        this.logger.log(`✅ Auto-registration completed`, {
+          merchantId,
+          userId: result.userId,
+          isNewUser: result.isNewUser,
+          email: result.email,
+        });
+      } catch (error: any) {
+        this.logger.error(`❌ Auto-registration failed: ${error.message}`, {
           merchantId,
           email: merchantInfo.email,
-          mobile: merchantInfo.mobile,
-          name: merchantInfo.name || merchantInfo.username || 'تاجر',
-          storeName: merchantInfo.name,
-          avatar: merchantInfo.avatar,
-          platform: 'salla',
-        },
-        savedStore,
-      );
-
-      this.logger.log(`✅ Auto-registration completed`, {
-        merchantId,
-        userId: result.userId,
-        isNewUser: result.isNewUser,
-        email: result.email,
-      });
-    } catch (error: any) {
-      this.logger.error(`❌ Auto-registration failed: ${error.message}`, {
-        merchantId,
-        email: merchantInfo.email,
-      });
-    }
+        });
+      }
+    });
 
     return savedStore;
   }
