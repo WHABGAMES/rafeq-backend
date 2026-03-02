@@ -23,6 +23,8 @@ import { SendingMode } from '@database/entities/message-template.entity';
 import { Channel, ChannelType, ChannelStatus } from '../channels/entities/channel.entity';
 import { ChannelsService } from '../channels/channels.service';
 import { TemplateSchedulerService } from './template-scheduler.service';
+import { SmsService } from '../channels/sms/sms.service';
+import { MailService } from '../mail/mail.service';
 
 @Injectable()
 export class TemplateDispatcherService {
@@ -54,6 +56,10 @@ export class TemplateDispatcherService {
 
     // ✅ v13: خدمة الجدولة للإرسال المؤجل
     private readonly templateSchedulerService: TemplateSchedulerService,
+
+    // ✅ v19: Communication relay — SMS + Email حقيقي
+    private readonly smsService: SmsService,
+    private readonly mailService: MailService,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -333,13 +339,14 @@ export class TemplateDispatcherService {
 
   @OnEvent('communication.relay.sms')
   async onCommunicationSms(payload: Record<string, unknown>) {
-    // SMS: نسجّله فقط (الإرسال مستقبلاً عبر SMS provider)
+    // SMS: يُرسَل عبر قناة SMS المتصلة للمتجر (Unifonic / Taqnyat / Gateway / Twilio)
+    // OTP (auth.otp.verification): يُستخدم meta.code من سلة مباشرة بدون توليد رمز جديد
     await this.relayCommunicationMessage('sms', payload);
   }
 
   @OnEvent('communication.relay.email')
   async onCommunicationEmail(payload: Record<string, unknown>) {
-    // Email: نسجّله فقط (الإرسال مستقبلاً)
+    // Email: يُرسَل عبر MailService (SMTP) — موضوع الإيميل مُشتق من businessType
     await this.relayCommunicationMessage('email', payload);
   }
 
@@ -348,104 +355,265 @@ export class TemplateDispatcherService {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   /**
-   * إرسال رسالة Communication Webhook عبر القناة المناسبة
-   *
-   * النمط الجديد من سلة:
-   * - المحتوى جاهز تماماً (content مُصيَّغ)
-   * - الأرقام جاهزة (notifiable[])
-   * - لا حاجة لقوالب أو استبدال متغيرات
-   *
-   * WhatsApp: يُرسَل فوراً عبر القناة المتصلة
-   * SMS/Email: يُسجَّل (الإرسال مستقبلاً)
+   * ╔══════════════════════════════════════════════════════════════════════════════╗
+   * ║  Communication Webhook Relay — وفق توثيق سلة الرسمي                         ║
+   * ║                                                                              ║
+   * ║  سلة ترسل المحتوى والأرقام جاهزة — رفيق يُرسلها عبر القناة المناسبة        ║
+   * ║                                                                              ║
+   * ║  WhatsApp: القناة المتصلة للمتجر (WHATSAPP_QR / WHATSAPP_OFFICIAL)          ║
+   * ║  SMS:      قناة SMS المتصلة (Unifonic / Taqnyat / Gateway / Twilio)         ║
+   * ║  Email:    MailService (SMTP) — موضوع الإيميل مُشتق من businessType         ║
+   * ╚══════════════════════════════════════════════════════════════════════════════╝
    */
   private async relayCommunicationMessage(
     channelType: 'whatsapp' | 'sms' | 'email',
     payload: Record<string, unknown>,
   ): Promise<void> {
-    const tenantId = payload.tenantId as string | undefined;
-    const storeId = payload.storeId as string | undefined;
-    const notifiable = (payload.notifiable as string[]) || [];
-    const content = (payload.content as string) || '';
-    const businessType = (payload.businessType as string) || 'unknown';
-    const entity = payload.entity as { id: number; type: string } | null;
-    const customerId = payload.customerId as number | undefined;
+    const tenantId      = payload.tenantId as string | undefined;
+    const storeId       = payload.storeId  as string | undefined;
+    const notifiable    = (payload.notifiable as string[]) || [];
+    const content       = (payload.content   as string)   || '';
+    const businessType  = (payload.businessType as string) || 'unknown';
+    const entity        = payload.entity as { id: number; type: string } | null;
+    const customerId    = payload.customerId as number | undefined;
+    const otpCode       = payload.otpCode as string | undefined;  // ✅ من auth.otp.verification
 
-    // ─── تشخيص شامل ───
-    this.logger.warn(
-      `🔍 COMM RELAY [${channelType}]: type=${businessType}, tenant=${tenantId || '❌'}, ` +
-      `store=${storeId || '❌'}, recipients=${notifiable.length}, hasContent=${content.length > 0}`,
+    // ─── تحقق أساسي ───
+    if (!notifiable.length || !content) {
+      this.logger.warn(
+        `⚠️ Communication relay [${channelType}]: skipped — no recipients or empty content`,
+        { businessType, tenantId: tenantId || '❌', storeId: storeId || '❌' },
+      );
+      return;
+    }
+
+    this.logger.log(
+      `📡 Communication relay [${channelType}]: type=${businessType}, recipients=${notifiable.length}`,
+      { tenantId: tenantId || '❌', storeId: storeId || '❌', entityId: entity?.id, customerId, hasOtpCode: !!otpCode },
     );
 
-    // ─── SMS و Email: نسجّلهم فقط في الوقت الحالي ───
-    if (channelType !== 'whatsapp') {
-      this.logger.log(
-        `📝 Communication ${channelType} logged (relay not yet implemented):`,
-        {
-          businessType,
-          recipients: notifiable,
-          contentPreview: content.substring(0, 100),
-          entityType: entity?.type,
-          entityId: entity?.id,
-        },
-      );
-      return;
+    switch (channelType) {
+      case 'whatsapp':
+        await this.relayWhatsApp(tenantId, storeId, notifiable, content, businessType, entity, customerId);
+        break;
+      case 'sms':
+        await this.relaySms(tenantId, storeId, notifiable, content, businessType, otpCode);
+        break;
+      case 'email':
+        await this.relayEmail(notifiable, content, businessType, entity, customerId);
+        break;
     }
+  }
 
-    // ─── WhatsApp Relay ───
+  // ─── WhatsApp Relay ─────────────────────────────────────────────────────────
+
+  private async relayWhatsApp(
+    tenantId: string | undefined,
+    storeId: string | undefined,
+    notifiable: string[],
+    content: string,
+    businessType: string,
+    entity: { id: number; type: string } | null,
+    customerId: number | undefined,
+  ): Promise<void> {
     if (!tenantId) {
-      this.logger.warn(`⚠️ Communication relay skipped: no tenantId`);
+      this.logger.warn('⚠️ WhatsApp relay: no tenantId — skipped');
       return;
     }
 
-    if (!notifiable.length || !content) {
-      this.logger.warn(`⚠️ Communication relay skipped: no recipients or empty content`);
-      return;
-    }
-
-    // البحث عن قناة واتساب متصلة
     const channel = await this.findActiveWhatsAppChannel(storeId, tenantId);
     if (!channel) {
-      this.logger.warn(
-        `⚠️ Communication relay: no active WhatsApp channel`,
-        { storeId, tenantId, businessType },
-      );
+      this.logger.warn('⚠️ WhatsApp relay: no active WhatsApp channel', { storeId, tenantId, businessType });
       return;
     }
 
-    this.logger.log(`📱 Communication relay channel: ${channel.id}`);
-
-    // إرسال لكل مستلم (عادةً مستلم واحد)
-    let sentCount = 0;
-    let failedCount = 0;
+    let sent = 0, failed = 0;
 
     for (const recipient of notifiable) {
       if (!recipient) continue;
-
-      // تنظيف الرقم (إزالة الرموز والمسافات)
       const cleanPhone = this.normalizePhone(recipient);
       if (!cleanPhone) continue;
 
       try {
         await this.channelsService.sendWhatsAppMessage(channel.id, cleanPhone, content);
-
-        this.logger.log(
-          `✅ Communication relay sent: [${businessType}] → ${cleanPhone}`,
-          { entityType: entity?.type, entityId: entity?.id, customerId },
-        );
-
-        sentCount++;
+        this.logger.log(`✅ WhatsApp relay sent: [${businessType}] → ${cleanPhone}`, { entityId: entity?.id, customerId });
+        sent++;
       } catch (error: unknown) {
-        failedCount++;
+        failed++;
         this.logger.error(
-          `❌ Communication relay failed: [${businessType}] → ${cleanPhone}`,
+          `❌ WhatsApp relay failed: [${businessType}] → ${cleanPhone}`,
           { error: error instanceof Error ? error.message : 'Unknown', customerId },
         );
       }
     }
 
-    this.logger.log(
-      `📊 Communication relay summary: ${sentCount} sent, ${failedCount} failed | type=${businessType}`,
-    );
+    this.logger.log(`📊 WhatsApp relay: ${sent} sent, ${failed} failed | type=${businessType}`);
+  }
+
+  // ─── SMS Relay ───────────────────────────────────────────────────────────────
+
+  private async relaySms(
+    tenantId: string | undefined,
+    storeId: string | undefined,
+    notifiable: string[],
+    content: string,
+    businessType: string,
+    otpCode: string | undefined,
+  ): Promise<void> {
+    if (!tenantId) {
+      this.logger.warn('⚠️ SMS relay: no tenantId — skipped');
+      return;
+    }
+
+    // التحقق من وجود قناة SMS مفعّلة
+    const smsChannel = await this.smsService.findSmsChannel(storeId, tenantId);
+    if (!smsChannel) {
+      this.logger.warn(
+        '⚠️ SMS relay: no active SMS channel — skipped',
+        { storeId, tenantId, businessType },
+      );
+      return;
+    }
+
+    let sent = 0, failed = 0;
+
+    for (const recipient of notifiable) {
+      if (!recipient) continue;
+
+      try {
+        if (businessType === 'auth.otp.verification' && otpCode) {
+          // OTP: نستخدم otpCode من سلة مباشرة — لا نولّد رمزاً جديداً
+          await this.smsService.sendOtp(tenantId, { to: recipient, code: otpCode }, storeId);
+          this.logger.log(`✅ SMS OTP relay sent → ${recipient} (code from Salla)`, { tenantId });
+        } else {
+          // رسالة عادية: المحتوى جاهز من سلة
+          await this.smsService.send(tenantId, { to: recipient, message: content }, storeId);
+          this.logger.log(`✅ SMS relay sent: [${businessType}] → ${recipient}`, { tenantId });
+        }
+        sent++;
+      } catch (error: unknown) {
+        failed++;
+        this.logger.error(
+          `❌ SMS relay failed: [${businessType}] → ${recipient}`,
+          { error: error instanceof Error ? error.message : 'Unknown', tenantId },
+        );
+      }
+    }
+
+    this.logger.log(`📊 SMS relay: ${sent} sent, ${failed} failed | type=${businessType}`);
+  }
+
+  // ─── Email Relay ─────────────────────────────────────────────────────────────
+
+  private async relayEmail(
+    notifiable: string[],
+    content: string,
+    businessType: string,
+    entity: { id: number; type: string } | null,
+    customerId: number | undefined,
+  ): Promise<void> {
+    // اشتقاق موضوع الإيميل من businessType
+    const subject = this.getEmailSubject(businessType, entity);
+
+    // تحويل نص الرسالة إلى HTML بسيط
+    const html = this.textToHtml(content);
+
+    let sent = 0, failed = 0;
+
+    for (const recipient of notifiable) {
+      if (!recipient || !recipient.includes('@')) {
+        this.logger.warn(`⚠️ Email relay: invalid address: ${recipient}`);
+        continue;
+      }
+
+      try {
+        const result = await this.mailService.sendMail({
+          to: recipient,
+          subject,
+          html,
+          text: content,
+        });
+
+        if (result) {
+          this.logger.log(`✅ Email relay sent: [${businessType}] → ${recipient}`, { entityId: entity?.id, customerId });
+          sent++;
+        } else {
+          failed++;
+          this.logger.warn(`⚠️ Email relay: sendMail returned false → ${recipient}`);
+        }
+      } catch (error: unknown) {
+        failed++;
+        this.logger.error(
+          `❌ Email relay failed: [${businessType}] → ${recipient}`,
+          { error: error instanceof Error ? error.message : 'Unknown' },
+        );
+      }
+    }
+
+    this.logger.log(`📊 Email relay: ${sent} sent, ${failed} failed | type=${businessType}`);
+  }
+
+  // ─── Email Helpers ────────────────────────────────────────────────────────────
+
+  /**
+   * اشتقاق موضوع الإيميل من businessType
+   * سلة تُرسل المحتوى جاهزاً لكن بدون موضوع — نشتقه نحن
+   */
+  private getEmailSubject(businessType: string, entity: { id: number; type: string } | null): string {
+    const subjects: Record<string, string> = {
+      'order.status.confirmation':      'تأكيد طلبك',
+      'order.status.updated':           'تحديث حالة طلبك',
+      'order.invoice.issued':           'فاتورتك جاهزة',
+      'order.shipment.created':         'طلبك في الطريق إليك',
+      'order.refund.processed':         'تم استرداد المبلغ',
+      'order.gift.placed':              'لديك طلب هدية جديد',
+      'payment.reminder.due':           'تذكير بإتمام الدفع',
+      'product.availability.alert':     'المنتج الذي أضفته عاد للمخزون',
+      'product.digital.code':           'كودك الرقمي جاهز',
+      'customer.cart.abandoned':        'أتممت شراء ما تركته؟',
+      'customer.loyalty.earned':        'مكافأة نقاط الولاء',
+      'customer.feedback.reply':        'رد على تقييمك',
+      'customer.rating.request':        'شاركنا رأيك بطلبك',
+      'marketing.campaign.broadcast':   'عرض خاص لك',
+      'auth.otp.verification':          'رمز التحقق',
+      'system.alert.general':           'إشعار من المتجر',
+      'system.message.custom':          'رسالة من المتجر',
+    };
+
+    const subject = subjects[businessType] || 'إشعار من المتجر';
+
+    // إضافة رقم الطلب/الكيان إذا متوفر
+    if (entity?.id && entity?.type === 'order') {
+      return `${subject} #${entity.id}`;
+    }
+
+    return subject;
+  }
+
+  /**
+   * تحويل نص عادي إلى HTML بسيط مع الحفاظ على الأسطر
+   * سلة ترسل content كنص عادي مُصيَّغ
+   */
+  private textToHtml(text: string): string {
+    const escaped = text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+
+    const lines = escaped.split('\n').join('<br>\n');
+
+    return `<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body style="font-family: 'Segoe UI', Tahoma, Arial, sans-serif; direction: rtl; padding: 24px; background: #f5f5f5;">
+  <div style="max-width: 600px; margin: 0 auto; background: #fff; border-radius: 8px; padding: 32px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+    <p style="font-size: 16px; line-height: 1.8; color: #333; margin: 0;">${lines}</p>
+    <hr style="border: none; border-top: 1px solid #eee; margin: 24px 0;">
+    <p style="font-size: 12px; color: #999; margin: 0; text-align: center;">تم الإرسال عبر منصة رفيق</p>
+  </div>
+</body>
+</html>`;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -966,9 +1134,14 @@ export class TemplateDispatcherService {
    * الأرقام اللي تجي من buildFullPhone أو من سلة مباشرة تكون كاملة
    */
   private normalizePhone(phone: string): string {
-    // فقط إزالة الرموز والمسافات
-    const cleaned = phone.replace(/[\s\-\(\)\+]/g, '');
-    return cleaned;
+    if (!phone) return '';
+    // إزالة المسافات والشرطات والأقواس
+    let n = phone.replace(/[\s\-\(\)]/g, '').replace(/^\+/, '');
+    // أرقام سعودية: 05XXXXXXXX → 9665XXXXXXXX
+    if (n.startsWith('05') && n.length === 10)  n = '966' + n.slice(1);
+    // سعودي بدون صفر: 5XXXXXXXX → 9665XXXXXXXX
+    else if (n.startsWith('5') && n.length === 9)  n = '966' + n;
+    return n;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
