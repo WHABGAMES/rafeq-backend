@@ -51,9 +51,20 @@ export class SallaWebhooksService {
       const storeInfo = await this.findStoreByMerchantId(payload.merchant);
 
       if (!storeInfo) {
-        this.logger.warn(`No store found for merchant ${payload.merchant} - webhook will be saved without tenantId`);
+        // ─── FIX #1: تمييز Communication webhooks — تحتاج tenantId بالضرورة
+        const isCommunicationEvent = payload.eventType.startsWith('communication.');
+        if (isCommunicationEvent) {
+          this.logger.error(
+            `🚨 CRITICAL: Communication webhook "${payload.eventType}" arrived for merchant ${payload.merchant} ` +
+            `but NO store found in DB! This notification CANNOT be sent. ` +
+            `Ensure app.store.authorize was processed and store is linked to a tenant. ` +
+            `Check: SELECT * FROM stores WHERE salla_merchant_id = ${payload.merchant};`
+          );
+        } else {
+          this.logger.warn(`No store found for merchant ${payload.merchant} - webhook will be saved without tenantId`);
+        }
       } else {
-        this.logger.debug(`Found store for merchant ${payload.merchant}: tenantId=${storeInfo.tenantId}`);
+        this.logger.log(`✅ Found store for merchant ${payload.merchant}: tenantId=${storeInfo.tenantId}, storeId=${storeInfo.storeId}`);
       }
 
       const webhookEvent = this.webhookEventRepository.create({
@@ -127,11 +138,31 @@ export class SallaWebhooksService {
     }
   }
 
+  /**
+   * ✅ FIX (Idempotency): يمنع التكرار للـ webhooks الناجحة فقط
+   *
+   * المشكلة السابقة:
+   *   webhook يصل → يُحفظ PENDING → يفشل (tenantId مفقود) → يُصبح FAILED
+   *   سلة تُعيد الإرسال → checkDuplicate يجد FAILED → يتجاهله → يضيع الإشعار للأبد
+   *
+   * الحل: نمنع التكرار فقط للحالات PROCESSED أو PROCESSING
+   *   FAILED / PENDING / SKIPPED → نسمح بإعادة المحاولة من سلة
+   */
   async checkDuplicate(idempotencyKey: string): Promise<boolean> {
     const existing = await this.webhookEventRepository.findOne({
-      where: { idempotencyKey },
-      select: ['id'],
+      where: [
+        { idempotencyKey, status: WebhookStatus.PROCESSED },
+        { idempotencyKey, status: WebhookStatus.PROCESSING },
+      ],
+      select: ['id', 'status'],
     });
+
+    if (existing) {
+      this.logger.debug(
+        `🔁 Duplicate webhook blocked (status=${existing.status})`,
+        { idempotencyKey: idempotencyKey.substring(0, 16) + '...' },
+      );
+    }
 
     return !!existing;
   }
