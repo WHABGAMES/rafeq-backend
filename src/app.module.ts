@@ -65,6 +65,8 @@ import { TenantsModule } from '@modules/tenants/tenants.module';
 import { StoresModule } from '@modules/stores/stores.module';
 import { ChannelsModule } from '@modules/channels/channels.module';
 import { WhatsAppModule } from '@modules/channels/whatsapp/whatsapp.module';
+import { EmailModule } from '@modules/channels/email/email.module';
+import { SmsModule as SmsChannelModule } from '@modules/channels/sms/sms.module';
 import { WebhooksModule } from '@modules/webhooks/webhooks.module';
 import { MessagingModule } from '@modules/messaging/messaging.module';
 import { AiModule } from '@modules/ai/ai.module';
@@ -402,7 +404,9 @@ import { AdminModule } from '@modules/admin/admin.module';
     // 🏪 المتاجر والقنوات
     StoresModule,
     ChannelsModule,
-    WhatsAppModule, // ✅ تحميل WhatsApp routes مباشرة (webhook, send/text, etc.)
+    WhatsAppModule,       // ✅ واتساب routes (webhook, send, etc.)
+    EmailModule,          // ✅ قناة البريد الإلكتروني (SMTP, SendGrid, Mailgun, SES)
+    SmsChannelModule,     // ✅ قناة SMS (Unifonic, Taqnyat, Gateway, Twilio)
     WebhooksModule,
     
     // 💬 الرسائل والذكاء الاصطناعي
