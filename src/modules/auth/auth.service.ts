@@ -168,9 +168,11 @@ export class AuthService implements OnModuleInit {
     }
 
     // ── Validate access token expiration ──
-    const accessExp = this.configService.get('JWT_EXPIRES_IN', '15m');
+    // ✅ FIX: نقرأ JWT_ACCESS_EXPIRATION أولاً (الاسم الصحيح) ثم JWT_EXPIRES_IN كـ fallback
+    const accessExp = this.configService.get('JWT_ACCESS_EXPIRATION')
+      || this.configService.get('JWT_EXPIRES_IN', '15m');
     if (accessExp.includes('d') || accessExp.includes('h')) {
-      this.logger.warn(`⚠️ JWT_EXPIRES_IN=${accessExp} is too long. Will be capped to 30m max.`);
+      this.logger.warn(`⚠️ Access token expiry (${accessExp}) is too long. Will be capped to 15m for security. Set JWT_ACCESS_EXPIRATION=15m in your .env`);
     }
 
     this.logger.log('✅ All critical secrets validated successfully.');
@@ -1345,9 +1347,9 @@ export class AuthService implements OnModuleInit {
       role: user.role,
     };
 
-    // 🔧 FIX C-02: Enforce max access token expiration (30 minutes)
-    // Even if JWT_EXPIRES_IN is set to '7d' in env, cap it at 30m
-    const requestedAccessExp = this.configService.get('JWT_EXPIRES_IN', '15m');
+    // ✅ FIX: نقرأ JWT_ACCESS_EXPIRATION أولاً (الاسم الصحيح) ثم JWT_EXPIRES_IN كـ fallback
+    const requestedAccessExp = this.configService.get('JWT_ACCESS_EXPIRATION')
+      || this.configService.get('JWT_EXPIRES_IN', '15m');
     const accessExpiresIn = this.sanitizeAccessTokenExpiry(requestedAccessExp);
 
     // 🔧 FIX C-03: Use separate refresh secret if available, otherwise fallback to JWT_SECRET
