@@ -140,7 +140,7 @@ export class NotificationEventListener {
 
     const expiringSubs = await this.dataSource.query(`
       SELECT 
-        s.tenant_id, s.end_date,
+        s.tenant_id, s.current_period_end AS end_date,
         u.id as user_id, u.email, u.phone,
         sp.name as plan_name
       FROM subscriptions s
@@ -148,7 +148,7 @@ export class NotificationEventListener {
       JOIN users u ON u.tenant_id = s.tenant_id AND u.role = 'owner'
       WHERE 
         s.status = 'active'
-        AND s.end_date BETWEEN NOW() AND NOW() + INTERVAL '3 days'
+        AND s.current_period_end BETWEEN NOW() AND NOW() + INTERVAL '3 days'
     `);
 
     this.logger.log(`Found ${expiringSubs.length} expiring subscriptions`);
