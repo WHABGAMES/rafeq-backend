@@ -41,6 +41,7 @@ import { StoresModule } from '../stores/stores.module';
 import { MessagingModule } from '../messaging/messaging.module';
 import { ChannelsModule } from '../channels/channels.module';
 import { TemplatesModule } from '../templates/templates.module';
+import { SmsModule } from '../channels/sms/sms.module';
 
 @Module({
   imports: [
@@ -88,6 +89,7 @@ import { TemplatesModule } from '../templates/templates.module';
     MessagingModule,
     ChannelsModule,
     TemplatesModule,
+    SmsModule,  // ✅ لتفعيل SMS relay في Communication Webhooks
   ],
 
   /**
