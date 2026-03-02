@@ -69,13 +69,13 @@ export class SmsService {
    */
   async connect(
     tenantId: string,
-    storeIdOverride: string | undefined,
     params: {
       provider: string;
       apiKey: string;
       apiSecret?: string;
       senderId: string;
     },
+    storeIdOverride?: string,
   ) {
     const supportedProviders = ['unifonic', 'taqnyat', 'gateway', 'cequens', 'twilio'];
     if (!supportedProviders.includes(params.provider)) {
