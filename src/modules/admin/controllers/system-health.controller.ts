@@ -170,7 +170,7 @@ export class SystemHealthController {
         SELECT
           COUNT(*) FILTER (WHERE status = 'active')                                     AS active,
           COUNT(*) FILTER (WHERE status = 'trialing')                                   AS trial,
-          COUNT(*) FILTER (WHERE end_date BETWEEN NOW() AND NOW() + INTERVAL '7 days') AS expiring_soon
+          COUNT(*) FILTER (WHERE current_period_end BETWEEN NOW() AND NOW() + INTERVAL '7 days') AS expiring_soon
         FROM subscriptions
       `);
       return {
