@@ -881,6 +881,8 @@ export class SallaWebhookProcessor extends WorkerHost {
     const entity = data.entity as { id: number; type: string } | null | undefined;
     const meta = data.meta as Record<string, unknown> | null | undefined;
     const customerId = meta?.customer_id ? Number(meta.customer_id) : undefined;
+    // ✅ FIX: auth.otp.verification → meta.code contains OTP (not customer_id per docs)
+    const otpCode = meta?.code ? String(meta.code) : undefined;
 
     this.logger.log(
       `📡 Communication ${channelType}: type=${businessType}, recipients=${notifiable.length}`,
@@ -927,6 +929,8 @@ export class SallaWebhookProcessor extends WorkerHost {
       businessType,
       entity: entity ?? null,
       customerId,
+      // ✅ FIX: pass otpCode so relaySms can use it for auth.otp.verification
+      otpCode,
       raw: data,
     };
 
