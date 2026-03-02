@@ -417,8 +417,8 @@ export class TemplateDispatcherService {
     customerId: number | undefined,
   ): Promise<void> {
     if (!tenantId) {
-      this.logger.warn('⚠️ WhatsApp relay: no tenantId — skipped');
-      return;
+      // FIX #2b: throw بدل return — حتى يُعيد BullMQ المحاولة
+      throw new Error(`WhatsApp relay: tenantId is missing (businessType=${businessType})`);
     }
 
     const channel = await this.findActiveWhatsAppChannel(storeId, tenantId);
@@ -461,8 +461,8 @@ export class TemplateDispatcherService {
     otpCode: string | undefined,
   ): Promise<void> {
     if (!tenantId) {
-      this.logger.warn('⚠️ SMS relay: no tenantId — skipped');
-      return;
+      // FIX #2c: throw بدل return — حتى يُعيد BullMQ المحاولة
+      throw new Error(`SMS relay: tenantId is missing (businessType=${businessType})`);
     }
 
     // التحقق من وجود قناة SMS مفعّلة
