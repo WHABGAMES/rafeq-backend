@@ -126,11 +126,32 @@ export class ZidWebhooksService {
     }
   }
 
+  /**
+   * ✅ FIX (Idempotency): يمنع التكرار للـ webhooks الناجحة فقط
+   *
+   * المشكلة السابقة:
+   *   webhook يصل → يُحفظ PENDING → يفشل → يُصبح FAILED
+   *   زد تُعيد الإرسال → checkDuplicate يجد FAILED → يتجاهله → يضيع الإشعار للأبد
+   *
+   * الحل: نمنع التكرار فقط للحالات PROCESSED أو PROCESSING
+   *   FAILED / PENDING / SKIPPED → نسمح بإعادة المحاولة من زد
+   */
   async checkDuplicate(idempotencyKey: string): Promise<boolean> {
     const existing = await this.webhookEventRepository.findOne({
-      where: { idempotencyKey },
-      select: ['id'],
+      where: [
+        { idempotencyKey, status: WebhookStatus.PROCESSED },
+        { idempotencyKey, status: WebhookStatus.PROCESSING },
+      ],
+      select: ['id', 'status'],
     });
+
+    if (existing) {
+      this.logger.debug(
+        `🔁 Duplicate Zid webhook blocked (status=${existing.status})`,
+        { idempotencyKey: idempotencyKey.substring(0, 16) + '...' },
+      );
+    }
+
     return !!existing;
   }
 
