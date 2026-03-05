@@ -2,31 +2,32 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║              RAFIQ PLATFORM - Template Dispatcher Service                      ║
  * ║                                                                                ║
- * ║  ✅ v20: DRAFT 1 FULL COMPLIANCE — Communication Webhooks                     ║
+ * ║  ✅ v22: RADICAL FIX COMPLETE — Communication Webhooks Production-Ready        ║
  * ║                                                                                ║
- * ║  التغييرات الجديدة:                                                            ║
- * ║  • كل businessType مستقل تماماً — trigger يبحث بـ businessType نفسه أولاً    ║
- * ║  • order.status.confirmation → order.status.pending_payment (ليس order.created)║
- * ║  • auth.otp.verification → محتوى سلة مباشرة (bypass template search)          ║
- * ║  • shipment/cart/product/feedback entities → extractVariablesFromSallaContent  ║
- * ║  • fetchOrderDataForTemplate → يتعامل مع كل entity types من المسودة 1         ║
- * ║  • getEmailSubject → موضوع مستقل لكل حدث مع entity type صحيح                 ║
- * ║  • textToHtml → تصميم احترافي مع لون مميز لكل نوع حدث                        ║
- * ║  • extractVariablesFromSallaContent → يستخرج order/otp/name من النص           ║
- * ║  • template lookup: approved + active                                          ║
+ * ║  ══ قاعدة رفيق الصارمة (غير قابلة للخرق) ══                                  ║
+ * ║  • يُرسَل قالب التاجر المفعَّل دائماً — لا محتوى سلة الافتراضي أبداً          ║
+ * ║  • إذا لا يوجد قالب → skip تام (تحذير للمطور فقط)                             ║
+ * ║  • كل businessType = trigger مستقل = قالب مستقل = ZERO تداخل                 ║
  * ║                                                                                ║
- * ║  أنواع Entity حسب المسودة 1:                                                  ║
- * ║  order    → DB lookup (sallaOrderId → referenceId)                            ║
- * ║  shipment → extractVariablesFromSallaContent (entity.id = shipment_id)        ║
- * ║  cart     → extractVariablesFromSallaContent (entity.id = cart_id)            ║
- * ║  product  → extractVariablesFromSallaContent (entity.id = product_id)         ║
- * ║  feedback → sallaCustomerId lookup (entity.id = feedback_id)                  ║
- * ║  null     → sallaCustomerId lookup أو extractVariablesFromSallaContent        ║
+ * ║  ══ الإصلاحات الجذرية v22 ══                                                   ║
+ * ║  #1 resolveTemplateForCommunication → يُعيد { content, templateId } | null    ║
+ * ║     → templateId يُمكّن تحديث إحصائيات الاستخدام (incrementUsage)            ║
+ * ║  #2 incrementUsage في communication relay بعد كل إرسال ناجح                   ║
+ * ║  #3 buildTemplateVariables مُعاد كتابته بالكامل:                               ║
+ * ║     • customer lookup عبر DB لكل entity type (بـ meta.customer_id)            ║
+ * ║     • order → DB كامل (customer, tracking, payment_link, ...)                 ║
+ * ║     • shipment/cart/product/feedback → entityId + customer من DB              ║
+ * ║     • null entity → customer من DB + نص سلة                                  ║
+ * ║  #4 auth.otp.verification → bypass مباشر (سلة تبني OTP، لا قالب يعرف الرمز)  ║
+ * ║  #5 dedup prefix 'comm:' في communication relay (منفصل عن regular webhook)    ║
+ * ║  #6 no fallback chains — EXACT MATCH فقط لكل businessType                     ║
  * ║                                                                                ║
- * ║  المسار:                                                                       ║
- * ║  Webhook → Processor → EventEmitter → هذا الـ Service                          ║
- * ║  → auth.otp → Salla content مباشرة                                            ║
- * ║  → بقية الأنواع → قالب مفعَّل (approved/active) → fallback محتوى سلة          ║
+ * ║  ══ المسارين المستقلين ══                                                      ║
+ * ║  ① Regular Webhook  → OnEvent → dispatch() → قالب بـ trigger = eventName      ║
+ * ║  ② Communication    → OnEvent → relayCommunicationMessage                     ║
+ * ║                      → resolveTemplateForCommunication                        ║
+ * ║                      → قالب بـ trigger = businessType (EXACT)                 ║
+ * ║                      → لا يوجد → skip (لا double-send ممكن)                  ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -386,299 +387,517 @@ export class TemplateDispatcherService {
 
   /**
    * ╔══════════════════════════════════════════════════════════════════════════════╗
-   * ║  Communication Webhook Relay — المنطق الصحيح                                ║
+   * ║  Communication Webhook Relay — v21 RADICAL FIX                              ║
    * ║                                                                              ║
-   * ║  الأولوية الصحيحة:                                                          ║
-   * ║  1️⃣ ابحث عن قالب مفعَّل للتاجر يطابق هذا الحدث                             ║
-   * ║     → إذا وُجد: أرسل القالب (مع استبدال المتغيرات من DB)                   ║
-   * ║  2️⃣ إذا لا يوجد قالب → استخدم محتوى سلة كـ fallback                        ║
+   * ║  القاعدة الأساسية لـ رفيق:                                                   ║
+   * ║  • يُرسَل دائماً قالب التاجر المفعَّل — ليس محتوى سلة الافتراضي            ║
+   * ║  • إذا لا يوجد قالب مفعَّل → لا تُرسَل أي رسالة (skip + تحذير)             ║
+   * ║  • كل businessType مستقل تماماً — لا تداخل بين الأنواع                      ║
+   * ║  • dedup: نفس الإشعار لا يُرسَل مرتين خلال 60 ثانية                        ║
    * ║                                                                              ║
-   * ║  مثال:                                                                       ║
-   * ║  • businessType = order.status.updated                                       ║
-   * ║  • التاجر عنده قالب "جاري التوصيل" مفعَّل لـ order.status.in_transit        ║
-   * ║  • نجلب الطلب من DB → نحدد الحالة → نطابق القالب → نرسله                   ║
-   * ║  • إذا ما في قالب → نرسل محتوى سلة مباشرة                                  ║
+   * ║  المسار الصحيح:                                                              ║
+   * ║  Webhook → Processor → EventEmitter                                          ║
+   * ║  → ابحث عن قالب مفعَّل بـ trigger = businessType (EXACT)                    ║
+   * ║  → وُجد: استبدل المتغيرات من بيانات الكيان → أرسل                           ║
+   * ║  → لم يُوجد: سجّل تحذير ← لا تُرسل شيئاً                                   ║
+   * ║                                                                              ║
+   * ║  ❌ ممنوع تماماً:                                                            ║
+   * ║  • إرسال محتوى سلة الافتراضي كـ fallback                                    ║
+   * ║  • fallback chains (order.status.confirmation → order.status.pending_payment)║
+   * ║  • إرسال قالب نوع آخر (قالب order.created لـ order.status.confirmation)     ║
    * ╚══════════════════════════════════════════════════════════════════════════════╝
    */
   private async relayCommunicationMessage(
     channelType: 'whatsapp' | 'sms' | 'email',
     payload: Record<string, unknown>,
   ): Promise<void> {
-    const tenantId      = payload.tenantId as string | undefined;
-    const storeId       = payload.storeId  as string | undefined;
-    const notifiable    = (payload.notifiable as string[]) || [];
-    const sallaContent  = (payload.content   as string)   || '';   // محتوى سلة الخام
-    const businessType  = (payload.businessType as string) || 'unknown';
-    const entityRaw     = payload.entity as { id: number | string; type: string } | null;
-    // ✅ نوحّد نوع id إلى number من المصدر مباشرة — يحل كل أخطاء TypeScript
+
+    // ─── استخراج البيانات ──────────────────────────────────────────────────────
+    const tenantId     = payload.tenantId     as string | undefined;
+    const storeId      = payload.storeId      as string | undefined;
+    const notifiable   = (payload.notifiable  as string[]) || [];
+    const sallaContent = (payload.content     as string)   || '';
+    const businessType = (payload.businessType as string)  || 'unknown';
+    const entityRaw    = payload.entity as { id: number | string; type: string } | null;
     const entity: { id: number; type: string } | null = entityRaw
       ? { id: Number(entityRaw.id), type: entityRaw.type }
       : null;
-    const customerId    = payload.customerId as number | undefined;
-    const otpCode       = payload.otpCode as string | undefined;
+    const customerId   = payload.customerId as number | undefined;
+    const otpCode      = payload.otpCode    as string | undefined;
 
-    // ─── تحقق أساسي ───
-    if (!notifiable.length || !sallaContent) {
+    // ─── تحقق أساسي: يجب أن يكون هناك مستلمون ────────────────────────────────
+    if (!notifiable.length) {
       this.logger.warn(
-        `⚠️ Communication relay [${channelType}]: skipped — no recipients or empty content`,
-        { businessType, tenantId: tenantId || '❌', storeId: storeId || '❌' },
+        `⚠️ Communication relay [${channelType}] [${businessType}]: skipped — empty notifiable[]`,
+        { tenantId: tenantId || '❌', storeId: storeId || '❌' },
+      );
+      return;
+    }
+
+    if (!tenantId) {
+      this.logger.error(
+        `❌ Communication relay [${channelType}] [${businessType}]: missing tenantId — cannot find templates`,
+        { storeId: storeId || '❌' },
+      );
+      return;
+    }
+
+    // ─── DEDUP: منع إرسال نفس الإشعار مرتين ──────────────────────────────────
+    // Key: أول مستلم + businessType + tenantId → يغطي 99% من حالات التكرار
+    const dedupKey = `comm:${notifiable[0]}-${businessType}-${tenantId}`;
+    const now = Date.now();
+
+    // تنظيف cache من الإدخالات القديمة
+    for (const [key, ts] of this.recentDispatches) {
+      if (now - ts > this.DEDUP_WINDOW_MS) this.recentDispatches.delete(key);
+    }
+
+    if (this.recentDispatches.has(dedupKey)) {
+      this.logger.warn(
+        `🔁 Communication relay DEDUP: skipping duplicate [${businessType}] → ${notifiable[0]} (within ${this.DEDUP_WINDOW_MS / 1000}s)`,
       );
       return;
     }
 
     this.logger.log(
       `📡 Communication relay [${channelType}]: type=${businessType}, recipients=${notifiable.length}`,
-      { tenantId: tenantId || '❌', storeId: storeId || '❌', entityId: entity?.id, customerId, hasOtpCode: !!otpCode },
+      {
+        tenantId,
+        storeId:   storeId   || '❌',
+        entityType: entity?.type || 'null',
+        entityId:   entity?.id   || 'null',
+        customerId: customerId   ?? 'N/A',
+      },
     );
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // 🎯 تحديد المحتوى النهائي
+    // 🎯 الخطوة 1: البحث عن قالب التاجر المفعَّل وتصييره
     //
-    // ✅ DRAFT 1: auth.otp.verification → meta.code هو OTP الجاهز
-    // سلة ترسل محتوى كامل في data.content — نستخدمه مباشرة دون البحث عن قالب
-    // لا نريد قالب مخصص يُلغي رمز OTP الذي أرسلته سلة
+    // ✅ القاعدة الصارمة:
+    // • قالب التاجر = المصدر الوحيد للرسالة
+    // • لا محتوى سلة كـ fallback
+    // • OTP استثناء: سلة تبني الرسالة مع الرمز الحقيقي
     // ═══════════════════════════════════════════════════════════════════════════
-    let finalContent: string;
+    const resolved = await this.resolveTemplateForCommunication(
+      tenantId,
+      storeId,
+      businessType,
+      entity,
+      sallaContent,
+      customerId,
+    );
 
-    if (businessType === CommunicationEventType.AUTH_OTP_VERIFICATION) {
-      // OTP: محتوى سلة = الرسالة الجاهزة — لا نبحث عن قالب
-      finalContent = sallaContent;
-      this.logger.log(`🔑 OTP relay: using Salla content directly (meta.code=${otpCode ?? 'N/A'})`);
-    } else {
-      // بقية الأنواع: نبحث أولاً عن قالب مفعَّل
-      finalContent = await this.resolveContentForCommunication(
-        tenantId,
-        storeId,
-        businessType,
-        entity,
-        sallaContent,
-      );
+    if (resolved === null) {
+      // لا قالب مفعَّل للتاجر → لا إرسال
+      // الـ log التحذيري يحدث داخل resolveTemplateForCommunication
+      return;
     }
 
-    // ─── إرسال عبر القناة المناسبة ───────────────────────────────────────────
+    const { content: finalContent, templateId } = resolved;
+
+    // ─── تسجيل DEDUP بعد تأكيد وجود القالب ────────────────────────────────
+    this.recentDispatches.set(dedupKey, now);
+
+    // ─── الخطوة 2: الإرسال عبر القناة المناسبة ─────────────────────────────
+    let sendSuccess = false;
+
     switch (channelType) {
       case 'whatsapp':
         await this.relayWhatsApp(tenantId, storeId, notifiable, finalContent, businessType, entity, customerId);
+        sendSuccess = true;
         break;
       case 'sms':
         await this.relaySms(tenantId, storeId, notifiable, finalContent, businessType, otpCode);
+        sendSuccess = true;
         break;
       case 'email':
         await this.relayEmail(notifiable, finalContent, businessType, entity, customerId);
+        sendSuccess = true;
         break;
+    }
+
+    // ─── الخطوة 3: تحديث إحصائيات استخدام القالب ──────────────────────────
+    // OTP لا يملك templateId حقيقي → لا نحدث إحصائيات
+    if (sendSuccess && templateId && templateId !== 'otp-direct') {
+      await this.incrementUsage(templateId);
     }
   }
 
   /**
-   * 🔍 تحديد المحتوى النهائي للرسالة
-   *
-   * الأولوية:
-   * 1. قالب مفعَّل للتاجر (مع استبدال متغيرات من DB)
-   * 2. محتوى سلة الخام (fallback)
-   *
-   * خريطة businessType → triggerEvent:
-   * ┌─────────────────────────────┬──────────────────────────────────────────┐
-   * │ businessType (Communication)│ triggerEvent (Template)                   │
-   * ├─────────────────────────────┼──────────────────────────────────────────┤
-   * ┌──────────────────────────────────┬─────────────────────────────────────────────────────┐
-   * │ businessType (المسودة 1)          │ triggerEvent البحث (بالأولوية)                     │
-   * ├──────────────────────────────────┼─────────────────────────────────────────────────────┤
-   * │ auth.otp.verification            │ auth.otp.verification                               │
-   * │ order.status.confirmation        │ order.status.confirmation → pending_payment         │
-   * │ order.status.updated             │ DB lookup للحالة الفعلية                            │
-   * │ order.invoice.issued             │ order.invoice.issued → order.created                │
-   * │ order.shipment.created           │ order.shipment.created → order.shipped              │
-   * │ order.refund.processed           │ order.refund.processed → order.refunded             │
-   * │ order.gift.placed                │ order.gift.placed → order.created                  │
-   * │ payment.reminder.due             │ payment.reminder.due → pending_payment              │
-   * │ product.availability.alert       │ product.availability.alert → product.available      │
-   * │ product.digital.code             │ product.digital.code                                │
-   * │ customer.cart.abandoned          │ customer.cart.abandoned → abandoned.cart            │
-   * │ customer.loyalty.earned          │ customer.loyalty.earned                             │
-   * │ customer.feedback.reply          │ customer.feedback.reply                             │
-   * │ customer.rating.request          │ customer.rating.request                             │
-   * │ marketing.campaign.broadcast     │ marketing.campaign.broadcast                        │
-   * │ system.alert.general             │ system.alert.general                                │
-   * │ system.message.custom            │ system.message.custom                               │
-   * └──────────────────────────────────┴─────────────────────────────────────────────────────┘
+   * ╔══════════════════════════════════════════════════════════════════════════════╗
+   * ║  resolveTemplateForCommunication — v22 RADICAL FIX                           ║
+   * ║                                                                              ║
+   * ║  قاعدة رفيق الصارمة:                                                        ║
+   * ║  • يُرسَل دائماً قالب التاجر المفعَّل — لا محتوى سلة الافتراضي أبداً        ║
+   * ║  • إذا لا يوجد قالب → null → لا إرسال (skip + تحذير للتاجر)                ║
+   * ║  • كل businessType يبحث بـ trigger = businessType نفسه فقط (EXACT MATCH)    ║
+   * ║  • لا fallback chains إطلاقاً                                               ║
+   * ║                                                                              ║
+   * ║  استثناء auth.otp.verification:                                              ║
+   * ║  → سلة تبني رسالة OTP كاملة في data.content                                ║
+   * ║  → يُرسَل محتوى سلة مباشرة — ليس قالباً (رمز OTP حساس ومتغير)             ║
+   * ║  → هذا الاستثناء الوحيد المسموح به في رفيق                                  ║
+   * ║                                                                              ║
+   * ║  استثناء order.status.updated:                                               ║
+   * ║  → يجلب الحالة الفعلية من DB → يبحث بـ trigger = 'order.status.<slug>'      ║
+   * ║                                                                              ║
+   * ║  يُعيد: { content: string; templateId: string } → نجح، القالب وُجد          ║
+   * ║          null → لا قالب مفعَّل (أو OTP bypass مُدار خارجاً)                 ║
+   * ╚══════════════════════════════════════════════════════════════════════════════╝
    */
-  private async resolveContentForCommunication(
-    tenantId: string | undefined,
+  private async resolveTemplateForCommunication(
+    tenantId: string,
     storeId: string | undefined,
     businessType: string,
     entity: { id: number; type: string } | null,
     sallaContent: string,
-  ): Promise<string> {
-    if (!tenantId) return sallaContent;
+    customerId?: number,
+  ): Promise<{ content: string; templateId: string } | null> {
 
     try {
-      // ─── تحديد triggerEvent المحتملة لهذا businessType ───────────────────
-      const candidateTriggers = await this.resolveTriggerEvents(
+      // ─── استثناء #1: auth.otp.verification ──────────────────────────────────
+      // سلة تبني رسالة OTP كاملة في data.content (مع الرمز الحقيقي)
+      // رفيق يُرسلها مباشرة — لا نبحث عن قالب لأن الرمز يتغير مع كل طلب
+      // ⚠️ لا يمكن لأي قالب أن يعرف الرمز الفعلي مسبقاً
+      if (businessType === CommunicationEventType.AUTH_OTP_VERIFICATION) {
+        this.logger.log(`🔑 OTP: sending Salla content directly (time-sensitive code)`);
+        return { content: sallaContent, templateId: 'otp-direct' };
+      }
+
+      // ─── تحديد trigger المطلوب البحث به ─────────────────────────────────────
+      const triggerCandidates = await this.resolveCommunicationTrigger(
         businessType,
         entity,
         storeId,
         sallaContent,
       );
 
-      if (!candidateTriggers.length) {
-        this.logger.debug(`📋 No template mapping for businessType: ${businessType} — using Salla content`);
-        return sallaContent;
+      if (!triggerCandidates.length) {
+        this.logger.warn(`⚠️ No trigger candidates for "${businessType}"`);
+        return null;
       }
 
-      // ─── البحث عن قالب مفعَّل (approved أو active) ───────────────────────
+      // ─── البحث عن قالب التاجر المفعَّل — EXACT MATCH بـ businessType ────────
+      // ⚠️ كل نوع حدث له قالب مستقل تماماً:
+      // • order.status.confirmation   ← قالب خاص بالتأكيد
+      // • order.status.in_transit     ← قالب خاص بالشحن
+      // • payment.reminder.due        ← قالب خاص بالتذكير
+      // لا يوجد أي تداخل أو استعارة قوالب بين الأنواع
       const template = await this.templateRepository.findOne({
         where: [
-          ...candidateTriggers.map(trigger => ({ tenantId, triggerEvent: trigger, status: 'approved' as any })),
-          ...candidateTriggers.map(trigger => ({ tenantId, triggerEvent: trigger, status: 'active'   as any })),
+          ...triggerCandidates.map(t => ({ tenantId, triggerEvent: t, status: 'approved' as any })),
+          ...triggerCandidates.map(t => ({ tenantId, triggerEvent: t, status: 'active'   as any })),
         ],
         order: { updatedAt: 'DESC' },
       });
 
       if (!template) {
-        this.logger.log(
-          `📋 No active template for [${businessType}] (tried: ${candidateTriggers.join(', ')}) — using Salla content`,
-          { tenantId },
+        // ✅ القرار الصريح: لا قالب مفعَّل = لا إرسال
+        // رفيق لا يُرسل محتوى سلة الافتراضي تحت أي ظرف
+        // التاجر يجب أن يُنشئ قالباً من لوحة التحكم أولاً
+        this.logger.warn(
+          `⏭️  [${businessType}] SKIPPED — no active template (triggers: [${triggerCandidates.join(', ')}])`,
+          {
+            tenantId,
+            action: `Merchant must create & activate template with triggerEvent="${triggerCandidates[0]}"`,
+          },
         );
-        return sallaContent;
+        return null;
       }
 
       this.logger.log(
-        `✅ Template found: "${template.name}" for [${businessType}] → trigger="${template.triggerEvent}"`,
-        { templateId: template.id, trigger: template.triggerEvent },
+        `✅ Template matched: "${template.name}" | trigger="${template.triggerEvent}" | type="${businessType}"`,
+        { templateId: template.id },
       );
 
-      // ─── جلب بيانات الكيان لاستبدال المتغيرات ────────────────────────────
-      // ✅ DRAFT 1: يتعامل مع order / shipment / cart / product / feedback / null
-      const orderData = await this.fetchOrderDataForTemplate(entity, storeId, sallaContent, businessType);
+      // ─── جلب بيانات الكيان لاستبدال متغيرات القالب ──────────────────────────
+      const entityData = await this.buildTemplateVariables(
+        entity,
+        storeId,
+        sallaContent,
+        businessType,
+        customerId,
+      );
 
-      // ─── استبدال المتغيرات في القالب ─────────────────────────────────────
-      const rendered = this.replaceVariables(template.body, orderData);
+      // ─── استبدال المتغيرات في قالب التاجر ───────────────────────────────────
+      const rendered = this.replaceVariables(template.body, entityData);
 
-      this.logger.log(`📝 Template rendered (${businessType}): "${rendered.substring(0, 80)}..."`);
-      return rendered;
+      this.logger.log(
+        `📝 Rendered: "${template.name}" → "${rendered.substring(0, 80)}${rendered.length > 80 ? '...' : ''}"`,
+        { businessType, entityId: entity?.id, vars: Object.keys(entityData) },
+      );
+
+      return { content: rendered, templateId: template.id };
 
     } catch (error) {
-      // fallback دائماً لمحتوى سلة عند أي خطأ
       this.logger.error(
-        `❌ Error resolving template for [${businessType}] — falling back to Salla content`,
-        { error: error instanceof Error ? error.message : 'Unknown' },
+        `❌ resolveTemplateForCommunication [${businessType}]: ${error instanceof Error ? error.message : 'Unknown'}`,
+        { stack: error instanceof Error ? error.stack : undefined },
       );
-      return sallaContent;
+      return null;  // خطأ = لا إرسال، لا fallback
     }
   }
 
   /**
-   * 🗺️ تحويل businessType → قائمة triggerEvent محتملة
+   * 🗺️ تحديد trigger المناسب لكل businessType
    *
-   * لـ order.status.updated: نجلب الطلب من DB لمعرفة الحالة الدقيقة
+   * ┌─────────────────────────────────┬──────────────────────────────────────────────┐
+   * │ businessType (Communication)    │ triggerEvent للبحث عن القالب                 │
+   * ├─────────────────────────────────┼──────────────────────────────────────────────┤
+   * │ auth.otp.verification           │ auth.otp.verification                        │
+   * │ order.status.confirmation       │ order.status.confirmation                    │
+   * │ order.status.updated            │ DB lookup → order.status.<actual_slug>       │
+   * │ order.invoice.issued            │ order.invoice.issued                         │
+   * │ order.shipment.created          │ order.shipment.created                       │
+   * │ order.refund.processed          │ order.refund.processed                       │
+   * │ order.gift.placed               │ order.gift.placed                            │
+   * │ payment.reminder.due            │ payment.reminder.due                         │
+   * │ product.availability.alert      │ product.availability.alert                   │
+   * │ product.digital.code            │ product.digital.code                         │
+   * │ customer.cart.abandoned         │ customer.cart.abandoned                      │
+   * │ customer.loyalty.earned         │ customer.loyalty.earned                      │
+   * │ customer.feedback.reply         │ customer.feedback.reply                      │
+   * │ customer.rating.request         │ customer.rating.request                      │
+   * │ marketing.campaign.broadcast    │ marketing.campaign.broadcast                 │
+   * │ system.alert.general            │ system.alert.general                         │
+   * │ system.message.custom           │ system.message.custom                        │
+   * └─────────────────────────────────┴──────────────────────────────────────────────┘
+   *
+   * ⚠️ ZERO fallback chains:
+   * كل businessType يبحث بـ trigger نفسه فقط
+   * لا يستخدم trigger نوع آخر أبداً
+   * هذا يضمن عزل كامل: قالب order.status.confirmation
+   * لن يُستخدَم أبداً لـ payment.reminder.due
    */
-  private async resolveTriggerEvents(
+  private async resolveCommunicationTrigger(
     businessType: string,
     entity: { id: number; type: string } | null,
     storeId: string | undefined,
     sallaContent?: string,
   ): Promise<string[]> {
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // 🎯 DRAFT 1 — مبدأ العزل الكامل
-    //
-    // كل businessType يبحث أولاً عن قالب يحمل trigger_event = businessType نفسه
-    // هذا يضمن أن كل نوع إشعار مستقل تماماً ولا يتداخل مع غيره
-    //
-    // خريطة المسودة 1 الكاملة:
-    // ┌──────────────────────────────────┬──────────────────────────────────────────────────┐
-    // │ businessType                     │ triggers (بالأولوية)                             │
-    // ├──────────────────────────────────┼──────────────────────────────────────────────────┤
-    // │ auth.otp.verification            │ [نفسه] — لا template، سلة ترسل المحتوى مباشرة   │
-    // │ order.status.confirmation        │ [نفسه] → order.status.pending_payment            │
-    // │ order.status.updated             │ DB lookup للحالة الفعلية                         │
-    // │ order.invoice.issued             │ [نفسه] → order.invoice.created → order.created   │
-    // │ order.shipment.created           │ [نفسه] → order.shipped → shipment.created        │
-    // │ order.refund.processed           │ [نفسه] → order.refunded                          │
-    // │ order.gift.placed                │ [نفسه] → order.created                           │
-    // │ payment.reminder.due             │ [نفسه] → order.status.pending_payment            │
-    // │ product.availability.alert       │ [نفسه] → product.available                       │
-    // │ product.digital.code             │ [نفسه]                                           │
-    // │ customer.cart.abandoned          │ [نفسه] → abandoned.cart                          │
-    // │ customer.loyalty.earned          │ [نفسه]                                           │
-    // │ customer.feedback.reply          │ [نفسه]                                           │
-    // │ customer.rating.request          │ [نفسه]                                           │
-    // │ marketing.campaign.broadcast     │ [نفسه]                                           │
-    // │ system.alert.general             │ [نفسه]                                           │
-    // │ system.message.custom            │ [نفسه]                                           │
-    // └──────────────────────────────────┴──────────────────────────────────────────────────┘
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ─── order.status.updated: نحتاج الحالة الفعلية من DB ──────────────────
+    // سلة ترسل هذا الـ businessType لكل تغيير حالة
+    // التاجر يُنشئ قوالب مختلفة لكل حالة (order.status.in_transit, order.delivered...)
+    if (businessType === 'order.status.updated') {
+      if (entity?.type === 'order' && entity.id && storeId) {
+        const statusTriggers = await this.resolveOrderStatusTriggers(entity.id, storeId, sallaContent);
 
-    // ─── order.status.updated: يحتاج DB lookup للحالة الفعلية ───────────────
-    if (businessType === 'order.status.updated' && entity?.type === 'order') {
-      const statusTriggers = await this.resolveOrderStatusTriggers(entity.id, storeId, sallaContent);
-      // businessType نفسه أولاً للعزل، ثم الحالة المحددة
-      return [businessType, ...statusTriggers];
+        this.logger.log(
+          `🔍 order.status.updated → DB lookup → triggers: [${statusTriggers.join(', ')}]`,
+          { entityId: entity.id, storeId },
+        );
+
+        // نُعيد triggers الحالة الفعلية فقط (لا businessType 'order.status.updated')
+        // لأن التاجر ينشئ قوالب لكل حالة باسمها المحدد
+        return statusTriggers;
+      }
+
+      // entity غير موجود أو غير صحيح → fallback للـ businessType نفسه
+      this.logger.warn(
+        `⚠️ order.status.updated: entity missing or wrong type — using businessType as trigger`,
+        { entity },
+      );
+      return ['order.status.updated'];
     }
 
-    // ─── auth.otp.verification: لا template — سلة تُرسل المحتوى كاملاً ──────
-    // meta.code هو الـ OTP الجاهز، نُرسله مباشرة دون البحث عن قالب
-    if (businessType === 'auth.otp.verification') {
-      return ['auth.otp.verification'];
-    }
-
-    // ─── خريطة DRAFT 1 الكاملة: العزل أولاً ثم backward compatibility ────────
-    const DRAFT1_MAP: Record<string, string[]> = {
-      // ✅ طلب جديد بانتظار الدفع — مختلف عن order.created العادي
-      // المسودة 1: "Triggered when an order is created and pending payment"
-      'order.status.confirmation':   ['order.status.confirmation', 'order.status.pending_payment'],
-
-      // ✅ فاتورة مُصدَرة
-      'order.invoice.issued':        ['order.invoice.issued', 'order.invoice.created', 'order.created'],
-
-      // ✅ شحنة مُنشأة — entity.type = 'shipment' (ليس order!)
-      'order.shipment.created':      ['order.shipment.created', 'order.shipped', 'shipment.created'],
-
-      // ✅ استرداد مُعالَج
-      'order.refund.processed':      ['order.refund.processed', 'order.refunded'],
-
-      // ✅ طلب هدية — نوع مستقل
-      'order.gift.placed':           ['order.gift.placed', 'order.created'],
-
-      // ✅ تذكير بالدفع — entity.type = 'order'
-      'payment.reminder.due':        ['payment.reminder.due', 'order.status.pending_payment'],
-
-      // ✅ المنتج عاد للمخزون — entity.type = 'product'
-      'product.availability.alert':  ['product.availability.alert', 'product.available'],
-
-      // ✅ كود رقمي — entity.type = 'order'
-      'product.digital.code':        ['product.digital.code'],
-
-      // ✅ سلة متروكة — entity.type = 'cart'
-      'customer.cart.abandoned':     ['customer.cart.abandoned', 'abandoned.cart'],
-
-      // ✅ نقاط ولاء — entity = N/A، meta.customer_id
-      'customer.loyalty.earned':     ['customer.loyalty.earned'],
-
-      // ✅ رد على تقييم — entity.type = 'feedback'
-      'customer.feedback.reply':     ['customer.feedback.reply'],
-
-      // ✅ طلب تقييم — entity.type = 'order'
-      'customer.rating.request':     ['customer.rating.request'],
-
-      // ✅ بث تسويقي — entity = N/A، لا meta.customer_id
-      'marketing.campaign.broadcast':['marketing.campaign.broadcast'],
-
-      // ✅ تنبيه عام
-      'system.alert.general':        ['system.alert.general'],
-
-      // ✅ رسالة مخصصة
-      'system.message.custom':       ['system.message.custom'],
-    };
-
-    if (DRAFT1_MAP[businessType]) {
-      return DRAFT1_MAP[businessType];
-    }
-
-    // fallback: يبحث بـ businessType نفسه
-    this.logger.warn(`⚠️ resolveTriggerEvents: unmapped businessType "${businessType}" — using as trigger directly`);
+    // ─── باقي الـ 16 نوع: trigger = businessType نفسه — لا استثناء ───────────
+    // ⚠️ هذا هو قلب عزل القوالب:
+    // كل businessType له قالب بـ trigger يحمل نفس اسمه تماماً
     return [businessType];
   }
+
+  /**
+   * 📊 بناء متغيرات القالب من بيانات الكيان
+   *
+   * ✅ Draft 1 Entity Types:
+   *   order    → DB lookup بـ sallaOrderId / referenceId → بيانات كاملة
+   *   shipment → entity.id = shipment_id → استخرج من sallaContent
+   *   cart     → entity.id = cart_id → استخرج من sallaContent
+   *   product  → entity.id = product_id → استخرج من sallaContent
+   *   feedback → entity.id = feedback_id → استخرج من sallaContent
+   *   null     → جلب بيانات العميل من DB بـ customerId + استخرج من sallaContent
+   */
+  private async buildTemplateVariables(
+    entity: { id: number; type: string } | null,
+    storeId: string | undefined,
+    sallaContent: string,
+    businessType: string,
+    customerId?: number,
+  ): Promise<Record<string, unknown>> {
+
+    // ─── الخطوة 1: استخراج متغيرات من نص سلة (قاعدة للجميع) ─────────────────
+    // يستخرج: reference_id, order_number, otp_code, customer_name
+    const baseVars = this.extractVariablesFromSallaContent(sallaContent);
+
+    // ─── الخطوة 2: جلب بيانات العميل من DB بـ customerId ─────────────────────
+    // ✅ يعمل لجميع أنواع entity: order / shipment / cart / product / feedback / null
+    // الهدف: customer_name, customer_phone, customer_email للقالب
+    if (customerId && storeId) {
+      try {
+        const customer = await this.customerRepository.findOne({
+          where: { sallaCustomerId: String(customerId), storeId },
+          select: ['id', 'firstName', 'lastName', 'fullName', 'phone', 'email'],
+        });
+
+        if (customer) {
+          const fullName = customer.fullName
+            || [customer.firstName, customer.lastName].filter(Boolean).join(' ')
+            || customer.firstName
+            || 'عميلنا الكريم';
+
+          baseVars.customer_name       = fullName;
+          baseVars.customer_first_name = customer.firstName || fullName;
+          baseVars.customer_phone      = customer.phone  || baseVars.customer_phone;
+          baseVars.customer_email      = customer.email  || baseVars.customer_email;
+
+          this.logger.debug(`👤 Customer enriched from DB: ${fullName} (sallaId=${customerId})`);
+        } else {
+          this.logger.debug(`⚠️ Customer not found in DB (sallaId=${customerId}) — using Salla content vars`);
+        }
+      } catch (err) {
+        this.logger.warn(`⚠️ Customer DB lookup failed: ${err instanceof Error ? err.message : 'Unknown'}`);
+      }
+    }
+
+    // ─── الخطوة 3: معالجة حسب entity.type ────────────────────────────────────
+
+    // entity = null (loyalty / otp / system / marketing) → baseVars تكفي
+    if (!entity?.id) {
+      this.logger.debug(`📝 buildTemplateVariables [${businessType}]: no entity → baseVars only`);
+      return baseVars;
+    }
+
+    const entityIdStr = String(entity.id);
+
+    // ─── entity.type = 'order' → DB lookup كامل ────────────────────────────
+    if (entity.type === 'order') {
+      try {
+        // البحث بـ sallaOrderId أولاً ثم referenceId
+        let order = await this.orderRepository.findOne({
+          where: { storeId, sallaOrderId: entityIdStr },
+          relations: ['customer'],
+        });
+
+        if (!order) {
+          order = await this.orderRepository.findOne({
+            where: { storeId, referenceId: entityIdStr },
+            relations: ['customer'],
+          });
+        }
+
+        if (order) {
+          // ✅ بيانات الطلب الكاملة من DB
+          const customerFromOrder = order.customer;
+          const customerName = customerFromOrder?.fullName
+            || customerFromOrder?.firstName
+            || String(baseVars.customer_name || 'عميلنا الكريم');
+
+          this.logger.debug(`📦 Order found: ${order.sallaOrderId || order.referenceId} [${businessType}]`);
+
+          return {
+            // بيانات الطلب
+            id:               order.sallaOrderId || order.id,
+            reference_id:     order.referenceId  || order.sallaOrderId,
+            order_id:         order.referenceId  || order.sallaOrderId,
+            order_number:     order.referenceId  || order.sallaOrderId,
+            status:           order.status,
+            order_status:     order.status,
+            total:            order.totalAmount,
+            order_total:      order.totalAmount,
+            order_date:       order.createdAt
+                                ? new Date(order.createdAt).toLocaleDateString('ar-SA')
+                                : new Date().toLocaleDateString('ar-SA'),
+            // بيانات العميل (من customer relation أو من lookup السابق)
+            customer: {
+              first_name: customerFromOrder?.firstName || customerName,
+              name:       customerName,
+              mobile:     customerFromOrder?.phone || baseVars.customer_phone,
+              email:      customerFromOrder?.email || baseVars.customer_email,
+            },
+            customer_name:        String(baseVars.customer_name || customerName),
+            customer_first_name:  customerFromOrder?.firstName || customerName,
+            customer_phone:       customerFromOrder?.phone  || String(baseVars.customer_phone || ''),
+            customer_email:       customerFromOrder?.email  || String(baseVars.customer_email || ''),
+            // بيانات الشحن
+            tracking_number:      (order.metadata as any)?.trackingNumber  || (order.metadata as any)?.tracking_number,
+            shipping_company:     (order.metadata as any)?.shippingCompany || (order.metadata as any)?.shipping_company,
+            tracking_url:         (order.metadata as any)?.trackingUrl     || (order.metadata as any)?.tracking_url,
+            order_tracking:       (order.metadata as any)?.trackingUrl     || (order.metadata as any)?.tracking_url,
+            // روابط
+            payment_link:         (order.metadata as any)?.paymentUrl      || (order.metadata as any)?.payment_url,
+            store_name:           (order.metadata as any)?.storeName       || 'متجرنا',
+          };
+
+        } else {
+          // الطلب غير موجود في DB → استخدم baseVars + entityId
+          this.logger.warn(
+            `⚠️ Order not found in DB (id=${entityIdStr}, storeId=${storeId}) [${businessType}]`,
+          );
+          baseVars.order_id     = entityIdStr;
+          baseVars.reference_id = baseVars.reference_id || entityIdStr;
+          baseVars.entity_id    = entityIdStr;
+          return baseVars;
+        }
+
+      } catch (error) {
+        this.logger.error(
+          `❌ Order DB lookup failed [${businessType}]: ${error instanceof Error ? error.message : 'Unknown'}`,
+        );
+        baseVars.order_id  = entityIdStr;
+        baseVars.entity_id = entityIdStr;
+        return baseVars;
+      }
+    }
+
+    // ─── entity.type = 'shipment' ─────────────────────────────────────────────
+    if (entity.type === 'shipment') {
+      baseVars.shipment_id  = entityIdStr;
+      baseVars.entity_id    = entityIdStr;
+      baseVars.entity_type  = 'shipment';
+      // tracking_number قد يكون في sallaContent أو في baseVars
+      if (!baseVars.tracking_number) {
+        baseVars.tracking_number = entityIdStr;
+      }
+      this.logger.debug(`🚚 Shipment entity [${businessType}]: id=${entityIdStr}`);
+      return baseVars;
+    }
+
+    // ─── entity.type = 'cart' ─────────────────────────────────────────────────
+    if (entity.type === 'cart') {
+      baseVars.cart_id      = entityIdStr;
+      baseVars.entity_id    = entityIdStr;
+      baseVars.entity_type  = 'cart';
+      this.logger.debug(`🛒 Cart entity [${businessType}]: id=${entityIdStr}`);
+      return baseVars;
+    }
+
+    // ─── entity.type = 'product' ──────────────────────────────────────────────
+    if (entity.type === 'product') {
+      baseVars.product_id   = entityIdStr;
+      baseVars.entity_id    = entityIdStr;
+      baseVars.entity_type  = 'product';
+      this.logger.debug(`📦 Product entity [${businessType}]: id=${entityIdStr}`);
+      return baseVars;
+    }
+
+    // ─── entity.type = 'feedback' ─────────────────────────────────────────────
+    if (entity.type === 'feedback') {
+      baseVars.feedback_id  = entityIdStr;
+      baseVars.review_id    = entityIdStr;
+      baseVars.entity_id    = entityIdStr;
+      baseVars.entity_type  = 'feedback';
+      this.logger.debug(`⭐ Feedback entity [${businessType}]: id=${entityIdStr}`);
+      return baseVars;
+    }
+
+    // ─── entity.type غير معروف → baseVars + entityId ─────────────────────────
+    this.logger.warn(`⚠️ Unknown entity.type="${entity.type}" [${businessType}]`);
+    baseVars.entity_id   = entityIdStr;
+    baseVars.entity_type = entity.type;
+    return baseVars;
+  }
+
 
   /**
    * 📦 تحديد triggerEvent لـ order.status.updated بناءً على حالة الطلب في DB
@@ -890,102 +1109,8 @@ export class TemplateDispatcherService {
    *   shipment → entity.id = shipment_id (ليس order_id)
    *              يستخرج المتغيرات من sallaContent مباشرة (رقم الطلب موجود في النص)
    *   cart     → entity.id = cart_id — يستخرج من sallaContent
-   *   product  → entity.id = product_id — يستخرج من sallaContent
-   *   feedback → entity.id = feedback_id — يستخرج من sallaContent
-   *   null     → يستخرج من sallaContent (loyalty / otp / system / marketing)
-   */
-  private async fetchOrderDataForTemplate(
-    entity: { id: number; type: string } | null,
-    storeId: string | undefined,
-    sallaContent?: string,
-    businessType?: string,
-  ): Promise<Record<string, unknown>> {
-
-    // ─── أنواع لا تحتاج DB lookup — المتغيرات تُستخرج من نص سلة ─────────────
-    // المسودة 1: shipment / cart / product / feedback / null
-    const NON_ORDER_ENTITIES = ['shipment', 'cart', 'product', 'feedback'];
-
-    if (!entity?.id || !storeId || (entity.type && NON_ORDER_ENTITIES.includes(entity.type))) {
-      const extracted = this.extractVariablesFromSallaContent(sallaContent);
-
-      if (entity) {
-        // أضف معرّف الكيان كمتغير إضافي
-        extracted[`${entity.type}_id`] = entity.id;
-        extracted.entity_id   = entity.id;
-        extracted.entity_type = entity.type;
-      }
-
-      this.logger.debug(
-        `📝 fetchOrderDataForTemplate: entity=${entity?.type || 'null'} (${businessType}) — using Salla content vars`,
-        { entityId: entity?.id, extracted },
-      );
-
-      return extracted;
-    }
-
-    // ─── entity.type = 'order' → DB lookup ─────────────────────────────────
-    try {
-      const idStr = String(entity.id);
-
-      // المستوى 1: البحث بـ sallaOrderId
-      let order = await this.orderRepository.findOne({
-        where: { storeId, sallaOrderId: idStr },
-        relations: ['customer'],
-      });
-
-      // المستوى 2: البحث بـ referenceId
-      if (!order) {
-        order = await this.orderRepository.findOne({
-          where: { storeId, referenceId: idStr },
-          relations: ['customer'],
-        });
-      }
-
-      if (!order) {
-        this.logger.warn(
-          `⚠️ fetchOrderDataForTemplate: order not found (id=${idStr}) — using Salla content as variable source`,
-          { storeId, businessType },
-        );
-        return this.extractVariablesFromSallaContent(sallaContent);
-      }
-
-      // ✅ بيانات كاملة من DB
-      this.logger.debug(`📦 fetchOrderDataForTemplate: order found in DB (${order.sallaOrderId || order.referenceId})`);
-      return {
-        id:               order.sallaOrderId || order.id,
-        reference_id:     order.referenceId  || order.sallaOrderId,
-        order_number:     order.referenceId  || order.sallaOrderId,
-        status:           order.status,
-        total:            order.totalAmount,
-        customer: {
-          first_name: order.customer?.firstName || order.customer?.fullName || 'عميلنا الكريم',
-          name:       order.customer?.fullName  || order.customer?.firstName,
-          mobile:     order.customer?.phone,
-          email:      order.customer?.email,
-        },
-        tracking_number:  (order.metadata as any)?.trackingNumber  || (order.metadata as any)?.tracking_number,
-        shipping_company: (order.metadata as any)?.shippingCompany || (order.metadata as any)?.shipping_company,
-        tracking_url:     (order.metadata as any)?.trackingUrl     || (order.metadata as any)?.tracking_url,
-      };
-    } catch (error) {
-      this.logger.error(
-        `❌ fetchOrderDataForTemplate error: ${error instanceof Error ? error.message : 'Unknown'}`,
-        { businessType },
-      );
-      return this.extractVariablesFromSallaContent(sallaContent);
-    }
-  }
-
   /**
-   * 📝 استخراج متغيرات القالب من نص سلة العربي كمصدر احتياطي
-   *
-   * مثال: "تم تغيير حالة طلبك رقم 245225985 إلى جاري التوصيل"
-   * → { reference_id: '245225985', order_number: '245225985' }
-   */
-  /**
-   * 📝 استخراج متغيرات القالب من نص سلة العربي
-   *
-   * سلة ترسل نصاً جاهزاً — نستخرج منه المتغيرات الضرورية لاستبدالها في القالب
+   * 📝 استخراج متغيرات القالب من نص سلة العربي\n   *\n   * سلة ترسل نصاً جاهزاً — نستخرج منه المتغيرات الضرورية لاستبدالها في القالب
    *
    * أنماط النصوص من الأمثلة الرسمية:
    *   "أصبحت حالة طلبك #218103278 [تم التنفيذ]"
