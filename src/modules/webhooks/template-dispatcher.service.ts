@@ -357,13 +357,18 @@ export class TemplateDispatcherService {
 
   /**
    * ╔══════════════════════════════════════════════════════════════════════════════╗
-   * ║  Communication Webhook Relay — وفق توثيق سلة الرسمي                         ║
+   * ║  Communication Webhook Relay — المنطق الصحيح                                ║
    * ║                                                                              ║
-   * ║  سلة ترسل المحتوى والأرقام جاهزة — رفيق يُرسلها عبر القناة المناسبة        ║
+   * ║  الأولوية الصحيحة:                                                          ║
+   * ║  1️⃣ ابحث عن قالب مفعَّل للتاجر يطابق هذا الحدث                             ║
+   * ║     → إذا وُجد: أرسل القالب (مع استبدال المتغيرات من DB)                   ║
+   * ║  2️⃣ إذا لا يوجد قالب → استخدم محتوى سلة كـ fallback                        ║
    * ║                                                                              ║
-   * ║  WhatsApp: القناة المتصلة للمتجر (WHATSAPP_QR / WHATSAPP_OFFICIAL)          ║
-   * ║  SMS:      قناة SMS المتصلة (Unifonic / Taqnyat / Gateway / Twilio)         ║
-   * ║  Email:    MailService (SMTP) — موضوع الإيميل مُشتق من businessType         ║
+   * ║  مثال:                                                                       ║
+   * ║  • businessType = order.status.updated                                       ║
+   * ║  • التاجر عنده قالب "جاري التوصيل" مفعَّل لـ order.status.in_transit        ║
+   * ║  • نجلب الطلب من DB → نحدد الحالة → نطابق القالب → نرسله                   ║
+   * ║  • إذا ما في قالب → نرسل محتوى سلة مباشرة                                  ║
    * ╚══════════════════════════════════════════════════════════════════════════════╝
    */
   private async relayCommunicationMessage(
@@ -373,14 +378,14 @@ export class TemplateDispatcherService {
     const tenantId      = payload.tenantId as string | undefined;
     const storeId       = payload.storeId  as string | undefined;
     const notifiable    = (payload.notifiable as string[]) || [];
-    const content       = (payload.content   as string)   || '';
+    const sallaContent  = (payload.content   as string)   || '';   // محتوى سلة الخام
     const businessType  = (payload.businessType as string) || 'unknown';
-    const entity        = payload.entity as { id: number; type: string } | null;
+    const entity        = payload.entity as { id: number | string; type: string } | null;
     const customerId    = payload.customerId as number | undefined;
-    const otpCode       = payload.otpCode as string | undefined;  // ✅ من auth.otp.verification
+    const otpCode       = payload.otpCode as string | undefined;
 
     // ─── تحقق أساسي ───
-    if (!notifiable.length || !content) {
+    if (!notifiable.length || !sallaContent) {
       this.logger.warn(
         `⚠️ Communication relay [${channelType}]: skipped — no recipients or empty content`,
         { businessType, tenantId: tenantId || '❌', storeId: storeId || '❌' },
@@ -393,16 +398,242 @@ export class TemplateDispatcherService {
       { tenantId: tenantId || '❌', storeId: storeId || '❌', entityId: entity?.id, customerId, hasOtpCode: !!otpCode },
     );
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 🎯 الخطوة 1: البحث عن قالب مفعَّل يطابق هذا الحدث
+    //
+    // نحوّل businessType → triggerEvent ونبحث عن قالب في DB
+    // إذا وُجد قالب: نجلب بيانات الطلب ونستبدل المتغيرات
+    // إذا لم يوجد: نستخدم محتوى سلة مباشرة (fallback)
+    // ═══════════════════════════════════════════════════════════════════════════
+    const finalContent = await this.resolveContentForCommunication(
+      tenantId,
+      storeId,
+      businessType,
+      entity,
+      sallaContent,
+    );
+
+    // ─── إرسال عبر القناة المناسبة ───────────────────────────────────────────
     switch (channelType) {
       case 'whatsapp':
-        await this.relayWhatsApp(tenantId, storeId, notifiable, content, businessType, entity, customerId);
+        await this.relayWhatsApp(tenantId, storeId, notifiable, finalContent, businessType, entity, customerId);
         break;
       case 'sms':
-        await this.relaySms(tenantId, storeId, notifiable, content, businessType, otpCode);
+        await this.relaySms(tenantId, storeId, notifiable, finalContent, businessType, otpCode);
         break;
       case 'email':
-        await this.relayEmail(notifiable, content, businessType, entity, customerId);
+        await this.relayEmail(notifiable, finalContent, businessType, entity, customerId);
         break;
+    }
+  }
+
+  /**
+   * 🔍 تحديد المحتوى النهائي للرسالة
+   *
+   * الأولوية:
+   * 1. قالب مفعَّل للتاجر (مع استبدال متغيرات من DB)
+   * 2. محتوى سلة الخام (fallback)
+   *
+   * خريطة businessType → triggerEvent:
+   * ┌─────────────────────────────┬──────────────────────────────────────────┐
+   * │ businessType (Communication)│ triggerEvent (Template)                   │
+   * ├─────────────────────────────┼──────────────────────────────────────────┤
+   * │ order.status.updated        │ order.status.{status} (يُجلب من DB)      │
+   * │ order.status.confirmation   │ order.created                             │
+   * │ order.shipment.created      │ order.shipped                             │
+   * │ order.refund.processed      │ order.refunded                            │
+   * │ order.invoice.issued        │ order.created                             │
+   * │ customer.cart.abandoned     │ abandoned.cart                            │
+   * │ order.gift.placed           │ order.created                             │
+   * │ payment.reminder.due        │ order.status.pending_payment              │
+   * └─────────────────────────────┴──────────────────────────────────────────┘
+   */
+  private async resolveContentForCommunication(
+    tenantId: string | undefined,
+    storeId: string | undefined,
+    businessType: string,
+    entity: { id: number | string; type: string } | null,
+    sallaContent: string,
+  ): Promise<string> {
+    if (!tenantId) return sallaContent;
+
+    try {
+      // ─── تحديد triggerEvent المحتملة لهذا businessType ───────────────────
+      const candidateTriggers = await this.resolveTriggerEvents(
+        businessType,
+        entity,
+        storeId,
+      );
+
+      if (!candidateTriggers.length) {
+        this.logger.debug(`📋 No template mapping for businessType: ${businessType} — using Salla content`);
+        return sallaContent;
+      }
+
+      // ─── البحث عن قالب مفعَّل ────────────────────────────────────────────
+      const template = await this.templateRepository.findOne({
+        where: candidateTriggers.map(trigger => ({
+          tenantId,
+          triggerEvent: trigger,
+          status: 'approved' as any,
+        })),
+        order: { updatedAt: 'DESC' },
+      });
+
+      if (!template) {
+        this.logger.log(
+          `📋 No active template for [${businessType}] (tried: ${candidateTriggers.join(', ')}) — using Salla content`,
+          { tenantId },
+        );
+        return sallaContent;
+      }
+
+      this.logger.log(
+        `✅ Template found: "${template.name}" for [${businessType}] → using template content`,
+        { templateId: template.id, trigger: template.triggerEvent },
+      );
+
+      // ─── جلب بيانات الطلب لاستبدال المتغيرات ────────────────────────────
+      const orderData = await this.fetchOrderDataForTemplate(entity, storeId);
+
+      // ─── استبدال المتغيرات في القالب ─────────────────────────────────────
+      const rendered = this.replaceVariables(template.body, orderData);
+
+      this.logger.debug(`📝 Template rendered: "${rendered.substring(0, 80)}..."`);
+      return rendered;
+
+    } catch (error) {
+      // fallback دائماً لمحتوى سلة عند أي خطأ
+      this.logger.error(
+        `❌ Error resolving template for [${businessType}] — falling back to Salla content`,
+        { error: error instanceof Error ? error.message : 'Unknown' },
+      );
+      return sallaContent;
+    }
+  }
+
+  /**
+   * 🗺️ تحويل businessType → قائمة triggerEvent محتملة
+   *
+   * لـ order.status.updated: نجلب الطلب من DB لمعرفة الحالة الدقيقة
+   */
+  private async resolveTriggerEvents(
+    businessType: string,
+    entity: { id: number | string; type: string } | null,
+    storeId: string | undefined,
+  ): Promise<string[]> {
+
+    // الخريطة الثابتة
+    const STATIC_MAP: Record<string, string[]> = {
+      'order.status.confirmation':  ['order.created'],
+      'order.shipment.created':     ['order.shipped', 'shipment.created'],
+      'order.refund.processed':     ['order.refunded'],
+      'order.invoice.issued':       ['order.created', 'order.invoice.created'],
+      'order.gift.placed':          ['order.created'],
+      'payment.reminder.due':       ['order.status.pending_payment'],
+      'customer.cart.abandoned':    ['abandoned.cart'],
+      'product.availability.alert': ['product.available'],
+    };
+
+    if (STATIC_MAP[businessType]) {
+      return STATIC_MAP[businessType];
+    }
+
+    // order.status.updated: نحتاج الحالة الفعلية من الـ entity أو DB
+    if (businessType === 'order.status.updated' && entity?.type === 'order') {
+      return this.resolveOrderStatusTriggers(entity.id, storeId);
+    }
+
+    return [];
+  }
+
+  /**
+   * 📦 تحديد triggerEvent لـ order.status.updated بناءً على حالة الطلب في DB
+   */
+  private async resolveOrderStatusTriggers(
+    entityId: number | string,
+    storeId: string | undefined,
+  ): Promise<string[]> {
+    if (!storeId || !entityId) return ['order.status.updated'];
+
+    try {
+      const order = await this.orderRepository.findOne({
+        where: { storeId, sallaOrderId: String(entityId) },
+        select: ['id', 'status'],
+      });
+
+      if (!order?.status) {
+        return ['order.status.updated'];
+      }
+
+      const status = order.status.toLowerCase();
+
+      // خريطة OrderStatus → triggerEvent المستخدمة في القوالب
+      const STATUS_TRIGGER_MAP: Record<string, string[]> = {
+        'processing':      ['order.status.processing'],
+        'completed':       ['order.status.completed', 'order.delivered'],
+        'in_transit':      ['order.status.in_transit', 'order.shipped'],
+        'shipped':         ['order.shipped', 'order.status.shipped'],
+        'delivered':       ['order.delivered', 'order.status.completed'],
+        'under_review':    ['order.status.under_review'],
+        'ready_to_ship':   ['order.status.ready_to_ship'],
+        'pending_payment': ['order.status.pending_payment'],
+        'on_hold':         ['order.status.on_hold'],
+        'cancelled':       ['order.cancelled'],
+        'refunded':        ['order.refunded'],
+        'paid':            ['order.status.paid'],
+        'created':         ['order.created'],
+      };
+
+      const triggers = STATUS_TRIGGER_MAP[status];
+      if (triggers) {
+        this.logger.debug(`🗺️ Order status "${status}" → triggers: [${triggers.join(', ')}]`);
+        return triggers;
+      }
+
+      // fallback: order.status.{status}
+      return [`order.status.${status}`, 'order.status.updated'];
+
+    } catch (error) {
+      this.logger.warn(`⚠️ Could not resolve order status triggers: ${error instanceof Error ? error.message : 'Unknown'}`);
+      return ['order.status.updated'];
+    }
+  }
+
+  /**
+   * 📊 جلب بيانات الطلب الكاملة لاستبدال متغيرات القالب
+   */
+  private async fetchOrderDataForTemplate(
+    entity: { id: number | string; type: string } | null,
+    storeId: string | undefined,
+  ): Promise<Record<string, unknown>> {
+    if (!entity?.id || !storeId) return {};
+
+    try {
+      const order = await this.orderRepository.findOne({
+        where: { storeId, sallaOrderId: String(entity.id) },
+        relations: ['customer'],
+      });
+
+      if (!order) return {};
+
+      // بناء data object يتوافق مع replaceVariables
+      return {
+        id:           order.sallaOrderId || order.id,
+        reference_id: order.referenceId  || order.sallaOrderId,
+        status:       order.status,
+        total:        order.total,
+        customer: {
+          first_name: order.customer?.firstName || order.customer?.fullName || 'عميلنا الكريم',
+          name:       order.customer?.fullName  || order.customer?.firstName,
+          mobile:     order.customer?.phone,
+          email:      order.customer?.email,
+        },
+        tracking_number:  (order.metadata as any)?.trackingNumber,
+        shipping_company: (order.metadata as any)?.shippingCompany,
+      };
+    } catch {
+      return {};
     }
   }
 
