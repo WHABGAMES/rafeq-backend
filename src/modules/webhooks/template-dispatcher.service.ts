@@ -72,6 +72,19 @@ export class TemplateDispatcherService {
     await this.dispatch('order.created', payload);
   }
 
+  // ✅ v21: أحداث مستقلة لكل طريقة دفع — فصل كامل من المصدر
+  // order.cod.created    → قالب "تأكيد الدفع عند الاستلام"
+  // order.online.created → قالب "تأكيد الدفع الإلكتروني" (مستقبلاً)
+  @OnEvent('order.cod.created')
+  async onOrderCodCreated(payload: Record<string, unknown>) {
+    await this.dispatch('order.cod.created', payload);
+  }
+
+  @OnEvent('order.online.created')
+  async onOrderOnlineCreated(payload: Record<string, unknown>) {
+    await this.dispatch('order.online.created', payload);
+  }
+
   // ✅ v8: حُذف @OnEvent('order.status.updated') العام نهائياً - كل حالة لها listener خاص
 
   // ✅ v7: Events خاصة بكل حالة طلب - كل حالة ترسل القالب الصحيح
@@ -576,12 +589,12 @@ export class TemplateDispatcherService {
     }
 
     // ─── خريطة OrderStatus → triggerEvent ───────────────────────────────────
-    // ⚠️ كل حالة لها trigger مستقل — لا تداخل بين in_transit و shipped
+    // ⚠️ كل حالة لها trigger مستقل — لا تداخل
     const STATUS_TRIGGER_MAP: Record<string, string[]> = {
       'processing':      ['order.status.processing'],
       'completed':       ['order.status.completed'],
-      'in_transit':      ['order.status.in_transit'],   // جاري التوصيل فقط
-      'shipped':         ['order.shipped'],              // تم الشحن فقط
+      'in_transit':      ['order.status.in_transit'],
+      'shipped':         ['order.shipped'],
       'delivered':       ['order.delivered'],
       'under_review':    ['order.status.under_review'],
       'ready_to_ship':   ['order.status.ready_to_ship'],
@@ -589,6 +602,7 @@ export class TemplateDispatcherService {
       'on_hold':         ['order.status.on_hold'],
       'cancelled':       ['order.cancelled'],
       'refunded':        ['order.refunded'],
+      'restoring':       ['order.status.restoring'],   // ✅ قيد الإسترجاع
       'paid':            ['order.status.paid'],
       'created':         ['order.created'],
     };
@@ -668,30 +682,90 @@ export class TemplateDispatcherService {
    */
   private extractTriggersFromSallaText(text: string): string[] {
     // ⚠️ كل حالة لها trigger واحد فقط — لا تداخل
-    // الترتيب مهم: الأطول أولاً لتجنب false matches
+    // ✅ النصوص مأخوذة من ما يرسله سلة فعلاً في الـ webhook
+    // ✅ الترتيب مهم: الأطول والأكثر تحديداً أولاً
     const TEXT_STATUS_MAP: Array<{ patterns: string[]; trigger: string }> = [
-      { patterns: ['جاري التوصيل', 'في الطريق إليك', 'قيد التوصيل'],  trigger: 'order.status.in_transit' },
-      { patterns: ['تم التوصيل', 'وصل الطلب', 'تم الاستلام'],          trigger: 'order.delivered'          },
-      { patterns: ['تم الشحن', 'تم إرسال', 'شُحن الطلب'],              trigger: 'order.shipped'            },
-      { patterns: ['قيد التنفيذ', 'جاري المعالجة', 'قيد المعالجة'],    trigger: 'order.status.processing'  },
-      { patterns: ['بانتظار المراجعة', 'قيد المراجعة', 'تحت المراجعة'], trigger: 'order.status.under_review' },
-      { patterns: ['تم الإلغاء', 'تم إلغاء', 'ملغي'],                  trigger: 'order.cancelled'          },
-      { patterns: ['تم الاسترداد', 'تم الإرجاع', 'مُسترد'],            trigger: 'order.refunded'           },
-      { patterns: ['في انتظار الدفع', 'بانتظار الدفع', 'معلق الدفع'],  trigger: 'order.status.pending_payment' },
-      { patterns: ['جاهز للشحن', 'جاهز للإرسال', 'استعداد للشحن'],    trigger: 'order.status.ready_to_ship'  },
-      { patterns: ['طلب جديد', 'تم إنشاء طلب', 'تأكيد الطلب'],        trigger: 'order.created'            },
+      // ─── التوصيل ─────────────────────────────────────────────────────────
+      {
+        patterns: ['جاري التوصيل', 'في الطريق إليك', 'قيد التوصيل', 'في الطريق'],
+        trigger: 'order.status.in_transit',
+      },
+      {
+        patterns: ['تم التوصيل', 'وصل الطلب', 'تم الاستلام', 'تم توصيل'],
+        trigger: 'order.delivered',
+      },
+      // ─── الشحن ───────────────────────────────────────────────────────────
+      {
+        patterns: ['تم الشحن', 'تم إرسال', 'شُحن الطلب', 'تم شحن'],
+        trigger: 'order.shipped',
+      },
+      {
+        patterns: ['جاهز للشحن', 'جاهز للإرسال', 'استعداد للشحن'],
+        trigger: 'order.status.ready_to_ship',
+      },
+      // ─── التنفيذ والمعالجة ────────────────────────────────────────────────
+      // ✅ "تم التنفيذ" و "قيد التنفيذ" كلاهما → processing
+      {
+        patterns: ['تم التنفيذ', 'قيد التنفيذ', 'جاري المعالجة', 'قيد المعالجة', 'جاري التنفيذ'],
+        trigger: 'order.status.processing',
+      },
+      // ─── الإكمال ─────────────────────────────────────────────────────────
+      // ✅ "تم الإكمال" → completed (بعد التوصيل والتأكيد)
+      {
+        patterns: ['تم الإكمال', 'اكتمل الطلب', 'تم إكمال', 'مكتمل'],
+        trigger: 'order.status.completed',
+      },
+      // ─── المراجعة ────────────────────────────────────────────────────────
+      {
+        patterns: ['بانتظار المراجعة', 'قيد المراجعة', 'تحت المراجعة', 'تحت الفحص'],
+        trigger: 'order.status.under_review',
+      },
+      // ─── الإلغاء ─────────────────────────────────────────────────────────
+      {
+        patterns: ['تم الإلغاء', 'تم إلغاء', 'ملغي', 'إلغاء الطلب'],
+        trigger: 'order.cancelled',
+      },
+      // ─── الاسترجاع ───────────────────────────────────────────────────────
+      // ✅ "قيد الإسترجاع" → restoring (حالة وسيطة قبل الاسترداد الكامل)
+      {
+        patterns: ['قيد الإسترجاع', 'قيد الاسترجاع', 'جاري الاسترجاع', 'جاري الإسترجاع'],
+        trigger: 'order.status.restoring',
+      },
+      // ✅ "مسترجع" و "تم الاسترداد" → refunded
+      {
+        patterns: ['مسترجع', 'تم الاسترداد', 'تم الإرجاع', 'مُسترد', 'تم استرداد'],
+        trigger: 'order.refunded',
+      },
+      // ─── الدفع ───────────────────────────────────────────────────────────
+      {
+        patterns: ['في انتظار الدفع', 'بانتظار الدفع', 'معلق الدفع', 'انتظار الدفع'],
+        trigger: 'order.status.pending_payment',
+      },
+      {
+        patterns: ['تم الدفع', 'تم تأكيد الدفع', 'اكتمل الدفع'],
+        trigger: 'order.status.paid',
+      },
+      // ─── الإنشاء ─────────────────────────────────────────────────────────
+      {
+        patterns: ['طلب جديد', 'تم إنشاء طلب', 'تأكيد الطلب', 'تم تأكيد طلبك'],
+        trigger: 'order.created',
+      },
     ];
 
     const lowerText = text.toLowerCase();
 
     for (const { patterns, trigger } of TEXT_STATUS_MAP) {
       if (patterns.some(p => lowerText.includes(p.toLowerCase()))) {
-        this.logger.log(`📝 Salla text matched: "${patterns[0]}" → trigger: ${trigger}`);
+        this.logger.log(`📝 Salla text matched: "${patterns[0]}" → trigger: ${trigger}`, {
+          textPreview: text.substring(0, 80),
+        });
         return [trigger];
       }
     }
 
-    this.logger.warn(`⚠️ extractTriggersFromSallaText: no match found for text: "${text.substring(0, 80)}"`);
+    this.logger.warn(
+      `⚠️ extractTriggersFromSallaText: no pattern matched — text: "${text.substring(0, 100)}"`,
+    );
     return ['order.status.updated'];
   }
 
@@ -1085,21 +1159,18 @@ export class TemplateDispatcherService {
         return;
       }
 
-      // ✅ v16: Template Isolation — قالب واحد فقط لكل حدث
-      // إذا وُجد أكثر من قالب مفعّل لنفس الحدث → نرسل الأحدث فقط ونُحذّر
+      // ✅ v21: Template Isolation — قالب واحد لكل trigger_event
+      // كل trigger_event فريد من المصدر (Processor) → لا تعارض ممكن
       if (templates.length > 1) {
-        this.logger.warn(`⚠️ ISOLATION: ${templates.length} templates found for trigger "${triggerEvent}" — sending only the most recent one`, {
+        this.logger.warn(`⚠️ ISOLATION: ${templates.length} templates share trigger "${triggerEvent}" — sending most recent only`, {
           templateNames: templates.map(t => t.name),
-          templateIds: templates.map(t => t.id),
         });
       }
-      // ترتيب حسب الأحدث واختيار الأول فقط
-      const sortedTemplates = templates.sort((a, b) =>
-        (b.updatedAt?.getTime() || 0) - (a.updatedAt?.getTime() || 0)
-      );
-      const activeTemplate = sortedTemplates[0];
+      const activeTemplate = templates.sort(
+        (a, b) => (b.updatedAt?.getTime() || 0) - (a.updatedAt?.getTime() || 0),
+      )[0];
 
-      // 2️⃣ البحث عن قناة واتساب متصلة (بـ storeId أولاً، ثم tenantId كـ fallback)
+      // 2️⃣ قناة واتساب
       const channel = await this.findActiveWhatsAppChannel(storeId, tenantId);
       if (!channel) {
         this.logger.warn(`⚠️ No active WhatsApp channel for store ${storeId} or tenant ${tenantId}`);
@@ -1107,17 +1178,13 @@ export class TemplateDispatcherService {
       }
       this.logger.log(`📱 WhatsApp channel found: ${channel.id} (type: ${channel.type})`);
 
-      // 3️⃣ استخراج رقم هاتف العميل
+      // 3️⃣ رقم الهاتف
       let customerPhone = this.extractCustomerPhone(raw);
-
-      // إذا ما لقينا الرقم من بيانات الـ webhook → نبحث في قاعدة البيانات
       if (!customerPhone) {
         this.logger.log(`🔍 Phone not in webhook data, looking up from database...`);
-        // ✅ FIX #6: نمرر customerId من raw لدعم customer.loyalty.earned وأحداث بدون entity
         const directCustomerId = (raw.customerId || raw.customer_id) as number | undefined;
         customerPhone = await this.lookupCustomerPhone(raw, storeId, directCustomerId);
       }
-
       if (!customerPhone) {
         this.logger.warn(`⚠️ No customer phone found for event ${triggerEvent}`, {
           rawKeys: Object.keys(raw),
@@ -1126,88 +1193,44 @@ export class TemplateDispatcherService {
         });
         return;
       }
-
       this.logger.log(`📞 Customer phone: ${customerPhone}`);
 
-      // 4️⃣ ✅ v16: إرسال قالب واحد فقط (Template Isolation)
-      const template = activeTemplate;
+      // 4️⃣ إرسال القالب المفعّل
+      const template     = activeTemplate;
       const sendSettings = template.sendSettings;
-
-      // ✅ تحديد نوع الإرسال من sendSettings
-      const mode = sendSettings?.sendingMode || SendingMode.INSTANT;
+      const mode         = sendSettings?.sendingMode || SendingMode.INSTANT;
 
       if (mode === SendingMode.MANUAL) {
-        this.logger.log(`⏭️ Skipping manual template: "${template.name}"`);
+        this.logger.log(`⏭️ Skipping MANUAL template: "${template.name}"`);
         return;
       }
 
-      // ✅ v15: فحص شرط الحالة — يعمل مع CONDITIONAL و DELAYED
-      if (sendSettings?.triggerCondition && (mode === SendingMode.CONDITIONAL || mode === SendingMode.DELAYED)) {
-        const condition = sendSettings.triggerCondition;
-
-        if (condition.orderStatus) {
-          const currentStatus = String(raw.status || raw.newStatus || '').toLowerCase();
-          if (currentStatus && currentStatus !== condition.orderStatus.toLowerCase()) {
-            this.logger.log(
-              `⏭️ Condition not met: "${template.name}" requires status "${condition.orderStatus}", got "${currentStatus}"`,
-            );
-            return;
-          }
-        }
-
-        if (condition.paymentMethod) {
-          const currentMethod = String(
-            raw.payment_method || (raw as any).paymentMethod || '',
-          ).toLowerCase();
-          if (currentMethod && currentMethod !== condition.paymentMethod.toLowerCase()) {
-            this.logger.log(
-              `⏭️ Condition not met: "${template.name}" requires payment "${condition.paymentMethod}", got "${currentMethod}"`,
-            );
-            return;
-          }
-        }
-      }
-
-      // ✅ Delayed أو Conditional مع تأخير: جدولة بدل إرسال فوري
+      // ✅ Delayed/Conditional مع تأخير: جدولة
       const delayMinutes = sendSettings?.delayMinutes;
       if (delayMinutes && delayMinutes > 0 && (mode === SendingMode.DELAYED || mode === SendingMode.CONDITIONAL)) {
-        this.logger.log(
-          `⏰ Scheduling: "${template.name}" → ${customerPhone} (delay: ${delayMinutes}min)`,
-        );
-
+        this.logger.log(`⏰ Scheduling: "${template.name}" → ${customerPhone} (delay: ${delayMinutes}min)`);
         const orderId = String(raw.id || raw.orderId || raw.order_id || '');
         await this.templateSchedulerService.scheduleDelayedSend({
-          template,
-          tenantId,
-          storeId,
-          customerPhone,
+          template, tenantId, storeId, customerPhone,
           customerName: String(
             (raw.customer as any)?.first_name ||
             (raw.customer as any)?.name ||
-            raw.customerName ||
-            '',
+            raw.customerName || '',
           ),
           referenceId: orderId || undefined,
           referenceType: triggerEvent.split('.')[0] || undefined,
-          triggerEvent,
-          payload: raw,
-          delayMinutes,
+          triggerEvent, payload: raw, delayMinutes,
           sequenceGroupKey: sendSettings?.sequence?.groupKey,
-          sequenceOrder: sendSettings?.sequence?.order,
+          sequenceOrder:    sendSettings?.sequence?.order,
         });
-
-        dedupConfirmed = true; // ✅ الجدولة نجحت → DEDUP مؤكد
-        return; // لا ترسل فورياً
+        dedupConfirmed = true;
+        return;
       }
 
       // ✅ Instant: إرسال فوري
       this.logger.log(`📤 Sending template: "${template.name}" for trigger: ${triggerEvent}`);
       const sendSuccess = await this.sendTemplate(template, channel, customerPhone, raw);
-
-      if (sendSuccess) {
-        dedupConfirmed = true; // ✅ إرسال نجح → DEDUP مؤكد
-      }
-      // إذا فشل → dedupConfirmed = false → finally يحذف DEDUP
+      if (sendSuccess) dedupConfirmed = true;
 
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : 'Unknown';
@@ -1281,6 +1304,11 @@ export class TemplateDispatcherService {
         this.logger.log(`📞 Phone found in webhook customer object: ${fullPhone}`);
         return this.normalizePhone(fullPhone);
       }
+      // ✅ telephone fallback (زد يرسل telephone بدل mobile)
+      if (customer.telephone) {
+        this.logger.log(`📞 Phone found in customer.telephone: ${customer.telephone}`);
+        return this.normalizePhone(String(customer.telephone));
+      }
     }
 
     // ✅ v4: من كائن order.customer (سلة ترسل order.status.updated بهالشكل)
@@ -1302,9 +1330,16 @@ export class TemplateDispatcherService {
       }
     }
 
-    // 2. من الحقول المباشرة
-    const directPhone = data.customerPhone || data.mobile || data.phone;
+    // 2. من الحقول المباشرة (top-level)
+    // ✅ telephone مدعوم (زد يرسل telephone، سلة ترسل mobile)
+    const directPhone = data.customerPhone || data.mobile || data.phone || data.telephone;
     if (directPhone) {
+      // ✅ إذا mobile موجود بدون mobile_code → جرّب بناء الرقم الكامل من top-level
+      const builtPhone = this.buildFullPhone(data);
+      if (builtPhone && builtPhone !== String(directPhone)) {
+        this.logger.log(`📞 Phone built from top-level mobile_code+mobile: ${builtPhone}`);
+        return this.normalizePhone(builtPhone);
+      }
       this.logger.log(`📞 Phone found in direct field: ${directPhone}`);
       return this.normalizePhone(String(directPhone));
     }
@@ -1595,10 +1630,10 @@ export class TemplateDispatcherService {
 
     const variables: Record<string, string> = {
       // ✅ v18: كل القيم تمر عبر safeStr لمنع [object Object]
-      customer_name: safeStr(customer.first_name || customer.name || data.customerName, 'عميلنا الكريم'),
-      customer_first_name: safeStr(customer.first_name || data.customerName, 'عميلنا'),
-      customer_phone: safeStr(customer.mobile || customer.phone),
-      customer_email: safeStr(customer.email),
+      customer_name: safeStr(customer.first_name || customer.name || data.customerName || data.first_name || (data.lastName ? String(data.firstName || "") : undefined), "عميلنا الكريم"),
+      customer_first_name: safeStr(customer.first_name || data.customerName || data.first_name, "عميلنا"),
+      customer_phone: safeStr(customer.mobile || customer.phone || data.mobile || data.phone || data.telephone),
+      customer_email: safeStr(customer.email || data.email),
       order_id: safeStr(data.reference_id || orderObj.reference_id || data.order_number || orderObj.order_number || data.id || orderObj.id || data.orderId),
       order_total: this.formatAmount(data.total || orderObj.total || (data.amounts as any)?.total || (orderObj.amounts as any)?.total),
       order_status: safeStr(data.status || data.newStatus || orderObj.status),
