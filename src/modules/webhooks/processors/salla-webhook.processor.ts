@@ -615,9 +615,24 @@ export class SallaWebhookProcessor extends WorkerHost {
 
       // ✅ الأولوية: customized.slug → slug → customized.name → name
       if (obj.customized?.slug && typeof obj.customized.slug === 'string') return obj.customized.slug.toLowerCase();
-      if (obj.slug && typeof obj.slug === 'string') return obj.slug.toLowerCase();
+
+      // ✅ v22 FIX: إذا slug غامض (pending/new/created) → لا تعتمد عليه
+      // سلة تُرسل slug="pending" لكل الحالات الأولية بما فيها "بانتظار الدفع"
+      // الـ name العربي يُعطي السياق الحقيقي
+      const AMBIGUOUS_SLUGS = ['pending', 'new', 'created'];
+      const slug = obj.slug && typeof obj.slug === 'string' ? obj.slug.toLowerCase() : '';
+
+      if (slug && !AMBIGUOUS_SLUGS.includes(slug)) {
+        // slug واضح → نستخدمه مباشرة
+        return slug;
+      }
+
+      // slug غامض أو غائب → نستخدم name العربي للتمييز الدقيق
       if (obj.customized?.name && typeof obj.customized.name === 'string') return cleanForMatch(obj.customized.name);
       if (obj.name && typeof obj.name === 'string') return cleanForMatch(obj.name);
+
+      // آخر ملجأ: نرجع slug كما هو
+      if (slug) return slug;
     }
 
     if (typeof sallaStatus === 'number') return String(sallaStatus);
@@ -931,7 +946,7 @@ export class SallaWebhookProcessor extends WorkerHost {
       : [];
 
     const content    = typeof data.content === 'string' ? data.content.trim() : '';
-    const rawType    = typeof data.type === 'string' ? data.type : '';
+    const rawType    = typeof data.type === 'string' ? data.type.trim() : '';
     const entity     = data.entity as { id: number | string; type: string } | null | undefined;
     const meta       = data.meta as Record<string, unknown> | null | undefined;
     const customerId = meta?.customer_id ? Number(meta.customer_id) : undefined;
@@ -942,8 +957,13 @@ export class SallaWebhookProcessor extends WorkerHost {
     // ─── FIX #4: التحقق من businessType بالـ Enum الرسمي ────────────────────
     // المسودة 1 تحدد 17 نوع — أي نوع غير معروف يُسجَّل تحذير ونستمر
     const validBusinessTypes = Object.values(CommunicationEventType) as string[];
-    const isKnownType  = validBusinessTypes.includes(rawType);
-    const businessType = rawType || 'unknown';
+
+    // ✅ DRAFT 1 FIX: سلة تُرسل أحياناً 'otp' بدل 'auth.otp.verification' (كما في Example #4)
+    // نُعيَّر للقيمة الرسمية حتى يطابق القالب والـ relay
+    const normalizedRawType = rawType === 'otp' ? CommunicationEventType.AUTH_OTP_VERIFICATION : rawType;
+
+    const isKnownType  = validBusinessTypes.includes(normalizedRawType);
+    const businessType = normalizedRawType || 'unknown';
 
     if (!isKnownType && rawType) {
       this.logger.warn(
