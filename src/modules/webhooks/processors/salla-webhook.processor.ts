@@ -20,6 +20,7 @@ import { WebhookStatus, SallaEventType } from '@database/entities/webhook-event.
 import { WebhookLogAction } from '../entities/webhook-log.entity';
 import { Order, OrderStatus } from '@database/entities/order.entity';
 import { Customer, CustomerStatus } from '@database/entities/customer.entity';
+import { CommunicationEventType } from '../dto/salla-webhook.dto';
 
 interface SallaWebhookJobData {
   webhookEventId: string;
@@ -846,23 +847,28 @@ export class SallaWebhookProcessor extends WorkerHost {
   @OnWorkerEvent('stalled') onStalled(jobId: string) { this.logger.warn(`Job stalled: ${jobId}`); }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 📡 Communication Webhooks Handler
+  // 📡 Communication Webhooks Handler — وفق توثيق سلة الرسمي (المسودة 1)
   // ═══════════════════════════════════════════════════════════════════════════════
 
   /**
    * معالجة Communication Webhooks من سلة
    *
-   * النمط الجديد (السهل): سلة ترسل الرقم والمحتوى جاهزين
-   * رفيق يأخذ البيانات ويُحوّلها لـ event ليُرسلها خدمة الـ relay
-   *
-   * بنية البيانات الواردة:
+   * ✅ وفق المسودة 1 — بنية البيانات الواردة:
    * {
-   *   "notifiable": ["+96656000000"],   ← رقم المستلم جاهز ✅
-   *   "type": "order.status.updated",   ← نوع الحدث
-   *   "content": "حالة طلبك ...",        ← نص الرسالة جاهز ✅
-   *   "entity": { "id": 123, "type": "order" },
-   *   "meta": { "customer_id": 456 }
+   *   "event": "communication.whatsapp.send",
+   *   "merchant": 292111819,
+   *   "data": {
+   *     "notifiable": ["+96656000000"],        ← أرقام/إيميلات المستلمين
+   *     "type": "order.status.updated",        ← businessType (17 نوع محدد)
+   *     "content": "حالة طلبك ...",            ← نص الرسالة جاهز
+   *     "entity": { "id": 123, "type": "order" }, ← الكيان (قد يكون null)
+   *     "meta": { "customer_id": 456 }         ← معرف العميل (أو code لـ OTP)
+   *   }
    * }
+   *
+   * ✅ أنواع entity حسب المسودة 1: order | cart | shipment | product | feedback
+   * ✅ أنواع بدون entity (null): auth.otp.verification / customer.loyalty.earned /
+   *    marketing.campaign.broadcast / system.alert.general / system.message.custom
    *
    * @param channelType - 'whatsapp' | 'sms' | 'email'
    */
@@ -871,86 +877,156 @@ export class SallaWebhookProcessor extends WorkerHost {
     data: Record<string, unknown>,
     context: { tenantId?: string; storeId?: string; webhookEventId: string },
   ): Promise<Record<string, unknown>> {
-    // استخراج البيانات الأساسية
+
+    // ─── استخراج البيانات وفق المسودة 1 ─────────────────────────────────────
     const notifiable = Array.isArray(data.notifiable)
       ? (data.notifiable as string[]).filter(Boolean)
       : [];
 
-    const content = typeof data.content === 'string' ? data.content.trim() : '';
-    const businessType = typeof data.type === 'string' ? data.type : 'unknown';
-    const entity = data.entity as { id: number; type: string } | null | undefined;
-    const meta = data.meta as Record<string, unknown> | null | undefined;
+    const content    = typeof data.content === 'string' ? data.content.trim() : '';
+    const rawType    = typeof data.type === 'string' ? data.type : '';
+    const entity     = data.entity as { id: number | string; type: string } | null | undefined;
+    const meta       = data.meta as Record<string, unknown> | null | undefined;
     const customerId = meta?.customer_id ? Number(meta.customer_id) : undefined;
-    // ✅ FIX: auth.otp.verification → meta.code contains OTP (not customer_id per docs)
+
+    // ✅ المسودة 1: auth.otp.verification → meta.code هو OTP (لا customer_id)
     const otpCode = meta?.code ? String(meta.code) : undefined;
 
-    this.logger.log(
-      `📡 Communication ${channelType}: type=${businessType}, recipients=${notifiable.length}`,
-      {
-        tenantId: context.tenantId || '❌ MISSING',
-        storeId: context.storeId || '❌ MISSING',
-        entityType: entity?.type,
-        entityId: entity?.id,
-        customerId,
-        hasContent: content.length > 0,
-        contentPreview: content.substring(0, 60),
-      },
-    );
+    // ─── FIX #4: التحقق من businessType بالـ Enum الرسمي ────────────────────
+    // المسودة 1 تحدد 17 نوع — أي نوع غير معروف يُسجَّل تحذير ونستمر
+    const validBusinessTypes = Object.values(CommunicationEventType) as string[];
+    const isKnownType  = validBusinessTypes.includes(rawType);
+    const businessType = rawType || 'unknown';
 
-    // ─── FIX #2: إذا غاب tenantId → throw لإعادة المحاولة من BullMQ ───
-    // (بدل الإرجاع الصامت الذي كان يخفي المشكلة ويضيّع الإشعار)
-    if (!context.tenantId) {
-      throw new Error(
-        `Communication ${channelType}: tenantId is missing for merchant — store not linked yet. ` +
-        `Check if merchant is properly registered and app.store.authorize was processed.`
+    if (!isKnownType && rawType) {
+      this.logger.warn(
+        `⚠️ Communication ${channelType}: unknown businessType "${rawType}" — not in spec. ` +
+        `Processing anyway. Check Salla docs for new event types.`,
       );
     }
 
-    // ─── التحقق من البيانات الأساسية ───
+    // ─── Diagnostic log شامل ─────────────────────────────────────────────────
+    this.logger.log(
+      `📡 Communication ${channelType}: type=${businessType}, recipients=${notifiable.length}`,
+      {
+        tenantId:       context.tenantId  || '❌ MISSING',
+        storeId:        context.storeId   || '❌ MISSING',
+        entityType:     entity?.type      || 'null',
+        entityId:       entity?.id        || 'null',
+        customerId:     customerId        ?? 'N/A',
+        isKnownType,
+        hasContent:     content.length > 0,
+        contentPreview: content.substring(0, 60),
+        isOtp:       businessType === CommunicationEventType.AUTH_OTP_VERIFICATION,
+        isCampaign:  businessType === CommunicationEventType.MARKETING_CAMPAIGN_BROADCAST,
+        isLoyalty:   businessType === CommunicationEventType.CUSTOMER_LOYALTY_EARNED,
+      },
+    );
+
+    // ─── إذا غاب tenantId → throw لإعادة المحاولة من BullMQ ────────────────
+    if (!context.tenantId) {
+      throw new Error(
+        `Communication ${channelType} [${businessType}]: tenantId is missing — ` +
+        `store not linked to tenant yet. Ensure app.store.authorize was processed.`,
+      );
+    }
+
+    // ─── التحقق من البيانات الأساسية ─────────────────────────────────────────
     if (!notifiable.length) {
-      this.logger.warn(`⚠️ Communication ${channelType}: no recipients in notifiable[]`);
+      this.logger.warn(
+        `⚠️ Communication ${channelType} [${businessType}]: no recipients in notifiable[] — skipping`,
+      );
       return { handled: false, reason: 'no_recipients', channelType, businessType };
     }
 
     if (!content) {
-      this.logger.warn(`⚠️ Communication ${channelType}: empty content`);
+      this.logger.warn(
+        `⚠️ Communication ${channelType} [${businessType}]: empty content — skipping`,
+      );
       return { handled: false, reason: 'empty_content', channelType, businessType };
     }
 
-    // ─── إطلاق الحدث لـ TemplateDispatcherService ليُرسل الرسالة ───
-    // نُطلق حدثاً داخلياً يُعيد استخدام البنية الحالية
-    const eventPayload = {
-      tenantId: context.tenantId,
-      storeId: context.storeId,
+    // ─── FIX #5: marketing.campaign.broadcast — حماية من الـ bulk الكبير ─────
+    // المسودة 1: marketing.campaign.broadcast → entity=null, meta={}
+    // الخطر: notifiable[] قد تحتوي مئات أرقام → يجمّد الـ worker
+    const BULK_THRESHOLD = 50;
+    if (
+      businessType === CommunicationEventType.MARKETING_CAMPAIGN_BROADCAST &&
+      notifiable.length > BULK_THRESHOLD
+    ) {
+      this.logger.warn(
+        `📢 Campaign broadcast: ${notifiable.length} recipients — splitting into batches of ${BULK_THRESHOLD}`,
+      );
+
+      const batches: string[][] = [];
+      for (let i = 0; i < notifiable.length; i += BULK_THRESHOLD) {
+        batches.push(notifiable.slice(i, i + BULK_THRESHOLD));
+      }
+
+      for (const [batchIndex, batch] of batches.entries()) {
+        this.eventEmitter.emit(`communication.relay.${channelType}`, {
+          tenantId:       context.tenantId,
+          storeId:        context.storeId,
+          webhookEventId: context.webhookEventId,
+          channelType,
+          notifiable:     batch,
+          content,
+          businessType,
+          entity:         null,
+          customerId:     undefined,
+          otpCode:        undefined,
+          isBatch:        true,
+          batchIndex,
+          totalBatches:   batches.length,
+          raw: data,
+        });
+      }
+
+      this.logger.log(
+        `✅ Campaign broadcast split into ${batches.length} batches`,
+        { totalRecipients: notifiable.length },
+      );
+
+      return {
+        handled:         true,
+        action:          `communication_${channelType}_campaign_batched`,
+        channelType,
+        businessType,
+        totalRecipients: notifiable.length,
+        batches:         batches.length,
+      };
+    }
+
+    // ─── إطلاق الحدث الداخلي للـ relay ───────────────────────────────────────
+    this.eventEmitter.emit(`communication.relay.${channelType}`, {
+      tenantId:       context.tenantId,
+      storeId:        context.storeId,
       webhookEventId: context.webhookEventId,
       channelType,
       notifiable,
       content,
       businessType,
-      entity: entity ?? null,
-      customerId,
-      // ✅ FIX: pass otpCode so relaySms can use it for auth.otp.verification
-      otpCode,
+      entity:    entity ?? null,
+      customerId,  // ✅ يُمرَّر لـ customer.loyalty.earned lookup
+      otpCode,     // ✅ يُمرَّر لـ auth.otp.verification
       raw: data,
-    };
-
-    // الحدث الداخلي → communication.relay.whatsapp / sms / email
-    this.eventEmitter.emit(`communication.relay.${channelType}`, eventPayload);
-
-    this.logger.log(`✅ Communication ${channelType} queued for relay: ${businessType}`, {
-      recipients: notifiable.length,
-      entityId: entity?.id,
     });
 
+    this.logger.log(
+      `✅ Communication ${channelType} relayed: [${businessType}] → ${notifiable.length} recipient(s)`,
+      { entityId: entity?.id ?? null, customerId: customerId ?? null },
+    );
+
     return {
-      handled: true,
-      action: `communication_${channelType}_relay`,
+      handled:     true,
+      action:      `communication_${channelType}_relay`,
       channelType,
       businessType,
-      recipients: notifiable.length,
-      entityType: entity?.type,
-      entityId: entity?.id,
-      customerId,
+      recipients:  notifiable.length,
+      entityType:  entity?.type  ?? null,
+      entityId:    entity?.id    ?? null,
+      customerId:  customerId    ?? null,
+      isKnownType,
     };
   }
 }
