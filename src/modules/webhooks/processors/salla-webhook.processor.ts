@@ -652,12 +652,13 @@ export class SallaWebhookProcessor extends WorkerHost {
       'restoring': 'order.status.restoring',
       'restored': 'order.status.restoring',
       'on_hold': 'order.status.on_hold',
-      // ✅ v21: shipped/delivered/cancelled/refunded مُحذوفة من هنا
-      // لها dedicated handlers تُصدر الـ event مباشرة → لا تعارض ولا DEDUP مطلوب
-      // order.shipped   → handleOrderShipped   (SallaEventType.ORDER_SHIPPED)
-      // order.delivered → handleOrderDelivered (SallaEventType.ORDER_DELIVERED)
-      // order.cancelled → handleOrderCancelled (SallaEventType.ORDER_CANCELLED)
-      // order.refunded  → handleOrderRefunded  (SallaEventType.ORDER_REFUNDED)
+      // ✅ v22: مُعادة — سلة قد ترسل order.status.updated فقط بدون webhook منفصل
+      // DEDUP (60s window) يمنع الإرسال المزدوج إذا وصل كلاهما
+      'shipped': 'order.shipped',
+      'delivered': 'order.delivered',
+      'cancelled': 'order.cancelled',
+      'canceled': 'order.cancelled',
+      'refunded': 'order.refunded',
     };
     if (slugMap[statusSlug]) return slugMap[statusSlug];
 
@@ -674,7 +675,7 @@ export class SallaWebhookProcessor extends WorkerHost {
       { test: t => t.includes('تم') && t.includes('تنفيذ'), event: 'order.status.completed', label: 'تم+تنفيذ→completed' },
       { test: t => t.includes('مكتمل'), event: 'order.status.completed', label: 'مكتمل→completed' },
       // ✅ "تم التوصيل" قبل "توصيل" العام
-      // ✅ v21: order.delivered له dedicated handler — لا تُصدر من هنا
+      { test: t => t.includes('تم') && t.includes('توصيل'), event: 'order.delivered', label: 'تم+توصيل→delivered' },
       // ✅ بانتظار الدفع — "دفع" بدون "مدفوع"
       { test: t => t.includes('دفع') && !t.includes('مدفوع'), event: 'order.status.pending_payment', label: 'دفع→pending_payment' },
       // ✅ بانتظار المراجعة — event مختلف عن DB status!
@@ -684,12 +685,12 @@ export class SallaWebhookProcessor extends WorkerHost {
       { test: t => t.includes('معالج'), event: 'order.status.processing', label: 'معالج→processing' },
       // ✅ الشحن والتوصيل
       { test: t => t.includes('جاهز') && t.includes('شحن'), event: 'order.status.ready_to_ship', label: 'جاهز+شحن→ready_to_ship' },
-      // ✅ v21: order.shipped له dedicated handler — لا تُصدر من هنا
+      { test: t => t.includes('تم') && t.includes('شحن'), event: 'order.shipped', label: 'تم+شحن→shipped' },
       { test: t => t.includes('جاري') && t.includes('توصيل'), event: 'order.status.in_transit', label: 'جاري+توصيل→in_transit' },
       { test: t => t.includes('قيد') && t.includes('توصيل'), event: 'order.status.in_transit', label: 'قيد+توصيل→in_transit' },
       // ✅ الإلغاء والاسترجاع
-      // ✅ v21: order.cancelled له dedicated handler — لا تُصدر من هنا
-      // ✅ v21: order.refunded له dedicated handler — لا تُصدر من هنا
+      { test: t => t.includes('ملغ'), event: 'order.cancelled', label: 'ملغ→cancelled' },
+      { test: t => t.includes('مسترجع'), event: 'order.refunded', label: 'مسترجع→refunded' },
       // ✅ v21: order.status.restoring له dedicated handler — لا تُصدر من هنا
       // ✅ v21: order.status.restoring له dedicated handler — لا تُصدر من هنا
       // ✅ حالات أخرى
@@ -719,16 +720,16 @@ export class SallaWebhookProcessor extends WorkerHost {
       [normalizeArabic('مكتمل')]: 'order.status.completed',
       [normalizeArabic('جاري التوصيل')]: 'order.status.in_transit',
       [normalizeArabic('قيد التوصيل')]: 'order.status.in_transit',
-      // ✅ v21: order.shipped له dedicated handler
+      [normalizeArabic('تم الشحن')]: 'order.shipped',
       [normalizeArabic('جاهز للشحن')]: 'order.status.ready_to_ship',
       [normalizeArabic('بانتظار الدفع')]: 'order.status.pending_payment',
       [normalizeArabic('بإنتظار الدفع')]: 'order.status.pending_payment',
       [normalizeArabic('مدفوع')]: 'order.status.paid',
-      // ✅ v21: order.delivered له dedicated handler
-      // ✅ v21: order.cancelled له dedicated handler
-      // ✅ v21: order.refunded له dedicated handler
-      // ✅ v21: order.status.restoring له dedicated handler
-      // ✅ v21: order.status.restoring له dedicated handler
+      [normalizeArabic('تم التوصيل')]: 'order.delivered',
+      [normalizeArabic('ملغي')]: 'order.cancelled',
+      [normalizeArabic('مسترجع')]: 'order.refunded',
+      [normalizeArabic('قيد الاسترجاع')]: 'order.status.restoring',
+      [normalizeArabic('قيد الاسترجاع')]: 'order.status.restoring',
       [normalizeArabic('معلق')]: 'order.status.on_hold',
     };
     if (arMap[normalizedSlug]) return arMap[normalizedSlug];
@@ -739,14 +740,14 @@ export class SallaWebhookProcessor extends WorkerHost {
     const dbMap: Record<string, string> = {
       [OrderStatus.CREATED]: 'order.created',
       [OrderStatus.PROCESSING]: 'order.status.processing',
-      // ✅ v21: order.shipped له dedicated handler
-      // ✅ v21: order.delivered له dedicated handler
+      [normalizeArabic('تم الشحن')]: 'order.shipped',
+      [normalizeArabic('تم التوصيل')]: 'order.delivered',
       [OrderStatus.COMPLETED]: 'order.status.completed',
       [OrderStatus.READY_TO_SHIP]: 'order.status.ready_to_ship',
       [OrderStatus.PENDING_PAYMENT]: 'order.status.pending_payment',
       [OrderStatus.PAID]: 'order.status.paid',
-      // ✅ v21: order.cancelled له dedicated handler
-      // ✅ v21: order.refunded له dedicated handler
+      [normalizeArabic('ملغي')]: 'order.cancelled',
+      [normalizeArabic('مسترجع')]: 'order.refunded',
       [OrderStatus.ON_HOLD]: 'order.status.on_hold',
     };
     return dbMap[dbStatus] || null;
