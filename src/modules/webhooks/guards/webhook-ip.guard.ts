@@ -2,15 +2,21 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║         RAFIQ PLATFORM — Webhook IP Allowlist Guard                            ║
  * ║                                                                                ║
- * ║  🔧 FIX H-06: Defense-in-depth — restrict webhook endpoints to known IPs      ║
+ * ║  ✅ v2: FIX CRITICAL BUG — explicit false now overrides production mode       ║
  * ║                                                                                ║
- * ║  🐛 FIX: كان يرفض كل webhooks لأن SALLA_KNOWN_IPS كان فارغ                   ║
- * ║     → أضفنا IPs سلة الحقيقية من لوقات الإنتاج                                 ║
- * ║     → WEBHOOK_ALLOWED_IPS في .env هو المصدر الرئيسي                           ║
+ * ║  🐛 البق السابق:                                                               ║
+ * ║     isEnabled = ('false' === 'true') || isProduction                          ║
+ * ║     = false || true = TRUE  ← يتجاهل الـ false تماماً في production!          ║
+ * ║                                                                                ║
+ * ║  ✅ الإصلاح:                                                                   ║
+ * ║     WEBHOOK_IP_ALLOWLIST_ENABLED=false → يُعطَّل دائماً بغض النظر عن البيئة  ║
+ * ║     WEBHOOK_IP_ALLOWLIST_ENABLED=true  → يُفعَّل دائماً                       ║
+ * ║     غير محدد + production              → يُفعَّل تلقائياً                     ║
+ * ║     غير محدد + development             → يُعطَّل                              ║
  * ║                                                                                ║
  * ║  📋 الإعداد في .env:                                                           ║
  * ║     WEBHOOK_ALLOWED_IPS=18.157.170.48,18.158.0.0/16,3.120.0.0/14             ║
- * ║     WEBHOOK_IP_ALLOWLIST_ENABLED=true (أو production تلقائياً)                 ║
+ * ║     WEBHOOK_IP_ALLOWLIST_ENABLED=false  ← يُعطِّل حتى في production           ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -28,7 +34,6 @@ import * as net from 'net';
 /**
  * Salla's known webhook source IPs
  * مأخوذة من لوقات الإنتاج + AWS eu-central-1 (Frankfurt)
- * ✅ يُحدّث من WEBHOOK_ALLOWED_IPS في .env
  */
 const SALLA_KNOWN_IPS: string[] = [
   // ✅ Confirmed from production logs (Feb 2026)
@@ -36,20 +41,14 @@ const SALLA_KNOWN_IPS: string[] = [
   '18.157.156.218',
 
   // Salla uses AWS eu-central-1 (Frankfurt)
-  // هذه IPs إضافية شائعة — المصدر الرئيسي هو WEBHOOK_ALLOWED_IPS
-  '18.156.0.0/14',    // AWS eu-central-1 range
-  '3.120.0.0/14',     // AWS eu-central-1 range
-  '35.156.0.0/14',    // AWS eu-central-1 range
-  '52.57.0.0/16',     // AWS eu-central-1 range
+  '18.156.0.0/14',
+  '3.120.0.0/14',
+  '35.156.0.0/14',
+  '52.57.0.0/16',
 ];
 
 const ZID_KNOWN_IPS: string[] = [
-  // ✅ Confirmed from production logs (Feb 2026)
   '108.128.244.94',
-
-  // TODO: Contact Zid support for official IP ranges
-  // Update this list as more Zid server IPs are identified
-  // المصدر الرئيسي: WEBHOOK_ALLOWED_IPS في .env
 ];
 
 @Injectable()
@@ -75,9 +74,28 @@ export class WebhookIpGuard implements CanActivate {
     this.allowedCidrs = allIps.filter((ip) => ip.includes('/'));
     this.allowedIps = new Set(allIps.filter((ip) => !ip.includes('/')));
 
-    // Enable in production, configurable via env
-    this.isEnabled =
-      configService.get<string>('WEBHOOK_IP_ALLOWLIST_ENABLED') === 'true' || isProduction;
+    // ✅ FIX CRITICAL: explicit false MUST override production mode
+    //
+    // Bug السابق:
+    //   isEnabled = (envValue === 'true') || isProduction
+    //   إذا envValue='false' و isProduction=true:
+    //   = false || true = TRUE ← يتجاهل الـ false!
+    //
+    // الإصلاح: نفحص explicit false أولاً قبل أي شيء
+    const envValue = configService.get<string>('WEBHOOK_IP_ALLOWLIST_ENABLED');
+    const explicitlyDisabled = envValue === 'false';
+    const explicitlyEnabled  = envValue === 'true';
+
+    if (explicitlyDisabled) {
+      // false صريح → معطَّل حتى في production
+      this.isEnabled = false;
+    } else if (explicitlyEnabled) {
+      // true صريح → مفعَّل دائماً
+      this.isEnabled = true;
+    } else {
+      // غير محدد → يعتمد على البيئة (production=true, dev=false)
+      this.isEnabled = isProduction;
+    }
 
     if (this.isEnabled && allIps.length === 0) {
       this.logger.warn(
@@ -90,7 +108,10 @@ export class WebhookIpGuard implements CanActivate {
         `✅ WebhookIpGuard active: ${this.allowedIps.size} IPs + ${this.allowedCidrs.length} CIDRs`,
       );
     } else {
-      this.logger.warn('⚠️ WebhookIpGuard is DISABLED (development mode)');
+      this.logger.warn(
+        `⚠️ WebhookIpGuard is DISABLED (WEBHOOK_IP_ALLOWLIST_ENABLED=false) — ` +
+        `all IPs allowed. Set to 'true' or remove to re-enable in production.`,
+      );
     }
   }
 
