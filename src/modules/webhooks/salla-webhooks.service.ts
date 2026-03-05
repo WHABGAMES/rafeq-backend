@@ -80,7 +80,7 @@ export class SallaWebhooksService {
         status: WebhookStatus.PENDING,
         ipAddress: payload.ipAddress,
         signature: payload.signature,
-        signatureVerified: true,
+        signatureVerified: payload.signatureVerified ?? false, // ✅ FIX #2: قيمة حقيقية من Controller
         relatedEntityId: this.extractEntityId(payload.data),
         relatedEntityType: this.extractEntityType(payload.eventType),
       });
