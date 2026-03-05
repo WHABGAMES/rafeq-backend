@@ -380,7 +380,11 @@ export class TemplateDispatcherService {
     const notifiable    = (payload.notifiable as string[]) || [];
     const sallaContent  = (payload.content   as string)   || '';   // محتوى سلة الخام
     const businessType  = (payload.businessType as string) || 'unknown';
-    const entity        = payload.entity as { id: number | string; type: string } | null;
+    const entityRaw     = payload.entity as { id: number | string; type: string } | null;
+    // ✅ نوحّد نوع id إلى number من المصدر مباشرة — يحل كل أخطاء TypeScript
+    const entity: { id: number; type: string } | null = entityRaw
+      ? { id: Number(entityRaw.id), type: entityRaw.type }
+      : null;
     const customerId    = payload.customerId as number | undefined;
     const otpCode       = payload.otpCode as string | undefined;
 
@@ -452,7 +456,7 @@ export class TemplateDispatcherService {
     tenantId: string | undefined,
     storeId: string | undefined,
     businessType: string,
-    entity: { id: number | string; type: string } | null,
+    entity: { id: number; type: string } | null,
     sallaContent: string,
   ): Promise<string> {
     if (!tenantId) return sallaContent;
@@ -519,7 +523,7 @@ export class TemplateDispatcherService {
    */
   private async resolveTriggerEvents(
     businessType: string,
-    entity: { id: number | string; type: string } | null,
+    entity: { id: number; type: string } | null,
     storeId: string | undefined,
   ): Promise<string[]> {
 
@@ -604,7 +608,7 @@ export class TemplateDispatcherService {
    * 📊 جلب بيانات الطلب الكاملة لاستبدال متغيرات القالب
    */
   private async fetchOrderDataForTemplate(
-    entity: { id: number | string; type: string } | null,
+    entity: { id: number; type: string } | null,
     storeId: string | undefined,
   ): Promise<Record<string, unknown>> {
     if (!entity?.id || !storeId) return {};
@@ -622,7 +626,7 @@ export class TemplateDispatcherService {
         id:           order.sallaOrderId || order.id,
         reference_id: order.referenceId  || order.sallaOrderId,
         status:       order.status,
-        total:        order.total,
+        total:        order.totalAmount,
         customer: {
           first_name: order.customer?.firstName || order.customer?.fullName || 'عميلنا الكريم',
           name:       order.customer?.fullName  || order.customer?.firstName,
