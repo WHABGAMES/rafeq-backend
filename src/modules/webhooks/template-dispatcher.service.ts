@@ -499,7 +499,8 @@ export class TemplateDispatcherService {
       );
 
       // ─── جلب بيانات الطلب لاستبدال المتغيرات ────────────────────────────
-      const orderData = await this.fetchOrderDataForTemplate(entity, storeId);
+      // ✅ نُمرر sallaContent كمصدر احتياطي لرقم الطلب عند عدم وجوده في DB
+      const orderData = await this.fetchOrderDataForTemplate(entity, storeId, sallaContent);
 
       // ─── استبدال المتغيرات في القالب ─────────────────────────────────────
       const rendered = this.replaceVariables(template.body, orderData);
@@ -575,12 +576,13 @@ export class TemplateDispatcherService {
     }
 
     // ─── خريطة OrderStatus → triggerEvent ───────────────────────────────────
+    // ⚠️ كل حالة لها trigger مستقل — لا تداخل بين in_transit و shipped
     const STATUS_TRIGGER_MAP: Record<string, string[]> = {
       'processing':      ['order.status.processing'],
-      'completed':       ['order.status.completed', 'order.delivered'],
-      'in_transit':      ['order.status.in_transit', 'order.shipped'],
-      'shipped':         ['order.shipped', 'order.status.shipped'],
-      'delivered':       ['order.delivered', 'order.status.completed'],
+      'completed':       ['order.status.completed'],
+      'in_transit':      ['order.status.in_transit'],   // جاري التوصيل فقط
+      'shipped':         ['order.shipped'],              // تم الشحن فقط
+      'delivered':       ['order.delivered'],
       'under_review':    ['order.status.under_review'],
       'ready_to_ship':   ['order.status.ready_to_ship'],
       'pending_payment': ['order.status.pending_payment'],
@@ -665,97 +667,119 @@ export class TemplateDispatcherService {
    * "تم تغيير حالة طلبك رقم 245225985 إلى تم الشحن"
    */
   private extractTriggersFromSallaText(text: string): string[] {
-    // خريطة النصوص العربية من سلة → triggerEvent
-    const TEXT_STATUS_MAP: Array<{ patterns: string[]; triggers: string[] }> = [
-      {
-        patterns: ['جاري التوصيل', 'في الطريق', 'قيد التوصيل'],
-        triggers: ['order.status.in_transit', 'order.shipped'],
-      },
-      {
-        patterns: ['تم التوصيل', 'وصل الطلب', 'تم الاستلام'],
-        triggers: ['order.delivered', 'order.status.completed'],
-      },
-      {
-        patterns: ['تم الشحن', 'تم إرسال', 'شُحن الطلب'],
-        triggers: ['order.shipped', 'order.status.in_transit'],
-      },
-      {
-        patterns: ['قيد التنفيذ', 'جاري المعالجة', 'قيد المعالجة'],
-        triggers: ['order.status.processing'],
-      },
-      {
-        patterns: ['بانتظار المراجعة', 'قيد المراجعة', 'تحت المراجعة'],
-        triggers: ['order.status.under_review'],
-      },
-      {
-        patterns: ['تم الإلغاء', 'ملغي', 'تم إلغاء'],
-        triggers: ['order.cancelled'],
-      },
-      {
-        patterns: ['تم الاسترداد', 'تم الإرجاع', 'مُسترد'],
-        triggers: ['order.refunded'],
-      },
-      {
-        patterns: ['في انتظار الدفع', 'بانتظار الدفع', 'معلق الدفع'],
-        triggers: ['order.status.pending_payment'],
-      },
-      {
-        patterns: ['جاهز للشحن', 'جاهز للإرسال', 'استعداد للشحن'],
-        triggers: ['order.status.ready_to_ship'],
-      },
-      {
-        patterns: ['طلب جديد', 'تم إنشاء طلب', 'تأكيد الطلب'],
-        triggers: ['order.created'],
-      },
+    // ⚠️ كل حالة لها trigger واحد فقط — لا تداخل
+    // الترتيب مهم: الأطول أولاً لتجنب false matches
+    const TEXT_STATUS_MAP: Array<{ patterns: string[]; trigger: string }> = [
+      { patterns: ['جاري التوصيل', 'في الطريق إليك', 'قيد التوصيل'],  trigger: 'order.status.in_transit' },
+      { patterns: ['تم التوصيل', 'وصل الطلب', 'تم الاستلام'],          trigger: 'order.delivered'          },
+      { patterns: ['تم الشحن', 'تم إرسال', 'شُحن الطلب'],              trigger: 'order.shipped'            },
+      { patterns: ['قيد التنفيذ', 'جاري المعالجة', 'قيد المعالجة'],    trigger: 'order.status.processing'  },
+      { patterns: ['بانتظار المراجعة', 'قيد المراجعة', 'تحت المراجعة'], trigger: 'order.status.under_review' },
+      { patterns: ['تم الإلغاء', 'تم إلغاء', 'ملغي'],                  trigger: 'order.cancelled'          },
+      { patterns: ['تم الاسترداد', 'تم الإرجاع', 'مُسترد'],            trigger: 'order.refunded'           },
+      { patterns: ['في انتظار الدفع', 'بانتظار الدفع', 'معلق الدفع'],  trigger: 'order.status.pending_payment' },
+      { patterns: ['جاهز للشحن', 'جاهز للإرسال', 'استعداد للشحن'],    trigger: 'order.status.ready_to_ship'  },
+      { patterns: ['طلب جديد', 'تم إنشاء طلب', 'تأكيد الطلب'],        trigger: 'order.created'            },
     ];
 
     const lowerText = text.toLowerCase();
 
-    for (const { patterns, triggers } of TEXT_STATUS_MAP) {
+    for (const { patterns, trigger } of TEXT_STATUS_MAP) {
       if (patterns.some(p => lowerText.includes(p.toLowerCase()))) {
-        this.logger.debug(`📝 extractTriggersFromSallaText: matched "${patterns[0]}" → [${triggers.join(', ')}]`);
-        return triggers;
+        this.logger.log(`📝 Salla text matched: "${patterns[0]}" → trigger: ${trigger}`);
+        return [trigger];
       }
     }
 
+    this.logger.warn(`⚠️ extractTriggersFromSallaText: no match found for text: "${text.substring(0, 80)}"`);
     return ['order.status.updated'];
   }
 
   /**
    * 📊 جلب بيانات الطلب الكاملة لاستبدال متغيرات القالب
+   *
+   * ✅ يبحث بـ sallaOrderId ثم referenceId
+   * ✅ يستخدم sallaContent كمصدر احتياطي للمتغيرات عند عدم وجود الطلب في DB
    */
   private async fetchOrderDataForTemplate(
     entity: { id: number; type: string } | null,
     storeId: string | undefined,
+    sallaContent?: string,  // نص سلة كمصدر احتياطي
   ): Promise<Record<string, unknown>> {
-    if (!entity?.id || !storeId) return {};
+    if (!entity?.id || !storeId) {
+      return this.extractVariablesFromSallaContent(sallaContent);
+    }
 
     try {
-      const order = await this.orderRepository.findOne({
-        where: { storeId, sallaOrderId: String(entity.id) },
+      const idStr = String(entity.id);
+
+      // المستوى 1: البحث بـ sallaOrderId
+      let order = await this.orderRepository.findOne({
+        where: { storeId, sallaOrderId: idStr },
         relations: ['customer'],
       });
 
-      if (!order) return {};
+      // المستوى 2: البحث بـ referenceId
+      if (!order) {
+        order = await this.orderRepository.findOne({
+          where: { storeId, referenceId: idStr },
+          relations: ['customer'],
+        });
+      }
 
-      // بناء data object يتوافق مع replaceVariables
+      if (!order) {
+        this.logger.warn(
+          `⚠️ fetchOrderDataForTemplate: order not found (id=${idStr}) — using Salla content as variable source`,
+          { storeId },
+        );
+        return this.extractVariablesFromSallaContent(sallaContent);
+      }
+
+      // ✅ بيانات كاملة من DB
       return {
-        id:           order.sallaOrderId || order.id,
-        reference_id: order.referenceId  || order.sallaOrderId,
-        status:       order.status,
-        total:        order.totalAmount,
+        id:               order.sallaOrderId || order.id,
+        reference_id:     order.referenceId  || order.sallaOrderId,
+        order_number:     order.referenceId  || order.sallaOrderId,
+        status:           order.status,
+        total:            order.totalAmount,
         customer: {
           first_name: order.customer?.firstName || order.customer?.fullName || 'عميلنا الكريم',
           name:       order.customer?.fullName  || order.customer?.firstName,
           mobile:     order.customer?.phone,
           email:      order.customer?.email,
         },
-        tracking_number:  (order.metadata as any)?.trackingNumber,
-        shipping_company: (order.metadata as any)?.shippingCompany,
+        tracking_number:  (order.metadata as any)?.trackingNumber  || (order.metadata as any)?.tracking_number,
+        shipping_company: (order.metadata as any)?.shippingCompany || (order.metadata as any)?.shipping_company,
+        tracking_url:     (order.metadata as any)?.trackingUrl     || (order.metadata as any)?.tracking_url,
       };
-    } catch {
-      return {};
+    } catch (error) {
+      this.logger.error(
+        `❌ fetchOrderDataForTemplate error: ${error instanceof Error ? error.message : 'Unknown'}`,
+      );
+      return this.extractVariablesFromSallaContent(sallaContent);
     }
+  }
+
+  /**
+   * 📝 استخراج متغيرات القالب من نص سلة العربي كمصدر احتياطي
+   *
+   * مثال: "تم تغيير حالة طلبك رقم 245225985 إلى جاري التوصيل"
+   * → { reference_id: '245225985', order_number: '245225985' }
+   */
+  private extractVariablesFromSallaContent(content?: string): Record<string, unknown> {
+    if (!content) return {};
+
+    const result: Record<string, unknown> = {};
+
+    // استخراج رقم الطلب من النص: "رقم 245225985" أو "رقم #245225985"
+    const orderNumMatch = content.match(/رقم\s*#?\s*(\d{6,12})/);
+    if (orderNumMatch) {
+      result.reference_id = orderNumMatch[1];
+      result.order_number  = orderNumMatch[1];
+      result.id            = orderNumMatch[1];
+    }
+
+    return result;
   }
 
   // ─── WhatsApp Relay ─────────────────────────────────────────────────────────
