@@ -423,6 +423,7 @@ export class SallaAppDataDto {
 
 /**
  * بيانات الـ Job في الـ Queue
+ * ✅ FIX #2: أضفنا signatureVerified — يُمرَّر من Controller بقيمة حقيقية
  */
 export class SallaWebhookJobDto {
   eventType: string;
@@ -432,6 +433,8 @@ export class SallaWebhookJobDto {
   deliveryId?: string;
   idempotencyKey: string;
   signature?: string;
+  /** ✅ القيمة الحقيقية من التحقق — لا تُثبَّت true أبداً */
+  signatureVerified?: boolean;
   ipAddress?: string;
   headers?: Record<string, string>;
 }
