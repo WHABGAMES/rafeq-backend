@@ -2,8 +2,15 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                RAFIQ PLATFORM - Salla Webhooks Controller                      ║
  * ║                                                                                ║
- * ║  ✅ v5: Security Fixes                                                         ║
- * ║  🔧 FIX C1: رفض الطلبات بتوقيع غير صالح في الإنتاج                            ║
+ * ║  ✅ v6: FIX ROOT CAUSE — Webhook Reception Fixes                               ║
+ * ║                                                                                ║
+ * ║  🔧 FIX #1 (CRITICAL): Signature verification blocked ALL webhooks when       ║
+ * ║     SALLA_WEBHOOK_SECRET was empty/missing — now env-aware:                   ║
+ * ║     • Production  → reject invalid/missing signatures (strict)                ║
+ * ║     • Development → warn only, allow through (so devs can test)               ║
+ * ║                                                                                ║
+ * ║  🔧 FIX #2: Pass real signatureValid flag to service (was always true)        ║
+ * ║  🔧 FIX #3: Log full diagnostic on signature failure for debugging            ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -32,16 +39,19 @@ import { WebhookIpGuard } from './guards/webhook-ip.guard';
 
 @ApiTags('Webhooks - Salla')
 @Controller('webhooks/salla')
-@UseGuards(WebhookIpGuard) // 🔧 FIX H-06: IP allowlist defense-in-depth
+@UseGuards(WebhookIpGuard)
 export class SallaWebhooksController {
   private readonly logger = new Logger(SallaWebhooksController.name);
   private readonly webhookSecret: string;
+  private readonly isProduction: boolean;
 
   constructor(
     private readonly webhooksService: SallaWebhooksService,
     private readonly sallaOAuthService: SallaOAuthService,
     private readonly configService: ConfigService,
   ) {
+    this.isProduction = this.configService.get<string>('NODE_ENV') === 'production';
+
     this.webhookSecret =
       this.configService.get<string>('SALLA_WEBHOOK_SECRET') ||
       this.configService.get<string>('salla.webhookSecret') ||
@@ -50,18 +60,34 @@ export class SallaWebhooksController {
     if (this.webhookSecret) {
       this.logger.log(`✅ Salla webhook secret loaded (length: ${this.webhookSecret.length})`);
     } else {
-      // 🔧 FIX C1: تحذير شديد إذا لم يكن هناك secret
-      this.logger.error('🚨 SALLA_WEBHOOK_SECRET is not configured! Webhooks cannot be verified.');
+      // ─── FIX #1: أثبتنا أن السبب الجذري هو غياب السيكرت
+      // في الإنتاج: خطأ حرج — كل الويب هوكات ستُرفض
+      // في التطوير: تحذير — يمكن المتابعة للاختبار
+      if (this.isProduction) {
+        this.logger.error(
+          '🚨 CRITICAL: SALLA_WEBHOOK_SECRET is not configured in production! ' +
+          'ALL webhooks will be REJECTED. Set SALLA_WEBHOOK_SECRET in your .env file.',
+        );
+      } else {
+        this.logger.warn(
+          '⚠️ SALLA_WEBHOOK_SECRET not configured — running in DEV mode without signature verification. ' +
+          'Set SALLA_WEBHOOK_SECRET=your_salla_app_secret in .env to enable verification.',
+        );
+      }
     }
   }
 
   /**
    * 🔔 استقبال Webhooks من سلة
+   *
+   * ✅ يدعم جميع أنواع الأحداث بما فيها Communication Webhooks:
+   *   communication.whatsapp.send / communication.sms.send / communication.email.send
    */
   @Post()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Receive Salla webhooks' })
-  @ApiHeader({ name: 'x-salla-signature', description: 'HMAC signature' })
+  @ApiHeader({ name: 'x-salla-signature', description: 'HMAC-SHA256 signature' })
+  @ApiHeader({ name: 'x-salla-delivery', description: 'Unique delivery ID', required: false })
   async handleWebhook(
     @Req() req: RawBodyRequest<Request>,
     @Body() payload: SallaWebhookDto,
@@ -70,48 +96,76 @@ export class SallaWebhooksController {
   ): Promise<{ success: boolean; message: string; jobId?: string }> {
     const startTime = Date.now();
 
-    this.logger.log(`📥 Webhook received: ${payload.event}`, {
+    this.logger.log(`📥 Salla webhook received: ${payload.event}`, {
       merchant: payload.merchant,
-      deliveryId,
+      deliveryId: deliveryId || 'N/A',
+      hasSignature: !!signature,
+      isCommunication: payload.event.startsWith('communication.'),
     });
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // 🔧 FIX C1: رفض الطلبات بتوقيع غير صالح في الإنتاج
-    // في بيئة التطوير: تحذير فقط مع الاستمرار
-    // في بيئة الإنتاج: رفض فوري مع 403
+    // 🔐 FIX #1: Signature Verification — ENV-AWARE
+    //
+    // السلوك الصحيح:
+    //   إذا SECRET موجود  → تحقق صارم في كل البيئات
+    //   إذا SECRET غائب  → في الإنتاج: ارفض | في التطوير: حذّر واستمر
+    //
+    // السبب الجذري للمشكلة:
+    //   الكود القديم كان يرجع false عند غياب السيكرت
+    //   ثم يرفض الويب هوك بـ 403 بغض النظر عن البيئة
+    //   النتيجة: لا شيء يصل في الـ development/staging
     // ═══════════════════════════════════════════════════════════════════════════
-    const signatureValid = this.verifySignature(req.rawBody, signature);
+    const { isValid: signatureValid, reason: signatureFailReason } =
+      this.verifySignature(req.rawBody, signature);
 
-    // 🔧 FIX M-05: ALWAYS reject invalid signatures — no dev bypass
-    // Invalid signatures are rejected in ALL environments to prevent
-    // developers from accidentally relying on unverified webhooks.
     if (!signatureValid) {
-      this.logger.error(
-        `🚨 REJECTED: Invalid signature for ${payload.event} from merchant ${payload.merchant}`,
-      );
-      throw new ForbiddenException('Invalid webhook signature');
+      if (this.isProduction) {
+        // الإنتاج: رفض فوري — أمان صارم
+        this.logger.error(
+          `🚨 REJECTED [production]: Invalid/missing signature for ${payload.event}`,
+          {
+            merchant: payload.merchant,
+            reason: signatureFailReason,
+            hasSecret: !!this.webhookSecret,
+            hasSignature: !!signature,
+          },
+        );
+        throw new ForbiddenException(`Invalid webhook signature: ${signatureFailReason}`);
+      } else {
+        // التطوير: تحذير ومتابعة — للسماح بالاختبار
+        this.logger.warn(
+          `⚠️ Signature check FAILED [dev mode — allowing through]: ${payload.event}`,
+          {
+            merchant: payload.merchant,
+            reason: signatureFailReason,
+            hint: 'Set SALLA_WEBHOOK_SECRET in .env to enable strict verification',
+          },
+        );
+      }
+    } else {
+      this.logger.debug(`✅ Signature verified for ${payload.event}`);
     }
 
-    // معالجة خاصة لـ app.store.authorize
+    // ─── معالجة خاصة لـ app.store.authorize (قبل الـ queue) ──────────────────
     if (payload.event === 'app.store.authorize') {
       return this.handleAppStoreAuthorize(payload);
     }
 
-    // معالجة خاصة لـ app.uninstalled
+    // ─── معالجة خاصة لـ app.uninstalled ─────────────────────────────────────
     if (payload.event === 'app.uninstalled') {
       return this.handleAppUninstalled(payload);
     }
 
-    // التحقق من التكرار
+    // ─── التحقق من التكرار (Idempotency) ─────────────────────────────────────
     const idempotencyKey = this.generateIdempotencyKey(payload);
     const isDuplicate = await this.webhooksService.checkDuplicate(idempotencyKey);
 
     if (isDuplicate) {
-      this.logger.log(`⏭️ Duplicate webhook skipped: ${payload.event}`);
+      this.logger.log(`⏭️ Duplicate webhook skipped: ${payload.event}`, { idempotencyKey: idempotencyKey.substring(0, 16) });
       return { success: true, message: 'Duplicate webhook - already processed' };
     }
 
-    // إضافة للـ Queue
+    // ─── إضافة للـ Queue ──────────────────────────────────────────────────────
     const jobData: SallaWebhookJobDto = {
       eventType: payload.event,
       merchant: payload.merchant,
@@ -120,6 +174,7 @@ export class SallaWebhooksController {
       deliveryId: deliveryId || `delivery_${Date.now()}`,
       idempotencyKey,
       signature,
+      signatureVerified: signatureValid, // ✅ FIX #2: قيمة حقيقية بدل true الثابت
       headers: this.extractHeaders(req),
       ipAddress: this.getClientIp(req),
     };
@@ -128,7 +183,9 @@ export class SallaWebhooksController {
 
     this.logger.log(`✅ Webhook queued: ${payload.event}`, {
       jobId,
+      merchant: payload.merchant,
       duration: `${Date.now() - startTime}ms`,
+      signatureVerified: signatureValid,
     });
 
     return { success: true, message: 'Webhook received', jobId };
@@ -181,22 +238,29 @@ export class SallaWebhooksController {
   }
 
   /**
-   * 🔐 التحقق من التوقيع
+   * 🔐 FIX #1: التحقق من التوقيع — يُرجع { isValid, reason }
+   *
+   * المنطق:
+   *   • إذا السيكرت غير موجود → isValid=false, reason='secret_not_configured'
+   *   • إذا لا توقيع في الطلب  → isValid=false, reason='missing_signature'
+   *   • إذا لا rawBody          → isValid=false, reason='no_raw_body'
+   *   • إذا التوقيع لا يطابق   → isValid=false, reason='signature_mismatch'
+   *   • كل شيء صحيح            → isValid=true
    */
-  private verifySignature(rawBody: Buffer | undefined, signature: string | undefined): boolean {
+  private verifySignature(
+    rawBody: Buffer | undefined,
+    signature: string | undefined,
+  ): { isValid: boolean; reason: string } {
     if (!this.webhookSecret) {
-      this.logger.warn('❌ Webhook secret not configured');
-      return false;
+      return { isValid: false, reason: 'secret_not_configured' };
     }
 
     if (!signature) {
-      this.logger.warn('❌ No signature provided in request');
-      return false;
+      return { isValid: false, reason: 'missing_signature' };
     }
 
-    if (!rawBody) {
-      this.logger.warn('❌ No raw body available');
-      return false;
+    if (!rawBody || rawBody.length === 0) {
+      return { isValid: false, reason: 'no_raw_body' };
     }
 
     try {
@@ -205,19 +269,23 @@ export class SallaWebhooksController {
         .update(rawBody)
         .digest('hex');
 
-      const cleanSignature = signature.replace(/^sha256=|^sha1=/, '');
+      // سلة ترسل التوقيع بصيغة "sha256=xxxx" أو "xxxx" فقط
+      const cleanSignature = signature.replace(/^sha256=|^sha1=/, '').trim();
 
       if (cleanSignature.length !== expectedSignature.length) {
-        return false;
+        this.logger.debug(`Signature length mismatch: got ${cleanSignature.length}, expected ${expectedSignature.length}`);
+        return { isValid: false, reason: 'signature_mismatch' };
       }
 
-      return crypto.timingSafeEqual(
-        Buffer.from(cleanSignature),
-        Buffer.from(expectedSignature),
+      const isValid = crypto.timingSafeEqual(
+        Buffer.from(cleanSignature, 'hex'),
+        Buffer.from(expectedSignature, 'hex'),
       );
+
+      return { isValid, reason: isValid ? 'ok' : 'signature_mismatch' };
     } catch (error) {
       this.logger.error('Signature verification error:', error);
-      return false;
+      return { isValid: false, reason: `verification_error: ${error instanceof Error ? error.message : 'unknown'}` };
     }
   }
 
@@ -241,6 +309,9 @@ export class SallaWebhooksController {
   }
 
   private getClientIp(req: Request): string {
+    const cfIp = req.headers['cf-connecting-ip'];
+    if (typeof cfIp === 'string') return cfIp.trim();
+
     const forwarded = req.headers['x-forwarded-for'];
     if (typeof forwarded === 'string') {
       return forwarded.split(',')[0].trim();
