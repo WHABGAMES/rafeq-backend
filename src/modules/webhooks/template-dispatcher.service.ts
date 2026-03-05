@@ -1151,7 +1151,7 @@ export class TemplateDispatcherService {
       this.logger.log(`📋 Templates found: ${templates.length} for trigger: ${triggerEvent}`, {
         tenantId,
         triggerEvent,
-        templateNames: templates.map(t => t.name),
+        templateNames: templates.map((t: MessageTemplate) => t.name),
       });
 
       if (templates.length === 0) {
@@ -1163,11 +1163,11 @@ export class TemplateDispatcherService {
       // كل trigger_event فريد من المصدر (Processor) → لا تعارض ممكن
       if (templates.length > 1) {
         this.logger.warn(`⚠️ ISOLATION: ${templates.length} templates share trigger "${triggerEvent}" — sending most recent only`, {
-          templateNames: templates.map(t => t.name),
+          templateNames: templates.map((t: MessageTemplate) => t.name),
         });
       }
       const activeTemplate = templates.sort(
-        (a, b) => (b.updatedAt?.getTime() || 0) - (a.updatedAt?.getTime() || 0),
+        (a: MessageTemplate, b: MessageTemplate) => (b.updatedAt?.getTime() || 0) - (a.updatedAt?.getTime() || 0),
       )[0];
 
       // 2️⃣ قناة واتساب
