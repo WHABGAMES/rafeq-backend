@@ -2,10 +2,10 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║              RAFIQ PLATFORM - Template Dispatcher Service                      ║
  * ║                                                                                ║
- * ║  📌 يستمع لأحداث الـ webhooks ويرسل رسائل واتساب تلقائية                      ║
- * ║                                                                                ║
- * ║  ✅ v5: يقرأ data.customer + data.order.customer + lookup من DB              ║
- * ║  ✅ v18: FIX — إزالة المستمعين المكررين + dedup بالهاتف + إصلاح [object Object] ║
+ * ║  ✅ v19: وفق المسودة 1 — Communication Webhooks fixes                         ║
+ * ║     • FIX #6: customer.loyalty.earned → lookup بـ sallaCustomerId             ║
+ * ║     • FIX #4: استخدام CommunicationEventType enum بدل magic strings           ║
+ * ║     • FIX #5: campaign.broadcast → batch protection في Processor              ║
  * ║                                                                                ║
  * ║  المسار:                                                                       ║
  * ║  Webhook → Processor → EventEmitter → هذا الـ Service                          ║
@@ -25,6 +25,7 @@ import { ChannelsService } from '../channels/channels.service';
 import { TemplateSchedulerService } from './template-scheduler.service';
 import { SmsService } from '../channels/sms/sms.service';
 import { MailService } from '../mail/mail.service';
+import { CommunicationEventType } from './dto/salla-webhook.dto';
 
 @Injectable()
 export class TemplateDispatcherService {
@@ -481,8 +482,8 @@ export class TemplateDispatcherService {
       if (!recipient) continue;
 
       try {
-        if (businessType === 'auth.otp.verification' && otpCode) {
-          // OTP: نستخدم otpCode من سلة مباشرة — لا نولّد رمزاً جديداً
+        if (businessType === CommunicationEventType.AUTH_OTP_VERIFICATION && otpCode) {
+          // ✅ المسودة 1: auth.otp.verification → meta.code هو OTP من سلة — لا نولّد رمزاً جديداً
           await this.smsService.sendOtp(tenantId, { to: recipient, code: otpCode }, storeId);
           this.logger.log(`✅ SMS OTP relay sent → ${recipient} (code from Salla)`, { tenantId });
         } else {
@@ -733,10 +734,12 @@ export class TemplateDispatcherService {
       // 3️⃣ استخراج رقم هاتف العميل
       let customerPhone = this.extractCustomerPhone(raw);
 
-      // ✅ v3: إذا ما لقينا الرقم من بيانات الـ webhook → نبحث في قاعدة البيانات
+      // إذا ما لقينا الرقم من بيانات الـ webhook → نبحث في قاعدة البيانات
       if (!customerPhone) {
         this.logger.log(`🔍 Phone not in webhook data, looking up from database...`);
-        customerPhone = await this.lookupCustomerPhone(raw, storeId);
+        // ✅ FIX #6: نمرر customerId من raw لدعم customer.loyalty.earned وأحداث بدون entity
+        const directCustomerId = (raw.customerId || raw.customer_id) as number | undefined;
+        customerPhone = await this.lookupCustomerPhone(raw, storeId, directCustomerId);
       }
 
       if (!customerPhone) {
@@ -953,18 +956,49 @@ export class TemplateDispatcherService {
    * ✅ v3: جلب رقم العميل من قاعدة البيانات
    * يبحث عن الطلب بـ sallaOrderId ثم يجلب رقم العميل من جدول customers
    */
+  /**
+   * جلب رقم العميل من قاعدة البيانات
+   *
+   * ✅ المسودة 1: أنواع الـ entity المختلفة تحتاج استراتيجيات مختلفة:
+   *
+   *   order / cart / shipment / product → يبحث عبر sallaOrderId
+   *   feedback                          → يبحث عبر sallaCustomerId مباشرة
+   *   null (customer.loyalty.earned,    → يبحث عبر sallaCustomerId مباشرة
+   *          auth.otp.verification,       (customerId في meta)
+   *          system.*, marketing.*)
+   */
   private async lookupCustomerPhone(
     data: Record<string, unknown>,
     storeId?: string,
+    directCustomerId?: number,  // ✅ FIX #6: للأحداث التي لا تحتوي entity
   ): Promise<string | null> {
     if (!storeId) return null;
 
     try {
-      // ✅ v4: البحث في data.id أو داخل data.order.id (سلة ترسل بيانات مختلفة حسب الحدث)
+      // ─── FIX #6: customer.loyalty.earned + أحداث بدون entity ─────────────
+      // المسودة 1: هذه الأحداث لها customer_id في meta لكن لا entity
+      // نبحث مباشرة بـ sallaCustomerId في جدول customers
+      if (directCustomerId) {
+        this.logger.log(`🔍 Looking up customer by sallaCustomerId: ${directCustomerId}, storeId: ${storeId}`);
+
+        const customer = await this.customerRepository.findOne({
+          where: { sallaCustomerId: String(directCustomerId), storeId },
+          select: ['id', 'phone', 'sallaCustomerId'],
+        });
+
+        if (customer?.phone) {
+          this.logger.log(`📞 Phone found via sallaCustomerId lookup: ${customer.phone}`);
+          return this.normalizePhone(customer.phone);
+        }
+
+        this.logger.log(`🔍 Customer not found by sallaCustomerId: ${directCustomerId} — trying order lookup`);
+      }
+
+      // ─── البحث عبر orderId (الطريقة الأصلية) ─────────────────────────────
       const orderObj = data.order as Record<string, unknown> | undefined;
       const orderId = data.id || data.orderId || data.order_id || orderObj?.id || orderObj?.order_id;
       if (!orderId) {
-        this.logger.log(`🔍 No order ID in data to lookup phone`);
+        this.logger.log(`🔍 No order ID and no directCustomerId — cannot lookup phone`);
         return null;
       }
 
@@ -996,7 +1030,7 @@ export class TemplateDispatcherService {
         return null;
       }
 
-      // جلب الرقم من العميل
+      // جلب الرقم من العميل المرتبط بالطلب
       if (order.customer?.phone) {
         this.logger.log(`📞 Phone found from DB customer: ${order.customer.phone}`);
         return this.normalizePhone(order.customer.phone);
@@ -1009,12 +1043,12 @@ export class TemplateDispatcherService {
           select: ['id', 'phone'],
         });
         if (customer?.phone) {
-          this.logger.log(`📞 Phone found from customer lookup: ${customer.phone}`);
+          this.logger.log(`📞 Phone found from customer direct lookup: ${customer.phone}`);
           return this.normalizePhone(customer.phone);
         }
       }
 
-      // ✅ v4: محاولة أخيرة - البحث في metadata.sallaData عن رقم العميل
+      // محاولة أخيرة: البحث في metadata.sallaData
       const sallaData = (order.metadata as any)?.sallaData as Record<string, unknown> | undefined;
       if (sallaData) {
         const sallaCustomer = sallaData.customer as Record<string, unknown> | undefined;
@@ -1023,7 +1057,6 @@ export class TemplateDispatcherService {
           this.logger.log(`📞 Phone found from order sallaData: ${sallaPhone}`);
           return this.normalizePhone(String(sallaPhone));
         }
-        // من shipping_address في sallaData
         const sallaShipping = sallaData.shipping_address as Record<string, unknown> | undefined;
         if (sallaShipping?.phone) {
           this.logger.log(`📞 Phone found from sallaData shipping: ${sallaShipping.phone}`);
