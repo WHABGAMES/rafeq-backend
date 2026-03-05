@@ -2,15 +2,31 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║              RAFIQ PLATFORM - Template Dispatcher Service                      ║
  * ║                                                                                ║
- * ║  ✅ v19: وفق المسودة 1 — Communication Webhooks fixes                         ║
- * ║     • FIX #6: customer.loyalty.earned → lookup بـ sallaCustomerId             ║
- * ║     • FIX #4: استخدام CommunicationEventType enum بدل magic strings           ║
- * ║     • FIX #5: campaign.broadcast → batch protection في Processor              ║
+ * ║  ✅ v20: DRAFT 1 FULL COMPLIANCE — Communication Webhooks                     ║
+ * ║                                                                                ║
+ * ║  التغييرات الجديدة:                                                            ║
+ * ║  • كل businessType مستقل تماماً — trigger يبحث بـ businessType نفسه أولاً    ║
+ * ║  • order.status.confirmation → order.status.pending_payment (ليس order.created)║
+ * ║  • auth.otp.verification → محتوى سلة مباشرة (bypass template search)          ║
+ * ║  • shipment/cart/product/feedback entities → extractVariablesFromSallaContent  ║
+ * ║  • fetchOrderDataForTemplate → يتعامل مع كل entity types من المسودة 1         ║
+ * ║  • getEmailSubject → موضوع مستقل لكل حدث مع entity type صحيح                 ║
+ * ║  • textToHtml → تصميم احترافي مع لون مميز لكل نوع حدث                        ║
+ * ║  • extractVariablesFromSallaContent → يستخرج order/otp/name من النص           ║
+ * ║  • template lookup: approved + active                                          ║
+ * ║                                                                                ║
+ * ║  أنواع Entity حسب المسودة 1:                                                  ║
+ * ║  order    → DB lookup (sallaOrderId → referenceId)                            ║
+ * ║  shipment → extractVariablesFromSallaContent (entity.id = shipment_id)        ║
+ * ║  cart     → extractVariablesFromSallaContent (entity.id = cart_id)            ║
+ * ║  product  → extractVariablesFromSallaContent (entity.id = product_id)         ║
+ * ║  feedback → sallaCustomerId lookup (entity.id = feedback_id)                  ║
+ * ║  null     → sallaCustomerId lookup أو extractVariablesFromSallaContent        ║
  * ║                                                                                ║
  * ║  المسار:                                                                       ║
  * ║  Webhook → Processor → EventEmitter → هذا الـ Service                          ║
- * ║  → يبحث عن قالب مفعّل بنفس triggerEvent                                       ║
- * ║  → يستبدل المتغيرات → يرسل عبر واتساب                                         ║
+ * ║  → auth.otp → Salla content مباشرة                                            ║
+ * ║  → بقية الأنواع → قالب مفعَّل (approved/active) → fallback محتوى سلة          ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -416,19 +432,28 @@ export class TemplateDispatcherService {
     );
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // 🎯 الخطوة 1: البحث عن قالب مفعَّل يطابق هذا الحدث
+    // 🎯 تحديد المحتوى النهائي
     //
-    // نحوّل businessType → triggerEvent ونبحث عن قالب في DB
-    // إذا وُجد قالب: نجلب بيانات الطلب ونستبدل المتغيرات
-    // إذا لم يوجد: نستخدم محتوى سلة مباشرة (fallback)
+    // ✅ DRAFT 1: auth.otp.verification → meta.code هو OTP الجاهز
+    // سلة ترسل محتوى كامل في data.content — نستخدمه مباشرة دون البحث عن قالب
+    // لا نريد قالب مخصص يُلغي رمز OTP الذي أرسلته سلة
     // ═══════════════════════════════════════════════════════════════════════════
-    const finalContent = await this.resolveContentForCommunication(
-      tenantId,
-      storeId,
-      businessType,
-      entity,
-      sallaContent,
-    );
+    let finalContent: string;
+
+    if (businessType === CommunicationEventType.AUTH_OTP_VERIFICATION) {
+      // OTP: محتوى سلة = الرسالة الجاهزة — لا نبحث عن قالب
+      finalContent = sallaContent;
+      this.logger.log(`🔑 OTP relay: using Salla content directly (meta.code=${otpCode ?? 'N/A'})`);
+    } else {
+      // بقية الأنواع: نبحث أولاً عن قالب مفعَّل
+      finalContent = await this.resolveContentForCommunication(
+        tenantId,
+        storeId,
+        businessType,
+        entity,
+        sallaContent,
+      );
+    }
 
     // ─── إرسال عبر القناة المناسبة ───────────────────────────────────────────
     switch (channelType) {
@@ -455,15 +480,27 @@ export class TemplateDispatcherService {
    * ┌─────────────────────────────┬──────────────────────────────────────────┐
    * │ businessType (Communication)│ triggerEvent (Template)                   │
    * ├─────────────────────────────┼──────────────────────────────────────────┤
-   * │ order.status.updated        │ order.status.{status} (يُجلب من DB)      │
-   * │ order.status.confirmation   │ order.created                             │
-   * │ order.shipment.created      │ order.shipped                             │
-   * │ order.refund.processed      │ order.refunded                            │
-   * │ order.invoice.issued        │ order.created                             │
-   * │ customer.cart.abandoned     │ abandoned.cart                            │
-   * │ order.gift.placed           │ order.created                             │
-   * │ payment.reminder.due        │ order.status.pending_payment              │
-   * └─────────────────────────────┴──────────────────────────────────────────┘
+   * ┌──────────────────────────────────┬─────────────────────────────────────────────────────┐
+   * │ businessType (المسودة 1)          │ triggerEvent البحث (بالأولوية)                     │
+   * ├──────────────────────────────────┼─────────────────────────────────────────────────────┤
+   * │ auth.otp.verification            │ auth.otp.verification                               │
+   * │ order.status.confirmation        │ order.status.confirmation → pending_payment         │
+   * │ order.status.updated             │ DB lookup للحالة الفعلية                            │
+   * │ order.invoice.issued             │ order.invoice.issued → order.created                │
+   * │ order.shipment.created           │ order.shipment.created → order.shipped              │
+   * │ order.refund.processed           │ order.refund.processed → order.refunded             │
+   * │ order.gift.placed                │ order.gift.placed → order.created                  │
+   * │ payment.reminder.due             │ payment.reminder.due → pending_payment              │
+   * │ product.availability.alert       │ product.availability.alert → product.available      │
+   * │ product.digital.code             │ product.digital.code                                │
+   * │ customer.cart.abandoned          │ customer.cart.abandoned → abandoned.cart            │
+   * │ customer.loyalty.earned          │ customer.loyalty.earned                             │
+   * │ customer.feedback.reply          │ customer.feedback.reply                             │
+   * │ customer.rating.request          │ customer.rating.request                             │
+   * │ marketing.campaign.broadcast     │ marketing.campaign.broadcast                        │
+   * │ system.alert.general             │ system.alert.general                                │
+   * │ system.message.custom            │ system.message.custom                               │
+   * └──────────────────────────────────┴─────────────────────────────────────────────────────┘
    */
   private async resolveContentForCommunication(
     tenantId: string | undefined,
@@ -480,7 +517,7 @@ export class TemplateDispatcherService {
         businessType,
         entity,
         storeId,
-        sallaContent,   // ✅ للاستخراج من النص عند فشل DB
+        sallaContent,
       );
 
       if (!candidateTriggers.length) {
@@ -488,13 +525,12 @@ export class TemplateDispatcherService {
         return sallaContent;
       }
 
-      // ─── البحث عن قالب مفعَّل ────────────────────────────────────────────
+      // ─── البحث عن قالب مفعَّل (approved أو active) ───────────────────────
       const template = await this.templateRepository.findOne({
-        where: candidateTriggers.map(trigger => ({
-          tenantId,
-          triggerEvent: trigger,
-          status: 'approved' as any,
-        })),
+        where: [
+          ...candidateTriggers.map(trigger => ({ tenantId, triggerEvent: trigger, status: 'approved' as any })),
+          ...candidateTriggers.map(trigger => ({ tenantId, triggerEvent: trigger, status: 'active'   as any })),
+        ],
         order: { updatedAt: 'DESC' },
       });
 
@@ -507,18 +543,18 @@ export class TemplateDispatcherService {
       }
 
       this.logger.log(
-        `✅ Template found: "${template.name}" for [${businessType}] → using template content`,
+        `✅ Template found: "${template.name}" for [${businessType}] → trigger="${template.triggerEvent}"`,
         { templateId: template.id, trigger: template.triggerEvent },
       );
 
-      // ─── جلب بيانات الطلب لاستبدال المتغيرات ────────────────────────────
-      // ✅ نُمرر sallaContent كمصدر احتياطي لرقم الطلب عند عدم وجوده في DB
-      const orderData = await this.fetchOrderDataForTemplate(entity, storeId, sallaContent);
+      // ─── جلب بيانات الكيان لاستبدال المتغيرات ────────────────────────────
+      // ✅ DRAFT 1: يتعامل مع order / shipment / cart / product / feedback / null
+      const orderData = await this.fetchOrderDataForTemplate(entity, storeId, sallaContent, businessType);
 
       // ─── استبدال المتغيرات في القالب ─────────────────────────────────────
       const rendered = this.replaceVariables(template.body, orderData);
 
-      this.logger.debug(`📝 Template rendered: "${rendered.substring(0, 80)}..."`);
+      this.logger.log(`📝 Template rendered (${businessType}): "${rendered.substring(0, 80)}..."`);
       return rendered;
 
     } catch (error) {
@@ -540,31 +576,108 @@ export class TemplateDispatcherService {
     businessType: string,
     entity: { id: number; type: string } | null,
     storeId: string | undefined,
-    sallaContent?: string,   // ✅ للاستخراج من النص عند فشل DB
+    sallaContent?: string,
   ): Promise<string[]> {
 
-    // الخريطة الثابتة
-    const STATIC_MAP: Record<string, string[]> = {
-      'order.status.confirmation':  ['order.created'],
-      'order.shipment.created':     ['order.shipped', 'shipment.created'],
-      'order.refund.processed':     ['order.refunded'],
-      'order.invoice.issued':       ['order.created', 'order.invoice.created'],
-      'order.gift.placed':          ['order.created'],
-      'payment.reminder.due':       ['order.status.pending_payment'],
-      'customer.cart.abandoned':    ['abandoned.cart'],
-      'product.availability.alert': ['product.available'],
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 🎯 DRAFT 1 — مبدأ العزل الكامل
+    //
+    // كل businessType يبحث أولاً عن قالب يحمل trigger_event = businessType نفسه
+    // هذا يضمن أن كل نوع إشعار مستقل تماماً ولا يتداخل مع غيره
+    //
+    // خريطة المسودة 1 الكاملة:
+    // ┌──────────────────────────────────┬──────────────────────────────────────────────────┐
+    // │ businessType                     │ triggers (بالأولوية)                             │
+    // ├──────────────────────────────────┼──────────────────────────────────────────────────┤
+    // │ auth.otp.verification            │ [نفسه] — لا template، سلة ترسل المحتوى مباشرة   │
+    // │ order.status.confirmation        │ [نفسه] → order.status.pending_payment            │
+    // │ order.status.updated             │ DB lookup للحالة الفعلية                         │
+    // │ order.invoice.issued             │ [نفسه] → order.invoice.created → order.created   │
+    // │ order.shipment.created           │ [نفسه] → order.shipped → shipment.created        │
+    // │ order.refund.processed           │ [نفسه] → order.refunded                          │
+    // │ order.gift.placed                │ [نفسه] → order.created                           │
+    // │ payment.reminder.due             │ [نفسه] → order.status.pending_payment            │
+    // │ product.availability.alert       │ [نفسه] → product.available                       │
+    // │ product.digital.code             │ [نفسه]                                           │
+    // │ customer.cart.abandoned          │ [نفسه] → abandoned.cart                          │
+    // │ customer.loyalty.earned          │ [نفسه]                                           │
+    // │ customer.feedback.reply          │ [نفسه]                                           │
+    // │ customer.rating.request          │ [نفسه]                                           │
+    // │ marketing.campaign.broadcast     │ [نفسه]                                           │
+    // │ system.alert.general             │ [نفسه]                                           │
+    // │ system.message.custom            │ [نفسه]                                           │
+    // └──────────────────────────────────┴──────────────────────────────────────────────────┘
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // ─── order.status.updated: يحتاج DB lookup للحالة الفعلية ───────────────
+    if (businessType === 'order.status.updated' && entity?.type === 'order') {
+      const statusTriggers = await this.resolveOrderStatusTriggers(entity.id, storeId, sallaContent);
+      // businessType نفسه أولاً للعزل، ثم الحالة المحددة
+      return [businessType, ...statusTriggers];
+    }
+
+    // ─── auth.otp.verification: لا template — سلة تُرسل المحتوى كاملاً ──────
+    // meta.code هو الـ OTP الجاهز، نُرسله مباشرة دون البحث عن قالب
+    if (businessType === 'auth.otp.verification') {
+      return ['auth.otp.verification'];
+    }
+
+    // ─── خريطة DRAFT 1 الكاملة: العزل أولاً ثم backward compatibility ────────
+    const DRAFT1_MAP: Record<string, string[]> = {
+      // ✅ طلب جديد بانتظار الدفع — مختلف عن order.created العادي
+      // المسودة 1: "Triggered when an order is created and pending payment"
+      'order.status.confirmation':   ['order.status.confirmation', 'order.status.pending_payment'],
+
+      // ✅ فاتورة مُصدَرة
+      'order.invoice.issued':        ['order.invoice.issued', 'order.invoice.created', 'order.created'],
+
+      // ✅ شحنة مُنشأة — entity.type = 'shipment' (ليس order!)
+      'order.shipment.created':      ['order.shipment.created', 'order.shipped', 'shipment.created'],
+
+      // ✅ استرداد مُعالَج
+      'order.refund.processed':      ['order.refund.processed', 'order.refunded'],
+
+      // ✅ طلب هدية — نوع مستقل
+      'order.gift.placed':           ['order.gift.placed', 'order.created'],
+
+      // ✅ تذكير بالدفع — entity.type = 'order'
+      'payment.reminder.due':        ['payment.reminder.due', 'order.status.pending_payment'],
+
+      // ✅ المنتج عاد للمخزون — entity.type = 'product'
+      'product.availability.alert':  ['product.availability.alert', 'product.available'],
+
+      // ✅ كود رقمي — entity.type = 'order'
+      'product.digital.code':        ['product.digital.code'],
+
+      // ✅ سلة متروكة — entity.type = 'cart'
+      'customer.cart.abandoned':     ['customer.cart.abandoned', 'abandoned.cart'],
+
+      // ✅ نقاط ولاء — entity = N/A، meta.customer_id
+      'customer.loyalty.earned':     ['customer.loyalty.earned'],
+
+      // ✅ رد على تقييم — entity.type = 'feedback'
+      'customer.feedback.reply':     ['customer.feedback.reply'],
+
+      // ✅ طلب تقييم — entity.type = 'order'
+      'customer.rating.request':     ['customer.rating.request'],
+
+      // ✅ بث تسويقي — entity = N/A، لا meta.customer_id
+      'marketing.campaign.broadcast':['marketing.campaign.broadcast'],
+
+      // ✅ تنبيه عام
+      'system.alert.general':        ['system.alert.general'],
+
+      // ✅ رسالة مخصصة
+      'system.message.custom':       ['system.message.custom'],
     };
 
-    if (STATIC_MAP[businessType]) {
-      return STATIC_MAP[businessType];
+    if (DRAFT1_MAP[businessType]) {
+      return DRAFT1_MAP[businessType];
     }
 
-    // order.status.updated: نحتاج الحالة الفعلية من الـ entity أو DB
-    if (businessType === 'order.status.updated' && entity?.type === 'order') {
-      return this.resolveOrderStatusTriggers(entity.id, storeId, sallaContent);
-    }
-
-    return [];
+    // fallback: يبحث بـ businessType نفسه
+    this.logger.warn(`⚠️ resolveTriggerEvents: unmapped businessType "${businessType}" — using as trigger directly`);
+    return [businessType];
   }
 
   /**
@@ -770,20 +883,47 @@ export class TemplateDispatcherService {
   }
 
   /**
-   * 📊 جلب بيانات الطلب الكاملة لاستبدال متغيرات القالب
+   * 📊 جلب بيانات الكيان لاستبدال متغيرات القالب
    *
-   * ✅ يبحث بـ sallaOrderId ثم referenceId
-   * ✅ يستخدم sallaContent كمصدر احتياطي للمتغيرات عند عدم وجود الطلب في DB
+   * ✅ DRAFT 1: خمسة أنواع entity مختلفة:
+   *   order    → يبحث بـ sallaOrderId ثم referenceId
+   *   shipment → entity.id = shipment_id (ليس order_id)
+   *              يستخرج المتغيرات من sallaContent مباشرة (رقم الطلب موجود في النص)
+   *   cart     → entity.id = cart_id — يستخرج من sallaContent
+   *   product  → entity.id = product_id — يستخرج من sallaContent
+   *   feedback → entity.id = feedback_id — يستخرج من sallaContent
+   *   null     → يستخرج من sallaContent (loyalty / otp / system / marketing)
    */
   private async fetchOrderDataForTemplate(
     entity: { id: number; type: string } | null,
     storeId: string | undefined,
-    sallaContent?: string,  // نص سلة كمصدر احتياطي
+    sallaContent?: string,
+    businessType?: string,
   ): Promise<Record<string, unknown>> {
-    if (!entity?.id || !storeId) {
-      return this.extractVariablesFromSallaContent(sallaContent);
+
+    // ─── أنواع لا تحتاج DB lookup — المتغيرات تُستخرج من نص سلة ─────────────
+    // المسودة 1: shipment / cart / product / feedback / null
+    const NON_ORDER_ENTITIES = ['shipment', 'cart', 'product', 'feedback'];
+
+    if (!entity?.id || !storeId || (entity.type && NON_ORDER_ENTITIES.includes(entity.type))) {
+      const extracted = this.extractVariablesFromSallaContent(sallaContent);
+
+      if (entity) {
+        // أضف معرّف الكيان كمتغير إضافي
+        extracted[`${entity.type}_id`] = entity.id;
+        extracted.entity_id   = entity.id;
+        extracted.entity_type = entity.type;
+      }
+
+      this.logger.debug(
+        `📝 fetchOrderDataForTemplate: entity=${entity?.type || 'null'} (${businessType}) — using Salla content vars`,
+        { entityId: entity?.id, extracted },
+      );
+
+      return extracted;
     }
 
+    // ─── entity.type = 'order' → DB lookup ─────────────────────────────────
     try {
       const idStr = String(entity.id);
 
@@ -804,12 +944,13 @@ export class TemplateDispatcherService {
       if (!order) {
         this.logger.warn(
           `⚠️ fetchOrderDataForTemplate: order not found (id=${idStr}) — using Salla content as variable source`,
-          { storeId },
+          { storeId, businessType },
         );
         return this.extractVariablesFromSallaContent(sallaContent);
       }
 
       // ✅ بيانات كاملة من DB
+      this.logger.debug(`📦 fetchOrderDataForTemplate: order found in DB (${order.sallaOrderId || order.referenceId})`);
       return {
         id:               order.sallaOrderId || order.id,
         reference_id:     order.referenceId  || order.sallaOrderId,
@@ -829,6 +970,7 @@ export class TemplateDispatcherService {
     } catch (error) {
       this.logger.error(
         `❌ fetchOrderDataForTemplate error: ${error instanceof Error ? error.message : 'Unknown'}`,
+        { businessType },
       );
       return this.extractVariablesFromSallaContent(sallaContent);
     }
@@ -840,17 +982,43 @@ export class TemplateDispatcherService {
    * مثال: "تم تغيير حالة طلبك رقم 245225985 إلى جاري التوصيل"
    * → { reference_id: '245225985', order_number: '245225985' }
    */
+  /**
+   * 📝 استخراج متغيرات القالب من نص سلة العربي
+   *
+   * سلة ترسل نصاً جاهزاً — نستخرج منه المتغيرات الضرورية لاستبدالها في القالب
+   *
+   * أنماط النصوص من الأمثلة الرسمية:
+   *   "أصبحت حالة طلبك #218103278 [تم التنفيذ]"
+   *   "تم تغيير حالة طلبك رقم 245225985 إلى جاري التوصيل"
+   *   "كود التفعيل الخاص بك: 0000"
+   */
   private extractVariablesFromSallaContent(content?: string): Record<string, unknown> {
     if (!content) return {};
 
     const result: Record<string, unknown> = {};
 
-    // استخراج رقم الطلب من النص: "رقم 245225985" أو "رقم #245225985"
-    const orderNumMatch = content.match(/رقم\s*#?\s*(\d{6,12})/);
+    // ─── استخراج رقم الطلب ───────────────────────────────────────────────────
+    // "طلبك #218103278"  أو  "رقم 245225985"  أو  "طلب #12345678"
+    const orderNumMatch = content.match(/(?:طلب[كم]?\s*#|رقم\s*#?)\s*(\d{6,12})/);
     if (orderNumMatch) {
-      result.reference_id = orderNumMatch[1];
+      result.reference_id  = orderNumMatch[1];
       result.order_number  = orderNumMatch[1];
       result.id            = orderNumMatch[1];
+    }
+
+    // ─── استخراج OTP من نص سلة ───────────────────────────────────────────────
+    // "كود التفعيل الخاص بك: 0000"
+    const otpMatch = content.match(/(?:كود[^:]*|رمز[^:]*|OTP[^:]*|code[^:]*)[:\s]+(\d{4,8})/i);
+    if (otpMatch) {
+      result.otp_code = otpMatch[1];
+      result.code     = otpMatch[1];
+    }
+
+    // ─── استخراج اسم العميل ──────────────────────────────────────────────────
+    // "أهلاً [اسم العميل]"  أو  "مرحباً محمد"
+    const nameMatch = content.match(/(?:أهلاً|مرحباً|عزيزنا)\s+([^\n,،]+)/);
+    if (nameMatch) {
+      result.customer_name = nameMatch[1].trim();
     }
 
     return result;
@@ -966,8 +1134,8 @@ export class TemplateDispatcherService {
     // اشتقاق موضوع الإيميل من businessType
     const subject = this.getEmailSubject(businessType, entity);
 
-    // تحويل نص الرسالة إلى HTML بسيط
-    const html = this.textToHtml(content);
+    // تحويل نص الرسالة إلى HTML احترافي مع لون يناسب الحدث
+    const html = this.textToHtml(content, businessType);
 
     let sent = 0, failed = 0;
 
@@ -1008,61 +1176,132 @@ export class TemplateDispatcherService {
 
   /**
    * اشتقاق موضوع الإيميل من businessType
-   * سلة تُرسل المحتوى جاهزاً لكن بدون موضوع — نشتقه نحن
+   *
+   * ✅ DRAFT 1: كل businessType له موضوع مستقل يعكس الحدث بدقة
+   * ✅ يُضيف رقم الكيان (طلب / شحنة / منتج) حين يكون مناسباً
+   *
+   * Entity types حسب المسودة 1:
+   *   order    → يُضيف رقم الطلب
+   *   shipment → يُضيف رقم الشحنة
+   *   product  → لا رقم (المنتج ليس له رقم مرجعي مُعرَّض)
+   *   cart     → لا رقم
+   *   feedback → لا رقم
+   *   null     → لا رقم
    */
   private getEmailSubject(businessType: string, entity: { id: number; type: string } | null): string {
-    const subjects: Record<string, string> = {
-      'order.status.confirmation':      'تأكيد طلبك',
-      'order.status.updated':           'تحديث حالة طلبك',
-      'order.invoice.issued':           'فاتورتك جاهزة',
-      'order.shipment.created':         'طلبك في الطريق إليك',
-      'order.refund.processed':         'تم استرداد المبلغ',
-      'order.gift.placed':              'لديك طلب هدية جديد',
-      'payment.reminder.due':           'تذكير بإتمام الدفع',
-      'product.availability.alert':     'المنتج الذي أضفته عاد للمخزون',
-      'product.digital.code':           'كودك الرقمي جاهز',
-      'customer.cart.abandoned':        'أتممت شراء ما تركته؟',
-      'customer.loyalty.earned':        'مكافأة نقاط الولاء',
-      'customer.feedback.reply':        'رد على تقييمك',
-      'customer.rating.request':        'شاركنا رأيك بطلبك',
-      'marketing.campaign.broadcast':   'عرض خاص لك',
-      'auth.otp.verification':          'رمز التحقق',
-      'system.alert.general':           'إشعار من المتجر',
-      'system.message.custom':          'رسالة من المتجر',
+
+    // موضوع مخصص لكل نوع حدث — مستقل تماماً
+    const SUBJECT_MAP: Record<string, string> = {
+      // ── أحداث الطلبات ──────────────────────────────────────────────────────
+      'order.status.confirmation':   'تأكيد طلبك الجديد',
+      'order.status.updated':        'تحديث حالة طلبك',
+      'order.invoice.issued':        'فاتورتك جاهزة',
+      'order.shipment.created':      'طلبك في الطريق إليك 🚚',
+      'order.refund.processed':      'تم استرداد مبلغ طلبك',
+      'order.gift.placed':           'طلب هدية جديد 🎁',
+      // ── المدفوعات ───────────────────────────────────────────────────────────
+      'payment.reminder.due':        'تذكير: أتمم دفع طلبك',
+      // ── المنتجات ────────────────────────────────────────────────────────────
+      'product.availability.alert':  'المنتج عاد للمخزون ✅',
+      'product.digital.code':        'كودك الرقمي جاهز 🔑',
+      // ── العملاء ─────────────────────────────────────────────────────────────
+      'customer.cart.abandoned':     'هل نسيت شيئاً في سلتك؟ 🛒',
+      'customer.loyalty.earned':     'نقاط ولاء جديدة 🌟',
+      'customer.feedback.reply':     'رد على تقييمك',
+      'customer.rating.request':     'شاركنا رأيك في طلبك ⭐',
+      // ── التسويق والنظام ─────────────────────────────────────────────────────
+      'marketing.campaign.broadcast':'عرض خاص لك من المتجر 🎉',
+      'auth.otp.verification':       'رمز التحقق الخاص بك',
+      'system.alert.general':        'إشعار من المتجر',
+      'system.message.custom':       'رسالة خاصة من المتجر',
     };
 
-    const subject = subjects[businessType] || 'إشعار من المتجر';
+    const baseSubject = SUBJECT_MAP[businessType] ?? 'إشعار من المتجر';
 
-    // إضافة رقم الطلب/الكيان إذا متوفر
-    if (entity?.id && entity?.type === 'order') {
-      return `${subject} #${entity.id}`;
+    // ✅ DRAFT 1: أضف رقم الكيان فقط لـ entity.type = 'order' أو 'shipment'
+    if (entity?.id) {
+      if (entity.type === 'order')    return `${baseSubject} #${entity.id}`;
+      if (entity.type === 'shipment') return `${baseSubject} — شحنة #${entity.id}`;
     }
 
-    return subject;
+    return baseSubject;
   }
 
   /**
-   * تحويل نص عادي إلى HTML بسيط مع الحفاظ على الأسطر
-   * سلة ترسل content كنص عادي مُصيَّغ
+   * تحويل نص سلة العربي إلى HTML احترافي
+   *
+   * ✅ كل businessType يحصل على تصميم مناسب للحدث
+   * ✅ يدعم RTL، أسطر متعددة، ويُحافظ على تنسيق النص
    */
-  private textToHtml(text: string): string {
+  private textToHtml(text: string, businessType?: string): string {
     const escaped = text
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
 
-    const lines = escaped.split('\n').join('<br>\n');
+    const lines = escaped.split('\n').map(l => l.trim()).filter(Boolean).join('<br>\n');
+
+    // اختيار لون الهيدر حسب نوع الحدث
+    const ACCENT_COLORS: Record<string, string> = {
+      'order.status.confirmation':   '#16a34a',  // أخضر — تأكيد
+      'order.status.updated':        '#2563eb',  // أزرق — تحديث
+      'order.invoice.issued':        '#7c3aed',  // بنفسجي — فاتورة
+      'order.shipment.created':      '#0891b2',  // سماوي — شحن
+      'order.refund.processed':      '#dc2626',  // أحمر — استرداد
+      'order.gift.placed':           '#ea580c',  // برتقالي — هدية
+      'payment.reminder.due':        '#d97706',  // ذهبي — تذكير
+      'product.availability.alert':  '#16a34a',  // أخضر — توفر
+      'product.digital.code':        '#7c3aed',  // بنفسجي — رقمي
+      'customer.cart.abandoned':     '#d97706',  // ذهبي — سلة
+      'customer.loyalty.earned':     '#ea580c',  // برتقالي — ولاء
+      'customer.feedback.reply':     '#2563eb',  // أزرق — تقييم
+      'customer.rating.request':     '#0891b2',  // سماوي — تقييم
+      'marketing.campaign.broadcast':'#7c3aed',  // بنفسجي — تسويق
+      'auth.otp.verification':       '#16a34a',  // أخضر — OTP
+      'system.alert.general':        '#6b7280',  // رمادي — نظام
+      'system.message.custom':       '#6b7280',  // رمادي — مخصص
+    };
+
+    const accent = (businessType && ACCENT_COLORS[businessType]) ?? '#2563eb';
 
     return `<!DOCTYPE html>
 <html dir="rtl" lang="ar">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
-<body style="font-family: 'Segoe UI', Tahoma, Arial, sans-serif; direction: rtl; padding: 24px; background: #f5f5f5;">
-  <div style="max-width: 600px; margin: 0 auto; background: #fff; border-radius: 8px; padding: 32px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
-    <p style="font-size: 16px; line-height: 1.8; color: #333; margin: 0;">${lines}</p>
-    <hr style="border: none; border-top: 1px solid #eee; margin: 24px 0;">
-    <p style="font-size: 12px; color: #999; margin: 0; text-align: center;">تم الإرسال عبر منصة رفيق</p>
-  </div>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin:0;padding:0;background:#f3f4f6;font-family:'Segoe UI',Tahoma,Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4f6;padding:32px 16px;">
+    <tr>
+      <td align="center">
+        <table width="600" cellpadding="0" cellspacing="0"
+               style="max-width:600px;width:100%;background:#ffffff;border-radius:12px;
+                      overflow:hidden;box-shadow:0 4px 12px rgba(0,0,0,0.08);">
+          <!-- Header -->
+          <tr>
+            <td style="background:${accent};padding:24px 32px;">
+              <p style="margin:0;color:#ffffff;font-size:13px;opacity:0.85;letter-spacing:0.5px;">رفيق</p>
+            </td>
+          </tr>
+          <!-- Body -->
+          <tr>
+            <td style="padding:32px;direction:rtl;text-align:right;">
+              <p style="margin:0;font-size:16px;line-height:1.9;color:#1f2937;">${lines}</p>
+            </td>
+          </tr>
+          <!-- Footer -->
+          <tr>
+            <td style="padding:16px 32px 24px;border-top:1px solid #e5e7eb;">
+              <p style="margin:0;font-size:12px;color:#9ca3af;text-align:center;">
+                تم الإرسال تلقائياً عبر منصة رفيق &bull; لا تردّ على هذا البريد
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
 </body>
 </html>`;
   }
