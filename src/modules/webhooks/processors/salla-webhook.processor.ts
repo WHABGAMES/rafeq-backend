@@ -482,19 +482,64 @@ export class SallaWebhookProcessor extends WorkerHost {
 
   private async handleOrderCreated(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
     this.logger.log('Processing order.created', { orderId: data.id, storeId: context.storeId });
+
     let savedCustomer: Customer | null = null;
     const cd = data.customer as Record<string, unknown> | undefined;
     if (cd?.id) savedCustomer = await this.syncCustomerToDatabase(cd, context);
     const savedOrder = await this.syncOrderToDatabase(data, context, savedCustomer?.id);
 
-    this.eventEmitter.emit('order.created', {
-      tenantId: context.tenantId, storeId: context.storeId, orderId: data.id,
-      orderNumber: data.reference_id || data.order_number,
-      customerName: cd?.first_name || cd?.name, customerPhone: cd?.mobile || cd?.phone,
-      totalAmount: data.total, currency: data.currency, items: data.items, status: data.status,
-      raw: data, dbOrderId: savedOrder?.id, dbCustomerId: savedCustomer?.id,
-    });
-    return { handled: true, action: 'order_created', orderId: data.id, dbOrderId: savedOrder?.id || 'sync_failed', dbCustomerId: savedCustomer?.id || 'no_customer', emittedEvent: 'order.created' };
+    // ─── استخراج طريقة الدفع من payload سلة ──────────────────────────────
+    // سلة ترسل: data.payment = { method: "cod" | "online" | "bank_transfer", status }
+    // أو: data.payment_method = "cod"
+    const paymentObj = data.payment as Record<string, unknown> | undefined;
+    const paymentMethod = String(
+      paymentObj?.method || data.payment_method || '',
+    ).toLowerCase().trim();
+
+    const basePayload = {
+      tenantId:     context.tenantId,
+      storeId:      context.storeId,
+      orderId:      data.id,
+      orderNumber:  data.reference_id || data.order_number,
+      customerName: cd?.first_name || cd?.name,
+      customerPhone: cd?.mobile || cd?.phone,
+      totalAmount:  data.total,
+      currency:     data.currency,
+      items:        data.items,
+      status:       data.status,
+      paymentMethod,
+      raw:          data,
+      dbOrderId:    savedOrder?.id,
+      dbCustomerId: savedCustomer?.id,
+    };
+
+    // ─── 1. order.created — يُصدَر دائماً لكل طلب ─────────────────────────
+    this.eventEmitter.emit('order.created', basePayload);
+
+    // ─── 2. event خاص بطريقة الدفع — فصل كامل من المصدر ─────────────────
+    // كل طريقة دفع لها trigger_event مستقل → لا تعارض مع order.created أبداً
+    if (paymentMethod === 'cod' || paymentMethod === 'cash_on_delivery') {
+      this.logger.log(`💵 COD order detected — emitting order.cod.created`, { orderId: data.id });
+      this.eventEmitter.emit('order.cod.created', basePayload);
+    } else if (paymentMethod && paymentMethod !== '') {
+      // online / bank_transfer / tap / moyasar / etc.
+      this.logger.log(`💳 Online payment order detected (${paymentMethod}) — emitting order.online.created`, { orderId: data.id });
+      this.eventEmitter.emit('order.online.created', basePayload);
+    }
+
+    const emittedEvents = ['order.created'];
+    if (paymentMethod === 'cod' || paymentMethod === 'cash_on_delivery') emittedEvents.push('order.cod.created');
+    else if (paymentMethod) emittedEvents.push('order.online.created');
+
+    return {
+      handled: true,
+      action: 'order_created',
+      orderId: data.id,
+      paymentMethod: paymentMethod || 'unknown',
+      dbOrderId: savedOrder?.id || 'sync_failed',
+      dbCustomerId: savedCustomer?.id || 'no_customer',
+      emittedEvents,
+    };
   }
 
   private async handleOrderStatusUpdated(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
@@ -599,19 +644,20 @@ export class SallaWebhookProcessor extends WorkerHost {
       'in_transit': 'order.status.in_transit',
       'out_for_delivery': 'order.status.in_transit',
       'delivering': 'order.status.in_transit',
-      'shipped': 'order.shipped',            // ✅ v18: توحيد — نفس الاسم كـ handleOrderShipped
       'ready_to_ship': 'order.status.ready_to_ship',
       'ready': 'order.status.ready_to_ship',
       'pending_payment': 'order.status.pending_payment',
       'awaiting_payment': 'order.status.pending_payment',
       'paid': 'order.status.paid',
-      'cancelled': 'order.cancelled',       // ✅ v18: توحيد — نفس الاسم كـ handleOrderCancelled
-      'canceled': 'order.cancelled',        // ✅ v18: توحيد
-      'refunded': 'order.refunded',         // ✅ v18: توحيد — نفس الاسم كـ handleOrderRefunded
-      'delivered': 'order.delivered',        // ✅ v18: توحيد — نفس الاسم كـ handleOrderDelivered
       'restoring': 'order.status.restoring',
       'restored': 'order.status.restoring',
       'on_hold': 'order.status.on_hold',
+      // ✅ v21: shipped/delivered/cancelled/refunded مُحذوفة من هنا
+      // لها dedicated handlers تُصدر الـ event مباشرة → لا تعارض ولا DEDUP مطلوب
+      // order.shipped   → handleOrderShipped   (SallaEventType.ORDER_SHIPPED)
+      // order.delivered → handleOrderDelivered (SallaEventType.ORDER_DELIVERED)
+      // order.cancelled → handleOrderCancelled (SallaEventType.ORDER_CANCELLED)
+      // order.refunded  → handleOrderRefunded  (SallaEventType.ORDER_REFUNDED)
     };
     if (slugMap[statusSlug]) return slugMap[statusSlug];
 
@@ -628,7 +674,7 @@ export class SallaWebhookProcessor extends WorkerHost {
       { test: t => t.includes('تم') && t.includes('تنفيذ'), event: 'order.status.completed', label: 'تم+تنفيذ→completed' },
       { test: t => t.includes('مكتمل'), event: 'order.status.completed', label: 'مكتمل→completed' },
       // ✅ "تم التوصيل" قبل "توصيل" العام
-      { test: t => t.includes('تم') && t.includes('توصيل'), event: 'order.delivered', label: 'تم+توصيل→delivered' },
+      // ✅ v21: order.delivered له dedicated handler — لا تُصدر من هنا
       // ✅ بانتظار الدفع — "دفع" بدون "مدفوع"
       { test: t => t.includes('دفع') && !t.includes('مدفوع'), event: 'order.status.pending_payment', label: 'دفع→pending_payment' },
       // ✅ بانتظار المراجعة — event مختلف عن DB status!
@@ -638,14 +684,14 @@ export class SallaWebhookProcessor extends WorkerHost {
       { test: t => t.includes('معالج'), event: 'order.status.processing', label: 'معالج→processing' },
       // ✅ الشحن والتوصيل
       { test: t => t.includes('جاهز') && t.includes('شحن'), event: 'order.status.ready_to_ship', label: 'جاهز+شحن→ready_to_ship' },
-      { test: t => t.includes('تم') && t.includes('شحن'), event: 'order.shipped', label: 'تم+شحن→shipped' },
+      // ✅ v21: order.shipped له dedicated handler — لا تُصدر من هنا
       { test: t => t.includes('جاري') && t.includes('توصيل'), event: 'order.status.in_transit', label: 'جاري+توصيل→in_transit' },
       { test: t => t.includes('قيد') && t.includes('توصيل'), event: 'order.status.in_transit', label: 'قيد+توصيل→in_transit' },
       // ✅ الإلغاء والاسترجاع
-      { test: t => t.includes('ملغ'), event: 'order.cancelled', label: 'ملغ→cancelled' },
-      { test: t => t.includes('مسترجع'), event: 'order.refunded', label: 'مسترجع→refunded' },
-      { test: t => t.includes('سترجاع'), event: 'order.status.restoring', label: 'سترجاع→restoring' },
-      { test: t => t.includes('مستعاد'), event: 'order.status.restoring', label: 'مستعاد→restoring' },
+      // ✅ v21: order.cancelled له dedicated handler — لا تُصدر من هنا
+      // ✅ v21: order.refunded له dedicated handler — لا تُصدر من هنا
+      // ✅ v21: order.status.restoring له dedicated handler — لا تُصدر من هنا
+      // ✅ v21: order.status.restoring له dedicated handler — لا تُصدر من هنا
       // ✅ حالات أخرى
       { test: t => t.includes('معلق'), event: 'order.status.on_hold', label: 'معلق→on_hold' },
       { test: t => t.includes('جديد'), event: 'order.created', label: 'جديد→created' },
@@ -673,16 +719,16 @@ export class SallaWebhookProcessor extends WorkerHost {
       [normalizeArabic('مكتمل')]: 'order.status.completed',
       [normalizeArabic('جاري التوصيل')]: 'order.status.in_transit',
       [normalizeArabic('قيد التوصيل')]: 'order.status.in_transit',
-      [normalizeArabic('تم الشحن')]: 'order.shipped',
+      // ✅ v21: order.shipped له dedicated handler
       [normalizeArabic('جاهز للشحن')]: 'order.status.ready_to_ship',
       [normalizeArabic('بانتظار الدفع')]: 'order.status.pending_payment',
       [normalizeArabic('بإنتظار الدفع')]: 'order.status.pending_payment',
       [normalizeArabic('مدفوع')]: 'order.status.paid',
-      [normalizeArabic('تم التوصيل')]: 'order.delivered',
-      [normalizeArabic('ملغي')]: 'order.cancelled',
-      [normalizeArabic('مسترجع')]: 'order.refunded',
-      [normalizeArabic('قيد الاسترجاع')]: 'order.status.restoring',
-      [normalizeArabic('مستعاد')]: 'order.status.restoring',
+      // ✅ v21: order.delivered له dedicated handler
+      // ✅ v21: order.cancelled له dedicated handler
+      // ✅ v21: order.refunded له dedicated handler
+      // ✅ v21: order.status.restoring له dedicated handler
+      // ✅ v21: order.status.restoring له dedicated handler
       [normalizeArabic('معلق')]: 'order.status.on_hold',
     };
     if (arMap[normalizedSlug]) return arMap[normalizedSlug];
@@ -693,14 +739,14 @@ export class SallaWebhookProcessor extends WorkerHost {
     const dbMap: Record<string, string> = {
       [OrderStatus.CREATED]: 'order.created',
       [OrderStatus.PROCESSING]: 'order.status.processing',
-      [OrderStatus.SHIPPED]: 'order.shipped',
-      [OrderStatus.DELIVERED]: 'order.delivered',
+      // ✅ v21: order.shipped له dedicated handler
+      // ✅ v21: order.delivered له dedicated handler
       [OrderStatus.COMPLETED]: 'order.status.completed',
       [OrderStatus.READY_TO_SHIP]: 'order.status.ready_to_ship',
       [OrderStatus.PENDING_PAYMENT]: 'order.status.pending_payment',
       [OrderStatus.PAID]: 'order.status.paid',
-      [OrderStatus.CANCELLED]: 'order.cancelled',
-      [OrderStatus.REFUNDED]: 'order.refunded',
+      // ✅ v21: order.cancelled له dedicated handler
+      // ✅ v21: order.refunded له dedicated handler
       [OrderStatus.ON_HOLD]: 'order.status.on_hold',
     };
     return dbMap[dbStatus] || null;
