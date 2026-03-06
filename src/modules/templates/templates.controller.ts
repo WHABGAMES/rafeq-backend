@@ -368,21 +368,20 @@ export class TemplatesController {
         },
         {
           id: 'order_cod_confirmation',
+          // ✅ FIX CRITICAL: triggerEvent مُصلَح ليطابق emit في handleOrderCreated
+          // handleOrderCreated يُصدر 'order.cod.created' للـ COD
+          // القديم: 'order.created' → يتعارض مع قالب "طلب جديد" ❌
+          // الجديد: 'order.cod.created' → dispatch مستقل تماماً ✅
           name: 'تأكيد الدفع عند الاستلام',
           language: 'ar',
           category: 'order_notifications',
-          triggerEvent: 'order.created',
-          content: 'مرحباً {{customer_name}} 👋\n\nلديك طلب جديد رقم #{{order_id}} بقيمة {{order_total}} ريال\n\nطريقة الدفع: الدفع عند الاستلام 💵\n\nهل تؤكد طلبك؟',
+          triggerEvent: 'order.cod.created',
+          content: 'مرحباً {{customer_name}} 👋\n\nلديك طلب جديد رقم #{{order_id}} بقيمة {{order_total}} ريال\n\nطريقة الدفع: الدفع عند الاستلام 💵\n\nشكراً لطلبك من {{store_name}} 🛍️',
           buttons: [
-            { type: 'quick_reply', text: 'نعم، أؤكد ✅' },
-            { type: 'quick_reply', text: 'إلغاء الطلب ❌' },
+            { type: 'url', text: 'تتبع الطلب', url: '{{order_tracking}}' },
           ],
           sendSettings: {
-            sendingMode: 'conditional',
-            delayMinutes: 5,
-            triggerCondition: {
-              paymentMethod: 'cod',
-            },
+            sendingMode: 'instant',
             maxSendsPerCustomer: { count: 1, periodDays: 1 },
           },
         },
