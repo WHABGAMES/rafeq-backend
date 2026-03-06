@@ -443,9 +443,10 @@ export class TemplateDispatcherService {
       return;
     }
 
-    // ─── DEDUP: منع إرسال نفس الإشعار مرتين ──────────────────────────────────
-    // Key: أول مستلم + businessType + tenantId → يغطي 99% من حالات التكرار
-    const dedupKey = `comm:${notifiable[0]}-${businessType}-${tenantId}`;
+    // ─── DEDUP: منع إرسال نفس الإشعار مرتين عبر communication relay ──────
+    // كل مسار (dispatch / comm relay) له DEDUP مستقل
+    // لا نفحص dispatch key لأنه قد يُحذف بعد فشل الإرسال (timing issue)
+    const commDedupKey = `comm:${notifiable[0]}-${businessType}-${tenantId}`;
     const now = Date.now();
 
     // تنظيف cache من الإدخالات القديمة
@@ -453,9 +454,9 @@ export class TemplateDispatcherService {
       if (now - ts > this.DEDUP_WINDOW_MS) this.recentDispatches.delete(key);
     }
 
-    if (this.recentDispatches.has(dedupKey)) {
+    if (this.recentDispatches.has(commDedupKey)) {
       this.logger.warn(
-        `🔁 Communication relay DEDUP: skipping duplicate [${businessType}] → ${notifiable[0]} (within ${this.DEDUP_WINDOW_MS / 1000}s)`,
+        `🔁 Communication relay DEDUP: already sent [${businessType}] → ${notifiable[0]}`,
       );
       return;
     }
@@ -497,7 +498,7 @@ export class TemplateDispatcherService {
     const { content: finalContent, templateId } = resolved;
 
     // ─── تسجيل DEDUP بعد تأكيد وجود القالب ────────────────────────────────
-    this.recentDispatches.set(dedupKey, now);
+    this.recentDispatches.set(commDedupKey, now);
 
     // ─── الخطوة 2: الإرسال عبر القناة المناسبة ─────────────────────────────
     let sendSuccess = false;
@@ -593,14 +594,25 @@ export class TemplateDispatcherService {
       });
 
       if (!template) {
-        // ✅ القرار الصريح: لا قالب مفعَّل = لا إرسال
-        // رفيق لا يُرسل محتوى سلة الافتراضي تحت أي ظرف
-        // التاجر يجب أن يُنشئ قالباً من لوحة التحكم أولاً
+        // اعرض كل قوالب التاجر المفعّلة لتشخيص المشكلة فوراً
+        const allTemplates = await this.templateRepository.find({
+          where: { tenantId },
+          select: ['id', 'name', 'triggerEvent', 'status'] as any,
+          order: { updatedAt: 'DESC' } as any,
+          take: 20,
+        });
+
         this.logger.warn(
-          `⏭️  [${businessType}] SKIPPED — no active template (triggers: [${triggerCandidates.join(', ')}])`,
+          `⏭️  [${businessType}] SKIPPED — no active template`,
           {
             tenantId,
-            action: `Merchant must create & activate template with triggerEvent="${triggerCandidates[0]}"`,
+            searched_triggers: triggerCandidates,
+            hint: `Create & activate a template with triggerEvent="${triggerCandidates[0]}"`,
+            tenant_templates: allTemplates.map((t: any) => ({
+              name:    t.name,
+              trigger: t.triggerEvent,
+              status:  t.status,
+            })),
           },
         );
         return null;
@@ -1457,29 +1469,49 @@ export class TemplateDispatcherService {
     // ═══════════════════════════════════════════════════════════════════════════════
     // 🔍 DIAGNOSTIC: تشخيص شامل — يطبع كل المتطلبات بسطر واحد
     // ═══════════════════════════════════════════════════════════════════════════════
-    {
-      const diag: Record<string, unknown> = { trigger: triggerEvent, tenantId: tenantId || '❌ MISSING', storeId: storeId || '❌ MISSING' };
-      
-      if (tenantId) {
-        // فحص القوالب
-        const tplCount = await this.templateRepository.count({
-          where: [
-            { tenantId, triggerEvent, status: 'approved' },
-            { tenantId, triggerEvent, status: 'active' },
-          ],
+    // ─── DISPATCH DIAGNOSTIC (يظهر في كل مكالمة لـ dispatch) ──────────────
+    if (tenantId) {
+      const tplCount = await this.templateRepository.count({
+        where: [
+          { tenantId, triggerEvent, status: 'approved' as any },
+          { tenantId, triggerEvent, status: 'active'   as any },
+        ],
+      });
+
+      const ch    = await this.findActiveWhatsAppChannel(storeId, tenantId);
+      const phone = this.extractCustomerPhone(raw);
+
+      const diag: Record<string, unknown> = {
+        trigger:   triggerEvent,
+        tenantId,
+        storeId:   storeId || '❌ MISSING',
+        templates: tplCount > 0 ? `✅ ${tplCount}` : '❌ 0',
+        whatsapp:  ch    ? `✅ ${ch.id}`   : '❌ no channel',
+        phone:     phone ? `✅ ${phone}`   : '❌ no phone',
+      };
+
+      // ─── عند عدم وجود قالب: اعرض كل قوالب التاجر المفعّلة للتشخيص ─────────
+      if (tplCount === 0) {
+        const allTemplates = await this.templateRepository.find({
+          where: { tenantId },
+          select: ['id', 'name', 'triggerEvent', 'status'] as any,
+          order: { updatedAt: 'DESC' } as any,
+          take: 20,
         });
-        diag.templates = tplCount > 0 ? `✅ ${tplCount}` : '❌ 0 — لا يوجد قالب مفعّل لهذا الحدث';
 
-        // فحص القناة
-        const ch = await this.findActiveWhatsAppChannel(storeId, tenantId);
-        diag.whatsapp = ch ? `✅ ${ch.id}` : '❌ لا يوجد قناة واتساب متصلة';
+        diag['❌_reason']      = `لا يوجد قالب بـ triggerEvent="${triggerEvent}" وstatus=approved/active`;
+        diag['tenant_templates'] = allTemplates.map((t: any) => ({
+          name:    t.name,
+          trigger: t.triggerEvent,
+          status:  t.status,
+        }));
 
-        // فحص الهاتف
-        const phone = this.extractCustomerPhone(raw);
-        diag.phone = phone ? `✅ ${phone}` : '❌ لا يوجد رقم في البيانات';
+        this.logger.warn(`🔍 DISPATCH FAIL [${triggerEvent}]`, diag);
+      } else {
+        this.logger.log(`🔍 DISPATCH OK [${triggerEvent}]`, diag);
       }
-
-      this.logger.warn(`🔍 DISPATCH DIAGNOSTIC: ${JSON.stringify(diag)}`);
+    } else {
+      this.logger.warn(`🔍 DISPATCH FAIL: tenantId MISSING for trigger=${triggerEvent}`);
     }
 
     if (!tenantId) {
