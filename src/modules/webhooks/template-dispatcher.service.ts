@@ -104,16 +104,8 @@ export class TemplateDispatcherService {
 
   // ✅ v8: حُذف @OnEvent('order.status.updated') العام نهائياً - كل حالة لها listener خاص
 
-  // ✅ v7: Events خاصة بكل حالة طلب - كل حالة ترسل القالب الصحيح
-  //
-  // ✅ v22 FIX: in_progress و processing حالتان مستقلتان
-  // سلة slug الرسمي: in_progress = "قيد التنفيذ"
-  // processing = alias لبعض المتاجر القديمة
-  @OnEvent('order.status.in_progress')
-  async onOrderInProgress(payload: Record<string, unknown>) {
-    await this.dispatch('order.status.in_progress', payload);
-  }
-
+  // ✅ Events خاصة بكل حالة طلب - كل حالة ترسل القالب الصحيح
+  // القاعدة: trigger واحد لكل حالة — الترجمة slug→trigger تحدث في الـ Processor
   @OnEvent('order.status.processing')
   async onOrderProcessing(payload: Record<string, unknown>) {
     await this.dispatch('order.status.processing', payload);
@@ -654,7 +646,7 @@ export class TemplateDispatcherService {
    * │ businessType (Communication)    │ triggerEvent للبحث عن القالب                 │
    * ├─────────────────────────────────┼──────────────────────────────────────────────┤
    * │ auth.otp.verification           │ auth.otp.verification                        │
-   * │ order.status.confirmation       │ order.status.confirmation                    │
+   * │ order.status.confirmation       │ order.status.confirmation OR order.created   │
    * │ order.status.updated            │ DB lookup → order.status.<actual_slug>       │
    * │ order.invoice.issued            │ order.invoice.issued                         │
    * │ order.shipment.created          │ order.shipment.created                       │
@@ -708,6 +700,15 @@ export class TemplateDispatcherService {
         { entity },
       );
       return ['order.status.updated'];
+    }
+
+
+    // ─── order.status.confirmation: طلب جديد ──────────────────────────────
+    // سلة ترسل هذا لكل طلب جديد
+    // التاجر قد يُنشئ قالبه بـ order.status.confirmation أو order.created
+    // نبحث في كلاهما
+    if (businessType === 'order.status.confirmation') {
+      return ['order.status.confirmation', 'order.created'];
     }
 
     // ─── باقي الـ 16 نوع: trigger = businessType نفسه — لا استثناء ───────────
@@ -932,30 +933,25 @@ export class TemplateDispatcherService {
     // ─── خريطة OrderStatus → triggerEvent ───────────────────────────────────
     // ✅ كل حالة لها trigger مستقل تماماً — لا تداخل بين أي حالتين
     // slugs مأخوذة من Salla API docs الرسمية (NewOrderStatus schema)
-    const STATUS_TRIGGER_MAP: Record<string, string[]> = {
-      // ─── حالات التنفيذ ────────────────────────────────────────────────────
-      // ✅ v22 FIX: in_progress و processing منفصلان تماماً
-      'in_progress':     ['order.status.in_progress'],   // قيد التنفيذ — slug رسمي سلة
-      'processing':      ['order.status.processing'],    // alias قديم
-      'completed':       ['order.status.completed'],     // تم التنفيذ — مختلف!
-      // ─── حالات التوصيل ───────────────────────────────────────────────────
-      'in_transit':      ['order.status.in_transit'],
-      'shipped':         ['order.shipped'],
-      'delivered':       ['order.delivered'],
-      // ─── حالات المراجعة والانتظار ─────────────────────────────────────────
-      'under_review':    ['order.status.under_review'],
-      'ready_to_ship':   ['order.status.ready_to_ship'],
-      'pending_payment': ['order.status.pending_payment'],
-      'payment_pending': ['order.status.pending_payment'], // alias سلة الآخر
-      'on_hold':         ['order.status.on_hold'],
-      // ─── الإلغاء والاسترجاع ───────────────────────────────────────────────
-      'cancelled':       ['order.cancelled'],
-      'canceled':        ['order.cancelled'],             // spelling variant
-      'refunded':        ['order.refunded'],
-      'restoring':       ['order.status.restoring'],
-      // ─── الدفع والإنشاء ──────────────────────────────────────────────────
-      'paid':            ['order.status.paid'],
-      'created':         ['order.created'],
+    // ─── خريطة DB status → triggerEvent ──────────────────────────────────────
+    // القاعدة: كل DB status له trigger واحد فقط — لا aliases هنا
+    // الترجمة slug→DB حدثت في mapSallaOrderStatus (salla-webhook.processor)
+    // هنا فقط نقرأ الـ DB status ونُحدّد الـ trigger
+    const STATUS_TRIGGER_MAP: Record<string, string> = {
+      'processing':        'order.status.processing',   // قيد التنفيذ (in_progress + processing)
+      'completed':         'order.status.completed',    // تم التنفيذ
+      'in_transit':        'order.status.in_transit',
+      'shipped':           'order.shipped',
+      'delivered':         'order.delivered',
+      'under_review':      'order.status.under_review',
+      'ready_to_ship':     'order.status.ready_to_ship',
+      'pending_payment':   'order.status.pending_payment',
+      'on_hold':           'order.status.on_hold',
+      'cancelled':         'order.cancelled',
+      'refunded':          'order.refunded',
+      'restoring':         'order.status.restoring',
+      'paid':              'order.status.paid',
+      'created':           'order.created',
     };
 
     try {
@@ -985,11 +981,11 @@ export class TemplateDispatcherService {
 
       if (order?.status) {
         const status = order.status.toLowerCase();
-        const triggers = STATUS_TRIGGER_MAP[status];
+        const trigger = STATUS_TRIGGER_MAP[status];
 
-        if (triggers) {
-          this.logger.debug(`🗺️ Order DB status="${status}" → triggers: [${triggers.join(', ')}]`);
-          return triggers;
+        if (trigger) {
+          this.logger.debug(`🗺️ Order DB status="${status}" → trigger: ${trigger}`);
+          return [trigger];
         }
 
         return [`order.status.${status}`];
@@ -1032,9 +1028,9 @@ export class TemplateDispatcherService {
    * "تم تغيير حالة طلبك رقم 245225985 إلى تم الشحن"
    */
   private extractTriggersFromSallaText(text: string): string[] {
-    // ⚠️ كل حالة لها trigger واحد فقط — لا تداخل
-    // ✅ النصوص مأخوذة من ما يرسله سلة فعلاً في الـ webhook
-    // ✅ الترتيب مهم: الأطول والأكثر تحديداً أولاً
+    // ✅ كل حالة لها trigger واحد ثابت
+    // الترجمة slug→trigger حدثت في mapStatusToSpecificEvent (مكان واحد فقط)
+    // هنا نستخرج trigger من النص العربي فقط
     const TEXT_STATUS_MAP: Array<{ patterns: string[]; trigger: string }> = [
       // ─── التوصيل ─────────────────────────────────────────────────────────
       {
@@ -1055,16 +1051,13 @@ export class TemplateDispatcherService {
         trigger: 'order.status.ready_to_ship',
       },
       // ─── التنفيذ — قيد التنفيذ (in_progress) ────────────────────────────
-      // ✅ "قيد التنفيذ" → order.status.in_progress (slug رسمي من سلة)
-      // ⚠️ مستقل تماماً عن "تم التنفيذ"
+      // ✅ يبحث عن كلا الاسمين: in_progress (جديد) و processing (قديم)
       {
         patterns: ['قيد التنفيذ', 'جاري التنفيذ', 'قيد المعالجة', 'جاري المعالجة', 'يُعالَج'],
-        trigger: 'order.status.in_progress',
+        trigger: 'order.status.processing',
       },
       // ─── الإكمال — تم التنفيذ (completed) ────────────────────────────────
-      // ✅ "تم التنفيذ" → order.status.completed
-      // ⚠️ مختلف تماماً عن "قيد التنفيذ" — قالب مستقل
-      // سلة ترسل: "أصبحت حالة طلبك #218103278 [تم التنفيذ]"
+      // ✅ مختلف تماماً عن قيد التنفيذ
       {
         patterns: ['تم التنفيذ', 'تم الإكمال', 'اكتمل الطلب', 'تم إكمال', 'مكتمل', 'اكتمل'],
         trigger: 'order.status.completed',
@@ -1076,25 +1069,20 @@ export class TemplateDispatcherService {
       },
       // ─── الإلغاء ─────────────────────────────────────────────────────────
       {
-        patterns: ['تم الإلغاء', 'تم إلغاء', 'ملغي', 'إلغاء الطلب'],
+        patterns: ['تم الإلغاء', 'ألغي الطلب', 'إلغاء الطلب', 'طلبك ملغي'],
         trigger: 'order.cancelled',
       },
       // ─── الاسترجاع ───────────────────────────────────────────────────────
-      // ✅ "قيد الإسترجاع" → restoring (حالة وسيطة قبل الاسترداد الكامل)
       {
-        patterns: ['قيد الإسترجاع', 'قيد الاسترجاع', 'جاري الاسترجاع', 'جاري الإسترجاع'],
+        patterns: ['قيد الاسترجاع', 'يتم إرجاع', 'قيد الإرجاع', 'تم الاسترجاع'],
         trigger: 'order.status.restoring',
       },
-      // ✅ "مسترجع" و "تم الاسترداد" → refunded
+      // ─── الانتظار ────────────────────────────────────────────────────────
       {
-        patterns: ['مسترجع', 'تم الاسترداد', 'تم الإرجاع', 'مُسترد', 'تم استرداد'],
-        trigger: 'order.refunded',
-      },
-      // ─── الدفع ───────────────────────────────────────────────────────────
-      {
-        patterns: ['في انتظار الدفع', 'بانتظار الدفع', 'معلق الدفع', 'انتظار الدفع'],
+        patterns: ['بانتظار الدفع', 'في انتظار الدفع', 'لم يكتمل الدفع'],
         trigger: 'order.status.pending_payment',
       },
+      // ─── الدفع ───────────────────────────────────────────────────────────
       {
         patterns: ['تم الدفع', 'تم تأكيد الدفع', 'اكتمل الدفع'],
         trigger: 'order.status.paid',
