@@ -184,11 +184,14 @@ export class TemplatesService {
       return this.mapToResponse(updated);
     }
 
-    // ✅ قالب جديد تماماً
+    // ✅ قالب جديد — active افتراضياً (رفيق لا يحتاج Meta approval workflow)
+    // disabled/rejected هي الحالات التي تمنع الإرسال فقط
     const status =
-      dto.status === 'approved' ? TemplateStatus.APPROVED
-      : dto.status === 'active' ? TemplateStatus.ACTIVE
-      : TemplateStatus.DRAFT;
+      dto.status === 'disabled'         ? TemplateStatus.DISABLED
+      : dto.status === 'rejected'       ? TemplateStatus.REJECTED
+      : dto.status === 'approved'       ? TemplateStatus.APPROVED
+      : dto.status === 'pending_approval' ? TemplateStatus.PENDING_APPROVAL
+      : TemplateStatus.ACTIVE;           // ← default: active (لا draft)
 
     this.logger.log(`📝 Creating NEW: name="${dto.name}", mappedStatus=${status}, sendSettings=${JSON.stringify(dto.sendSettings || null)}`);
 
