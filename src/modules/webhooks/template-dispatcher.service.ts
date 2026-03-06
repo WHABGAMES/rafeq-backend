@@ -105,6 +105,15 @@ export class TemplateDispatcherService {
   // ✅ v8: حُذف @OnEvent('order.status.updated') العام نهائياً - كل حالة لها listener خاص
 
   // ✅ v7: Events خاصة بكل حالة طلب - كل حالة ترسل القالب الصحيح
+  //
+  // ✅ v22 FIX: in_progress و processing حالتان مستقلتان
+  // سلة slug الرسمي: in_progress = "قيد التنفيذ"
+  // processing = alias لبعض المتاجر القديمة
+  @OnEvent('order.status.in_progress')
+  async onOrderInProgress(payload: Record<string, unknown>) {
+    await this.dispatch('order.status.in_progress', payload);
+  }
+
   @OnEvent('order.status.processing')
   async onOrderProcessing(payload: Record<string, unknown>) {
     await this.dispatch('order.status.processing', payload);
@@ -921,20 +930,30 @@ export class TemplateDispatcherService {
     }
 
     // ─── خريطة OrderStatus → triggerEvent ───────────────────────────────────
-    // ⚠️ كل حالة لها trigger مستقل — لا تداخل
+    // ✅ كل حالة لها trigger مستقل تماماً — لا تداخل بين أي حالتين
+    // slugs مأخوذة من Salla API docs الرسمية (NewOrderStatus schema)
     const STATUS_TRIGGER_MAP: Record<string, string[]> = {
-      'processing':      ['order.status.processing'],
-      'completed':       ['order.status.completed'],
+      // ─── حالات التنفيذ ────────────────────────────────────────────────────
+      // ✅ v22 FIX: in_progress و processing منفصلان تماماً
+      'in_progress':     ['order.status.in_progress'],   // قيد التنفيذ — slug رسمي سلة
+      'processing':      ['order.status.processing'],    // alias قديم
+      'completed':       ['order.status.completed'],     // تم التنفيذ — مختلف!
+      // ─── حالات التوصيل ───────────────────────────────────────────────────
       'in_transit':      ['order.status.in_transit'],
       'shipped':         ['order.shipped'],
       'delivered':       ['order.delivered'],
+      // ─── حالات المراجعة والانتظار ─────────────────────────────────────────
       'under_review':    ['order.status.under_review'],
       'ready_to_ship':   ['order.status.ready_to_ship'],
       'pending_payment': ['order.status.pending_payment'],
+      'payment_pending': ['order.status.pending_payment'], // alias سلة الآخر
       'on_hold':         ['order.status.on_hold'],
+      // ─── الإلغاء والاسترجاع ───────────────────────────────────────────────
       'cancelled':       ['order.cancelled'],
+      'canceled':        ['order.cancelled'],             // spelling variant
       'refunded':        ['order.refunded'],
-      'restoring':       ['order.status.restoring'],   // ✅ قيد الإسترجاع
+      'restoring':       ['order.status.restoring'],
+      // ─── الدفع والإنشاء ──────────────────────────────────────────────────
       'paid':            ['order.status.paid'],
       'created':         ['order.created'],
     };
@@ -1035,16 +1054,19 @@ export class TemplateDispatcherService {
         patterns: ['جاهز للشحن', 'جاهز للإرسال', 'استعداد للشحن'],
         trigger: 'order.status.ready_to_ship',
       },
-      // ─── التنفيذ والمعالجة ────────────────────────────────────────────────
-      // ✅ "تم التنفيذ" و "قيد التنفيذ" كلاهما → processing
+      // ─── التنفيذ — قيد التنفيذ (in_progress) ────────────────────────────
+      // ✅ "قيد التنفيذ" → order.status.in_progress (slug رسمي من سلة)
+      // ⚠️ مستقل تماماً عن "تم التنفيذ"
       {
-        patterns: ['تم التنفيذ', 'قيد التنفيذ', 'جاري المعالجة', 'قيد المعالجة', 'جاري التنفيذ'],
-        trigger: 'order.status.processing',
+        patterns: ['قيد التنفيذ', 'جاري التنفيذ', 'قيد المعالجة', 'جاري المعالجة', 'يُعالَج'],
+        trigger: 'order.status.in_progress',
       },
-      // ─── الإكمال ─────────────────────────────────────────────────────────
-      // ✅ "تم الإكمال" → completed (بعد التوصيل والتأكيد)
+      // ─── الإكمال — تم التنفيذ (completed) ────────────────────────────────
+      // ✅ "تم التنفيذ" → order.status.completed
+      // ⚠️ مختلف تماماً عن "قيد التنفيذ" — قالب مستقل
+      // سلة ترسل: "أصبحت حالة طلبك #218103278 [تم التنفيذ]"
       {
-        patterns: ['تم الإكمال', 'اكتمل الطلب', 'تم إكمال', 'مكتمل'],
+        patterns: ['تم التنفيذ', 'تم الإكمال', 'اكتمل الطلب', 'تم إكمال', 'مكتمل', 'اكتمل'],
         trigger: 'order.status.completed',
       },
       // ─── المراجعة ────────────────────────────────────────────────────────
