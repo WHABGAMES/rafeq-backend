@@ -491,7 +491,7 @@ export class SallaWebhookProcessor extends WorkerHost {
       // ✅ بانتظار الدفع — الكلمة المميزة "دفع" بدون "مدفوع"
       { test: t => t.includes('دفع') && !t.includes('مدفوع'), status: OrderStatus.PENDING_PAYMENT, label: 'دفع→PENDING_PAYMENT' },
       // ✅ بانتظار المراجعة — DB status = PROCESSING (لا يوجد UNDER_REVIEW في الـ enum)
-      { test: t => t.includes('مراجع'), status: OrderStatus.PROCESSING, label: 'مراجع→PROCESSING' },
+      { test: t => t.includes('مراجع'), status: OrderStatus.UNDER_REVIEW, label: 'مراجع→UNDER_REVIEW' },
       // ✅ قيد التنفيذ / قيد المعالجة
       { test: t => t.includes('تنفيذ'), status: OrderStatus.PROCESSING, label: 'تنفيذ→PROCESSING' },
       { test: t => t.includes('معالج'), status: OrderStatus.PROCESSING, label: 'معالج→PROCESSING' },
@@ -542,8 +542,8 @@ export class SallaWebhookProcessor extends WorkerHost {
       [normalizeArabic('فشل')]: OrderStatus.FAILED,
       [normalizeArabic('معلق')]: OrderStatus.ON_HOLD,
       [normalizeArabic('مستعاد')]: OrderStatus.PROCESSING,
-      [normalizeArabic('بانتظار المراجعة')]: OrderStatus.PROCESSING,
-      [normalizeArabic('بإنتظار المراجعة')]: OrderStatus.PROCESSING,
+      [normalizeArabic('بانتظار المراجعة')]: OrderStatus.UNDER_REVIEW,
+      [normalizeArabic('بإنتظار المراجعة')]: OrderStatus.UNDER_REVIEW,
       [normalizeArabic('قيد الاسترجاع')]: OrderStatus.REFUNDED,
     };
     if (arMap[normalized]) return arMap[normalized];
@@ -626,39 +626,104 @@ export class SallaWebhookProcessor extends WorkerHost {
     data: Record<string, unknown>,
     context: { tenantId?: string; storeId?: string; webhookEventId: string },
   ): Promise<Record<string, unknown>> {
-    this.logger.log('Processing order.updated', { orderId: data.id });
-
     const orderObj = data.order as Record<string, unknown> | undefined;
-    const statusCandidate = data.status ?? orderObj?.status;
+    const normalizedData: Record<string, unknown> = orderObj && typeof orderObj === 'object'
+      ? {
+          ...orderObj,
+          ...data,
+          id: data.id ?? orderObj.id,
+          customer: (data.customer as Record<string, unknown> | undefined) ?? (orderObj.customer as Record<string, unknown> | undefined),
+        }
+      : data;
+
+    const normalizedOrderId = normalizedData.id ?? data.id;
+    this.logger.log('Processing order.updated', { orderId: normalizedOrderId });
+
+    const statusCandidate = normalizedData.status;
+    const previousStatus = normalizedData.previous_status;
 
     if (statusCandidate !== undefined && statusCandidate !== null) {
-      this.logger.log('order.updated contains status - forwarding to status handler', {
-        orderId: data.id,
+      const templateSlug = this.extractCustomizedStatus(statusCandidate);
+      const mappedStatus = this.mapSallaOrderStatus(statusCandidate);
+      const specificEvent = this.mapStatusToSpecificEvent(templateSlug, mappedStatus);
+      const criticalFallbackEvents = new Set([
+        'order.created',
+        'order.status.pending_payment',
+        'order.status.under_review',
+      ]);
+      const hasPreviousStatus = previousStatus !== undefined && previousStatus !== null;
+
+      let hasRealStatusTransition = false;
+      let transitionCheckPerformed = false;
+      if (context.storeId && normalizedOrderId !== undefined && normalizedOrderId !== null) {
+        transitionCheckPerformed = true;
+        try {
+          const existingOrder = await this.orderRepository.findOne({
+            where: {
+              storeId: context.storeId,
+              sallaOrderId: String(normalizedOrderId),
+            },
+          });
+          hasRealStatusTransition = !existingOrder || existingOrder.status !== mappedStatus;
+        } catch (error: unknown) {
+          this.logger.warn('order.updated transition check failed, allowing status dispatch', {
+            orderId: normalizedOrderId,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          });
+          hasRealStatusTransition = true;
+        }
+      }
+
+      const shouldForwardToStatusHandler =
+        hasPreviousStatus ||
+        hasRealStatusTransition ||
+        (!transitionCheckPerformed && !!specificEvent && criticalFallbackEvents.has(specificEvent));
+
+      if (shouldForwardToStatusHandler) {
+        this.logger.log('order.updated routed to status handler', {
+          orderId: normalizedOrderId,
+          templateSlug,
+          specificEvent: specificEvent || 'NONE',
+          hasPreviousStatus,
+          hasRealStatusTransition,
+          transitionCheckPerformed,
+        });
+        return this.handleOrderStatusUpdated(
+          {
+            ...normalizedData,
+            id: normalizedOrderId,
+            status: statusCandidate,
+            ...(hasPreviousStatus ? { previous_status: previousStatus } : {}),
+          },
+          context,
+        );
+      }
+
+      this.logger.debug('order.updated has status but is not a critical transition, skipping status dispatch', {
+        orderId: normalizedOrderId,
+        templateSlug,
+        specificEvent: specificEvent || 'NONE',
       });
-      return this.handleOrderStatusUpdated(
-        { ...data, status: statusCandidate },
-        context,
-      );
     }
 
     let savedCustomer: Customer | null = null;
-    const customerData = (data.customer || orderObj?.customer) as Record<string, unknown> | undefined;
+    const customerData = normalizedData.customer as Record<string, unknown> | undefined;
     if (customerData?.id) {
       savedCustomer = await this.syncCustomerToDatabase(customerData, context);
     }
-    const savedOrder = await this.syncOrderToDatabase(data, context, savedCustomer?.id);
+    const savedOrder = await this.syncOrderToDatabase(normalizedData, context, savedCustomer?.id);
 
     this.eventEmitter.emit('order.updated', {
       tenantId: context.tenantId,
       storeId: context.storeId,
-      orderId: data.id,
-      raw: data,
+      orderId: normalizedOrderId,
+      raw: normalizedData,
     });
 
     return {
       handled: true,
       action: 'order_updated',
-      orderId: data.id,
+      orderId: normalizedOrderId,
       routedToStatusHandler: false,
       dbOrderId: savedOrder?.id || 'sync_failed',
       dbCustomerId: savedCustomer?.id || 'no_customer',
