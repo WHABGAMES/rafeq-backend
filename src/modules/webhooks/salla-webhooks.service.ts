@@ -106,10 +106,16 @@ export class SallaWebhooksService {
           storeId: storeInfo?.storeId,
         },
         {
-          jobId: payload.idempotencyKey,
+          // ✅ FIX CRITICAL: لا نستخدم idempotencyKey كـ jobId في BullMQ
+          // السبب: BullMQ يتجاهل add() بصمت إذا jobId موجود (حتى لو failed)
+          // النتيجة: webhook لأول فشل → blocked للأبد → لا لوق → لا إشعار
+          // الحل: checkDuplicate في DB يتولى منع التكرار (موثوق أكثر)
+          // jobId: payload.idempotencyKey, ← محذوف
           priority: this.getEventPriority(payload.eventType),
           removeOnComplete: true,
-          removeOnFail: false,
+          removeOnFail: true,   // ✅ حذف الـ failed jobs حتى لا تحجب القادمة
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 5000 },
         },
       );
 
@@ -139,14 +145,9 @@ export class SallaWebhooksService {
   }
 
   /**
-   * ✅ FIX (Idempotency): يمنع التكرار للـ webhooks الناجحة فقط
-   *
-   * المشكلة السابقة:
-   *   webhook يصل → يُحفظ PENDING → يفشل (tenantId مفقود) → يُصبح FAILED
-   *   سلة تُعيد الإرسال → checkDuplicate يجد FAILED → يتجاهله → يضيع الإشعار للأبد
-   *
-   * الحل: نمنع التكرار فقط للحالات PROCESSED أو PROCESSING
-   *   FAILED / PENDING / SKIPPED → نسمح بإعادة المحاولة من سلة
+   * ✅ منع تكرار معالجة نفس الـ webhook
+   * يمنع فقط: PROCESSED و PROCESSING
+   * يسمح بإعادة المحاولة: FAILED / PENDING / SKIPPED
    */
   async checkDuplicate(idempotencyKey: string): Promise<boolean> {
     const existing = await this.webhookEventRepository.findOne({
@@ -154,17 +155,22 @@ export class SallaWebhooksService {
         { idempotencyKey, status: WebhookStatus.PROCESSED },
         { idempotencyKey, status: WebhookStatus.PROCESSING },
       ],
-      select: ['id', 'status'],
+      select: ['id', 'status', 'eventType'],
     });
 
     if (existing) {
-      this.logger.debug(
-        `🔁 Duplicate webhook blocked (status=${existing.status})`,
-        { idempotencyKey: idempotencyKey.substring(0, 16) + '...' },
+      this.logger.warn(
+        `🔁 Duplicate webhook BLOCKED — already ${existing.status}`,
+        {
+          idempotencyKey: idempotencyKey.substring(0, 16) + '...',
+          existingId: existing.id,
+          eventType: (existing as any).eventType,
+        },
       );
+      return true;
     }
 
-    return !!existing;
+    return false;
   }
 
   async getStoreSecret(merchantId: number): Promise<string | undefined> {
