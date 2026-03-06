@@ -178,6 +178,7 @@ export class SallaWebhookProcessor extends WorkerHost {
   private async handleEvent(eventType: string, data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
     switch (eventType) {
       case SallaEventType.ORDER_CREATED:          return this.handleOrderCreated(data, context);
+      case SallaEventType.ORDER_UPDATED:          return this.handleOrderUpdated(data, context);
       case SallaEventType.ORDER_STATUS_UPDATED:   return this.handleOrderStatusUpdated(data, context);
       case SallaEventType.ORDER_PAYMENT_UPDATED:  return this.handleOrderPaymentUpdated(data, context);
       case SallaEventType.ORDER_SHIPPED:          return this.handleOrderShipped(data, context);
@@ -617,6 +618,54 @@ export class SallaWebhookProcessor extends WorkerHost {
     };
   }
 
+  /**
+   * Handles Salla `order.updated` as a resilient alias for status transitions.
+   * Some stores receive early status changes on this event instead of `order.status.updated`.
+   */
+  private async handleOrderUpdated(
+    data: Record<string, unknown>,
+    context: { tenantId?: string; storeId?: string; webhookEventId: string },
+  ): Promise<Record<string, unknown>> {
+    this.logger.log('Processing order.updated', { orderId: data.id });
+
+    const orderObj = data.order as Record<string, unknown> | undefined;
+    const statusCandidate = data.status ?? orderObj?.status;
+
+    if (statusCandidate !== undefined && statusCandidate !== null) {
+      this.logger.log('order.updated contains status - forwarding to status handler', {
+        orderId: data.id,
+      });
+      return this.handleOrderStatusUpdated(
+        { ...data, status: statusCandidate },
+        context,
+      );
+    }
+
+    let savedCustomer: Customer | null = null;
+    const customerData = (data.customer || orderObj?.customer) as Record<string, unknown> | undefined;
+    if (customerData?.id) {
+      savedCustomer = await this.syncCustomerToDatabase(customerData, context);
+    }
+    const savedOrder = await this.syncOrderToDatabase(data, context, savedCustomer?.id);
+
+    this.eventEmitter.emit('order.updated', {
+      tenantId: context.tenantId,
+      storeId: context.storeId,
+      orderId: data.id,
+      raw: data,
+    });
+
+    return {
+      handled: true,
+      action: 'order_updated',
+      orderId: data.id,
+      routedToStatusHandler: false,
+      dbOrderId: savedOrder?.id || 'sync_failed',
+      dbCustomerId: savedCustomer?.id || 'no_customer',
+      emittedEvent: 'order.updated',
+    };
+  }
+
 
   private async handleOrderStatusUpdated(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
     // ✅ v10: LOG كامل لبيانات الحالة
@@ -756,14 +805,22 @@ export class SallaWebhookProcessor extends WorkerHost {
         customized_name: obj.customized?.name,
       });
 
-      // ✅ الأولوية: customized.slug → slug → customized.name → name
-      if (obj.customized?.slug && typeof obj.customized.slug === 'string') return obj.customized.slug.toLowerCase();
-
-      // ✅ v22 FIX: إذا slug غامض (pending/new/created) → لا تعتمد عليه
-      // سلة تُرسل slug="pending" لكل الحالات الأولية بما فيها "بانتظار الدفع"
-      // الـ name العربي يُعطي السياق الحقيقي
+      // ✅ v23 FIX: if customized.slug or slug is ambiguous (pending/new/created),
+      // fall back to human-readable names to avoid collapsing distinct states
+      // into order.created.
       const AMBIGUOUS_SLUGS = ['pending', 'new', 'created'];
-      const slug = obj.slug && typeof obj.slug === 'string' ? obj.slug.toLowerCase() : '';
+      const customizedSlug =
+        obj.customized?.slug && typeof obj.customized.slug === 'string'
+          ? obj.customized.slug.toLowerCase()
+          : '';
+      const slug =
+        obj.slug && typeof obj.slug === 'string'
+          ? obj.slug.toLowerCase()
+          : '';
+
+      if (customizedSlug && !AMBIGUOUS_SLUGS.includes(customizedSlug)) {
+        return customizedSlug;
+      }
 
       if (slug && !AMBIGUOUS_SLUGS.includes(slug)) {
         // slug واضح → نستخدمه مباشرة
