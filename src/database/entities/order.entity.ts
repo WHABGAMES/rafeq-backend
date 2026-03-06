@@ -19,10 +19,6 @@ import { Customer } from './customer.entity';
 
 export enum OrderStatus {
   CREATED = 'created',
-  // ✅ v22 FIX: in_progress و processing حالتان مستقلتان
-  // in_progress = 'قيد التنفيذ' — slug رسمي من سلة (يحتاج قالب مستقل)
-  // processing  = alias قديم لبعض المتاجر
-  IN_PROGRESS = 'in_progress',
   PROCESSING = 'processing',
   PENDING_PAYMENT = 'pending_payment',
   PAID = 'paid',
