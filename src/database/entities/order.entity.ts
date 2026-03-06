@@ -20,6 +20,7 @@ import { Customer } from './customer.entity';
 export enum OrderStatus {
   CREATED = 'created',
   PROCESSING = 'processing',
+  UNDER_REVIEW = 'under_review',
   PENDING_PAYMENT = 'pending_payment',
   PAID = 'paid',
   READY_TO_SHIP = 'ready_to_ship',
@@ -28,6 +29,7 @@ export enum OrderStatus {
   COMPLETED = 'completed',
   CANCELLED = 'cancelled',
   REFUNDED = 'refunded',
+  RESTORING = 'restoring',
   FAILED = 'failed',
   ON_HOLD = 'on_hold',
 }
