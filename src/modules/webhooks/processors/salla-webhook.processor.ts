@@ -406,9 +406,10 @@ export class SallaWebhookProcessor extends WorkerHost {
       'refunded':          OrderStatus.REFUNDED,
       'failed':            OrderStatus.FAILED,
       'on_hold':           OrderStatus.ON_HOLD,
-      'restored':          OrderStatus.PROCESSING,
-      'under_review':      OrderStatus.PROCESSING,
-      'awaiting_review':   OrderStatus.PROCESSING,
+      'restoring':         OrderStatus.RESTORING,
+      'restored':          OrderStatus.RESTORING,
+      'under_review':      OrderStatus.UNDER_REVIEW,
+      'awaiting_review':   OrderStatus.UNDER_REVIEW,
     };
     if (engMap[s]) return engMap[s];
 
