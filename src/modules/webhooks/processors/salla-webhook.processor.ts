@@ -382,17 +382,32 @@ export class SallaWebhookProcessor extends WorkerHost {
     // 1. بحث إنجليزي مباشر (الأسرع والأكثر دقة)
     // ═══════════════════════════════════════════════════════════════
     const engMap: Record<string, OrderStatus> = {
-      'created': OrderStatus.CREATED, 'new': OrderStatus.CREATED, 'pending': OrderStatus.CREATED,
-      'processing': OrderStatus.PROCESSING, 'in_progress': OrderStatus.PROCESSING,
-      'pending_payment': OrderStatus.PENDING_PAYMENT, 'paid': OrderStatus.PAID,
-      'ready_to_ship': OrderStatus.READY_TO_SHIP, 'ready': OrderStatus.READY_TO_SHIP,
-      'shipped': OrderStatus.SHIPPED, 'delivering': OrderStatus.SHIPPED,
-      'in_transit': OrderStatus.SHIPPED, 'out_for_delivery': OrderStatus.SHIPPED,
-      'delivered': OrderStatus.DELIVERED, 'completed': OrderStatus.COMPLETED,
-      'cancelled': OrderStatus.CANCELLED, 'canceled': OrderStatus.CANCELLED,
-      'refunded': OrderStatus.REFUNDED, 'failed': OrderStatus.FAILED, 'on_hold': OrderStatus.ON_HOLD,
-      'restored': OrderStatus.PROCESSING, 'under_review': OrderStatus.PROCESSING,
-      'awaiting_review': OrderStatus.PROCESSING, 'awaiting_payment': OrderStatus.PENDING_PAYMENT,
+      'created':           OrderStatus.CREATED,
+      'new':               OrderStatus.CREATED,
+      'pending':           OrderStatus.CREATED,
+      // ✅ v22 FIX: in_progress → IN_PROGRESS (حالة مستقلة، لا تُدمَج مع PROCESSING)
+      'in_progress':       OrderStatus.IN_PROGRESS,  // قيد التنفيذ — slug سلة الرسمي
+      'processing':        OrderStatus.PROCESSING,   // alias قديم
+      'pending_payment':   OrderStatus.PENDING_PAYMENT,
+      'payment_pending':   OrderStatus.PENDING_PAYMENT,
+      'awaiting_payment':  OrderStatus.PENDING_PAYMENT,
+      'paid':              OrderStatus.PAID,
+      'ready_to_ship':     OrderStatus.READY_TO_SHIP,
+      'ready':             OrderStatus.READY_TO_SHIP,
+      'shipped':           OrderStatus.SHIPPED,
+      'delivering':        OrderStatus.SHIPPED,
+      'in_transit':        OrderStatus.SHIPPED,
+      'out_for_delivery':  OrderStatus.SHIPPED,
+      'delivered':         OrderStatus.DELIVERED,
+      'completed':         OrderStatus.COMPLETED,    // تم التنفيذ
+      'cancelled':         OrderStatus.CANCELLED,
+      'canceled':          OrderStatus.CANCELLED,
+      'refunded':          OrderStatus.REFUNDED,
+      'failed':            OrderStatus.FAILED,
+      'on_hold':           OrderStatus.ON_HOLD,
+      'restored':          OrderStatus.PROCESSING,
+      'under_review':      OrderStatus.PROCESSING,
+      'awaiting_review':   OrderStatus.PROCESSING,
     };
     if (engMap[s]) return engMap[s];
 
@@ -640,40 +655,44 @@ export class SallaWebhookProcessor extends WorkerHost {
   }
 
   /**
-   * ✅ v10: ربط حالة سلة → event خاص للقالب
-   * يستخدم normalizeArabic لمطابقة "بإنتظار" = "بانتظار" وكل اختلافات الهمزات
+   * ✅ v22 FIX: ربط حالة سلة → event خاص للقالب
+   *
+   * ✅ الإصلاح الجذري:
+   * 'in_progress' → 'order.status.in_progress'  (قيد التنفيذ — slug رسمي من سلة)
+   * 'completed'   → 'order.status.completed'    (تم التنفيذ)
+   * كل حالة لها event مستقل = قالب مستقل
    */
   private mapStatusToSpecificEvent(statusSlug: string, dbStatus: OrderStatus): string | null {
     // ═══════════════════════════════════════════════════════════════
     // 1. بحث إنجليزي مباشر (slug من سلة)
     // ═══════════════════════════════════════════════════════════════
     const slugMap: Record<string, string> = {
-      'created': 'order.created',
-      'new': 'order.created',
-      'pending': 'order.created',
-      'processing': 'order.status.processing',
-      'in_progress': 'order.status.processing',
-      'under_review': 'order.status.under_review',
-      'awaiting_review': 'order.status.under_review',
-      'completed': 'order.status.completed',
-      'in_transit': 'order.status.in_transit',
-      'out_for_delivery': 'order.status.in_transit',
-      'delivering': 'order.status.in_transit',
-      'ready_to_ship': 'order.status.ready_to_ship',
-      'ready': 'order.status.ready_to_ship',
-      'pending_payment': 'order.status.pending_payment',
-      'awaiting_payment': 'order.status.pending_payment',
-      'paid': 'order.status.paid',
-      'restoring': 'order.status.restoring',
-      'restored': 'order.status.restoring',
-      'on_hold': 'order.status.on_hold',
-      // ✅ v22: مُعادة — سلة قد ترسل order.status.updated فقط بدون webhook منفصل
-      // DEDUP (60s window) يمنع الإرسال المزدوج إذا وصل كلاهما
-      'shipped': 'order.shipped',
-      'delivered': 'order.delivered',
-      'cancelled': 'order.cancelled',
-      'canceled': 'order.cancelled',
-      'refunded': 'order.refunded',
+      'created':           'order.created',
+      'new':               'order.created',
+      'pending':           'order.created',
+      // ✅ v22 FIX: in_progress ≠ processing — حالتان مختلفتان
+      'in_progress':       'order.status.in_progress',  // قيد التنفيذ (slug سلة الرسمي)
+      'processing':        'order.status.processing',   // alias قديم لبعض المتاجر
+      'completed':         'order.status.completed',    // تم التنفيذ
+      'under_review':      'order.status.under_review',
+      'awaiting_review':   'order.status.under_review',
+      'in_transit':        'order.status.in_transit',
+      'out_for_delivery':  'order.status.in_transit',
+      'delivering':        'order.status.in_transit',
+      'ready_to_ship':     'order.status.ready_to_ship',
+      'ready':             'order.status.ready_to_ship',
+      'pending_payment':   'order.status.pending_payment',
+      'payment_pending':   'order.status.pending_payment',
+      'awaiting_payment':  'order.status.pending_payment',
+      'paid':              'order.status.paid',
+      'restoring':         'order.status.restoring',
+      'restored':          'order.status.restoring',
+      'on_hold':           'order.status.on_hold',
+      'shipped':           'order.shipped',
+      'delivered':         'order.delivered',
+      'cancelled':         'order.cancelled',
+      'canceled':          'order.cancelled',
+      'refunded':          'order.refunded',
     };
     if (slugMap[statusSlug]) return slugMap[statusSlug];
 
