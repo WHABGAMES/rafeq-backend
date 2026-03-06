@@ -228,7 +228,7 @@ export class MessageTemplate extends BaseEntity {
   @Column({
     type: 'varchar',
     length: 50,
-    default: 'draft',
+    default: 'active',   // ← active بدل draft — رفيق لا يحتاج approval workflow
   })
   status: string;
 
