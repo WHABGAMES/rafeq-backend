@@ -57,6 +57,13 @@ export class TemplateDispatcherService {
   private readonly recentDispatches = new Map<string, number>();
   private readonly DEDUP_WINDOW_MS = 60_000; // 60 ثانية
 
+  /**
+   * ✅ الحالات التي تعني "القالب مفعّل ويجب الإرسال"
+   * رفيق لا يستخدم Meta approval workflow —
+   * أي قالب أنشأه التاجر يُعتبر مفعّلاً ما لم يكن disabled أو rejected
+   */
+  private readonly ACTIVE_STATUSES = ['active', 'approved', 'draft'] as const;
+
   constructor(
     @InjectRepository(MessageTemplate)
     private readonly templateRepository: Repository<MessageTemplate>,
@@ -586,10 +593,9 @@ export class TemplateDispatcherService {
       // • payment.reminder.due        ← قالب خاص بالتذكير
       // لا يوجد أي تداخل أو استعارة قوالب بين الأنواع
       const template = await this.templateRepository.findOne({
-        where: [
-          ...triggerCandidates.map(t => ({ tenantId, triggerEvent: t, status: 'approved' as any })),
-          ...triggerCandidates.map(t => ({ tenantId, triggerEvent: t, status: 'active'   as any })),
-        ],
+        where: triggerCandidates.flatMap(t =>
+          this.ACTIVE_STATUSES.map(s => ({ tenantId, triggerEvent: t, status: s as any }))
+        ),
         order: { updatedAt: 'DESC' },
       });
 
@@ -1472,10 +1478,9 @@ export class TemplateDispatcherService {
     // ─── DISPATCH DIAGNOSTIC (يظهر في كل مكالمة لـ dispatch) ──────────────
     if (tenantId) {
       const tplCount = await this.templateRepository.count({
-        where: [
-          { tenantId, triggerEvent, status: 'approved' as any },
-          { tenantId, triggerEvent, status: 'active'   as any },
-        ],
+        where: this.ACTIVE_STATUSES.map(s => ({
+          tenantId, triggerEvent, status: s as any,
+        })),
       });
 
       const ch    = await this.findActiveWhatsAppChannel(storeId, tenantId);
@@ -1551,10 +1556,9 @@ export class TemplateDispatcherService {
 
       // 1️⃣ البحث عن القوالب المفعّلة بنفس triggerEvent
       const templates = await this.templateRepository.find({
-        where: [
-          { tenantId, triggerEvent, status: 'approved' },
-          { tenantId, triggerEvent, status: 'active' },
-        ],
+        where: this.ACTIVE_STATUSES.map(s => ({
+          tenantId, triggerEvent, status: s as any,
+        })),
       });
 
       // ✅ LOG level بدل DEBUG - لازم يظهر في الـ production logs
