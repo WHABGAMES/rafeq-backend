@@ -379,15 +379,16 @@ export class SallaWebhookProcessor extends WorkerHost {
     const s = statusStr.toLowerCase();
 
     // ═══════════════════════════════════════════════════════════════
-    // 1. بحث إنجليزي مباشر (الأسرع والأكثر دقة)
+    // 1. بحث إنجليزي مباشر (slug سلة → OrderStatus في DB)
+    //    in_progress = slug سلة → PROCESSING في DB (نفس الحالة، اسم مختلف)
     // ═══════════════════════════════════════════════════════════════
     const engMap: Record<string, OrderStatus> = {
       'created':           OrderStatus.CREATED,
       'new':               OrderStatus.CREATED,
       'pending':           OrderStatus.CREATED,
-      // ✅ v22 FIX: in_progress → IN_PROGRESS (حالة مستقلة، لا تُدمَج مع PROCESSING)
-      'in_progress':       OrderStatus.IN_PROGRESS,  // قيد التنفيذ — slug سلة الرسمي
-      'processing':        OrderStatus.PROCESSING,   // alias قديم
+      // ✅ in_progress (slug سلة) و processing (alias قديم) → نفس DB status
+      'in_progress':       OrderStatus.PROCESSING,
+      'processing':        OrderStatus.PROCESSING,
       'pending_payment':   OrderStatus.PENDING_PAYMENT,
       'payment_pending':   OrderStatus.PENDING_PAYMENT,
       'awaiting_payment':  OrderStatus.PENDING_PAYMENT,
@@ -399,7 +400,7 @@ export class SallaWebhookProcessor extends WorkerHost {
       'in_transit':        OrderStatus.SHIPPED,
       'out_for_delivery':  OrderStatus.SHIPPED,
       'delivered':         OrderStatus.DELIVERED,
-      'completed':         OrderStatus.COMPLETED,    // تم التنفيذ
+      'completed':         OrderStatus.COMPLETED,
       'cancelled':         OrderStatus.CANCELLED,
       'canceled':          OrderStatus.CANCELLED,
       'refunded':          OrderStatus.REFUNDED,
@@ -655,25 +656,28 @@ export class SallaWebhookProcessor extends WorkerHost {
   }
 
   /**
-   * ✅ v22 FIX: ربط حالة سلة → event خاص للقالب
+   * ✅ ربط حالة سلة (slug) → triggerEvent في النظام
    *
-   * ✅ الإصلاح الجذري:
-   * 'in_progress' → 'order.status.in_progress'  (قيد التنفيذ — slug رسمي من سلة)
-   * 'completed'   → 'order.status.completed'    (تم التنفيذ)
-   * كل حالة لها event مستقل = قالب مستقل
+   * القاعدة: slug سلة الداخلي يُترجَم هنا مرة واحدة فقط
+   * التاجر يرى اسم trigger النظام فقط — لا يعرف slugs سلة
+   *
+   * in_progress = slug سلة لـ "قيد التنفيذ" → يُترجَم لـ order.status.processing
    */
   private mapStatusToSpecificEvent(statusSlug: string, dbStatus: OrderStatus): string | null {
     // ═══════════════════════════════════════════════════════════════
-    // 1. بحث إنجليزي مباشر (slug من سلة)
+    // 1. بحث إنجليزي مباشر (slug من سلة → trigger النظام)
+    //    كل slug سلة يُترجَم لـ trigger ثابت — لا قيمتان لنفس الحالة
     // ═══════════════════════════════════════════════════════════════
     const slugMap: Record<string, string> = {
       'created':           'order.created',
       'new':               'order.created',
       'pending':           'order.created',
-      // ✅ v22 FIX: in_progress ≠ processing — حالتان مختلفتان
-      'in_progress':       'order.status.in_progress',  // قيد التنفيذ (slug سلة الرسمي)
-      'processing':        'order.status.processing',   // alias قديم لبعض المتاجر
-      'completed':         'order.status.completed',    // تم التنفيذ
+      // ✅ in_progress = slug سلة لـ "قيد التنفيذ" → order.status.processing
+      // processing = alias قديم لنفس الحالة
+      // كلاهما → نفس trigger النظام (التاجر ينشئ قالباً واحداً)
+      'in_progress':       'order.status.processing',
+      'processing':        'order.status.processing',
+      'completed':         'order.status.completed',
       'under_review':      'order.status.under_review',
       'awaiting_review':   'order.status.under_review',
       'in_transit':        'order.status.in_transit',
