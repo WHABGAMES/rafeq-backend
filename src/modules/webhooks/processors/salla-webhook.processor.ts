@@ -223,20 +223,29 @@ export class SallaWebhookProcessor extends WorkerHost {
     try {
       let customer = await this.customerRepository.findOne({ where: { storeId: context.storeId, sallaCustomerId } });
       const firstName = (customerData.first_name as string) || (customerData.name as string) || undefined;
-      const lastName = (customerData.last_name as string) || undefined;
-      const fullName = firstName && lastName ? `${firstName} ${lastName}` : firstName || undefined;
-      const phone = (customerData.mobile as string) || (customerData.phone as string) || (customerData.mobile_code as string) || undefined;
-      const email = (customerData.email as string) || undefined;
+      const lastName  = (customerData.last_name as string) || undefined;
+      const fullName  = firstName && lastName ? `${firstName} ${lastName}` : firstName || undefined;
+      const email     = (customerData.email as string) || undefined;
+
+      // ✅ FIX CRITICAL: بناء رقم الهاتف الدولي الكامل عند الحفظ في DB
+      //
+      // المشكلة: سلة ترسل { mobile: "0501234567", mobile_code: "966" }
+      // الكود القديم: phone = "0501234567" فقط ← رقم محلي
+      // normalizePhone يصلحه لاحقاً لكن DB lookup يُعيد الرقم المحلي
+      //
+      // الحل: نبني الرقم الدولي هنا مرة واحدة ونحفظه كاملاً
+      // "966" + "501234567" = "966501234567" ✅
+      const phone = this.buildFullPhoneFromCustomer(customerData);
 
       if (customer) {
         if (firstName) customer.firstName = firstName;
-        if (lastName) customer.lastName = lastName;
-        if (fullName) customer.fullName = fullName;
-        if (phone) customer.phone = phone;
-        if (email) customer.email = email;
+        if (lastName)  customer.lastName  = lastName;
+        if (fullName)  customer.fullName  = fullName;
+        if (phone)     customer.phone     = phone;
+        if (email)     customer.email     = email;
         customer.metadata = { ...(customer.metadata || {}), sallaData: customerData } as any;
         customer = await this.customerRepository.save(customer);
-        this.logger.log(`🔄 Customer updated: ${sallaCustomerId} (${fullName || 'N/A'})`);
+        this.logger.log(`🔄 Customer updated: ${sallaCustomerId} (${fullName || 'N/A'}, phone: ${phone || 'N/A'})`);
       } else {
         customer = this.customerRepository.create({
           tenantId: context.tenantId, storeId: context.storeId, sallaCustomerId,
@@ -251,6 +260,46 @@ export class SallaWebhookProcessor extends WorkerHost {
       this.logger.error(`❌ Customer sync failed ${sallaCustomerId}: ${error instanceof Error ? error.message : 'Unknown'}`);
       return null;
     }
+  }
+
+  /**
+   * ✅ بناء رقم الهاتف الدولي الكامل من بيانات سلة للحفظ في DB
+   *
+   * يُستدعى فقط من syncCustomerToDatabase — يبني الرقم مرة واحدة للحفظ
+   *
+   * سلة ترسل:
+   *   { mobile: "0501234567", mobile_code: "966" } → "966501234567"
+   *   { mobile: "501234567",  mobile_code: "966" } → "966501234567"
+   *   { mobile: "0501234567"                      } → "966501234567" (سعودي محلي)
+   *   { phone:  "966501234567"                    } → "966501234567"
+   */
+  private buildFullPhoneFromCustomer(customerData: Record<string, unknown>): string | undefined {
+    const mobile     = customerData.mobile      as string | undefined;
+    const mobileCode = customerData.mobile_code as string | undefined;
+    const phone      = customerData.phone       as string | undefined;
+
+    // حالة 1: mobile_code + mobile
+    if (mobileCode && mobile) {
+      const code = String(mobileCode).replace(/[^0-9]/g, '');
+      const num  = String(mobile).replace(/[^0-9]/g, '').replace(/^0+/, '');
+      if (code && num) return code + num;
+    }
+
+    // حالة 2: phone كامل
+    if (phone) {
+      const cleaned = String(phone).replace(/[\s\-\(\)]/g, '').replace(/^\+/, '');
+      return cleaned;
+    }
+
+    // حالة 3: mobile فقط — تحويل الأرقام السعودية المحلية
+    if (mobile) {
+      let n = String(mobile).replace(/[\s\-\(\)]/g, '').replace(/^\+/, '');
+      if (n.startsWith('05') && n.length === 10) n = '966' + n.slice(1);
+      else if (n.startsWith('5') && n.length === 9) n = '966' + n;
+      return n;
+    }
+
+    return undefined;
   }
 
   /**
@@ -568,56 +617,116 @@ export class SallaWebhookProcessor extends WorkerHost {
     };
   }
 
+
   private async handleOrderStatusUpdated(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
-    // ✅ v9: LOG كامل لبيانات الحالة
+    // ✅ v10: LOG كامل لبيانات الحالة
     this.logger.log('📦 order.status.updated RAW:', {
       orderId: data.id,
       status_type: typeof data.status,
       status_raw: JSON.stringify(data.status),
     });
 
-    // 1. حفظ الحالة في DB (يستخدم system slug)
+    // ─── 1. حفظ الحالة في DB (يستخدم system slug) ──────────────────────────
     const newStatus = this.mapSallaOrderStatus(data.status);
     await this.updateOrderStatusInDatabase(data, context, newStatus);
 
-    // 2. مزامنة العميل
+    // ─── 2. مزامنة العميل + استخراج هاتفه مباشرة من بيانات سلة ─────────────
+    //
+    // ╔══════════════════════════════════════════════════════════════════════╗
+    // ║  FIX CRITICAL: تمرير الهاتف في raw مباشرة                          ║
+    // ║                                                                      ║
+    // ║  المشكلة: webhook order.status.updated من سلة يحمل customer أحياناً ║
+    // ║  لكن dispatch() يستخرج الهاتف من raw فقط.                          ║
+    // ║  إذا لم يجد → DB lookup → قد يفشل في race condition                 ║
+    // ║  (طلب لم يُحفظ بعد لأن order.created لم يُعالَج)                   ║
+    // ║                                                                      ║
+    // ║  الحل: نستخرج الهاتف هنا مباشرة ونضعه في raw.customerPhone         ║
+    // ║  حتى extractCustomerPhone في dispatch يجده بأول خطوة               ║
+    // ╚══════════════════════════════════════════════════════════════════════╝
     const orderObj = data.order as Record<string, unknown> | undefined;
     const customerData = (data.customer || orderObj?.customer) as Record<string, unknown> | undefined;
+
+    let preExtractedPhone: string | undefined;
+
     if (customerData?.id) {
       await this.syncCustomerToDatabase(customerData, context);
+
+      // استخراج الهاتف مباشرة من بيانات سلة (أموثوق من DB lookup)
+      const mobile     = customerData.mobile     as string | undefined;
+      const mobileCode = customerData.mobile_code as string | undefined;
+      const phone      = customerData.phone       as string | undefined;
+
+      if (mobile || phone) {
+        // بناء الرقم الكامل يدوياً بنفس منطق buildFullPhone المُصلَح
+        if (mobileCode && mobile) {
+          const code = String(mobileCode).replace(/[^0-9]/g, '');
+          const num  = String(mobile).replace(/[^0-9]/g, '').replace(/^0+/, '');
+          if (code && num) preExtractedPhone = code + num;
+        } else if (mobile) {
+          preExtractedPhone = mobile;
+        } else if (phone) {
+          preExtractedPhone = phone;
+        }
+
+        this.logger.log(`📞 Pre-extracted phone for status update: ${preExtractedPhone || 'N/A'}`, {
+          orderId: data.id,
+          customerId: customerData.id,
+        });
+      }
     }
 
-    // 3. ✅ v9 CRITICAL FIX: استخراج الحالة الفعلية (customized أولاً) لاختيار القالب
+    // ─── 3. استخراج الحالة الفعلية (customized أولاً) لاختيار القالب ──────
     //    سلة ترسل: { slug: "in_progress", customized: { slug: "under_review" } }
-    //    extractStatusString يرجع "in_progress" → قالب غلط ❌
-    //    extractCustomizedStatus يرجع "under_review" → القالب الصحيح ✅
-    const templateSlug = this.extractCustomizedStatus(data.status);
+    //    extractCustomizedStatus → "under_review" → order.status.under_review ✅
+    const templateSlug  = this.extractCustomizedStatus(data.status);
     const specificEvent = this.mapStatusToSpecificEvent(templateSlug, newStatus);
 
     this.logger.log('🔄 Status mapping:', {
       templateSlug,
-      dbStatus: newStatus,
+      dbStatus:      newStatus,
       specificEvent: specificEvent || 'NONE',
+      hasPrePhone:   !!preExtractedPhone,
     });
+
+    // ─── 4. بناء eventPayload مع الهاتف مضمَّناً في raw ─────────────────────
+    const enrichedRaw: Record<string, unknown> = {
+      ...data,
+      // ✅ نضع customerPhone مباشرة في raw حتى extractCustomerPhone يجده فوراً
+      // هذا يضمن عمل الإشعار حتى لو الطلب غير موجود في DB بعد
+      ...(preExtractedPhone ? { customerPhone: preExtractedPhone } : {}),
+      // ✅ نُرجّع customer في raw إذا كان موجوداً في payload سلة
+      ...(customerData ? { customer: customerData } : {}),
+    };
 
     const eventPayload = {
       tenantId:        context.tenantId,
       storeId:         context.storeId,
       orderId:         data.id,
-      id:              data.id,          // ← lookupCustomerPhone يبحث عن raw.id
+      id:              data.id,
       newStatus:       data.status,
       previousStatus:  data.previous_status,
-      raw:             data,
+      raw:             enrichedRaw,
     };
 
     if (specificEvent) {
-      this.logger.log(`📌 Emitting ONLY: ${specificEvent}`);
+      this.logger.log(`📌 Emitting ONLY: ${specificEvent}`, {
+        orderId: data.id,
+        phone: preExtractedPhone || '(will use DB lookup)',
+      });
       this.eventEmitter.emit(specificEvent, eventPayload);
     } else {
       this.logger.warn(`⚠️ No event for slug "${templateSlug}" (db: ${newStatus}) - no template sent`);
     }
 
-    return { handled: true, action: 'order_status_updated', orderId: data.id, dbStatus: newStatus, templateSlug, specificEvent: specificEvent || 'NONE' };
+    return {
+      handled:       true,
+      action:        'order_status_updated',
+      orderId:       data.id,
+      dbStatus:      newStatus,
+      templateSlug,
+      specificEvent: specificEvent || 'NONE',
+      hasPhone:      !!preExtractedPhone,
+    };
   }
 
   /**
