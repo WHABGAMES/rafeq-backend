@@ -122,7 +122,16 @@ export class SallaWebhookProcessor extends WorkerHost {
   async process(job: Job<SallaWebhookJobData>): Promise<void> {
     const startTime = Date.now();
     const { webhookEventId, eventType, data, tenantId, storeId } = job.data;
-    this.logger.log(`🔄 Processing webhook: ${eventType}`, { jobId: job.id, webhookEventId, attempt: job.attemptsMade + 1 });
+
+    // ✅ FIRST LOG: يُطبع قبل أي عملية — إذا لم يظهر → الـ job لا يصل للـ worker
+    this.logger.warn(`🚀 JOB START: ${eventType}`, {
+      jobId:          job.id,
+      webhookEventId,
+      tenantId:       tenantId  || '❌ MISSING',
+      storeId:        storeId   || '❌ MISSING',
+      attempt:        job.attemptsMade + 1,
+      dataKeys:       Object.keys(data || {}).join(','),
+    });
 
     try {
       await this.sallaWebhooksService.updateStatus(webhookEventId, WebhookStatus.PROCESSING);
