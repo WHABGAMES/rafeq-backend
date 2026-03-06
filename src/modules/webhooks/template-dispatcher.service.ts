@@ -706,14 +706,18 @@ export class TemplateDispatcherService {
     // ─── order.status.confirmation: طلب جديد ──────────────────────────────
     // سلة ترسل هذا لكل طلب جديد
     // التاجر قد يُنشئ قالبه بـ order.status.confirmation أو order.created
-    // نبحث في كلاهما
     if (businessType === 'order.status.confirmation') {
       return ['order.status.confirmation', 'order.created'];
     }
 
-    // ─── باقي الـ 16 نوع: trigger = businessType نفسه — لا استثناء ───────────
-    // ⚠️ هذا هو قلب عزل القوالب:
-    // كل businessType له قالب بـ trigger يحمل نفس اسمه تماماً
+    // ─── payment.reminder.due: بانتظار الدفع ──────────────────────────────
+    // سلة ترسل 'payment.reminder.due' لطلبات الدفع المعلقة
+    // التاجر يُنشئ قالبه بـ 'order.status.pending_payment' (الاسم المنطقي)
+    if (businessType === 'payment.reminder.due') {
+      return ['payment.reminder.due', 'order.status.pending_payment'];
+    }
+
+    // ─── باقي الأنواع: trigger = businessType نفسه ────────────────────────
     return [businessType];
   }
 
@@ -938,18 +942,18 @@ export class TemplateDispatcherService {
     // الترجمة slug→DB حدثت في mapSallaOrderStatus (salla-webhook.processor)
     // هنا فقط نقرأ الـ DB status ونُحدّد الـ trigger
     const STATUS_TRIGGER_MAP: Record<string, string> = {
-      'processing':        'order.status.processing',   // قيد التنفيذ (in_progress + processing)
-      'completed':         'order.status.completed',    // تم التنفيذ
+      'processing':        'order.status.processing',
+      'under_review':      'order.status.under_review',
+      'restoring':         'order.status.restoring',
+      'completed':         'order.status.completed',
       'in_transit':        'order.status.in_transit',
       'shipped':           'order.shipped',
       'delivered':         'order.delivered',
-      'under_review':      'order.status.under_review',
       'ready_to_ship':     'order.status.ready_to_ship',
       'pending_payment':   'order.status.pending_payment',
       'on_hold':           'order.status.on_hold',
       'cancelled':         'order.cancelled',
       'refunded':          'order.refunded',
-      'restoring':         'order.status.restoring',
       'paid':              'order.status.paid',
       'created':           'order.created',
     };
