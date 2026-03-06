@@ -1873,15 +1873,30 @@ export class TemplateDispatcherService {
         }
       }
 
-      // محاولة أخيرة: البحث في metadata.sallaData
+      // محاولة أخيرة: البحث في metadata.sallaData (الـ snapshot الأصلي من سلة)
       const sallaData = (order.metadata as any)?.sallaData as Record<string, unknown> | undefined;
       if (sallaData) {
         const sallaCustomer = sallaData.customer as Record<string, unknown> | undefined;
-        const sallaPhone = sallaCustomer?.mobile || sallaCustomer?.phone || sallaData.customer_phone;
-        if (sallaPhone) {
-          this.logger.log(`📞 Phone found from order sallaData: ${sallaPhone}`);
-          return this.normalizePhone(String(sallaPhone));
+
+        if (sallaCustomer) {
+          // ✅ FIX: استخدام buildFullPhone لبناء الرقم الكامل من mobile_code + mobile
+          // الكود القديم: sallaCustomer.mobile فقط → رقم محلي بدون كود الدولة
+          // الكود الجديد: mobile_code + mobile → رقم دولي كامل
+          const builtPhone = this.buildFullPhone(sallaCustomer);
+          if (builtPhone) {
+            this.logger.log(`📞 Phone built from sallaData.customer (mobile_code+mobile): ${builtPhone}`);
+            return this.normalizePhone(builtPhone);
+          }
         }
+
+        // Fallback: رقم مباشر في sallaData
+        const directPhone = (sallaData as any).customer_phone;
+        if (directPhone) {
+          this.logger.log(`📞 Phone found from sallaData.customer_phone: ${directPhone}`);
+          return this.normalizePhone(String(directPhone));
+        }
+
+        // Fallback: عنوان الشحن
         const sallaShipping = sallaData.shipping_address as Record<string, unknown> | undefined;
         if (sallaShipping?.phone) {
           this.logger.log(`📞 Phone found from sallaData shipping: ${sallaShipping.phone}`);
@@ -1962,43 +1977,81 @@ export class TemplateDispatcherService {
    * القاعدة: نأخذ الرقم كما هو من سلة بدون أي تعديل
    * يشتغل مع أي دولة (سعودي، إماراتي، أمريكي، روسي...)
    */
+  /**
+   * ╔══════════════════════════════════════════════════════════════════════════════╗
+   * ║  buildFullPhone — v2 PRODUCTION FIX                                          ║
+   * ║                                                                              ║
+   * ║  المشكلة الجذرية (تؤثر على طلب جديد + بانتظار المراجعة + بانتظار الدفع):  ║
+   * ║  سلة ترسل: { mobile_code: "966", mobile: "0501234567" }                     ║
+   * ║  الكود القديم:  "966" + "0501234567" = "9660501234567"  ← رقم خاطئ ❌      ║
+   * ║  الكود الجديد: "966" + "501234567"  = "966501234567"   ← رقم صحيح ✅       ║
+   * ║                                                                              ║
+   * ║  القاعدة: عند وجود mobile_code → احذف الصفر البادئ من mobile               ║
+   * ║           لأن mobile_code هو كود الدولة الكامل (966, 971, 1...)             ║
+   * ║           والـ mobile يكون إما "0501234567" أو "501234567" — كلاهما مدعوم  ║
+   * ╚══════════════════════════════════════════════════════════════════════════════╝
+   */
   private buildFullPhone(obj: Record<string, unknown>): string | null {
     const mobileCode = obj.mobile_code || obj.country_code || obj.countryCode;
     const mobile = obj.mobile;
 
-    // ✅ لو فيه mobile_code + mobile → نجمعهم
+    // ─── حالة 1: mobile_code + mobile ────────────────────────────────────────
     if (mobileCode && mobile) {
       const code = String(mobileCode).replace(/[^0-9]/g, '');
-      const num = String(mobile).replace(/[^0-9]/g, '');
+      // ✅ FIX CRITICAL: إزالة الصفر البادئ من mobile عند وجود mobile_code
+      // سلة ترسل mobile="0501234567" مع mobile_code="966"
+      // بدون إزالة الصفر: "966" + "0501234567" = "9660501234567" ← خاطئ
+      // مع إزالة الصفر:  "966" + "501234567"  = "966501234567"  ← صحيح
+      const num = String(mobile).replace(/[^0-9]/g, '').replace(/^0+/, '');
       if (code && num) {
-        this.logger.log(`📞 Built phone from mobile_code(${code}) + mobile(${num})`);
+        this.logger.log(`📞 Built phone: mobile_code(${code}) + mobile(stripped=${num}) = ${code + num}`);
         return code + num;
       }
     }
 
-    // ✅ لو فيه phone كامل (مثل "+971561667877") → نستخدمه كما هو
+    // ─── حالة 2: phone كامل (مثل "+966501234567") ────────────────────────────
     if (obj.phone) return String(obj.phone);
 
-    // ✅ لو فيه mobile بس بدون code → نرجعه كما هو
+    // ─── حالة 3: mobile فقط بدون mobile_code ────────────────────────────────
     if (mobile) return String(mobile);
 
     return null;
   }
 
   /**
-   * ✅ v7: تنظيف رقم الهاتف - فقط إزالة رموز بدون تغيير كود الدولة
-   * 
-   * القاعدة: لا نفترض أي كود دولة - الرقم يمر كما هو
-   * الأرقام اللي تجي من buildFullPhone أو من سلة مباشرة تكون كاملة
+   * ╔══════════════════════════════════════════════════════════════════════════════╗
+   * ║  normalizePhone — v2 PRODUCTION FIX                                          ║
+   * ║                                                                              ║
+   * ║  يعالج جميع الأشكال الواردة من سلة وDB:                                    ║
+   * ║  • "+966501234567"   → "966501234567"   (إزالة +)                          ║
+   * ║  • "966501234567"    → "966501234567"   (بدون تغيير)                       ║
+   * ║  • "0501234567"      → "966501234567"   (سعودي بصفر)                       ║
+   * ║  • "501234567"       → "966501234567"   (سعودي بدون صفر)                   ║
+   * ║  • "9660501234567"   → "966501234567"   (ناتج buildFullPhone القديم)        ║
+   * ╚══════════════════════════════════════════════════════════════════════════════╝
    */
   private normalizePhone(phone: string): string {
     if (!phone) return '';
-    // إزالة المسافات والشرطات والأقواس
+
+    // ─── تنظيف: إزالة المسافات، الشرطات، الأقواس، وعلامة +
     let n = phone.replace(/[\s\-\(\)]/g, '').replace(/^\+/, '');
-    // أرقام سعودية: 05XXXXXXXX → 9665XXXXXXXX
-    if (n.startsWith('05') && n.length === 10)  n = '966' + n.slice(1);
-    // سعودي بدون صفر: 5XXXXXXXX → 9665XXXXXXXX
-    else if (n.startsWith('5') && n.length === 9)  n = '966' + n;
+
+    // ─── إصلاح ناتج buildFullPhone القديم (تراكم صفر):
+    // "9660501234567" (13 رقم) → "966501234567" (12 رقم صحيح)
+    if (n.startsWith('9660') && n.length === 13) {
+      n = '966' + n.slice(4);
+    }
+
+    // ─── أرقام سعودية محلية: 05XXXXXXXX → 966XXXXXXXX
+    else if (n.startsWith('05') && n.length === 10) {
+      n = '966' + n.slice(1);
+    }
+
+    // ─── أرقام سعودية بدون صفر: 5XXXXXXXX → 966XXXXXXXX
+    else if (n.startsWith('5') && n.length === 9) {
+      n = '966' + n;
+    }
+
     return n;
   }
 
