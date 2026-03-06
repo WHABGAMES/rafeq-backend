@@ -591,7 +591,15 @@ export class SallaWebhookProcessor extends WorkerHost {
       specificEvent: specificEvent || 'NONE',
     });
 
-    const eventPayload = { tenantId: context.tenantId, storeId: context.storeId, orderId: data.id, newStatus: data.status, previousStatus: data.previous_status, raw: data };
+    const eventPayload = {
+      tenantId:        context.tenantId,
+      storeId:         context.storeId,
+      orderId:         data.id,
+      id:              data.id,          // ← lookupCustomerPhone يبحث عن raw.id
+      newStatus:       data.status,
+      previousStatus:  data.previous_status,
+      raw:             data,
+    };
 
     if (specificEvent) {
       this.logger.log(`📌 Emitting ONLY: ${specificEvent}`);
@@ -777,17 +785,20 @@ export class SallaWebhookProcessor extends WorkerHost {
     // 4. Last resort: من DB status
     // ═══════════════════════════════════════════════════════════════
     const dbMap: Record<string, string> = {
-      [OrderStatus.CREATED]: 'order.created',
-      [OrderStatus.PROCESSING]: 'order.status.processing',
-      [normalizeArabic('تم الشحن')]: 'order.shipped',
-      [normalizeArabic('تم التوصيل')]: 'order.delivered',
-      [OrderStatus.COMPLETED]: 'order.status.completed',
-      [OrderStatus.READY_TO_SHIP]: 'order.status.ready_to_ship',
-      [OrderStatus.PENDING_PAYMENT]: 'order.status.pending_payment',
-      [OrderStatus.PAID]: 'order.status.paid',
-      [normalizeArabic('ملغي')]: 'order.cancelled',
-      [normalizeArabic('مسترجع')]: 'order.refunded',
-      [OrderStatus.ON_HOLD]: 'order.status.on_hold',
+      [OrderStatus.CREATED]:         'order.created',
+      [OrderStatus.PROCESSING]:       'order.status.processing',
+      [OrderStatus.UNDER_REVIEW]:     'order.status.under_review',
+      [OrderStatus.PENDING_PAYMENT]:  'order.status.pending_payment',
+      [OrderStatus.PAID]:             'order.status.paid',
+      [OrderStatus.READY_TO_SHIP]:    'order.status.ready_to_ship',
+      [OrderStatus.SHIPPED]:          'order.shipped',
+      [OrderStatus.DELIVERED]:        'order.delivered',
+      [OrderStatus.COMPLETED]:        'order.status.completed',
+      [OrderStatus.CANCELLED]:        'order.cancelled',
+      [OrderStatus.REFUNDED]:         'order.refunded',
+      [OrderStatus.RESTORING]:        'order.status.restoring',
+      [OrderStatus.ON_HOLD]:          'order.status.on_hold',
+      [OrderStatus.FAILED]:           'order.status.failed',
     };
     return dbMap[dbStatus] || null;
   }
