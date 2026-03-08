@@ -304,6 +304,31 @@ export class SallaWebhookProcessor extends WorkerHost {
   }
 
   /**
+   * Normalize Salla order payload shape.
+   * Some webhooks send order fields at top-level, others send them under `data.order`.
+   */
+  private normalizeOrderPayload(data: Record<string, unknown>): Record<string, unknown> {
+    const orderObj = data.order as Record<string, unknown> | undefined;
+    if (!orderObj || typeof orderObj !== 'object') return data;
+
+    return {
+      ...orderObj,
+      ...data,
+      id: data.id ?? orderObj.id,
+      status: data.status ?? orderObj.status,
+      previous_status: data.previous_status ?? orderObj.previous_status,
+      customer: (data.customer as Record<string, unknown> | undefined) ?? (orderObj.customer as Record<string, unknown> | undefined),
+      reference_id: data.reference_id ?? orderObj.reference_id,
+      order_number: data.order_number ?? orderObj.order_number,
+      items: data.items ?? orderObj.items,
+      total: data.total ?? orderObj.total,
+      currency: data.currency ?? orderObj.currency,
+      payment: data.payment ?? orderObj.payment,
+      payment_method: data.payment_method ?? orderObj.payment_method,
+    };
+  }
+
+  /**
    * ✅ v16: استخراج مبلغ رقمي من أي نوع بيانات
    * سلة ترسل total بأشكال مختلفة:
    *   - number: 299
@@ -410,11 +435,31 @@ export class SallaWebhookProcessor extends WorkerHost {
     if (typeof sallaStatus === 'object' && sallaStatus !== null) {
       const statusObj = sallaStatus as SallaStatusObject;
 
-      // الأولوية: slug (إنجليزي) → customized.slug → name → customized.name
-      if (statusObj.slug && typeof statusObj.slug === 'string') return statusObj.slug;
-      if (statusObj.customized?.slug && typeof statusObj.customized.slug === 'string') return statusObj.customized.slug;
-      if (statusObj.name && typeof statusObj.name === 'string') return statusObj.name;
-      if (statusObj.customized?.name && typeof statusObj.customized.name === 'string') return statusObj.customized.name;
+      // إذا كان slug عام مثل pending/new/created نفضّل الاسم المقروء
+      // حتى لا تنهار حالات مثل pending_payment/under_review إلى created.
+      const ambiguousSlugs = new Set(['pending', 'new', 'created', 'in_progress', 'processing']);
+      const customizedSlug =
+        statusObj.customized?.slug && typeof statusObj.customized.slug === 'string'
+          ? statusObj.customized.slug.toLowerCase().trim()
+          : '';
+      const slug =
+        statusObj.slug && typeof statusObj.slug === 'string'
+          ? statusObj.slug.toLowerCase().trim()
+          : '';
+
+      if (customizedSlug && !ambiguousSlugs.has(customizedSlug)) return customizedSlug;
+      if (slug && !ambiguousSlugs.has(slug)) return slug;
+
+      if (statusObj.customized?.name && typeof statusObj.customized.name === 'string') {
+        return cleanForMatch(statusObj.customized.name.toLowerCase());
+      }
+      if (statusObj.name && typeof statusObj.name === 'string') {
+        return cleanForMatch(statusObj.name.toLowerCase());
+      }
+
+      // fallback أخير لو لا يوجد اسم
+      if (customizedSlug) return customizedSlug;
+      if (slug) return slug;
     }
 
     // إذا كانت number → نحولها لـ string
@@ -436,6 +481,7 @@ export class SallaWebhookProcessor extends WorkerHost {
     if (!statusStr) return OrderStatus.CREATED;
 
     const s = statusStr.toLowerCase();
+    const sCanonical = s.replace(/[\s-]+/g, '_');
 
     // ═══════════════════════════════════════════════════════════════
     // 1. بحث إنجليزي مباشر (slug سلة → OrderStatus في DB)
@@ -471,6 +517,7 @@ export class SallaWebhookProcessor extends WorkerHost {
       'awaiting_review':   OrderStatus.UNDER_REVIEW,
     };
     if (engMap[s]) return engMap[s];
+    if (engMap[sCanonical]) return engMap[sCanonical];
 
     // ═══════════════════════════════════════════════════════════════
     // 2. ✅ v16 FIX: تنظيف Unicode المخفي قبل المطابقة العربية
@@ -557,34 +604,35 @@ export class SallaWebhookProcessor extends WorkerHost {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   private async handleOrderCreated(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
-    this.logger.log('Processing order.created', { orderId: data.id, storeId: context.storeId });
+    const normalizedData = this.normalizeOrderPayload(data);
+    this.logger.log('Processing order.created', { orderId: normalizedData.id, storeId: context.storeId });
 
     let savedCustomer: Customer | null = null;
-    const cd = data.customer as Record<string, unknown> | undefined;
+    const cd = normalizedData.customer as Record<string, unknown> | undefined;
     if (cd?.id) savedCustomer = await this.syncCustomerToDatabase(cd, context);
-    const savedOrder = await this.syncOrderToDatabase(data, context, savedCustomer?.id);
+    const savedOrder = await this.syncOrderToDatabase(normalizedData, context, savedCustomer?.id);
 
     // ─── استخراج طريقة الدفع من payload سلة ──────────────────────────────
     // سلة ترسل: data.payment = { method: "cod" | "online" | "bank_transfer", status }
     // أو: data.payment_method = "cod"
-    const paymentObj = data.payment as Record<string, unknown> | undefined;
+    const paymentObj = normalizedData.payment as Record<string, unknown> | undefined;
     const paymentMethod = String(
-      paymentObj?.method || data.payment_method || '',
+      paymentObj?.method || normalizedData.payment_method || '',
     ).toLowerCase().trim();
 
     const basePayload = {
       tenantId:     context.tenantId,
       storeId:      context.storeId,
-      orderId:      data.id,
-      orderNumber:  data.reference_id || data.order_number,
+      orderId:      normalizedData.id,
+      orderNumber:  normalizedData.reference_id || normalizedData.order_number,
       customerName: cd?.first_name || cd?.name,
       customerPhone: cd?.mobile || cd?.phone,
-      totalAmount:  data.total,
-      currency:     data.currency,
-      items:        data.items,
-      status:       data.status,
+      totalAmount:  normalizedData.total,
+      currency:     normalizedData.currency,
+      items:        normalizedData.items,
+      status:       normalizedData.status,
       paymentMethod,
-      raw:          data,
+      raw:          normalizedData,
       dbOrderId:    savedOrder?.id,
       dbCustomerId: savedCustomer?.id,
     };
@@ -595,11 +643,11 @@ export class SallaWebhookProcessor extends WorkerHost {
     // ─── 2. event خاص بطريقة الدفع — فصل كامل من المصدر ─────────────────
     // كل طريقة دفع لها trigger_event مستقل → لا تعارض مع order.created أبداً
     if (paymentMethod === 'cod' || paymentMethod === 'cash_on_delivery') {
-      this.logger.log(`💵 COD order detected — emitting order.cod.created`, { orderId: data.id });
+      this.logger.log(`💵 COD order detected — emitting order.cod.created`, { orderId: normalizedData.id });
       this.eventEmitter.emit('order.cod.created', basePayload);
     } else if (paymentMethod && paymentMethod !== '') {
       // online / bank_transfer / tap / moyasar / etc.
-      this.logger.log(`💳 Online payment order detected (${paymentMethod}) — emitting order.online.created`, { orderId: data.id });
+      this.logger.log(`💳 Online payment order detected (${paymentMethod}) — emitting order.online.created`, { orderId: normalizedData.id });
       this.eventEmitter.emit('order.online.created', basePayload);
     }
 
@@ -610,7 +658,7 @@ export class SallaWebhookProcessor extends WorkerHost {
     return {
       handled: true,
       action: 'order_created',
-      orderId: data.id,
+      orderId: normalizedData.id,
       paymentMethod: paymentMethod || 'unknown',
       dbOrderId: savedOrder?.id || 'sync_failed',
       dbCustomerId: savedCustomer?.id || 'no_customer',
@@ -626,15 +674,7 @@ export class SallaWebhookProcessor extends WorkerHost {
     data: Record<string, unknown>,
     context: { tenantId?: string; storeId?: string; webhookEventId: string },
   ): Promise<Record<string, unknown>> {
-    const orderObj = data.order as Record<string, unknown> | undefined;
-    const normalizedData: Record<string, unknown> = orderObj && typeof orderObj === 'object'
-      ? {
-          ...orderObj,
-          ...data,
-          id: data.id ?? orderObj.id,
-          customer: (data.customer as Record<string, unknown> | undefined) ?? (orderObj.customer as Record<string, unknown> | undefined),
-        }
-      : data;
+    const normalizedData = this.normalizeOrderPayload(data);
 
     const normalizedOrderId = normalizedData.id ?? data.id;
     this.logger.log('Processing order.updated', { orderId: normalizedOrderId });
@@ -733,16 +773,18 @@ export class SallaWebhookProcessor extends WorkerHost {
 
 
   private async handleOrderStatusUpdated(data: Record<string, unknown>, context: { tenantId?: string; storeId?: string; webhookEventId: string }): Promise<Record<string, unknown>> {
+    const normalizedData = this.normalizeOrderPayload(data);
+
     // ✅ v10: LOG كامل لبيانات الحالة
     this.logger.log('📦 order.status.updated RAW:', {
-      orderId: data.id,
-      status_type: typeof data.status,
-      status_raw: JSON.stringify(data.status),
+      orderId: normalizedData.id,
+      status_type: typeof normalizedData.status,
+      status_raw: JSON.stringify(normalizedData.status),
     });
 
     // ─── 1. حفظ الحالة في DB (يستخدم system slug) ──────────────────────────
-    const newStatus = this.mapSallaOrderStatus(data.status);
-    await this.updateOrderStatusInDatabase(data, context, newStatus);
+    const newStatus = this.mapSallaOrderStatus(normalizedData.status);
+    await this.updateOrderStatusInDatabase(normalizedData, context, newStatus);
 
     // ─── 2. مزامنة العميل + استخراج هاتفه مباشرة من بيانات سلة ─────────────
     //
@@ -757,8 +799,7 @@ export class SallaWebhookProcessor extends WorkerHost {
     // ║  الحل: نستخرج الهاتف هنا مباشرة ونضعه في raw.customerPhone         ║
     // ║  حتى extractCustomerPhone في dispatch يجده بأول خطوة               ║
     // ╚══════════════════════════════════════════════════════════════════════╝
-    const orderObj = data.order as Record<string, unknown> | undefined;
-    const customerData = (data.customer || orderObj?.customer) as Record<string, unknown> | undefined;
+    const customerData = normalizedData.customer as Record<string, unknown> | undefined;
 
     let preExtractedPhone: string | undefined;
 
@@ -783,7 +824,7 @@ export class SallaWebhookProcessor extends WorkerHost {
         }
 
         this.logger.log(`📞 Pre-extracted phone for status update: ${preExtractedPhone || 'N/A'}`, {
-          orderId: data.id,
+          orderId: normalizedData.id,
           customerId: customerData.id,
         });
       }
@@ -792,7 +833,7 @@ export class SallaWebhookProcessor extends WorkerHost {
     // ─── 3. استخراج الحالة الفعلية (customized أولاً) لاختيار القالب ──────
     //    سلة ترسل: { slug: "in_progress", customized: { slug: "under_review" } }
     //    extractCustomizedStatus → "under_review" → order.status.under_review ✅
-    const templateSlug  = this.extractCustomizedStatus(data.status);
+    const templateSlug  = this.extractCustomizedStatus(normalizedData.status);
     const specificEvent = this.mapStatusToSpecificEvent(templateSlug, newStatus);
 
     this.logger.log('🔄 Status mapping:', {
@@ -804,7 +845,7 @@ export class SallaWebhookProcessor extends WorkerHost {
 
     // ─── 4. بناء eventPayload مع الهاتف مضمَّناً في raw ─────────────────────
     const enrichedRaw: Record<string, unknown> = {
-      ...data,
+      ...normalizedData,
       // ✅ نضع customerPhone مباشرة في raw حتى extractCustomerPhone يجده فوراً
       // هذا يضمن عمل الإشعار حتى لو الطلب غير موجود في DB بعد
       ...(preExtractedPhone ? { customerPhone: preExtractedPhone } : {}),
@@ -815,16 +856,16 @@ export class SallaWebhookProcessor extends WorkerHost {
     const eventPayload = {
       tenantId:        context.tenantId,
       storeId:         context.storeId,
-      orderId:         data.id,
-      id:              data.id,
-      newStatus:       data.status,
-      previousStatus:  data.previous_status,
+      orderId:         normalizedData.id,
+      id:              normalizedData.id,
+      newStatus:       normalizedData.status,
+      previousStatus:  normalizedData.previous_status,
       raw:             enrichedRaw,
     };
 
     if (specificEvent) {
       this.logger.log(`📌 Emitting ONLY: ${specificEvent}`, {
-        orderId: data.id,
+        orderId: normalizedData.id,
         phone: preExtractedPhone || '(will use DB lookup)',
       });
       this.eventEmitter.emit(specificEvent, eventPayload);
@@ -835,7 +876,7 @@ export class SallaWebhookProcessor extends WorkerHost {
     return {
       handled:       true,
       action:        'order_status_updated',
-      orderId:       data.id,
+      orderId:       normalizedData.id,
       dbStatus:      newStatus,
       templateSlug,
       specificEvent: specificEvent || 'NONE',
@@ -873,7 +914,7 @@ export class SallaWebhookProcessor extends WorkerHost {
       // ✅ v23 FIX: if customized.slug or slug is ambiguous (pending/new/created),
       // fall back to human-readable names to avoid collapsing distinct states
       // into order.created.
-      const AMBIGUOUS_SLUGS = ['pending', 'new', 'created'];
+      const AMBIGUOUS_SLUGS = ['pending', 'new', 'created', 'in_progress', 'processing'];
       const customizedSlug =
         obj.customized?.slug && typeof obj.customized.slug === 'string'
           ? obj.customized.slug.toLowerCase()
@@ -913,6 +954,8 @@ export class SallaWebhookProcessor extends WorkerHost {
    * in_progress = slug سلة لـ "قيد التنفيذ" → يُترجَم لـ order.status.processing
    */
   private mapStatusToSpecificEvent(statusSlug: string, dbStatus: OrderStatus): string | null {
+    const slugLookup = (statusSlug || '').toLowerCase().replace(/[\s-]+/g, '_');
+
     // ═══════════════════════════════════════════════════════════════
     // 1. بحث إنجليزي مباشر (slug من سلة → trigger النظام)
     //    كل slug سلة يُترجَم لـ trigger ثابت — لا قيمتان لنفس الحالة
@@ -948,6 +991,7 @@ export class SallaWebhookProcessor extends WorkerHost {
       'refunded':          'order.refunded',
     };
     if (slugMap[statusSlug]) return slugMap[statusSlug];
+    if (slugMap[slugLookup]) return slugMap[slugLookup];
 
     // ═══════════════════════════════════════════════════════════════
     // 2. ✅ v16 FIX: تنظيف Unicode المخفي قبل المطابقة العربية
