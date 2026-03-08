@@ -687,7 +687,6 @@ export class SallaWebhookProcessor extends WorkerHost {
       const mappedStatus = this.mapSallaOrderStatus(statusCandidate);
       const specificEvent = this.mapStatusToSpecificEvent(templateSlug, mappedStatus);
       const criticalFallbackEvents = new Set([
-        'order.created',
         'order.status.pending_payment',
         'order.status.under_review',
       ]);
@@ -717,7 +716,7 @@ export class SallaWebhookProcessor extends WorkerHost {
       const shouldForwardToStatusHandler =
         hasPreviousStatus ||
         hasRealStatusTransition ||
-        (!transitionCheckPerformed && !!specificEvent && criticalFallbackEvents.has(specificEvent));
+        (!!specificEvent && criticalFallbackEvents.has(specificEvent));
 
       if (shouldForwardToStatusHandler) {
         this.logger.log('order.updated routed to status handler', {
