@@ -45,6 +45,16 @@ interface SallaStatusObject {
     name?: string;
     slug?: string;
   };
+  original?: {
+    id?: number;
+    name?: string;
+    slug?: string;
+  };
+  parent?: {
+    id?: number;
+    name?: string;
+    slug?: string;
+  };
 }
 
 /**
@@ -329,6 +339,135 @@ export class SallaWebhookProcessor extends WorkerHost {
   }
 
   /**
+   * Build normalized status signals from any Salla status shape.
+   * Used to detect real transitions even when DB enum status is the same.
+   */
+  private collectStatusSignals(sallaStatus: unknown): string[] {
+    const signals = new Set<string>();
+
+    const addSignal = (value: unknown): void => {
+      if (value === undefined || value === null) return;
+      const raw = String(value).toLowerCase().trim();
+      if (!raw) return;
+      signals.add(raw);
+      signals.add(raw.replace(/[\s-]+/g, '_'));
+      signals.add(cleanForMatch(raw));
+    };
+
+    if (typeof sallaStatus === 'string' || typeof sallaStatus === 'number') {
+      addSignal(sallaStatus);
+    }
+
+    if (typeof sallaStatus === 'object' && sallaStatus !== null) {
+      const obj = sallaStatus as SallaStatusObject;
+      addSignal(obj.slug);
+      addSignal(obj.name);
+      addSignal(obj.customized?.slug);
+      addSignal(obj.customized?.name);
+      addSignal(obj.original?.slug);
+      addSignal(obj.original?.name);
+      addSignal(obj.parent?.slug);
+      addSignal(obj.parent?.name);
+    }
+
+    addSignal(this.extractStatusString(sallaStatus));
+    addSignal(this.extractCustomizedStatus(sallaStatus));
+
+    return Array.from(signals).filter(Boolean);
+  }
+
+  /**
+   * Stable status signature to detect transitions across custom statuses.
+   */
+  private buildStatusSignature(sallaStatus: unknown): string {
+    const signals = this.collectStatusSignals(sallaStatus);
+    if (!signals.length) return '';
+    return signals.sort().join('|');
+  }
+
+  private hasUnderReviewSignal(statusValue: unknown): boolean {
+    const signals = this.collectStatusSignals(statusValue);
+    const joined = signals.join(' ');
+    return signals.some(s =>
+      s.includes('under_review') ||
+      s.includes('awaiting_review') ||
+      s.includes('review')
+    ) || /\u0645\u0631\u0627\u062c\u0639/.test(joined);
+  }
+
+  private hasProcessingSignal(statusValue: unknown): boolean {
+    if (this.hasUnderReviewSignal(statusValue)) return false;
+    const signals = this.collectStatusSignals(statusValue);
+    const joined = signals.join(' ');
+    return signals.some(s =>
+      s.includes('in_progress') ||
+      s.includes('processing')
+    ) || /\u062a\u0646\u0641\u064a\u0630/.test(joined) || /\u0645\u0639\u0627\u0644\u062c/.test(joined);
+  }
+
+  private hasPendingPaymentSignal(payload: Record<string, unknown>, statusValue: unknown): boolean {
+    const signals = this.collectStatusSignals(statusValue);
+    const joined = signals.join(' ');
+    const hasStatusSignal = signals.some(s =>
+      s.includes('pending_payment') ||
+      s.includes('payment_pending') ||
+      s.includes('awaiting_payment') ||
+      s.includes('payment_due')
+    ) || (/\u062f\u0641\u0639/.test(joined) && !/\u0645\u062f\u0641\u0648\u0639/.test(joined));
+
+    if (hasStatusSignal) return true;
+
+    const isPendingPayment = payload.is_pending_payment;
+    if (typeof isPendingPayment === 'boolean' && isPendingPayment) return true;
+    if (typeof isPendingPayment === 'number' && isPendingPayment > 0) return true;
+    if (typeof isPendingPayment === 'string' && ['1', 'true', 'yes'].includes(isPendingPayment.toLowerCase().trim())) {
+      return true;
+    }
+
+    const pendingEndsAt = payload.pending_payment_ends_at;
+    if (typeof pendingEndsAt === 'number' && pendingEndsAt > 0) return true;
+    if (typeof pendingEndsAt === 'string' && pendingEndsAt.trim() !== '' && pendingEndsAt !== '0') return true;
+
+    const paymentObj = payload.payment as Record<string, unknown> | undefined;
+    const paymentStatus = String(paymentObj?.status || payload.payment_status || '').toLowerCase().trim();
+    if (['pending', 'unpaid', 'awaiting_payment', 'payment_pending', 'pending_payment'].includes(paymentStatus)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Resolve specific trigger event with defensive fallbacks for ambiguous Salla payloads.
+   */
+  private resolveSpecificStatusEvent(
+    statusValue: unknown,
+    mappedStatus: OrderStatus,
+    payload?: Record<string, unknown>,
+  ): { templateSlug: string; specificEvent: string | null; mappedStatus: OrderStatus } {
+    const templateSlug = this.extractCustomizedStatus(statusValue);
+    let resolvedStatus = mappedStatus;
+    let specificEvent = this.mapStatusToSpecificEvent(templateSlug, resolvedStatus);
+
+    if (payload && this.hasPendingPaymentSignal(payload, statusValue) && (!specificEvent || specificEvent === 'order.created')) {
+      resolvedStatus = OrderStatus.PENDING_PAYMENT;
+      specificEvent = 'order.status.pending_payment';
+    }
+
+    if (this.hasUnderReviewSignal(statusValue) && (!specificEvent || specificEvent === 'order.created')) {
+      resolvedStatus = OrderStatus.UNDER_REVIEW;
+      specificEvent = 'order.status.under_review';
+    }
+
+    if (this.hasProcessingSignal(statusValue) && (!specificEvent || specificEvent === 'order.created')) {
+      resolvedStatus = OrderStatus.PROCESSING;
+      specificEvent = 'order.status.processing';
+    }
+
+    return { templateSlug, specificEvent, mappedStatus: resolvedStatus };
+  }
+
+  /**
    * ✅ v16: استخراج مبلغ رقمي من أي نوع بيانات
    * سلة ترسل total بأشكال مختلفة:
    *   - number: 299
@@ -360,6 +499,7 @@ export class SallaWebhookProcessor extends WorkerHost {
     try {
       let order = await this.orderRepository.findOne({ where: { storeId: context.storeId, sallaOrderId } });
       const status = this.mapSallaOrderStatus(orderData.status);
+      const statusSignature = this.buildStatusSignature(orderData.status);
       const items = Array.isArray(orderData.items)
         ? (orderData.items as Array<Record<string, unknown>>).map(item => ({
             productId: String(item.product_id || item.id || ''), name: String(item.name || ''),
@@ -374,16 +514,21 @@ export class SallaWebhookProcessor extends WorkerHost {
         order.referenceId = (orderData.reference_id as string) || (orderData.order_number as string) || order.referenceId;
         if (orderData.total) order.totalAmount = this.extractAmount(orderData.total);
         if (items.length > 0) order.items = items as any;
-        order.metadata = { ...(order.metadata || {}), sallaData: orderData } as any;
+        const existingSallaData = (order.metadata?.sallaData as Record<string, unknown> | undefined) || {};
+        const mergedSallaData: Record<string, unknown> = { ...existingSallaData, ...orderData };
+        if (statusSignature) mergedSallaData.lastStatusSignature = statusSignature;
+        order.metadata = { ...(order.metadata || {}), sallaData: mergedSallaData } as any;
         order = await this.orderRepository.save(order);
         this.logger.log(`🔄 Order updated: ${sallaOrderId} → ${status}`);
       } else {
+        const initialSallaData: Record<string, unknown> = { ...orderData };
+        if (statusSignature) initialSallaData.lastStatusSignature = statusSignature;
         order = this.orderRepository.create({
           tenantId: context.tenantId, storeId: context.storeId, customerId: customerId || undefined,
           sallaOrderId, referenceId: (orderData.reference_id as string) || (orderData.order_number as string) || undefined,
           status, currency: (orderData.currency as string) || 'SAR',
           totalAmount: this.extractAmount(orderData.total), subtotal: this.extractAmount(orderData.sub_total || orderData.total),
-          items: items as any, metadata: { sallaData: orderData } as any,
+          items: items as any, metadata: { sallaData: initialSallaData } as any,
         });
         order = await this.orderRepository.save(order);
         this.logger.log(`✅ Order saved: ${sallaOrderId} (${order.totalAmount} ${order.currency})`);
@@ -398,15 +543,22 @@ export class SallaWebhookProcessor extends WorkerHost {
   private async updateOrderStatusInDatabase(orderData: Record<string, unknown>, context: { tenantId?: string; storeId?: string }, newStatus: OrderStatus, extraUpdates?: Partial<Order>): Promise<Order | null> {
     if (!context.storeId || !orderData?.id) return null;
     const sallaOrderId = String(orderData.id);
+    const statusSignature = this.buildStatusSignature(orderData.status);
     try {
       const order = await this.orderRepository.findOne({ where: { storeId: context.storeId, sallaOrderId } });
       if (!order) {
         this.logger.warn(`⚠️ Order ${sallaOrderId} not in DB - creating`);
-        return this.syncOrderToDatabase({ ...orderData, status: newStatus }, context);
+        return this.syncOrderToDatabase({ ...orderData, status: orderData.status ?? newStatus }, context);
       }
       order.status = newStatus;
       if (extraUpdates) Object.assign(order, extraUpdates);
-      order.metadata = { ...(order.metadata || {}), sallaData: { ...(order.metadata?.sallaData || {}), lastWebhookData: orderData } } as any;
+      const existingSallaData = (order.metadata?.sallaData as Record<string, unknown> | undefined) || {};
+      const mergedSallaData: Record<string, unknown> = {
+        ...existingSallaData,
+        lastWebhookData: orderData,
+      };
+      if (statusSignature) mergedSallaData.lastStatusSignature = statusSignature;
+      order.metadata = { ...(order.metadata || {}), sallaData: mergedSallaData } as any;
       const saved = await this.orderRepository.save(order);
       this.logger.log(`🔄 Order ${sallaOrderId} → ${newStatus}`);
       return saved;
@@ -442,24 +594,42 @@ export class SallaWebhookProcessor extends WorkerHost {
         statusObj.customized?.slug && typeof statusObj.customized.slug === 'string'
           ? statusObj.customized.slug.toLowerCase().trim()
           : '';
+      const originalSlug =
+        statusObj.original?.slug && typeof statusObj.original.slug === 'string'
+          ? statusObj.original.slug.toLowerCase().trim()
+          : '';
       const slug =
         statusObj.slug && typeof statusObj.slug === 'string'
           ? statusObj.slug.toLowerCase().trim()
           : '';
+      const parentSlug =
+        statusObj.parent?.slug && typeof statusObj.parent.slug === 'string'
+          ? statusObj.parent.slug.toLowerCase().trim()
+          : '';
 
       if (customizedSlug && !ambiguousSlugs.has(customizedSlug)) return customizedSlug;
+      if (originalSlug && !ambiguousSlugs.has(originalSlug)) return originalSlug;
       if (slug && !ambiguousSlugs.has(slug)) return slug;
+      if (parentSlug && !ambiguousSlugs.has(parentSlug)) return parentSlug;
 
       if (statusObj.customized?.name && typeof statusObj.customized.name === 'string') {
         return cleanForMatch(statusObj.customized.name.toLowerCase());
       }
+      if (statusObj.original?.name && typeof statusObj.original.name === 'string') {
+        return cleanForMatch(statusObj.original.name.toLowerCase());
+      }
       if (statusObj.name && typeof statusObj.name === 'string') {
         return cleanForMatch(statusObj.name.toLowerCase());
+      }
+      if (statusObj.parent?.name && typeof statusObj.parent.name === 'string') {
+        return cleanForMatch(statusObj.parent.name.toLowerCase());
       }
 
       // fallback أخير لو لا يوجد اسم
       if (customizedSlug) return customizedSlug;
+      if (originalSlug) return originalSlug;
       if (slug) return slug;
+      if (parentSlug) return parentSlug;
     }
 
     // إذا كانت number → نحولها لـ string
@@ -683,17 +853,20 @@ export class SallaWebhookProcessor extends WorkerHost {
     const previousStatus = normalizedData.previous_status;
 
     if (statusCandidate !== undefined && statusCandidate !== null) {
-      const templateSlug = this.extractCustomizedStatus(statusCandidate);
+      const statusSignature = this.buildStatusSignature(statusCandidate);
       const mappedStatus = this.mapSallaOrderStatus(statusCandidate);
-      const specificEvent = this.mapStatusToSpecificEvent(templateSlug, mappedStatus);
+      const resolved = this.resolveSpecificStatusEvent(statusCandidate, mappedStatus, normalizedData);
+      const { templateSlug, specificEvent, mappedStatus: resolvedStatus } = resolved;
       const criticalFallbackEvents = new Set([
         'order.status.pending_payment',
         'order.status.under_review',
+        'order.status.processing',
       ]);
       const hasPreviousStatus = previousStatus !== undefined && previousStatus !== null;
 
       let hasRealStatusTransition = false;
       let transitionCheckPerformed = false;
+      let existingStatusSignature = '';
       if (context.storeId && normalizedOrderId !== undefined && normalizedOrderId !== null) {
         transitionCheckPerformed = true;
         try {
@@ -703,7 +876,12 @@ export class SallaWebhookProcessor extends WorkerHost {
               sallaOrderId: String(normalizedOrderId),
             },
           });
-          hasRealStatusTransition = !existingOrder || existingOrder.status !== mappedStatus;
+          existingStatusSignature =
+            String((existingOrder?.metadata as any)?.sallaData?.lastStatusSignature || '').trim();
+          hasRealStatusTransition =
+            !existingOrder ||
+            existingOrder.status !== resolvedStatus ||
+            (!!statusSignature && statusSignature !== existingStatusSignature);
         } catch (error: unknown) {
           this.logger.warn('order.updated transition check failed, allowing status dispatch', {
             orderId: normalizedOrderId,
@@ -716,13 +894,18 @@ export class SallaWebhookProcessor extends WorkerHost {
       const shouldForwardToStatusHandler =
         hasPreviousStatus ||
         hasRealStatusTransition ||
-        (!!specificEvent && criticalFallbackEvents.has(specificEvent));
+        (!!specificEvent && criticalFallbackEvents.has(specificEvent)) ||
+        (!transitionCheckPerformed && !!specificEvent && specificEvent !== 'order.created');
 
       if (shouldForwardToStatusHandler) {
         this.logger.log('order.updated routed to status handler', {
           orderId: normalizedOrderId,
           templateSlug,
+          mappedStatus,
+          resolvedStatus,
           specificEvent: specificEvent || 'NONE',
+          statusSignature: statusSignature || 'NONE',
+          existingStatusSignature: existingStatusSignature || 'NONE',
           hasPreviousStatus,
           hasRealStatusTransition,
           transitionCheckPerformed,
@@ -741,7 +924,11 @@ export class SallaWebhookProcessor extends WorkerHost {
       this.logger.debug('order.updated has status but is not a critical transition, skipping status dispatch', {
         orderId: normalizedOrderId,
         templateSlug,
+        mappedStatus,
+        resolvedStatus,
         specificEvent: specificEvent || 'NONE',
+        statusSignature: statusSignature || 'NONE',
+        existingStatusSignature: existingStatusSignature || 'NONE',
       });
     }
 
@@ -782,8 +969,10 @@ export class SallaWebhookProcessor extends WorkerHost {
     });
 
     // ─── 1. حفظ الحالة في DB (يستخدم system slug) ──────────────────────────
-    const newStatus = this.mapSallaOrderStatus(normalizedData.status);
-    await this.updateOrderStatusInDatabase(normalizedData, context, newStatus);
+    const mappedStatus = this.mapSallaOrderStatus(normalizedData.status);
+    const resolved = this.resolveSpecificStatusEvent(normalizedData.status, mappedStatus, normalizedData);
+    const { templateSlug, specificEvent, mappedStatus: resolvedStatus } = resolved;
+    await this.updateOrderStatusInDatabase(normalizedData, context, resolvedStatus);
 
     // ─── 2. مزامنة العميل + استخراج هاتفه مباشرة من بيانات سلة ─────────────
     //
@@ -832,12 +1021,10 @@ export class SallaWebhookProcessor extends WorkerHost {
     // ─── 3. استخراج الحالة الفعلية (customized أولاً) لاختيار القالب ──────
     //    سلة ترسل: { slug: "in_progress", customized: { slug: "under_review" } }
     //    extractCustomizedStatus → "under_review" → order.status.under_review ✅
-    const templateSlug  = this.extractCustomizedStatus(normalizedData.status);
-    const specificEvent = this.mapStatusToSpecificEvent(templateSlug, newStatus);
-
     this.logger.log('🔄 Status mapping:', {
       templateSlug,
-      dbStatus:      newStatus,
+      mappedStatus,
+      dbStatus:      resolvedStatus,
       specificEvent: specificEvent || 'NONE',
       hasPrePhone:   !!preExtractedPhone,
     });
@@ -869,14 +1056,14 @@ export class SallaWebhookProcessor extends WorkerHost {
       });
       this.eventEmitter.emit(specificEvent, eventPayload);
     } else {
-      this.logger.warn(`⚠️ No event for slug "${templateSlug}" (db: ${newStatus}) - no template sent`);
+      this.logger.warn(`⚠️ No event for slug "${templateSlug}" (db: ${resolvedStatus}) - no template sent`);
     }
 
     return {
       handled:       true,
       action:        'order_status_updated',
       orderId:       normalizedData.id,
-      dbStatus:      newStatus,
+      dbStatus:      resolvedStatus,
       templateSlug,
       specificEvent: specificEvent || 'NONE',
       hasPhone:      !!preExtractedPhone,
@@ -908,6 +1095,10 @@ export class SallaWebhookProcessor extends WorkerHost {
         name: obj.name,
         customized_slug: obj.customized?.slug,
         customized_name: obj.customized?.name,
+        original_slug: obj.original?.slug,
+        original_name: obj.original?.name,
+        parent_slug: obj.parent?.slug,
+        parent_name: obj.parent?.name,
       });
 
       // ✅ v23 FIX: if customized.slug or slug is ambiguous (pending/new/created),
@@ -916,15 +1107,27 @@ export class SallaWebhookProcessor extends WorkerHost {
       const AMBIGUOUS_SLUGS = ['pending', 'new', 'created', 'in_progress', 'processing'];
       const customizedSlug =
         obj.customized?.slug && typeof obj.customized.slug === 'string'
-          ? obj.customized.slug.toLowerCase()
+          ? obj.customized.slug.toLowerCase().trim()
+          : '';
+      const originalSlug =
+        obj.original?.slug && typeof obj.original.slug === 'string'
+          ? obj.original.slug.toLowerCase().trim()
           : '';
       const slug =
         obj.slug && typeof obj.slug === 'string'
-          ? obj.slug.toLowerCase()
+          ? obj.slug.toLowerCase().trim()
+          : '';
+      const parentSlug =
+        obj.parent?.slug && typeof obj.parent.slug === 'string'
+          ? obj.parent.slug.toLowerCase().trim()
           : '';
 
       if (customizedSlug && !AMBIGUOUS_SLUGS.includes(customizedSlug)) {
         return customizedSlug;
+      }
+
+      if (originalSlug && !AMBIGUOUS_SLUGS.includes(originalSlug)) {
+        return originalSlug;
       }
 
       if (slug && !AMBIGUOUS_SLUGS.includes(slug)) {
@@ -932,12 +1135,21 @@ export class SallaWebhookProcessor extends WorkerHost {
         return slug;
       }
 
+      if (parentSlug && !AMBIGUOUS_SLUGS.includes(parentSlug)) {
+        return parentSlug;
+      }
+
       // slug غامض أو غائب → نستخدم name العربي للتمييز الدقيق
       if (obj.customized?.name && typeof obj.customized.name === 'string') return cleanForMatch(obj.customized.name);
+      if (obj.original?.name && typeof obj.original.name === 'string') return cleanForMatch(obj.original.name);
       if (obj.name && typeof obj.name === 'string') return cleanForMatch(obj.name);
+      if (obj.parent?.name && typeof obj.parent.name === 'string') return cleanForMatch(obj.parent.name);
 
       // آخر ملجأ: نرجع slug كما هو
       if (slug) return slug;
+      if (customizedSlug) return customizedSlug;
+      if (originalSlug) return originalSlug;
+      if (parentSlug) return parentSlug;
     }
 
     if (typeof sallaStatus === 'number') return String(sallaStatus);
