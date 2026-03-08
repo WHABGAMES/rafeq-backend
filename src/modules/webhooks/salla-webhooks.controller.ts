@@ -157,7 +157,7 @@ export class SallaWebhooksController {
     }
 
     // ─── التحقق من التكرار (Idempotency) ─────────────────────────────────────
-    const idempotencyKey = this.generateIdempotencyKey(payload);
+    const idempotencyKey = this.generateIdempotencyKey(payload, req, deliveryId);
     const isDuplicate = await this.webhooksService.checkDuplicate(idempotencyKey);
 
     if (isDuplicate) {
@@ -289,9 +289,35 @@ export class SallaWebhooksController {
     }
   }
 
-  private generateIdempotencyKey(payload: SallaWebhookDto): string {
-    const data = `${payload.event}_${payload.merchant}_${payload.created_at}_${JSON.stringify(payload.data).slice(0, 100)}`;
-    return crypto.createHash('sha256').update(data).digest('hex');
+  private generateIdempotencyKey(
+    payload: SallaWebhookDto,
+    req: Request,
+    deliveryId?: string,
+  ): string {
+    const headerDeliveryId = req.headers['x-salla-delivery'];
+    const normalizedDeliveryId =
+      typeof deliveryId === 'string' && deliveryId.trim()
+        ? deliveryId.trim()
+        : typeof headerDeliveryId === 'string' && headerDeliveryId.trim()
+          ? headerDeliveryId.trim()
+          : '';
+
+    // Use full payload hash to avoid collisions between different order.updated statuses.
+    // Old logic sliced the first 100 chars only, which could collapse distinct events.
+    const dataHash = crypto
+      .createHash('sha256')
+      .update(JSON.stringify(payload.data ?? {}))
+      .digest('hex');
+
+    const keySource = [
+      payload.event,
+      String(payload.merchant),
+      payload.created_at || '',
+      normalizedDeliveryId,
+      dataHash,
+    ].join('|');
+
+    return crypto.createHash('sha256').update(keySource).digest('hex');
   }
 
   private extractHeaders(req: Request): Record<string, string> {
