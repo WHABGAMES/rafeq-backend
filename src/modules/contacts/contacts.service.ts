@@ -557,8 +557,7 @@ export class ContactsService {
         });
 
         // ✅ Salla API: { status, success, data: [...], pagination }
-        // لكن أحياناً data تكون مصفوفة أو كائن فيه data
-        const rawData = response?.data;
+        const rawData: any = response?.data;
         const customers = Array.isArray(rawData) ? rawData : (Array.isArray(rawData?.data) ? rawData.data : []);
         this.logger.log(`📦 Salla page ${page}: ${customers.length} customers received`);
         
