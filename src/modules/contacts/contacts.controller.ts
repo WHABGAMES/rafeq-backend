@@ -211,9 +211,9 @@ export class ContactsController {
   @ApiQuery({ name: 'segment', required: false })
   async exportContacts(
     @CurrentUser() user: any,
+    @Res() res: Response,
     @Query('format') format = 'csv',
     @Query('segment') segment?: string,
-    @Res() res: Response,
   ) {
     const tenantId = user.tenantId;
     const csvContent = await this.contactsService.exportContacts(tenantId, format, segment);
