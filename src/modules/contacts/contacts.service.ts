@@ -580,8 +580,8 @@ export class ContactsService {
             const email = sallaCustomer.email || undefined;
 
             // بناء رقم الهاتف الدولي
-            const mobile = sallaCustomer.mobile;
-            const mobileCode = sallaCustomer.mobile_code || '966';
+            const mobile = sallaCustomer.mobile != null ? String(sallaCustomer.mobile) : '';
+            const mobileCode = sallaCustomer.mobile_code != null ? String(sallaCustomer.mobile_code) : '966';
             let phone: string | undefined;
             if (mobile) {
               const cleaned = mobile.replace(/\D/g, '').replace(/^0+/, '');
