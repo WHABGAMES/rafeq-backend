@@ -197,6 +197,41 @@ export class Store extends BaseEntity {
   sallaPlan?: string;
 
   // ═══════════════════════════════════════════════════════════════════════════════
+  // 👤 Salla Owner (Personal) — بيانات التاجر الشخصية من OAuth user/info
+  //
+  // ⚠️ مهم: sallaEmail هو إيميل المتجر (مثل support@salla.dev)
+  //    sallaOwnerEmail هو الإيميل الشخصي للتاجر (المسجّل عليه في سلة)
+  //    هذا هو الإيميل المستخدم لإنشاء الحساب وإرسال بيانات الدخول
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Column({
+    name: 'salla_owner_email',
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+    comment: 'الإيميل الشخصي لمالك المتجر (من OAuth user/info — يُستخدم لإنشاء الحساب)',
+  })
+  sallaOwnerEmail?: string;
+
+  @Column({
+    name: 'salla_owner_mobile',
+    type: 'varchar',
+    length: 20,
+    nullable: true,
+    comment: 'رقم جوال مالك المتجر الشخصي (من OAuth user/info)',
+  })
+  sallaOwnerMobile?: string;
+
+  @Column({
+    name: 'salla_owner_name',
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+    comment: 'اسم مالك المتجر الشخصي (من OAuth user/info)',
+  })
+  sallaOwnerName?: string;
+
+  // ═══════════════════════════════════════════════════════════════════════════════
   // 📊 Salla Stats (cached — updated on sync, NOT on every dashboard load)
   //
   // ✅ لماذا cached؟
