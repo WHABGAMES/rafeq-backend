@@ -8,6 +8,8 @@ import { Injectable, NotFoundException, BadRequestException, Logger } from '@nes
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Customer, Conversation, Order, CustomerStatus } from '@database/entities';
+import { Store } from '@database/entities';
+import { SallaApiService } from '../stores/salla-api.service';
 import {
   CreateContactDto,
   UpdateContactDto,
@@ -32,6 +34,9 @@ export class ContactsService {
     private readonly conversationRepository: Repository<Conversation>,
     @InjectRepository(Order)
     private readonly orderRepository: Repository<Order>,
+    @InjectRepository(Store)
+    private readonly storeRepository: Repository<Store>,
+    private readonly sallaApiService: SallaApiService,
   ) {}
 
   /**
@@ -508,6 +513,111 @@ export class ContactsService {
 
   async deleteSegment(_id: string, _tenantId: string) {
     // TODO: Implement
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ✅ مزامنة العملاء من سلة
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async syncFromSalla(tenantId: string): Promise<{ synced: number; total: number; errors: number }> {
+    this.logger.log(`🔄 Starting Salla customer sync`, { tenantId });
+
+    // 1. جلب المتجر مع access token
+    const store = await this.storeRepository.findOne({
+      where: { tenantId, platform: 'salla' as any },
+    });
+
+    if (!store || !store.accessToken) {
+      throw new BadRequestException('لا يوجد متجر سلة مربوط أو التوكن منتهي');
+    }
+
+    let synced = 0;
+    let errors = 0;
+    let page = 1;
+    let hasMore = true;
+
+    // 2. جلب العملاء من سلة (كل الصفحات)
+    while (hasMore) {
+      try {
+        const response = await this.sallaApiService.getCustomers(store.accessToken, {
+          page,
+          perPage: 50,
+        });
+
+        const customers = response?.data || [];
+        if (customers.length === 0) {
+          hasMore = false;
+          break;
+        }
+
+        // 3. حفظ/تحديث كل عميل
+        for (const sallaCustomer of customers) {
+          try {
+            const sallaCustomerId = String(sallaCustomer.id);
+            let customer = await this.customerRepository.findOne({
+              where: { storeId: store.id, sallaCustomerId },
+            });
+
+            const firstName = sallaCustomer.first_name || undefined;
+            const lastName = sallaCustomer.last_name || undefined;
+            const fullName = firstName && lastName ? `${firstName} ${lastName}` : firstName || undefined;
+            const email = sallaCustomer.email || undefined;
+
+            // بناء رقم الهاتف الدولي
+            const mobile = sallaCustomer.mobile;
+            const mobileCode = sallaCustomer.mobile_code || '966';
+            let phone: string | undefined;
+            if (mobile) {
+              const cleaned = mobile.replace(/\D/g, '').replace(/^0+/, '');
+              const code = mobileCode.replace(/\D/g, '').replace(/^\+/, '');
+              phone = cleaned.startsWith(code) ? cleaned : `${code}${cleaned}`;
+            }
+
+            if (customer) {
+              // تحديث
+              if (firstName) customer.firstName = firstName;
+              if (lastName) customer.lastName = lastName;
+              if (fullName) customer.fullName = fullName;
+              if (phone) customer.phone = phone;
+              if (email) customer.email = email;
+              await this.customerRepository.save(customer);
+            } else {
+              // إنشاء
+              customer = this.customerRepository.create({
+                tenantId,
+                storeId: store.id,
+                sallaCustomerId,
+                firstName,
+                lastName,
+                fullName,
+                phone,
+                email,
+                status: CustomerStatus.ACTIVE,
+              });
+              await this.customerRepository.save(customer);
+            }
+            synced++;
+          } catch {
+            errors++;
+          }
+        }
+
+        // التحقق من وجود صفحات أخرى
+        if (customers.length < 50) {
+          hasMore = false;
+        } else {
+          page++;
+        }
+      } catch (error: any) {
+        this.logger.error(`❌ Salla sync page ${page} failed: ${error?.message}`);
+        hasMore = false;
+      }
+    }
+
+    const total = await this.customerRepository.count({ where: { tenantId } });
+    this.logger.log(`✅ Salla sync complete: ${synced} synced, ${errors} errors, ${total} total`, { tenantId });
+
+    return { synced, total, errors };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
