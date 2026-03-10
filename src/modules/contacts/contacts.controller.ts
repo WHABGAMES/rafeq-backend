@@ -213,7 +213,7 @@ export class ContactsController {
     @CurrentUser() user: any,
     @Query('format') format = 'csv',
     @Query('segment') segment?: string,
-    @Res() res?: Response,
+    @Res() res: Response,
   ) {
     const tenantId = user.tenantId;
     const csvContent = await this.contactsService.exportContacts(tenantId, format, segment);
