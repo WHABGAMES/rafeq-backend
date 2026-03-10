@@ -202,7 +202,7 @@ export class QuickRepliesService {
       id,
       tenantId,
       shortcut: dto.shortcut,
-      title: dto.title,
+      title: dto.title || dto.shortcut,
       content: dto.content,
       category: dto.category,
       variables,
