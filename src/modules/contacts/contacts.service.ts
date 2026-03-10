@@ -648,6 +648,52 @@ export class ContactsService {
       }
     }
 
+    // ═══════════════════════════════════════════════════════════════════════
+    // 4. مزامنة الطلبات — تحديث totalOrders و totalSpent لكل عميل
+    // ═══════════════════════════════════════════════════════════════════════
+    try {
+      this.logger.log(`📦 Syncing orders from Salla...`);
+      const customerStats: Record<string, { orders: number; spent: number }> = {};
+      let orderPage = 1;
+      let hasMoreOrders = true;
+
+      while (hasMoreOrders) {
+        try {
+          const orderRes = await this.sallaApiService.getOrders(accessToken, { page: orderPage, perPage: 50 });
+          const rawOrders: any = orderRes?.data;
+          const orders = Array.isArray(rawOrders) ? rawOrders : [];
+
+          if (orders.length === 0) { hasMoreOrders = false; break; }
+
+          for (const order of orders) {
+            const custId = String(order?.customer?.id || '');
+            if (!custId) continue;
+            if (!customerStats[custId]) customerStats[custId] = { orders: 0, spent: 0 };
+            customerStats[custId].orders++;
+            customerStats[custId].spent += order?.amounts?.total?.amount || 0;
+          }
+
+          if (orders.length < 50) hasMoreOrders = false;
+          else orderPage++;
+        } catch { hasMoreOrders = false; }
+      }
+
+      // تحديث العملاء بالإحصائيات
+      for (const [sallaId, stats] of Object.entries(customerStats)) {
+        try {
+          await this.customerRepository
+            .createQueryBuilder()
+            .update()
+            .set({ totalOrders: stats.orders, totalSpent: stats.spent })
+            .where('storeId = :storeId AND sallaCustomerId = :sallaId', { storeId: store.id, sallaId })
+            .execute();
+        } catch {}
+      }
+      this.logger.log(`✅ Order stats updated for ${Object.keys(customerStats).length} customers`);
+    } catch (err: any) {
+      this.logger.error(`⚠️ Order sync failed: ${err?.message}`);
+    }
+
     const total = await this.customerRepository.count({ where: { tenantId } });
     this.logger.log(`✅ Salla sync complete: ${synced} synced, ${errors} errors, ${total} total`, { tenantId });
 
