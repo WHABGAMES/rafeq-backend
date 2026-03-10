@@ -7,6 +7,7 @@
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { OnEvent } from '@nestjs/event-emitter';
 import { Customer, Conversation, Order, CustomerStatus, Store } from '@database/entities';
 import { SallaApiService } from '../stores/salla-api.service';
 import { decrypt } from '@common/utils/encryption.util';
@@ -38,6 +39,22 @@ export class ContactsService {
     private readonly storeRepository: Repository<Store>,
     private readonly sallaApiService: SallaApiService,
   ) {}
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ✅ مزامنة تلقائية عند ربط متجر جديد
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @OnEvent('store.connected')
+  async handleStoreConnected(payload: { storeId: string; tenantId: string; platform: string }) {
+    if (payload.platform !== 'salla') return;
+    this.logger.log(`🔄 Auto-syncing customers for new store: ${payload.storeId}`);
+    try {
+      const result = await this.syncFromSalla(payload.tenantId);
+      this.logger.log(`✅ Auto-sync complete: ${result.synced} customers synced for store ${payload.storeId}`);
+    } catch (error: any) {
+      this.logger.error(`❌ Auto-sync failed for store ${payload.storeId}: ${error?.message}`);
+    }
+  }
 
   /**
    * جلب جميع العملاء مع الفلترة
