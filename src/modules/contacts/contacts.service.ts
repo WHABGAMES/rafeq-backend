@@ -528,13 +528,55 @@ export class ContactsService {
     };
   }
 
-  async exportContacts(tenantId: string, format: string, segment?: string) {
-    this.logger.log(`Exporting contacts`, { tenantId, format, segment });
+  /**
+   * ✅ تصدير العملاء كملف CSV حقيقي
+   *
+   * يجلب جميع العملاء للمتجر ويُنشئ CSV مع:
+   * - BOM لدعم العربية في Excel
+   * - أعمدة: الاسم، الهاتف، الإيميل، القناة، الطلبات، الإنفاق، التصنيفات
+   */
+  async exportContacts(tenantId: string, _format: string, _segment?: string): Promise<string> {
+    this.logger.log(`Exporting contacts`, { tenantId, _format });
 
-    return {
-      success: true,
-      downloadUrl: '/api/v1/contacts/export/download/file-id',
-      expiresAt: new Date(Date.now() + 3600000),
+    // جلب جميع العملاء (بدون pagination)
+    const customers = await this.customerRepository.find({
+      where: { tenantId },
+      order: { createdAt: 'DESC' },
+    });
+
+    // UTF-8 BOM لدعم العربية في Excel
+    const BOM = '\uFEFF';
+
+    // Headers
+    const headers = ['الاسم', 'رقم الهاتف', 'الإيميل', 'القناة', 'الحالة', 'عدد الطلبات', 'إجمالي الإنفاق', 'التصنيفات', 'تاريخ التسجيل'];
+
+    // Rows
+    const rows = customers.map(c => {
+      const name = c.fullName || [c.firstName, c.lastName].filter(Boolean).join(' ') || '—';
+      const phone = c.phone || '—';
+      const email = c.email || '—';
+      const channel = c.channel || '—';
+      const status = c.status || 'active';
+      const orders = String(c.totalOrders ?? 0);
+      const spent = String(c.totalSpent ?? 0);
+      const tags = (c.tags || []).join('، ');
+      const date = c.createdAt ? new Date(c.createdAt).toLocaleDateString('ar-SA') : '—';
+      return [name, phone, email, channel, status, orders, spent, tags, date];
+    });
+
+    // Build CSV
+    const escapeCsv = (val: string) => {
+      if (val.includes(',') || val.includes('"') || val.includes('\n')) {
+        return `"${val.replace(/"/g, '""')}"`;
+      }
+      return val;
     };
+
+    const csvLines = [
+      headers.map(escapeCsv).join(','),
+      ...rows.map(row => row.map(escapeCsv).join(',')),
+    ];
+
+    return BOM + csvLines.join('\n');
   }
 }
