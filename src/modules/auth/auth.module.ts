@@ -37,6 +37,9 @@ import { MailModule } from '../mail/mail.module';
 // Stores Module (forwardRef to break circular dependency)
 import { StoresModule } from '../stores/stores.module';
 
+// Admin Module (for WhatsappSettingsService — sends via admin-configured WhatsApp)
+import { AdminModule } from '../admin/admin.module';
+
 @Module({
   imports: [
     TypeOrmModule.forFeature([User, Tenant]),
@@ -65,6 +68,9 @@ import { StoresModule } from '../stores/stores.module';
 
     // 🔗 StoresModule — forwardRef لكسر الاعتماد الدائري مع StoresModule
     forwardRef(() => StoresModule),
+
+    // 🔗 AdminModule — لاستخدام WhatsappSettingsService (إرسال من رقم الأدمن)
+    AdminModule,
   ],
   controllers: [AuthController],
   providers: [
