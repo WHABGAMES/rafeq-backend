@@ -129,6 +129,17 @@ export class ContactsController {
     return this.contactsService.getStats(tenantId);
   }
 
+  @Post('sync')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'مزامنة العملاء من سلة',
+    description: 'جلب جميع العملاء من متجر سلة وحفظهم في قاعدة البيانات',
+  })
+  async syncCustomers(@CurrentUser() user: any) {
+    const tenantId = user.tenantId;
+    return this.contactsService.syncFromSalla(tenantId);
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════════
   // Segments - شرائح العملاء
   // ═══════════════════════════════════════════════════════════════════════════════
