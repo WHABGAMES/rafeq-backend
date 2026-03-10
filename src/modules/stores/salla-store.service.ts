@@ -82,12 +82,17 @@ export class SallaStoreService {
       status: StoreStatus.ACTIVE,
       sallaMerchantId: merchantInfo.id,
       tokenExpiresAt: tokens.expiresAt,
+      // بيانات المتجر
       sallaStoreName: merchantInfo.name,
       sallaEmail: merchantInfo.email,
       sallaMobile: merchantInfo.mobile,
       sallaDomain: merchantInfo.domain,
       sallaAvatar: merchantInfo.avatar,
       sallaPlan: merchantInfo.plan,
+      // ✅ بيانات المالك الشخصية
+      sallaOwnerEmail: merchantInfo.ownerEmail,
+      sallaOwnerMobile: merchantInfo.ownerMobile,
+      sallaOwnerName: merchantInfo.ownerName,
       // ✅ تهيئة الإحصائيات بـ 0 عند الربط — تُحدَّث عند أول sync
       sallaOrdersCount: 0,
       sallaProductsCount: 0,
@@ -146,6 +151,11 @@ export class SallaStoreService {
     store.sallaDomain     = merchantInfo.domain;
     store.sallaAvatar     = merchantInfo.avatar;
     store.sallaPlan       = merchantInfo.plan;
+
+    // ✅ بيانات المالك الشخصية
+    if (merchantInfo.ownerEmail) store.sallaOwnerEmail = merchantInfo.ownerEmail;
+    if (merchantInfo.ownerMobile) store.sallaOwnerMobile = merchantInfo.ownerMobile;
+    if (merchantInfo.ownerName) store.sallaOwnerName = merchantInfo.ownerName;
 
     return this.storeRepository.save(store);
   }
