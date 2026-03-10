@@ -28,11 +28,11 @@ export class CreateQuickReplyDto {
   })
   shortcut: string;
 
-  @ApiProperty({ description: 'عنوان الرد' })
+  @ApiPropertyOptional({ description: 'عنوان الرد' })
+  @IsOptional()
   @IsString()
-  @MinLength(2)
   @MaxLength(100)
-  title: string;
+  title?: string;
 
   @ApiProperty({ description: 'محتوى الرد' })
   @IsString()
@@ -71,7 +71,6 @@ export class UpdateQuickReplyDto {
   @ApiPropertyOptional({ description: 'عنوان الرد' })
   @IsOptional()
   @IsString()
-  @MinLength(2)
   @MaxLength(100)
   title?: string;
 
