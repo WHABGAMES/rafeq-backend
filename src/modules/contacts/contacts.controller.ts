@@ -29,6 +29,7 @@ import {
   Body,
   Param,
   Query,
+  Res,
   ParseUUIDPipe,
   HttpCode,
   HttpStatus,
@@ -36,6 +37,7 @@ import {
   UploadedFile,
   UseInterceptors,
 } from '@nestjs/common';
+import { Response } from 'express';
 import {
   ApiTags,
   ApiOperation,
@@ -203,7 +205,7 @@ export class ContactsController {
   @Get('export')
   @ApiOperation({
     summary: 'تصدير عملاء',
-    description: 'تصدير العملاء إلى ملف CSV/Excel',
+    description: 'تصدير العملاء إلى ملف CSV (يفتح في Excel مباشرة)',
   })
   @ApiQuery({ name: 'format', required: false, enum: ['csv', 'xlsx'] })
   @ApiQuery({ name: 'segment', required: false })
@@ -211,9 +213,16 @@ export class ContactsController {
     @CurrentUser() user: any,
     @Query('format') format = 'csv',
     @Query('segment') segment?: string,
+    @Res() res?: Response,
   ) {
     const tenantId = user.tenantId;
-    return this.contactsService.exportContacts(tenantId, format, segment);
+    const csvContent = await this.contactsService.exportContacts(tenantId, format, segment);
+
+    // ✅ إرسال كملف CSV مع BOM لدعم العربية في Excel
+    const filename = encodeURIComponent(`عملاء-رفيق-${new Date().toISOString().slice(0, 10)}.csv`);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"; filename*=UTF-8''${filename}`);
+    res.send(csvContent);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
