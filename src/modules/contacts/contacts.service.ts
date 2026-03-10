@@ -535,6 +535,8 @@ export class ContactsService {
       throw new BadRequestException('لا يوجد متجر سلة مربوط أو التوكن منتهي');
     }
 
+    this.logger.log(`📦 Found store: ${store.id}, platform: ${store.platform}`);
+
     // ✅ فك تشفير التوكن (محفوظ مشفّر بـ AES-256-GCM)
     const accessToken = decrypt(store.accessToken);
     if (!accessToken) {
@@ -554,7 +556,12 @@ export class ContactsService {
           perPage: 50,
         });
 
-        const customers = response?.data || [];
+        // ✅ Salla API: { status, success, data: [...], pagination }
+        // لكن أحياناً data تكون مصفوفة أو كائن فيه data
+        const rawData = response?.data;
+        const customers = Array.isArray(rawData) ? rawData : (Array.isArray(rawData?.data) ? rawData.data : []);
+        this.logger.log(`📦 Salla page ${page}: ${customers.length} customers received`);
+        
         if (customers.length === 0) {
           hasMore = false;
           break;
@@ -607,7 +614,8 @@ export class ContactsService {
               await this.customerRepository.save(customer);
             }
             synced++;
-          } catch {
+          } catch (err: any) {
+            this.logger.error(`❌ Customer sync failed for Salla ID ${sallaCustomer?.id}: ${err?.message || err}`);
             errors++;
           }
         }
