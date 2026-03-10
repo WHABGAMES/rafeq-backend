@@ -96,8 +96,8 @@ export class QuickRepliesService {
 
     const qb = this.repo
       .createQueryBuilder('qr')
-      .where('(qr.tenant_id = :tenantId OR qr.is_global = true)', { tenantId })
-      .andWhere('qr.deleted_at IS NULL');
+      .where('(qr.tenantId = :tenantId OR qr.isGlobal = true)', { tenantId })
+      .andWhere('qr.deletedAt IS NULL');
 
     if (filters.category) {
       qb.andWhere('qr.category = :category', { category: filters.category });
@@ -110,8 +110,8 @@ export class QuickRepliesService {
       );
     }
 
-    qb.orderBy('qr.usage_count', 'DESC')
-      .addOrderBy('qr.created_at', 'DESC');
+    qb.orderBy('qr.usageCount', 'DESC')
+      .addOrderBy('qr.createdAt', 'DESC');
 
     const total = await qb.getCount();
     const data = await qb.skip(skip).take(limit).getMany();
@@ -130,13 +130,13 @@ export class QuickRepliesService {
   async search(tenantId: string, query: string): Promise<{ results: QuickReply[] }> {
     const results = await this.repo
       .createQueryBuilder('qr')
-      .where('(qr.tenant_id = :tenantId OR qr.is_global = true)', { tenantId })
-      .andWhere('qr.deleted_at IS NULL')
+      .where('(qr.tenantId = :tenantId OR qr.isGlobal = true)', { tenantId })
+      .andWhere('qr.deletedAt IS NULL')
       .andWhere(
         '(qr.shortcut ILIKE :q OR qr.title ILIKE :q)',
         { q: `%${query}%` },
       )
-      .orderBy('qr.usage_count', 'DESC')
+      .orderBy('qr.usageCount', 'DESC')
       .take(10)
       .getMany();
 
@@ -245,9 +245,9 @@ export class QuickRepliesService {
   async findByShortcut(tenantId: string, shortcut: string): Promise<QuickReply | null> {
     const entity = await this.repo
       .createQueryBuilder('qr')
-      .where('(qr.tenant_id = :tenantId OR qr.is_global = true)', { tenantId })
+      .where('(qr.tenantId = :tenantId OR qr.isGlobal = true)', { tenantId })
       .andWhere('LOWER(qr.shortcut) = LOWER(:shortcut)', { shortcut })
-      .andWhere('qr.deleted_at IS NULL')
+      .andWhere('qr.deletedAt IS NULL')
       .getOne();
 
     return entity ? this.toInterface(entity) : null;
