@@ -52,7 +52,7 @@ export class ContactsService {
     // Search filter
     if (filters.search) {
       queryBuilder.andWhere(
-        '(customer.name ILIKE :search OR customer.phone ILIKE :search OR customer.email ILIKE :search)',
+        '(customer.fullName ILIKE :search OR customer.firstName ILIKE :search OR customer.phone ILIKE :search OR customer.email ILIKE :search)',
         { search: `%${filters.search}%` },
       );
     }
