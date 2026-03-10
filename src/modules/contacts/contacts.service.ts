@@ -1,56 +1,14 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║              RAFIQ PLATFORM - Contacts Controller (CRM)                        ║
- * ║                                                                                ║
- * ║  📌 إدارة العملاء وبياناتهم                                                    ║
- * ║                                                                                ║
- * ║  الـ Endpoints:                                                                ║
- * ║  GET    /contacts              → قائمة العملاء                                 ║
- * ║  POST   /contacts              → إضافة عميل جديد                               ║
- * ║  GET    /contacts/:id          → تفاصيل عميل                                   ║
- * ║  PUT    /contacts/:id          → تحديث بيانات عميل                             ║
- * ║  DELETE /contacts/:id          → حذف عميل                                      ║
- * ║  GET    /contacts/:id/conversations → محادثات العميل                           ║
- * ║  GET    /contacts/:id/orders   → طلبات العميل                                  ║
- * ║  POST   /contacts/:id/tags     → إضافة تصنيفات                                 ║
- * ║  POST   /contacts/import       → استيراد عملاء                                 ║
- * ║  GET    /contacts/export       → تصدير عملاء                                   ║
- * ║  GET    /contacts/segments     → شرائح العملاء                                 ║
- * ║  POST   /contacts/segments     → إنشاء شريحة                                   ║
+ * ║              RAFIQ PLATFORM - Contacts Service (CRM)                           ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
-import {
-  Controller,
-  Get,
-  Post,
-  Put,
-  Delete,
-  Body,
-  Param,
-  Query,
-  Res,
-  ParseUUIDPipe,
-  HttpCode,
-  HttpStatus,
-  UseGuards,
-  UploadedFile,
-  UseInterceptors,
-} from '@nestjs/common';
-import { Response } from 'express';
-import {
-  ApiTags,
-  ApiOperation,
-  ApiResponse,
-  ApiBearerAuth,
-  ApiQuery,
-  ApiConsumes,
-} from '@nestjs/swagger';
-import { FileInterceptor } from '@nestjs/platform-express';
-
-import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
-import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { ContactsService } from './contacts.service';
+import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { Customer, Conversation, Order, CustomerStatus, Store } from '@database/entities';
+import { SallaApiService } from '../stores/salla-api.service';
 import {
   CreateContactDto,
   UpdateContactDto,
@@ -59,416 +17,675 @@ import {
   CreateSegmentDto,
 } from './dto';
 
-@ApiTags('Contacts - إدارة العملاء (CRM)')
-@ApiBearerAuth('JWT-auth')
-@UseGuards(JwtAuthGuard)
-@Controller({
-  path: 'contacts',
-  version: '1',
-})
-export class ContactsController {
-  constructor(private readonly contactsService: ContactsService) {}
+interface PaginationOptions {
+  page: number;
+  limit: number;
+}
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // GET /contacts - قائمة العملاء
-  // ═══════════════════════════════════════════════════════════════════════════════
+@Injectable()
+export class ContactsService {
+  private readonly logger = new Logger(ContactsService.name);
 
-  @Get()
-  @ApiOperation({
-    summary: 'قائمة العملاء',
-    description: 'جلب جميع العملاء مع الفلترة والبحث',
-  })
-  @ApiQuery({ name: 'search', required: false, description: 'البحث بالاسم أو الهاتف أو الإيميل' })
-  @ApiQuery({ name: 'segment', required: false, description: 'معرف الشريحة' })
-  @ApiQuery({ name: 'tags', required: false, description: 'التصنيفات (مفصولة بفاصلة)' })
-  @ApiQuery({ name: 'channel', required: false, description: 'القناة' })
-  @ApiQuery({ name: 'hasOrders', required: false, type: Boolean })
-  @ApiQuery({ name: 'sortBy', required: false, enum: ['createdAt', 'lastActivity', 'totalOrders', 'name'] })
-  @ApiQuery({ name: 'sortOrder', required: false, enum: ['asc', 'desc'] })
-  @ApiQuery({ name: 'page', required: false, type: Number })
-  @ApiQuery({ name: 'limit', required: false, type: Number })
-  @ApiResponse({ status: 200, description: 'قائمة العملاء' })
+  constructor(
+    @InjectRepository(Customer)
+    private readonly customerRepository: Repository<Customer>,
+    @InjectRepository(Conversation)
+    private readonly conversationRepository: Repository<Conversation>,
+    @InjectRepository(Order)
+    private readonly orderRepository: Repository<Order>,
+    @InjectRepository(Store)
+    private readonly storeRepository: Repository<Store>,
+    private readonly sallaApiService: SallaApiService,
+  ) {}
+
+  /**
+   * جلب جميع العملاء مع الفلترة
+   */
   async findAll(
-    @CurrentUser() user: any,
-    @Query('search') search?: string,
-    @Query('segment') segment?: string,
-    @Query('tags') tags?: string,
-    @Query('channel') channel?: string,
-    @Query('hasOrders') hasOrders?: boolean,
-    @Query('sortBy') sortBy = 'createdAt',
-    @Query('sortOrder') sortOrder: 'asc' | 'desc' = 'desc',
-    @Query('page') page = 1,
-    @Query('limit') limit = 20,
+    tenantId: string,
+    filters: ContactFiltersDto,
+    pagination: PaginationOptions,
   ) {
-    const tenantId = user.tenantId;
+    const { page, limit } = pagination;
+    const skip = (page - 1) * limit;
 
-    const filters: ContactFiltersDto = {
-      search,
-      segment,
-      tags: tags?.split(','),
-      channel,
-      hasOrders,
-      sortBy,
-      sortOrder,
+    const queryBuilder = this.customerRepository
+      .createQueryBuilder('customer')
+      .where('customer.tenantId = :tenantId', { tenantId });
+
+    // Search filter
+    if (filters.search) {
+      queryBuilder.andWhere(
+        '(customer.fullName ILIKE :search OR customer.firstName ILIKE :search OR customer.phone ILIKE :search OR customer.email ILIKE :search)',
+        { search: `%${filters.search}%` },
+      );
+    }
+
+    // Tags filter
+    if (filters.tags?.length) {
+      queryBuilder.andWhere('customer.tags && :tags', { tags: filters.tags });
+    }
+
+    // Channel filter
+    if (filters.channel) {
+      queryBuilder.andWhere('customer.channel = :channel', { channel: filters.channel });
+    }
+
+    // Sorting
+    const sortColumn = `customer.${filters.sortBy || 'createdAt'}`;
+    queryBuilder.orderBy(sortColumn, filters.sortOrder?.toUpperCase() as 'ASC' | 'DESC' || 'DESC');
+
+    // Get total count
+    const total = await queryBuilder.getCount();
+
+    // Get paginated results
+    const contacts = await queryBuilder
+      .skip(skip)
+      .take(limit)
+      .getMany();
+
+    return {
+      data: contacts,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
     };
-
-    return this.contactsService.findAll(tenantId, filters, { page, limit });
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // GET /contacts/stats - إحصائيات العملاء
-  // ═══════════════════════════════════════════════════════════════════════════════
+  /**
+   * إحصائيات العملاء
+   */
+  async getStats(tenantId: string) {
+    const total = await this.customerRepository.count({ where: { tenantId } });
+    
+    // Get counts by different criteria
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    const newToday = await this.customerRepository
+      .createQueryBuilder('customer')
+      .where('customer.tenantId = :tenantId', { tenantId })
+      .andWhere('customer.createdAt >= :today', { today })
+      .getCount();
 
-  @Get('stats')
-  @ApiOperation({
-    summary: 'إحصائيات العملاء',
-    description: 'إحصائيات شاملة عن العملاء',
-  })
-  async getStats(@CurrentUser() user: any) {
-    const tenantId = user.tenantId;
-    return this.contactsService.getStats(tenantId);
+    const thisMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+    const newThisMonth = await this.customerRepository
+      .createQueryBuilder('customer')
+      .where('customer.tenantId = :tenantId', { tenantId })
+      .andWhere('customer.createdAt >= :thisMonth', { thisMonth })
+      .getCount();
+
+    // Count blocked customers
+    const blocked = await this.customerRepository.count({
+      where: { tenantId, status: CustomerStatus.BLOCKED },
+    });
+
+    return {
+      total,
+      newToday,
+      newThisMonth,
+      withOrders: 0,
+      blocked,
+      byChannel: {
+        whatsapp: 0,
+        instagram: 0,
+        telegram: 0,
+        email: 0,
+        sms: 0,
+      },
+    };
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // Segments - شرائح العملاء
-  // ═══════════════════════════════════════════════════════════════════════════════
+  /**
+   * إنشاء عميل جديد
+   */
+  async create(tenantId: string, dto: CreateContactDto) {
+    // Check for duplicate phone/email
+    const existing = await this.customerRepository.findOne({
+      where: [
+        { tenantId, phone: dto.phone },
+        dto.email ? { tenantId, email: dto.email } : undefined,
+      ].filter(Boolean) as any,
+    });
 
-  @Get('segments')
-  @ApiOperation({
-    summary: 'شرائح العملاء',
-    description: 'جلب جميع شرائح العملاء',
-  })
-  async getSegments(@CurrentUser() user: any) {
-    const tenantId = user.tenantId;
-    return this.contactsService.getSegments(tenantId);
+    if (existing) {
+      throw new BadRequestException('العميل موجود مسبقاً');
+    }
+
+    // Extract address string and other fields separately
+    const { address: addressString, ...restDto } = dto;
+
+    const contact = this.customerRepository.create({
+      ...restDto,
+      tenantId,
+      // Convert string address to CustomerAddress if provided
+      address: addressString ? { street: addressString } : undefined,
+    } as any);
+
+    const saved = await this.customerRepository.save(contact);
+
+    // Handle both single and array results from save()
+    const savedContact = Array.isArray(saved) ? saved[0] : saved;
+
+    this.logger.log(`Contact created: ${savedContact.id}`, { tenantId, phone: dto.phone });
+
+    return savedContact;
   }
 
-  @Post('segments')
-  @ApiOperation({
-    summary: 'إنشاء شريحة',
-    description: 'إنشاء شريحة عملاء جديدة بشروط محددة',
-  })
-  async createSegment(@CurrentUser() user: any,
-    @Body() dto: CreateSegmentDto) {
-    const tenantId = user.tenantId;
-    return this.contactsService.createSegment(tenantId, dto);
+  /**
+   * جلب عميل بالـ ID
+   */
+  async findById(id: string, tenantId: string) {
+    const contact = await this.customerRepository.findOne({
+      where: { id, tenantId },
+    });
+
+    if (!contact) {
+      throw new NotFoundException('العميل غير موجود');
+    }
+
+    // Get additional stats
+    const conversationCount = await this.conversationRepository.count({
+      where: { customerId: id, tenantId },
+    });
+
+    const orderCount = await this.orderRepository.count({
+      where: { customerId: id, tenantId },
+    });
+
+    return {
+      ...contact,
+      stats: {
+        conversationCount,
+        orderCount,
+        totalSpent: 0,
+        lastOrderDate: null,
+        averageOrderValue: 0,
+      },
+    };
   }
 
-  @Get('segments/:id')
-  @ApiOperation({ summary: 'تفاصيل شريحة' })
-  async getSegment(@CurrentUser() user: any,
-    @Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = user.tenantId;
-    return this.contactsService.getSegmentById(id, tenantId);
+  /**
+   * تحديث عميل
+   */
+  async update(id: string, tenantId: string, dto: UpdateContactDto) {
+    const contact = await this.customerRepository.findOne({
+      where: { id, tenantId },
+    });
+
+    if (!contact) {
+      throw new NotFoundException('العميل غير موجود');
+    }
+
+    Object.assign(contact, dto);
+
+    return this.customerRepository.save(contact);
   }
 
-  @Put('segments/:id')
-  @ApiOperation({ summary: 'تحديث شريحة' })
-  async updateSegment(
-    @CurrentUser() user: any,
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body() dto: CreateSegmentDto,
+  /**
+   * حذف عميل
+   */
+  async delete(id: string, tenantId: string) {
+    const contact = await this.customerRepository.findOne({
+      where: { id, tenantId },
+    });
+
+    if (!contact) {
+      throw new NotFoundException('العميل غير موجود');
+    }
+
+    await this.customerRepository.remove(contact);
+    this.logger.log(`Contact deleted: ${id}`, { tenantId });
+  }
+
+  /**
+   * جلب محادثات العميل
+   */
+  async getConversations(
+    contactId: string,
+    tenantId: string,
+    pagination: PaginationOptions,
   ) {
-    const tenantId = user.tenantId;
-    return this.contactsService.updateSegment(id, tenantId, dto);
+    const { page, limit } = pagination;
+    const skip = (page - 1) * limit;
+
+    const [conversations, total] = await this.conversationRepository.findAndCount({
+      where: { customerId: contactId, tenantId },
+      order: { updatedAt: 'DESC' },
+      skip,
+      take: limit,
+    });
+
+    return {
+      data: conversations,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
   }
 
-  @Delete('segments/:id')
-  @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({ summary: 'حذف شريحة' })
-  async deleteSegment(@CurrentUser() user: any,
-    @Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = user.tenantId;
-    await this.contactsService.deleteSegment(id, tenantId);
+  /**
+   * جلب طلبات العميل
+   */
+  async getOrders(
+    contactId: string,
+    tenantId: string,
+    pagination: PaginationOptions,
+  ) {
+    const { page, limit } = pagination;
+    const skip = (page - 1) * limit;
+
+    const [orders, total] = await this.orderRepository.findAndCount({
+      where: { customerId: contactId, tenantId },
+      order: { createdAt: 'DESC' },
+      skip,
+      take: limit,
+    });
+
+    return {
+      data: orders,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  /**
+   * سجل النشاطات
+   */
+  async getTimeline(
+    _contactId: string,
+    _tenantId: string,
+    pagination: PaginationOptions,
+  ) {
+    return {
+      data: [],
+      pagination: {
+        ...pagination,
+        total: 0,
+        totalPages: 0,
+      },
+    };
+  }
+
+  /**
+   * إضافة تصنيفات
+   */
+  async addTags(contactId: string, tenantId: string, tags: string[]) {
+    const contact = await this.customerRepository.findOne({
+      where: { id: contactId, tenantId },
+    });
+
+    if (!contact) {
+      throw new NotFoundException('العميل غير موجود');
+    }
+    
+    const existingTags = contact.tags || [];
+    const newTags = [...new Set([...existingTags, ...tags])];
+    
+    contact.tags = newTags;
+    
+    return this.customerRepository.save(contact);
+  }
+
+  /**
+   * إزالة تصنيف
+   */
+  async removeTag(contactId: string, tenantId: string, tag: string) {
+    const contact = await this.customerRepository.findOne({
+      where: { id: contactId, tenantId },
+    });
+
+    if (!contact) {
+      throw new NotFoundException('العميل غير موجود');
+    }
+    
+    contact.tags = (contact.tags || []).filter((t) => t !== tag);
+    
+    await this.customerRepository.save(contact);
+  }
+
+  /**
+   * جلب الملاحظات
+   */
+  async getNotes(_contactId: string, _tenantId: string) {
+    return { notes: [] };
+  }
+
+  /**
+   * إضافة ملاحظة
+   */
+  async addNote(contactId: string, _tenantId: string, userId: string, content: string) {
+    return {
+      id: 'note-id',
+      contactId,
+      userId,
+      content,
+      createdAt: new Date(),
+    };
+  }
+
+  /**
+   * حذف ملاحظة
+   */
+  async deleteNote(_contactId: string, _tenantId: string, _noteId: string) {
+    // TODO: Implement notes deletion
+  }
+
+  /**
+   * دمج عملاء
+   */
+  async mergeContacts(primaryId: string, secondaryId: string, tenantId: string) {
+    const primary = await this.customerRepository.findOne({
+      where: { id: primaryId, tenantId },
+    });
+
+    if (!primary) {
+      throw new NotFoundException('العميل الأساسي غير موجود');
+    }
+
+    const secondary = await this.customerRepository.findOne({
+      where: { id: secondaryId, tenantId },
+    });
+
+    if (!secondary) {
+      throw new NotFoundException('العميل الثانوي غير موجود');
+    }
+
+    // Merge tags
+    primary.tags = [...new Set([...(primary.tags || []), ...(secondary.tags || [])])];
+
+    // Update conversations to point to primary
+    await this.conversationRepository.update(
+      { customerId: secondaryId, tenantId },
+      { customerId: primaryId },
+    );
+
+    // Update orders to point to primary
+    await this.orderRepository.update(
+      { customerId: secondaryId, tenantId },
+      { customerId: primaryId },
+    );
+
+    // Delete secondary contact
+    await this.customerRepository.remove(secondary);
+
+    // Save primary with merged data
+    return this.customerRepository.save(primary);
+  }
+
+  /**
+   * حظر عميل
+   */
+  async blockContact(contactId: string, tenantId: string, _reason?: string) {
+    const contact = await this.customerRepository.findOne({
+      where: { id: contactId, tenantId },
+    });
+
+    if (!contact) {
+      throw new NotFoundException('العميل غير موجود');
+    }
+    
+    contact.status = CustomerStatus.BLOCKED;
+    
+    return this.customerRepository.save(contact);
+  }
+
+  /**
+   * إلغاء حظر عميل
+   */
+  async unblockContact(contactId: string, tenantId: string) {
+    const contact = await this.customerRepository.findOne({
+      where: { id: contactId, tenantId },
+    });
+
+    if (!contact) {
+      throw new NotFoundException('العميل غير موجود');
+    }
+    
+    contact.status = CustomerStatus.ACTIVE;
+    
+    return this.customerRepository.save(contact);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // Segments
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async getSegments(_tenantId: string) {
+    return {
+      segments: [
+        {
+          id: 'all-customers',
+          name: 'جميع العملاء',
+          count: 0,
+          isSystem: true,
+        },
+        {
+          id: 'new-customers',
+          name: 'عملاء جدد (آخر 30 يوم)',
+          count: 0,
+          isSystem: true,
+        },
+        {
+          id: 'vip-customers',
+          name: 'عملاء VIP',
+          count: 0,
+          isSystem: true,
+        },
+        {
+          id: 'inactive-customers',
+          name: 'عملاء غير نشطين',
+          count: 0,
+          isSystem: true,
+        },
+      ],
+    };
+  }
+
+  async createSegment(tenantId: string, dto: CreateSegmentDto) {
+    return {
+      id: 'new-segment-id',
+      ...dto,
+      tenantId,
+      count: 0,
+      createdAt: new Date(),
+    };
+  }
+
+  async getSegmentById(id: string, tenantId: string) {
+    return { id, tenantId };
+  }
+
+  async updateSegment(_id: string, _tenantId: string, dto: CreateSegmentDto) {
+    return { id: _id, ...dto };
+  }
+
+  async deleteSegment(_id: string, _tenantId: string) {
+    // TODO: Implement
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ✅ مزامنة العملاء من سلة
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async syncFromSalla(tenantId: string): Promise<{ synced: number; total: number; errors: number }> {
+    this.logger.log(`🔄 Starting Salla customer sync`, { tenantId });
+
+    // 1. جلب المتجر مع access token
+    const store = await this.storeRepository.findOne({
+      where: { tenantId, platform: 'salla' as any },
+    });
+
+    if (!store || !store.accessToken) {
+      throw new BadRequestException('لا يوجد متجر سلة مربوط أو التوكن منتهي');
+    }
+
+    let synced = 0;
+    let errors = 0;
+    let page = 1;
+    let hasMore = true;
+
+    // 2. جلب العملاء من سلة (كل الصفحات)
+    while (hasMore) {
+      try {
+        const response = await this.sallaApiService.getCustomers(store.accessToken, {
+          page,
+          perPage: 50,
+        });
+
+        const customers = response?.data || [];
+        if (customers.length === 0) {
+          hasMore = false;
+          break;
+        }
+
+        // 3. حفظ/تحديث كل عميل
+        for (const sallaCustomer of customers) {
+          try {
+            const sallaCustomerId = String(sallaCustomer.id);
+            let customer = await this.customerRepository.findOne({
+              where: { storeId: store.id, sallaCustomerId },
+            });
+
+            const firstName = sallaCustomer.first_name || undefined;
+            const lastName = sallaCustomer.last_name || undefined;
+            const fullName = firstName && lastName ? `${firstName} ${lastName}` : firstName || undefined;
+            const email = sallaCustomer.email || undefined;
+
+            // بناء رقم الهاتف الدولي
+            const mobile = sallaCustomer.mobile;
+            const mobileCode = sallaCustomer.mobile_code || '966';
+            let phone: string | undefined;
+            if (mobile) {
+              const cleaned = mobile.replace(/\D/g, '').replace(/^0+/, '');
+              const code = mobileCode.replace(/\D/g, '').replace(/^\+/, '');
+              phone = cleaned.startsWith(code) ? cleaned : `${code}${cleaned}`;
+            }
+
+            if (customer) {
+              // تحديث
+              if (firstName) customer.firstName = firstName;
+              if (lastName) customer.lastName = lastName;
+              if (fullName) customer.fullName = fullName;
+              if (phone) customer.phone = phone;
+              if (email) customer.email = email;
+              await this.customerRepository.save(customer);
+            } else {
+              // إنشاء
+              customer = this.customerRepository.create({
+                tenantId,
+                storeId: store.id,
+                sallaCustomerId,
+                firstName,
+                lastName,
+                fullName,
+                phone,
+                email,
+                status: CustomerStatus.ACTIVE,
+              });
+              await this.customerRepository.save(customer);
+            }
+            synced++;
+          } catch {
+            errors++;
+          }
+        }
+
+        // التحقق من وجود صفحات أخرى
+        if (customers.length < 50) {
+          hasMore = false;
+        } else {
+          page++;
+        }
+      } catch (error: any) {
+        this.logger.error(`❌ Salla sync page ${page} failed: ${error?.message}`);
+        hasMore = false;
+      }
+    }
+
+    const total = await this.customerRepository.count({ where: { tenantId } });
+    this.logger.log(`✅ Salla sync complete: ${synced} synced, ${errors} errors, ${total} total`, { tenantId });
+
+    return { synced, total, errors };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
   // Import/Export
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  @Post('import')
-  @ApiOperation({
-    summary: 'استيراد عملاء',
-    description: 'استيراد عملاء من ملف CSV/Excel',
-  })
-  @ApiConsumes('multipart/form-data')
-  @UseInterceptors(FileInterceptor('file'))
   async importContacts(
-    @CurrentUser() user: any,
-    @UploadedFile() file: any,
-    @Body() dto: ImportContactsDto,
+    tenantId: string,
+    file: { originalname?: string },
+    _dto: ImportContactsDto,
   ) {
-    const tenantId = user.tenantId;
-    return this.contactsService.importContacts(tenantId, file, dto);
+    this.logger.log(`Importing contacts`, { tenantId, filename: file?.originalname });
+
+    return {
+      success: true,
+      message: 'جاري استيراد العملاء',
+      jobId: 'import-job-id',
+    };
   }
 
-  @Post('sync')
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({
-    summary: 'مزامنة العملاء من سلة',
-    description: 'جلب جميع العملاء من متجر سلة وحفظهم في قاعدة البيانات',
-  })
-  async syncCustomers(@CurrentUser() user: any) {
-    const tenantId = user.tenantId;
-    return this.contactsService.syncFromSalla(tenantId);
-  }
+  /**
+   * ✅ تصدير العملاء كملف CSV حقيقي
+   *
+   * يجلب جميع العملاء للمتجر ويُنشئ CSV مع:
+   * - BOM لدعم العربية في Excel
+   * - أعمدة: الاسم، الهاتف، الإيميل، القناة، الطلبات، الإنفاق، التصنيفات
+   */
+  async exportContacts(tenantId: string, _format: string, _segment?: string): Promise<string> {
+    this.logger.log(`Exporting contacts`, { tenantId, _format });
 
-  @Get('export')
-  @ApiOperation({
-    summary: 'تصدير عملاء',
-    description: 'تصدير العملاء إلى ملف CSV (يفتح في Excel مباشرة)',
-  })
-  @ApiQuery({ name: 'format', required: false, enum: ['csv', 'xlsx'] })
-  @ApiQuery({ name: 'segment', required: false })
-  async exportContacts(
-    @CurrentUser() user: any,
-    @Res() res: Response,
-    @Query('format') format = 'csv',
-    @Query('segment') segment?: string,
-  ) {
-    const tenantId = user.tenantId;
-    const csvContent = await this.contactsService.exportContacts(tenantId, format, segment);
+    // جلب جميع العملاء (بدون pagination)
+    const customers = await this.customerRepository.find({
+      where: { tenantId },
+      order: { createdAt: 'DESC' },
+    });
 
-    // ✅ إرسال كملف CSV مع BOM لدعم العربية في Excel
-    const filename = encodeURIComponent(`عملاء-رفيق-${new Date().toISOString().slice(0, 10)}.csv`);
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"; filename*=UTF-8''${filename}`);
-    res.send(csvContent);
-  }
+    // UTF-8 BOM لدعم العربية في Excel
+    const BOM = '\uFEFF';
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // POST /contacts - إضافة عميل جديد
-  // ═══════════════════════════════════════════════════════════════════════════════
+    // Headers
+    const headers = ['الاسم', 'رقم الهاتف', 'الإيميل', 'القناة', 'الحالة', 'عدد الطلبات', 'إجمالي الإنفاق', 'التصنيفات', 'تاريخ التسجيل'];
 
-  @Post()
-  @ApiOperation({
-    summary: 'إضافة عميل جديد',
-    description: 'إنشاء عميل جديد في النظام',
-  })
-  @ApiResponse({ status: 201, description: 'تم إنشاء العميل' })
-  async create(@CurrentUser() user: any,
-    @Body() dto: CreateContactDto) {
-    const tenantId = user.tenantId;
-    return this.contactsService.create(tenantId, dto);
-  }
+    // Rows
+    const rows = customers.map(c => {
+      const name = c.fullName || [c.firstName, c.lastName].filter(Boolean).join(' ') || '—';
+      const phone = c.phone || '—';
+      const email = c.email || '—';
+      const channel = c.channel || '—';
+      const status = c.status || 'active';
+      const orders = String(c.totalOrders ?? 0);
+      const spent = String(c.totalSpent ?? 0);
+      const tags = (c.tags || []).join('، ');
+      const date = c.createdAt ? new Date(c.createdAt).toLocaleDateString('ar-SA') : '—';
+      return [name, phone, email, channel, status, orders, spent, tags, date];
+    });
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // GET /contacts/:id - تفاصيل عميل
-  // ═══════════════════════════════════════════════════════════════════════════════
+    // Build CSV
+    const escapeCsv = (val: string) => {
+      if (val.includes(',') || val.includes('"') || val.includes('\n')) {
+        return `"${val.replace(/"/g, '""')}"`;
+      }
+      return val;
+    };
 
-  @Get(':id')
-  @ApiOperation({
-    summary: 'تفاصيل عميل',
-    description: 'جلب تفاصيل عميل معين مع سجل النشاطات',
-  })
-  async findOne(@CurrentUser() user: any,
-    @Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = user.tenantId;
-    return this.contactsService.findById(id, tenantId);
-  }
+    const csvLines = [
+      headers.map(escapeCsv).join(','),
+      ...rows.map(row => row.map(escapeCsv).join(',')),
+    ];
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // PUT /contacts/:id - تحديث بيانات عميل
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  @Put(':id')
-  @ApiOperation({
-    summary: 'تحديث بيانات عميل',
-    description: 'تحديث بيانات عميل معين',
-  })
-  async update(
-    @CurrentUser() user: any,
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body() dto: UpdateContactDto,
-  ) {
-    const tenantId = user.tenantId;
-    return this.contactsService.update(id, tenantId, dto);
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // DELETE /contacts/:id - حذف عميل
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  @Delete(':id')
-  @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({
-    summary: 'حذف عميل',
-    description: 'حذف عميل من النظام',
-  })
-  async remove(@CurrentUser() user: any,
-    @Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = user.tenantId;
-    await this.contactsService.delete(id, tenantId);
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // GET /contacts/:id/conversations - محادثات العميل
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  @Get(':id/conversations')
-  @ApiOperation({
-    summary: 'محادثات العميل',
-    description: 'جلب جميع محادثات عميل معين',
-  })
-  @ApiQuery({ name: 'page', required: false })
-  @ApiQuery({ name: 'limit', required: false })
-  async getConversations(
-    @CurrentUser() user: any,
-    @Param('id', ParseUUIDPipe) id: string,
-    @Query('page') page = 1,
-    @Query('limit') limit = 20,
-  ) {
-    const tenantId = user.tenantId;
-    return this.contactsService.getConversations(id, tenantId, { page, limit });
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // GET /contacts/:id/orders - طلبات العميل
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  @Get(':id/orders')
-  @ApiOperation({
-    summary: 'طلبات العميل',
-    description: 'جلب جميع طلبات عميل معين من سلة/زد',
-  })
-  @ApiQuery({ name: 'page', required: false })
-  @ApiQuery({ name: 'limit', required: false })
-  async getOrders(
-    @CurrentUser() user: any,
-    @Param('id', ParseUUIDPipe) id: string,
-    @Query('page') page = 1,
-    @Query('limit') limit = 20,
-  ) {
-    const tenantId = user.tenantId;
-    return this.contactsService.getOrders(id, tenantId, { page, limit });
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // GET /contacts/:id/timeline - سجل النشاطات
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  @Get(':id/timeline')
-  @ApiOperation({
-    summary: 'سجل النشاطات',
-    description: 'جميع نشاطات العميل (رسائل، طلبات، ملاحظات)',
-  })
-  async getTimeline(
-    @CurrentUser() user: any,
-    @Param('id', ParseUUIDPipe) id: string,
-    @Query('page') page = 1,
-    @Query('limit') limit = 50,
-  ) {
-    const tenantId = user.tenantId;
-    return this.contactsService.getTimeline(id, tenantId, { page, limit });
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // Tags Management
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  @Post(':id/tags')
-  @ApiOperation({
-    summary: 'إضافة تصنيفات',
-    description: 'إضافة تصنيفات للعميل',
-  })
-  async addTags(
-    @CurrentUser() user: any,
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body() body: { tags: string[] },
-  ) {
-    const tenantId = user.tenantId;
-    return this.contactsService.addTags(id, tenantId, body.tags);
-  }
-
-  @Delete(':id/tags/:tag')
-  @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({
-    summary: 'إزالة تصنيف',
-    description: 'إزالة تصنيف من العميل',
-  })
-  async removeTag(
-    @CurrentUser() user: any,
-    @Param('id', ParseUUIDPipe) id: string,
-    @Param('tag') tag: string,
-  ) {
-    const tenantId = user.tenantId;
-    await this.contactsService.removeTag(id, tenantId, tag);
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // Notes Management
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  @Get(':id/notes')
-  @ApiOperation({ summary: 'ملاحظات العميل' })
-  async getNotes(@CurrentUser() user: any,
-    @Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = user.tenantId;
-    return this.contactsService.getNotes(id, tenantId);
-  }
-
-  @Post(':id/notes')
-  @ApiOperation({ summary: 'إضافة ملاحظة' })
-  async addNote(
-    @CurrentUser() user: any,
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body() body: { content: string },
-  ) {
-    const tenantId = user.tenantId;
-    const userId = user.id;
-    return this.contactsService.addNote(id, tenantId, userId, body.content);
-  }
-
-  @Delete(':id/notes/:noteId')
-  @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({ summary: 'حذف ملاحظة' })
-  async deleteNote(
-    @CurrentUser() user: any,
-    @Param('id', ParseUUIDPipe) id: string,
-    @Param('noteId', ParseUUIDPipe) noteId: string,
-  ) {
-    const tenantId = user.tenantId;
-    await this.contactsService.deleteNote(id, tenantId, noteId);
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // Merge Contacts
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  @Post(':id/merge')
-  @ApiOperation({
-    summary: 'دمج عملاء',
-    description: 'دمج عميلين في سجل واحد',
-  })
-  async mergeContacts(
-    @CurrentUser() user: any,
-    @Param('id', ParseUUIDPipe) primaryId: string,
-    @Body() body: { secondaryId: string },
-  ) {
-    const tenantId = user.tenantId;
-    return this.contactsService.mergeContacts(primaryId, body.secondaryId, tenantId);
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // Block/Unblock Contact
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  @Post(':id/block')
-  @ApiOperation({ summary: 'حظر عميل' })
-  async blockContact(
-    @CurrentUser() user: any,
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body() body: { reason?: string },
-  ) {
-    const tenantId = user.tenantId;
-    return this.contactsService.blockContact(id, tenantId, body.reason);
-  }
-
-  @Post(':id/unblock')
-  @ApiOperation({ summary: 'إلغاء حظر عميل' })
-  async unblockContact(@CurrentUser() user: any,
-    @Param('id', ParseUUIDPipe) id: string) {
-    const tenantId = user.tenantId;
-    return this.contactsService.unblockContact(id, tenantId);
+    return BOM + csvLines.join('\n');
   }
 }
