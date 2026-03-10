@@ -9,6 +9,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Customer, Conversation, Order, CustomerStatus, Store } from '@database/entities';
 import { SallaApiService } from '../stores/salla-api.service';
+import { decrypt } from '@common/utils/encryption.util';
 import {
   CreateContactDto,
   UpdateContactDto,
@@ -521,13 +522,23 @@ export class ContactsService {
   async syncFromSalla(tenantId: string): Promise<{ synced: number; total: number; errors: number }> {
     this.logger.log(`🔄 Starting Salla customer sync`, { tenantId });
 
-    // 1. جلب المتجر مع access token
-    const store = await this.storeRepository.findOne({
-      where: { tenantId, platform: 'salla' as any },
-    });
+    // 1. جلب المتجر مع access token (select: false في الـ entity)
+    const store = await this.storeRepository
+      .createQueryBuilder('store')
+      .addSelect('store.accessToken')
+      .where('store.tenantId = :tenantId', { tenantId })
+      .andWhere('store.platform = :platform', { platform: 'salla' })
+      .andWhere('store.deletedAt IS NULL')
+      .getOne();
 
     if (!store || !store.accessToken) {
       throw new BadRequestException('لا يوجد متجر سلة مربوط أو التوكن منتهي');
+    }
+
+    // ✅ فك تشفير التوكن (محفوظ مشفّر بـ AES-256-GCM)
+    const accessToken = decrypt(store.accessToken);
+    if (!accessToken) {
+      throw new BadRequestException('فشل في فك تشفير التوكن — أعد ربط المتجر');
     }
 
     let synced = 0;
@@ -538,7 +549,7 @@ export class ContactsService {
     // 2. جلب العملاء من سلة (كل الصفحات)
     while (hasMore) {
       try {
-        const response = await this.sallaApiService.getCustomers(store.accessToken, {
+        const response = await this.sallaApiService.getCustomers(accessToken, {
           page,
           perPage: 50,
         });
