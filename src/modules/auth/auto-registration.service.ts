@@ -17,7 +17,7 @@
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
@@ -28,6 +28,7 @@ import * as bcrypt from 'bcryptjs';
 import { User, UserStatus, UserRole } from '@database/entities/user.entity';
 import { Store } from '@modules/stores/entities/store.entity';
 import { MailService } from '../mail/mail.service';
+import { WhatsappSettingsService } from '../admin/services/whatsapp-settings.service';
 
 /**
  * 📌 بيانات التاجر من سلة
@@ -67,6 +68,11 @@ export class AutoRegistrationService {
     private readonly mailService: MailService,
     private readonly configService: ConfigService,
     private readonly httpService: HttpService,
+
+    // ✅ واتساب لوحة الأدمن — يُرسل من الرقم المربوط في لوحة التحكم
+    // Optional لأن AdminModule قد لا يكون مُفعّل في بعض البيئات
+    @Optional()
+    private readonly whatsappSettingsService?: WhatsappSettingsService,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -425,27 +431,71 @@ export class AutoRegistrationService {
 
   // ═══════════════════════════════════════════════════════════════════════════════
   // 📱 WhatsApp Helper
+  //
+  // ✅ الأولوية:
+  //   1. WhatsappSettingsService (لوحة الأدمن) — الرقم المربوط في لوحة التحكم
+  //   2. ENV variables (WHATSAPP_PHONE_NUMBER_ID) — fallback قديم
+  //
+  // هذا يضمن أن الرسالة تُرسل من الرقم الصحيح المُدار من الأدمن
+  // ويُسجّل في message_logs للمتابعة
   // ═══════════════════════════════════════════════════════════════════════════════
 
   private async sendWhatsAppMessage(data: {
     mobile: string | undefined | null;
     message: string;
   }): Promise<void> {
-    // ✅ FIX: حماية من mobile = undefined (متجر سلة التجريبي ما يرسل رقم جوال)
+    // ✅ حماية من mobile = undefined
     if (!data.mobile) {
       this.logger.warn('⚠️ No mobile number — skipping WhatsApp notification');
       return;
     }
 
+    const formattedPhone = this.formatPhoneNumber(data.mobile);
+    if (!formattedPhone) {
+      this.logger.warn('⚠️ Invalid mobile number format — skipping WhatsApp');
+      return;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // 🥇 الأولوية 1: WhatsappSettingsService (لوحة الأدمن)
+    // يُرسل من الرقم المربوط في لوحة التحكم + يُسجّل في message_logs
+    // ═══════════════════════════════════════════════════════════════════
+    if (this.whatsappSettingsService) {
+      try {
+        const result = await this.whatsappSettingsService.sendMessage(
+          formattedPhone,
+          data.message,
+          { triggerEvent: 'merchant_welcome' },
+        );
+
+        if (result.success) {
+          this.logger.log(`📱 WhatsApp sent via Admin Settings to ${this.maskPhone(formattedPhone)}`, {
+            messageLogId: result.messageLogId,
+          });
+          return;
+        }
+
+        // sendMessage رجع false (واتساب الأدمن غير مفعّل أو خطأ)
+        this.logger.warn(`⚠️ Admin WhatsApp send failed — trying ENV fallback`, {
+          messageLogId: result.messageLogId,
+        });
+      } catch (error: any) {
+        this.logger.warn(`⚠️ Admin WhatsApp error: ${error.message} — trying ENV fallback`);
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // 🥈 الأولوية 2: ENV variables (fallback)
+    // يُستخدم فقط إذا WhatsappSettingsService غير متاح أو فشل
+    // ═══════════════════════════════════════════════════════════════════
     const phoneNumberId = this.configService.get<string>('WHATSAPP_PHONE_NUMBER_ID');
     const accessToken = this.configService.get<string>('WHATSAPP_ACCESS_TOKEN');
 
     if (!phoneNumberId || !accessToken) {
-      this.logger.warn('⚠️ WhatsApp credentials not configured — skipping');
+      this.logger.warn('⚠️ WhatsApp credentials not configured (neither Admin nor ENV) — skipping');
       return;
     }
 
-    const formattedPhone = this.formatPhoneNumber(data.mobile);
     const apiVersion = 'v18.0';
     const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
 
@@ -471,7 +521,7 @@ export class AutoRegistrationService {
       );
 
       if (response.data?.messages?.[0]?.id) {
-        this.logger.log(`📱 WhatsApp sent to ${this.maskPhone(formattedPhone)}`, {
+        this.logger.log(`📱 WhatsApp sent via ENV fallback to ${this.maskPhone(formattedPhone)}`, {
           messageId: response.data.messages[0].id,
         });
       }
