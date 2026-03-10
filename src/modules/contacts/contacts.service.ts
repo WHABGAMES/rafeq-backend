@@ -665,12 +665,22 @@ export class ContactsService {
 
           if (orders.length === 0) { hasMoreOrders = false; break; }
 
+          // ✅ Log first order amounts for debugging
+          if (orderPage === 1 && orders[0]) {
+            this.logger.log(`📋 Sample order amounts: ${JSON.stringify(orders[0]?.amounts)}`);
+          }
+
           for (const order of orders) {
             const custId = String(order?.customer?.id || '');
             if (!custId) continue;
             if (!customerStats[custId]) customerStats[custId] = { orders: 0, spent: 0 };
             customerStats[custId].orders++;
-            customerStats[custId].spent += order?.amounts?.total?.amount || 0;
+            // ✅ سلة ترسل amounts بأشكال مختلفة
+            const totalAmount = order?.amounts?.total;
+            const spent = typeof totalAmount === 'number' ? totalAmount
+              : typeof totalAmount?.amount === 'number' ? totalAmount.amount
+              : parseFloat(totalAmount?.amount || totalAmount || '0') || 0;
+            customerStats[custId].spent += spent;
           }
 
           if (orders.length < 50) hasMoreOrders = false;
@@ -684,7 +694,7 @@ export class ContactsService {
           await this.customerRepository
             .createQueryBuilder()
             .update()
-            .set({ totalOrders: stats.orders, totalSpent: stats.spent })
+            .set({ totalOrders: stats.orders, totalSpent: Math.round(stats.spent * 100) / 100 })
             .where('storeId = :storeId AND sallaCustomerId = :sallaId', { storeId: store.id, sallaId })
             .execute();
         } catch {}
