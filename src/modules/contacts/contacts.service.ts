@@ -705,6 +705,15 @@ export class ContactsService {
     }
 
     const total = await this.customerRepository.count({ where: { tenantId } });
+
+    // ✅ تحديث عدد العملاء في المتجر ليتطابق مع قاعدة البيانات
+    try {
+      await this.storeRepository.update(
+        { id: store.id },
+        { sallaCustomersCount: total } as any,
+      );
+    } catch {}
+
     this.logger.log(`✅ Salla sync complete: ${synced} synced, ${errors} errors, ${total} total`, { tenantId });
 
     return { synced, total, errors };
