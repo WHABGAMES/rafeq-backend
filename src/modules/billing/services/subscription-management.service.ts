@@ -14,7 +14,6 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
-// ✅ Subscription entity + enums
 import {
   Subscription,
   SubscriptionStatus,
@@ -22,10 +21,8 @@ import {
   UsageStats,
 } from '@database/entities/subscription.entity';
 
-// ✅ SubscriptionPlan ENTITY (جدول الخطط)
 import { SubscriptionPlan as SubscriptionPlanEntity } from '@database/entities/subscription-plan.entity';
 
-// ✅ Tenant entity + SubscriptionPlan ENUM (حقل الباقة في Tenant)
 import {
   Tenant,
   TenantStatus,
@@ -165,7 +162,6 @@ export class SubscriptionManagementService {
     }
   }
 
-  /** زيادة عداد الرسائل atomically */
   async incrementMessageUsage(tenantId: string, count: number = 1): Promise<void> {
     await this.subscriptionRepo
       .createQueryBuilder()
@@ -218,7 +214,6 @@ export class SubscriptionManagementService {
       throw new NotFoundException(`التاجر غير موجود: ${tenantId}`);
     }
 
-    // إلغاء الاشتراك
     if (plan === PlanTier.NONE) {
       await this.subscriptionRepo
         .createQueryBuilder()
@@ -242,7 +237,6 @@ export class SubscriptionManagementService {
       return this.getSubscriptionInfo(tenantId);
     }
 
-    // إنشاء أو تحديث الاشتراك
     const planEntity = await this.findOrCreatePlan(plan);
     const now = new Date();
     const periodEnd = new Date(now);
@@ -272,15 +266,12 @@ export class SubscriptionManagementService {
       sub.currentPeriodEnd = periodEnd;
       sub.amount = planEntity.pricing?.monthlyPrice || 0;
       sub.usageStats = newUsageStats;
-      // ✅ FIX: مسح تواريخ الإلغاء عند إعادة التفعيل
       sub.cancelledAt = null as any;
       sub.endsAt = null as any;
-      sub.metadata = {
+      (sub as any).metadata = {
         ...(sub.metadata || {}),
-        lastChangedBy: 'admin',
-        adminId,
-        reason: reason || `Set plan to ${plan}`,
-        changedAt: now.toISOString(),
+        notes: `Admin ${adminId}: ${reason || `Set plan to ${plan}`} at ${now.toISOString()}`,
+        cancellationReason: undefined,
       };
     } else {
       sub = this.subscriptionRepo.create({
@@ -302,7 +293,6 @@ export class SubscriptionManagementService {
 
     await this.subscriptionRepo.save(sub);
 
-    // تحديث Tenant بالـ enum الصحيح
     const tenantPlan = plan === PlanTier.PROFESSIONAL
       ? TenantPlanEnum.PRO
       : TenantPlanEnum.BASIC;
@@ -366,7 +356,6 @@ export class SubscriptionManagementService {
     const limit = parseInt(String(filters.limit || 50), 10) || 50;
     const offset = (page - 1) * limit;
 
-    // ✅ Raw query — لأن Tenant ليس له relation مباشر مع Subscription
     let whereClauses = ['1=1'];
     const params: any[] = [];
     let idx = 1;
@@ -429,7 +418,6 @@ export class SubscriptionManagementService {
       };
     });
 
-    // فلترة حسب الباقة (بعد الجلب لأن الباقة مشتقة)
     const filtered = filters.plan
       ? items.filter((i: any) => i.plan === filters.plan)
       : items;
@@ -511,56 +499,56 @@ export class SubscriptionManagementService {
   private async findOrCreatePlan(tier: PlanTier): Promise<SubscriptionPlanEntity> {
     const slug = tier === PlanTier.PROFESSIONAL ? 'professional' : 'basic';
 
-    let plan = await this.planRepo.findOne({ where: { slug } });
-
-    if (!plan) {
-      const isProf = tier === PlanTier.PROFESSIONAL;
-      plan = this.planRepo.create({
-        name: isProf ? 'احترافي' : 'أساسي',
-        slug,
-        type: 'paid' as any,
-        status: 'active' as any,
-        pricing: {
-          currency: 'SAR',
-          monthlyPrice: isProf ? 69 : 49,
-          yearlyPrice: isProf ? 660 : 468,
-          yearlyDiscount: 20,
-        },
-        features: {
-          monthlyMessages: isProf ? 10000 : 1000,
-          maxStores: isProf ? 10 : 3,
-          maxUsers: isProf ? 10 : 3,
-          maxWhatsAppChannels: isProf ? 5 : 2,
-          maxInstagramChannels: isProf ? 3 : 1,
-          maxDiscordChannels: isProf ? 2 : 1,
-          maxActiveCampaigns: isProf ? 50 : 10,
-          maxTemplates: isProf ? 100 : 20,
-          storageLimit: isProf ? 5000 : 1000,
-          aiSupport: isProf,
-          advancedAnalytics: isProf,
-          apiAccess: isProf,
-          customWebhooks: isProf,
-          dataExport: isProf,
-          prioritySupport: isProf,
-          dedicatedAccountManager: false,
-          whiteLabel: false,
-          ssoEnabled: false,
-          auditLogs: isProf,
-        },
-        featureList: isProf
-          ? ['10,000 رسالة/شهر', 'بوت الذكاء الاصطناعي', 'تحليلات متقدمة']
-          : ['1,000 رسالة/شهر', 'إشعارات الطلبات', 'قوالب جاهزة'],
-        trialDays: 0,
-        displayOrder: isProf ? 2 : 1,
-        isVisible: true,
-        metadata: {},
-      } as any);
-
-      plan = await this.planRepo.save(plan);
-      this.logger.log(`📦 Created ${slug} plan in DB`);
+    const existing = await this.planRepo.findOne({ where: { slug } });
+    if (existing) {
+      return existing;
     }
 
-    return plan;
+    const isProf = tier === PlanTier.PROFESSIONAL;
+    const newPlan = this.planRepo.create({
+      name: isProf ? 'احترافي' : 'أساسي',
+      slug,
+      type: 'paid' as any,
+      status: 'active' as any,
+      pricing: {
+        currency: 'SAR',
+        monthlyPrice: isProf ? 69 : 49,
+        yearlyPrice: isProf ? 660 : 468,
+        yearlyDiscount: 20,
+      },
+      features: {
+        monthlyMessages: isProf ? 10000 : 1000,
+        maxStores: isProf ? 10 : 3,
+        maxUsers: isProf ? 10 : 3,
+        maxWhatsAppChannels: isProf ? 5 : 2,
+        maxInstagramChannels: isProf ? 3 : 1,
+        maxDiscordChannels: isProf ? 2 : 1,
+        maxActiveCampaigns: isProf ? 50 : 10,
+        maxTemplates: isProf ? 100 : 20,
+        storageLimit: isProf ? 5000 : 1000,
+        aiSupport: isProf,
+        advancedAnalytics: isProf,
+        apiAccess: isProf,
+        customWebhooks: isProf,
+        dataExport: isProf,
+        prioritySupport: isProf,
+        dedicatedAccountManager: false,
+        whiteLabel: false,
+        ssoEnabled: false,
+        auditLogs: isProf,
+      },
+      featureList: isProf
+        ? ['10,000 رسالة/شهر', 'بوت الذكاء الاصطناعي', 'تحليلات متقدمة']
+        : ['1,000 رسالة/شهر', 'إشعارات الطلبات', 'قوالب جاهزة'],
+      trialDays: 0,
+      displayOrder: isProf ? 2 : 1,
+      isVisible: true,
+      metadata: {},
+    } as any);
+
+    const saved = await this.planRepo.save(newPlan);
+    this.logger.log(`📦 Created ${slug} plan in DB`);
+    return saved;
   }
 
   private async activateSubscription(
@@ -588,7 +576,6 @@ export class SubscriptionManagementService {
       sub.currentPeriodEnd = periodEnd;
       sub.amount = planEntity.pricing?.monthlyPrice || 0;
       sub.usageStats = usageStats;
-      // ✅ FIX: مسح تواريخ الإلغاء عند إعادة التفعيل
       sub.cancelledAt = null as any;
       sub.endsAt = null as any;
     } else {
