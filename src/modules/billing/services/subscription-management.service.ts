@@ -27,11 +27,7 @@ import {
 import { SubscriptionPlan as SubscriptionPlanEntity } from '@database/entities/subscription-plan.entity';
 
 // ✅ Tenant entity + SubscriptionPlan ENUM (حقل الباقة في Tenant)
-import {
-  Tenant,
-  TenantStatus,
-  SubscriptionPlan as TenantPlanEnum,
-} from '@database/entities/tenant.entity';
+import { Tenant } from '@database/entities/tenant.entity';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPES & CONSTANTS
@@ -237,11 +233,10 @@ export class SubscriptionManagementService {
         .andWhere('status IN (:...s)', { s: ['active', 'trialing', 'past_due'] })
         .execute();
 
-      await this.tenantRepo.update(tenantId, {
-        subscriptionPlan: TenantPlanEnum.FREE,
-        monthlyMessageLimit: 0,
-      });
-      await this.dataSource.query('UPDATE tenants SET subscription_ends_at = NULL WHERE id = $1', [tenantId]);
+      await this.dataSource.query(
+        `UPDATE tenants SET subscription_plan = 'free', monthly_message_limit = 0, subscription_ends_at = NULL WHERE id = $1`,
+        [tenantId],
+      );
 
       this.logger.log(`Admin ${adminId} removed subscription: ${tenantId}`);
       this.eventEmitter.emit('subscription.admin_changed', { tenantId, plan, adminId });
@@ -253,13 +248,12 @@ export class SubscriptionManagementService {
     const now = new Date();
     const periodEnd = new Date(now);
 
-    // ✅ حساب تاريخ الانتهاء من المدة المحددة
     if (duration && duration.amount > 0) {
       if (duration.unit === 'days') periodEnd.setDate(periodEnd.getDate() + duration.amount);
       else if (duration.unit === 'weeks') periodEnd.setDate(periodEnd.getDate() + (duration.amount * 7));
       else periodEnd.setMonth(periodEnd.getMonth() + duration.amount);
     } else {
-      periodEnd.setMonth(periodEnd.getMonth() + 1); // افتراضي: شهر واحد
+      periodEnd.setMonth(periodEnd.getMonth() + 1);
     }
 
     const newUsageStats: UsageStats = {
@@ -314,22 +308,11 @@ export class SubscriptionManagementService {
 
     await this.subscriptionRepo.save(sub);
 
-    // تحديث Tenant بالـ enum الصحيح
-    const tenantPlan = plan === PlanTier.PROFESSIONAL
-      ? TenantPlanEnum.PRO
-      : TenantPlanEnum.BASIC;
-
-    // ✅ تحديث حقول TypeORM المعروفة (بدون as any)
-    await this.tenantRepo.update(tenantId, {
-      subscriptionPlan: tenantPlan,
-      status: TenantStatus.ACTIVE,
-      monthlyMessageLimit: PLAN_MESSAGE_LIMITS[plan],
-    });
-
-    // ✅ تحديث subscription_ends_at عبر raw SQL (أضمن)
+    // ✅ تحديث Tenant عبر raw SQL — يضمن تحديث subscription_plan (PostgreSQL enum)
+    const dbPlanValue = plan === PlanTier.PROFESSIONAL ? 'pro' : 'basic';
     await this.dataSource.query(
-      'UPDATE tenants SET subscription_ends_at = $1 WHERE id = $2',
-      [periodEnd.toISOString(), tenantId],
+      `UPDATE tenants SET subscription_plan = $1, status = 'active', monthly_message_limit = $2, subscription_ends_at = $3, updated_at = NOW() WHERE id = $4`,
+      [dbPlanValue, PLAN_MESSAGE_LIMITS[plan], periodEnd.toISOString(), tenantId],
     );
 
     const durationLabel = duration
@@ -630,15 +613,10 @@ export class SubscriptionManagementService {
 
     await this.subscriptionRepo.save(sub);
 
-    const tenantPlan = plan === PlanTier.PROFESSIONAL ? TenantPlanEnum.PRO : TenantPlanEnum.BASIC;
-    await this.tenantRepo.update(tenantId, {
-      subscriptionPlan: tenantPlan,
-      status: TenantStatus.ACTIVE,
-      monthlyMessageLimit: PLAN_MESSAGE_LIMITS[plan],
-    });
+    const dbPlan = plan === PlanTier.PROFESSIONAL ? 'pro' : 'basic';
     await this.dataSource.query(
-      'UPDATE tenants SET subscription_ends_at = $1 WHERE id = $2',
-      [periodEnd.toISOString(), tenantId],
+      `UPDATE tenants SET subscription_plan = $1, status = 'active', monthly_message_limit = $2, subscription_ends_at = $3, updated_at = NOW() WHERE id = $4`,
+      [dbPlan, PLAN_MESSAGE_LIMITS[plan], periodEnd.toISOString(), tenantId],
     );
 
     this.logger.log(`✅ Subscription activated: ${tenantId} → ${plan} (${ctx.source})`);
@@ -652,11 +630,10 @@ export class SubscriptionManagementService {
       .andWhere('status IN (:...s)', { s: ['active', 'trialing', 'past_due'] })
       .execute();
 
-    await this.tenantRepo.update(tenantId, {
-      subscriptionPlan: TenantPlanEnum.FREE,
-      monthlyMessageLimit: 0,
-    });
-    await this.dataSource.query('UPDATE tenants SET subscription_ends_at = NULL WHERE id = $1', [tenantId]);
+    await this.dataSource.query(
+      `UPDATE tenants SET subscription_plan = 'free', monthly_message_limit = 0, subscription_ends_at = NULL, updated_at = NOW() WHERE id = $1`,
+      [tenantId],
+    );
 
     this.logger.log(`❌ Subscription deactivated: ${tenantId} (${source})`);
   }
