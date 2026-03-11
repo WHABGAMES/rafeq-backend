@@ -11,7 +11,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { InjectDataSource } from '@nestjs/typeorm';
+import { Repository, DataSource } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
 // ✅ Subscription entity + enums
@@ -107,6 +108,9 @@ export class SubscriptionManagementService {
 
     @InjectRepository(Tenant)
     private readonly tenantRepo: Repository<Tenant>,
+
+    @InjectDataSource()
+    private readonly dataSource: DataSource,
 
     private readonly eventEmitter: EventEmitter2,
   ) {}
@@ -403,8 +407,8 @@ export class SubscriptionManagementService {
     `;
 
     const [rows, countResult] = await Promise.all([
-      this.tenantRepo.query(query, params),
-      this.tenantRepo.query(countQuery, params),
+      this.dataSource.query(query, params),
+      this.dataSource.query(countQuery, params),
     ]);
 
     const total = parseInt(countResult[0]?.total || '0', 10);
