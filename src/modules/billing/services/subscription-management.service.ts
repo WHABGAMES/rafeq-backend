@@ -240,8 +240,8 @@ export class SubscriptionManagementService {
       await this.tenantRepo.update(tenantId, {
         subscriptionPlan: TenantPlanEnum.FREE,
         monthlyMessageLimit: 0,
-        subscriptionEndsAt: null,
-      } as any);
+      });
+      await this.dataSource.query('UPDATE tenants SET subscription_ends_at = NULL WHERE id = $1', [tenantId]);
 
       this.logger.log(`Admin ${adminId} removed subscription: ${tenantId}`);
       this.eventEmitter.emit('subscription.admin_changed', { tenantId, plan, adminId });
@@ -319,12 +319,18 @@ export class SubscriptionManagementService {
       ? TenantPlanEnum.PRO
       : TenantPlanEnum.BASIC;
 
+    // ✅ تحديث حقول TypeORM المعروفة (بدون as any)
     await this.tenantRepo.update(tenantId, {
       subscriptionPlan: tenantPlan,
       status: TenantStatus.ACTIVE,
       monthlyMessageLimit: PLAN_MESSAGE_LIMITS[plan],
-      subscriptionEndsAt: periodEnd,
-    } as any);
+    });
+
+    // ✅ تحديث subscription_ends_at عبر raw SQL (أضمن)
+    await this.dataSource.query(
+      'UPDATE tenants SET subscription_ends_at = $1 WHERE id = $2',
+      [periodEnd.toISOString(), tenantId],
+    );
 
     const durationLabel = duration
       ? `${duration.amount} ${duration.unit === 'days' ? 'يوم' : duration.unit === 'weeks' ? 'أسبوع' : 'شهر'}`
@@ -630,6 +636,10 @@ export class SubscriptionManagementService {
       status: TenantStatus.ACTIVE,
       monthlyMessageLimit: PLAN_MESSAGE_LIMITS[plan],
     });
+    await this.dataSource.query(
+      'UPDATE tenants SET subscription_ends_at = $1 WHERE id = $2',
+      [periodEnd.toISOString(), tenantId],
+    );
 
     this.logger.log(`✅ Subscription activated: ${tenantId} → ${plan} (${ctx.source})`);
   }
@@ -645,8 +655,8 @@ export class SubscriptionManagementService {
     await this.tenantRepo.update(tenantId, {
       subscriptionPlan: TenantPlanEnum.FREE,
       monthlyMessageLimit: 0,
-      subscriptionEndsAt: null,
-    } as any);
+    });
+    await this.dataSource.query('UPDATE tenants SET subscription_ends_at = NULL WHERE id = $1', [tenantId]);
 
     this.logger.log(`❌ Subscription deactivated: ${tenantId} (${source})`);
   }
