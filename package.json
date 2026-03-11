@@ -16,6 +16,14 @@
     "@database": "dist/database",
     "@queue": "dist/queue"
   },
+  "overrides": {
+    "npmlog": "^7.0.1",
+    "are-we-there-yet": "^4.0.2",
+    "gauge": "^5.0.2",
+    "glob": "^10.4.5",
+    "inflight": "^1.0.6",
+    "rimraf": "^5.0.5"
+  },
   "scripts": {
     "prebuild": "rm -rf dist",
     "build": "npx nest build",
