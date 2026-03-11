@@ -411,16 +411,14 @@ export class SubscriptionManagementService {
 
     const items = rows.map((row: any) => {
       const usageStats = row.usage_stats || {};
-      const resolvedPlan = row.sub_status
-        ? this.mapTenantPlanToTier(row.subscription_plan)
-        : PlanTier.NONE;
+      const resolvedPlan = this.mapTenantPlanToTier(row.subscription_plan || 'free');
 
       return {
         tenantId: row.id,
         tenantName: row.name || '',
         email: row.email || '',
         plan: resolvedPlan,
-        status: row.sub_status || 'none',
+        status: row.sub_status || (resolvedPlan !== PlanTier.NONE ? 'active' : 'none'),
         messagesUsed: usageStats.messagesUsed || 0,
         messagesLimit: PLAN_MESSAGE_LIMITS[resolvedPlan],
         currentPeriodEnd: row.current_period_end || null,
