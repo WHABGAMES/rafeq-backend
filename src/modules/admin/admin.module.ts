@@ -44,12 +44,18 @@ import {
 } from './controllers/admin.controllers';
 import { SystemHealthController } from './controllers/system-health.controller';
 
+// ✅ NEW: Admin Subscriptions Controller
+import { AdminSubscriptionsController } from './controllers/admin-subscriptions.controller';
+
 // Guards
 import { AdminJwtGuard, AdminPermissionGuard } from './guards/admin.guards';
 
 // Processor & Listeners
 import { NotificationProcessor } from './processors/notification.processor';
 import { NotificationEventListener } from './listeners/notification-event.listener';
+
+// ✅ NEW: BillingModule — مطلوب لـ SubscriptionManagementService في AdminSubscriptionsController
+import { BillingModule } from '../billing/billing.module';
 
 // ─── [C-2] Startup Validation ─────────────────────────────────────────────────
 // يُنفَّذ قبل أي شيء عند تحميل الـ module
@@ -120,6 +126,9 @@ if (!jwtSecret) {
         removeOnFail: false,
       },
     }),
+
+    // ✅ NEW: BillingModule — يوفر SubscriptionManagementService
+    BillingModule,
   ],
 
   controllers: [
@@ -130,6 +139,8 @@ if (!jwtSecret) {
     TemplatesController,
     AuditLogsController,
     SystemHealthController,
+    // ✅ NEW: إدارة اشتراكات التجار
+    AdminSubscriptionsController,
   ],
 
   providers: [
