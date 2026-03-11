@@ -14,6 +14,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
+// ✅ Subscription entity + enums
 import {
   Subscription,
   SubscriptionStatus,
@@ -21,8 +22,10 @@ import {
   UsageStats,
 } from '@database/entities/subscription.entity';
 
+// ✅ SubscriptionPlan ENTITY (جدول الخطط)
 import { SubscriptionPlan as SubscriptionPlanEntity } from '@database/entities/subscription-plan.entity';
 
+// ✅ Tenant entity + SubscriptionPlan ENUM (حقل الباقة في Tenant)
 import {
   Tenant,
   TenantStatus,
@@ -162,6 +165,7 @@ export class SubscriptionManagementService {
     }
   }
 
+  /** زيادة عداد الرسائل atomically */
   async incrementMessageUsage(tenantId: string, count: number = 1): Promise<void> {
     await this.subscriptionRepo
       .createQueryBuilder()
@@ -214,6 +218,7 @@ export class SubscriptionManagementService {
       throw new NotFoundException(`التاجر غير موجود: ${tenantId}`);
     }
 
+    // إلغاء الاشتراك
     if (plan === PlanTier.NONE) {
       await this.subscriptionRepo
         .createQueryBuilder()
@@ -237,6 +242,7 @@ export class SubscriptionManagementService {
       return this.getSubscriptionInfo(tenantId);
     }
 
+    // إنشاء أو تحديث الاشتراك
     const planEntity = await this.findOrCreatePlan(plan);
     const now = new Date();
     const periodEnd = new Date(now);
@@ -266,6 +272,7 @@ export class SubscriptionManagementService {
       sub.currentPeriodEnd = periodEnd;
       sub.amount = planEntity.pricing?.monthlyPrice || 0;
       sub.usageStats = newUsageStats;
+      // ✅ FIX: مسح تواريخ الإلغاء عند إعادة التفعيل
       sub.cancelledAt = null as any;
       sub.endsAt = null as any;
       (sub as any).metadata = {
@@ -293,6 +300,7 @@ export class SubscriptionManagementService {
 
     await this.subscriptionRepo.save(sub);
 
+    // تحديث Tenant بالـ enum الصحيح
     const tenantPlan = plan === PlanTier.PROFESSIONAL
       ? TenantPlanEnum.PRO
       : TenantPlanEnum.BASIC;
@@ -356,6 +364,7 @@ export class SubscriptionManagementService {
     const limit = parseInt(String(filters.limit || 50), 10) || 50;
     const offset = (page - 1) * limit;
 
+    // ✅ Raw query — لأن Tenant ليس له relation مباشر مع Subscription
     let whereClauses = ['1=1'];
     const params: any[] = [];
     let idx = 1;
@@ -418,6 +427,7 @@ export class SubscriptionManagementService {
       };
     });
 
+    // فلترة حسب الباقة (بعد الجلب لأن الباقة مشتقة)
     const filtered = filters.plan
       ? items.filter((i: any) => i.plan === filters.plan)
       : items;
@@ -504,6 +514,7 @@ export class SubscriptionManagementService {
       return existing;
     }
 
+    // الخطة غير موجودة — ننشئها
     const isProf = tier === PlanTier.PROFESSIONAL;
     const newPlan = this.planRepo.create({
       name: isProf ? 'احترافي' : 'أساسي',
@@ -546,7 +557,7 @@ export class SubscriptionManagementService {
       metadata: {},
     } as any);
 
-    const saved = await this.planRepo.save(newPlan);
+    const saved = await this.planRepo.save(newPlan) as SubscriptionPlanEntity;
     this.logger.log(`📦 Created ${slug} plan in DB`);
     return saved;
   }
@@ -576,6 +587,7 @@ export class SubscriptionManagementService {
       sub.currentPeriodEnd = periodEnd;
       sub.amount = planEntity.pricing?.monthlyPrice || 0;
       sub.usageStats = usageStats;
+      // ✅ FIX: مسح تواريخ الإلغاء عند إعادة التفعيل
       sub.cancelledAt = null as any;
       sub.endsAt = null as any;
     } else {
