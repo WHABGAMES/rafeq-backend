@@ -79,7 +79,13 @@ export class AdminSubscriptionsController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'تعيين أو تغيير باقة تاجر يدوياً' })
   async setPlan(
-    @Body() body: { tenantId: string; plan: string; reason?: string },
+    @Body() body: {
+      tenantId: string;
+      plan: string;
+      reason?: string;
+      durationAmount?: number;
+      durationUnit?: 'days' | 'weeks' | 'months';
+    },
     @CurrentAdmin() admin: AdminUser,
     @AdminIp() ip: string,
   ) {
@@ -93,11 +99,17 @@ export class AdminSubscriptionsController {
       throw new BadRequestException('معرف التاجر مطلوب');
     }
 
+    // ✅ بناء كائن المدة إذا تم تحديدها
+    const duration = body.durationAmount && body.durationUnit
+      ? { amount: body.durationAmount, unit: body.durationUnit }
+      : undefined;
+
     const result = await this.subscriptionService.adminSetPlan(
       body.tenantId,
       body.plan as PlanTier,
       admin.id,
       body.reason,
+      duration,
     );
 
     // ✅ AuditService.log() — يأخذ actor: AdminUser (كائن كامل)
@@ -106,7 +118,12 @@ export class AdminSubscriptionsController {
       action: 'subscription.set_plan',
       targetType: 'tenant',
       targetId: body.tenantId,
-      metadata: { plan: body.plan, reason: body.reason || '' },
+      metadata: {
+        plan: body.plan,
+        reason: body.reason || '',
+        durationAmount: body.durationAmount,
+        durationUnit: body.durationUnit,
+      },
       ipAddress: ip,
     });
 
