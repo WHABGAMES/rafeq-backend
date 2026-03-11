@@ -109,6 +109,9 @@ const buildConfig = (configService: ConfigService): TypeOrmModuleOptions => {
     ssl: sslConfig,
     entities,
     synchronize,
+    // ✅ Auto-run pending migrations on app startup
+    migrations: [path.join(__dirname, '..', 'database', 'migrations', '*{.ts,.js}')],
+    migrationsRun: true,
     logging: isDevelopment
       ? ['error', 'warn', 'migration']
       : configService.get<boolean>('database.logging', false)
