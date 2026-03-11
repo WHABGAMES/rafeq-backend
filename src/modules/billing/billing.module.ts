@@ -1,13 +1,6 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║                    RAFIQ PLATFORM - Billing Module                             ║
- * ║                                                                                ║
- * ║  📌 هذا الـ Module مسؤول عن:                                                    ║
- * ║  - إدارة خطط الاشتراك (Subscription Plans)                                      ║
- * ║  - إدارة اشتراكات المستأجرين (Subscriptions)                                    ║
- * ║  - معالجة المدفوعات (Stripe/Moyasar)                                           ║
- * ║  - تتبع الاستخدام (Usage Tracking)                                              ║
- * ║  - إنفاذ الحصص (Quota Enforcement)                                              ║
+ * ║                    RAFIQ PLATFORM - Billing Module (v2)                       ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -18,51 +11,54 @@ import { BullModule } from '@nestjs/bullmq';
 // Entities
 import { SubscriptionPlan } from '@database/entities/subscription-plan.entity';
 import { Subscription } from '@database/entities/subscription.entity';
+import { Tenant } from '@database/entities/tenant.entity';
 
-// Services
+// Existing services
 import { BillingService } from './billing.service';
 import { SubscriptionPlanService } from './services/subscription-plan.service';
 import { UsageTrackingService } from './services/usage-tracking.service';
 import { PaymentService } from './services/payment.service';
 
-// Controllers
+// ✅ NEW: Subscription management
+import { SubscriptionManagementService } from './services/subscription-management.service';
+
+// Existing controllers
 import { BillingController } from './billing.controller';
 import { PlansController } from './controllers/plans.controller';
 import { WebhooksController } from './controllers/payment-webhooks.controller';
 
-// Queue Processors
+// ✅ NEW: Subscription info API
+import { SubscriptionInfoController } from './subscription-info.controller';
+
+// ✅ NEW: Guards
+import { PlanGuard } from './guards/subscription.guard';
+
+// ✅ NEW: Webhook listener
+import { SubscriptionWebhookListener } from './listeners/subscription-webhook.listener';
+
+// Existing processor
 import { BillingProcessor } from './processors/billing.processor';
 
-// Related Modules
+// Related modules
 import { TenantsModule } from '@modules/tenants/tenants.module';
 
 @Module({
   imports: [
-    // ═══════════════════════════════════════════════════════════════════════════════
-    // 🗄️ TypeORM - تسجيل الـ Entities
-    // ═══════════════════════════════════════════════════════════════════════════════
+    // ✅ Tenant مطلوب هنا لأن SubscriptionManagementService يستخدم @InjectRepository(Tenant)
     TypeOrmModule.forFeature([
       SubscriptionPlan,
       Subscription,
+      Tenant,
     ]),
 
-    // ═══════════════════════════════════════════════════════════════════════════════
-    // 📬 BullMQ - طوابير الفوترة
-    // ═══════════════════════════════════════════════════════════════════════════════
     BullModule.registerQueue({
       name: 'billing',
       defaultJobOptions: {
         attempts: 3,
-        backoff: {
-          type: 'exponential',
-          delay: 5000,  // 5 ثواني
-        },
+        backoff: { type: 'exponential', delay: 5000 },
       },
     }),
 
-    // ═══════════════════════════════════════════════════════════════════════════════
-    // 🔗 Related Modules
-    // ═══════════════════════════════════════════════════════════════════════════════
     forwardRef(() => TenantsModule),
   ],
 
@@ -70,6 +66,7 @@ import { TenantsModule } from '@modules/tenants/tenants.module';
     BillingController,
     PlansController,
     WebhooksController,
+    SubscriptionInfoController,
   ],
 
   providers: [
@@ -77,6 +74,9 @@ import { TenantsModule } from '@modules/tenants/tenants.module';
     SubscriptionPlanService,
     UsageTrackingService,
     PaymentService,
+    SubscriptionManagementService,
+    PlanGuard,
+    SubscriptionWebhookListener,
     BillingProcessor,
   ],
 
@@ -84,6 +84,8 @@ import { TenantsModule } from '@modules/tenants/tenants.module';
     BillingService,
     SubscriptionPlanService,
     UsageTrackingService,
+    SubscriptionManagementService,
+    PlanGuard,
   ],
 })
 export class BillingModule {}
