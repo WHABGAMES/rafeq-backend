@@ -99,7 +99,6 @@ export class AdminSubscriptionsController {
       throw new BadRequestException('معرف التاجر مطلوب');
     }
 
-    // ✅ بناء كائن المدة إذا تم تحديدها
     const duration = body.durationAmount && body.durationUnit
       ? { amount: body.durationAmount, unit: body.durationUnit }
       : undefined;
