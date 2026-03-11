@@ -216,6 +216,7 @@ export class SubscriptionManagementService {
     plan: PlanTier,
     adminId: string,
     reason?: string,
+    duration?: { amount: number; unit: 'days' | 'weeks' | 'months' },
   ): Promise<SubscriptionInfo> {
     const tenant = await this.tenantRepo.findOne({ where: { id: tenantId } });
     if (!tenant) {
@@ -239,7 +240,8 @@ export class SubscriptionManagementService {
       await this.tenantRepo.update(tenantId, {
         subscriptionPlan: TenantPlanEnum.FREE,
         monthlyMessageLimit: 0,
-      });
+        subscriptionEndsAt: null,
+      } as any);
 
       this.logger.log(`Admin ${adminId} removed subscription: ${tenantId}`);
       this.eventEmitter.emit('subscription.admin_changed', { tenantId, plan, adminId });
@@ -250,7 +252,15 @@ export class SubscriptionManagementService {
     const planEntity = await this.findOrCreatePlan(plan);
     const now = new Date();
     const periodEnd = new Date(now);
-    periodEnd.setMonth(periodEnd.getMonth() + 1);
+
+    // ✅ حساب تاريخ الانتهاء من المدة المحددة
+    if (duration && duration.amount > 0) {
+      if (duration.unit === 'days') periodEnd.setDate(periodEnd.getDate() + duration.amount);
+      else if (duration.unit === 'weeks') periodEnd.setDate(periodEnd.getDate() + (duration.amount * 7));
+      else periodEnd.setMonth(periodEnd.getMonth() + duration.amount);
+    } else {
+      periodEnd.setMonth(periodEnd.getMonth() + 1); // افتراضي: شهر واحد
+    }
 
     const newUsageStats: UsageStats = {
       messagesUsed: 0,
@@ -313,9 +323,13 @@ export class SubscriptionManagementService {
       subscriptionPlan: tenantPlan,
       status: TenantStatus.ACTIVE,
       monthlyMessageLimit: PLAN_MESSAGE_LIMITS[plan],
-    });
+      subscriptionEndsAt: periodEnd,
+    } as any);
 
-    this.logger.log(`✅ Admin ${adminId} set tenant ${tenantId} → ${plan}`);
+    const durationLabel = duration
+      ? `${duration.amount} ${duration.unit === 'days' ? 'يوم' : duration.unit === 'weeks' ? 'أسبوع' : 'شهر'}`
+      : '1 شهر';
+    this.logger.log(`✅ Admin ${adminId} set tenant ${tenantId} → ${plan} (${durationLabel}, ends: ${periodEnd.toISOString()})`);
     this.eventEmitter.emit('subscription.admin_changed', { tenantId, plan, adminId });
 
     return this.getSubscriptionInfo(tenantId);
@@ -382,6 +396,7 @@ export class SubscriptionManagementService {
     const dataQuery = `
       SELECT
         t.id, t.name, t.email, t.subscription_plan,
+        t.subscription_ends_at, t.created_at AS subscribed_at,
         s.status AS sub_status,
         s.usage_stats,
         s.current_period_end
@@ -412,6 +427,12 @@ export class SubscriptionManagementService {
     const items = rows.map((row: any) => {
       const usageStats = row.usage_stats || {};
       const resolvedPlan = this.mapTenantPlanToTier(row.subscription_plan || 'free');
+      const endsAt = row.subscription_ends_at ? new Date(row.subscription_ends_at) : null;
+      const now = new Date();
+      let daysRemaining: number | null = null;
+      if (endsAt) {
+        daysRemaining = Math.max(0, Math.ceil((endsAt.getTime() - now.getTime()) / 86400000));
+      }
 
       return {
         tenantId: row.id,
@@ -422,6 +443,9 @@ export class SubscriptionManagementService {
         messagesUsed: usageStats.messagesUsed || 0,
         messagesLimit: PLAN_MESSAGE_LIMITS[resolvedPlan],
         currentPeriodEnd: row.current_period_end || null,
+        subscribedAt: row.subscribed_at || null,
+        subscriptionEndsAt: row.subscription_ends_at || null,
+        daysRemaining,
       };
     });
 
@@ -621,7 +645,8 @@ export class SubscriptionManagementService {
     await this.tenantRepo.update(tenantId, {
       subscriptionPlan: TenantPlanEnum.FREE,
       monthlyMessageLimit: 0,
-    });
+      subscriptionEndsAt: null,
+    } as any);
 
     this.logger.log(`❌ Subscription deactivated: ${tenantId} (${source})`);
   }
