@@ -183,6 +183,15 @@ async function bootstrap() {
     // ─── Auto-create subscription tables (safe — IF NOT EXISTS) ─────────────
     try {
       const ds = app.get(DataSource);
+
+      // ─── Add missing columns to tenants table ───────────────────────────────
+      await ds.query(`DO $$ BEGIN CREATE TYPE tenants_subscription_plan_enum AS ENUM ('free','basic','pro','enterprise'); EXCEPTION WHEN duplicate_object THEN NULL; END $$`);
+      await ds.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS subscription_plan tenants_subscription_plan_enum NOT NULL DEFAULT 'free'`);
+      await ds.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS subscription_ends_at TIMESTAMPTZ`);
+      await ds.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS trial_ends_at TIMESTAMPTZ`);
+      await ds.query(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS monthly_message_limit INTEGER NOT NULL DEFAULT 0`);
+
+      // ─── Create subscription enums + tables ─────────────────────────────────
       await ds.query(`DO $$ BEGIN CREATE TYPE plan_type_enum AS ENUM ('free','paid','trial','custom'); EXCEPTION WHEN duplicate_object THEN NULL; END $$`);
       await ds.query(`DO $$ BEGIN CREATE TYPE plan_status_enum AS ENUM ('active','inactive','archived'); EXCEPTION WHEN duplicate_object THEN NULL; END $$`);
       await ds.query(`DO $$ BEGIN CREATE TYPE subscription_status_enum AS ENUM ('trialing','active','past_due','suspended','cancelling','cancelled','expired'); EXCEPTION WHEN duplicate_object THEN NULL; END $$`);
