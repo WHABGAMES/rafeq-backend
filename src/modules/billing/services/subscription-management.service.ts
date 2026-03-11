@@ -364,74 +364,69 @@ export class SubscriptionManagementService {
     page: number;
     limit: number;
   }> {
-    const page = parseInt(String(filters.page || 1), 10) || 1;
-    const limit = parseInt(String(filters.limit || 50), 10) || 50;
-    const offset = (page - 1) * limit;
+    const { page = 1, limit = 50 } = { page: filters.page || 1, limit: filters.limit || 50 };
 
-    // ✅ Raw query — لأن Tenant ليس له relation مباشر مع Subscription
-    let whereClauses = ['1=1'];
+    const whereConditions: string[] = ['1=1'];
     const params: any[] = [];
     let idx = 1;
 
     if (filters.search) {
-      whereClauses.push(`(t.name ILIKE $${idx} OR t.email ILIKE $${idx})`);
+      whereConditions.push(`(t.name ILIKE $${idx} OR t.email ILIKE $${idx})`);
       params.push(`%${filters.search}%`);
       idx++;
     }
 
-    const whereSQL = whereClauses.join(' AND ');
+    const whereClause = whereConditions.join(' AND ');
 
-    const query = `
-      SELECT 
-        t.id AS "tenantId",
-        t.name AS "tenantName",
-        t.email,
-        t.subscription_plan AS "tenantPlan",
-        s.status AS "subStatus",
-        s.usage_stats AS "usageStats",
-        s.current_period_end AS "currentPeriodEnd"
+    // ✅ نفس نمط admin-users.service.ts — LIMIT/OFFSET كـ parameters
+    const dataQuery = `
+      SELECT
+        t.id, t.name, t.email, t.subscription_plan,
+        s.status AS sub_status,
+        s.usage_stats,
+        s.current_period_end
       FROM tenants t
-      LEFT JOIN subscriptions s 
-        ON s.tenant_id = t.id 
+      LEFT JOIN subscriptions s
+        ON s.tenant_id = t.id
         AND s.status IN ('active','trialing','past_due','cancelling')
-      WHERE ${whereSQL}
+      WHERE ${whereClause}
         AND t.deleted_at IS NULL
       ORDER BY t.created_at DESC
-      LIMIT ${limit} OFFSET ${offset}
+      LIMIT $${idx} OFFSET $${idx + 1}
     `;
+    const dataParams = [...params, limit, (page - 1) * limit];
 
     const countQuery = `
-      SELECT COUNT(*) as total
+      SELECT COUNT(*) AS count
       FROM tenants t
-      WHERE ${whereSQL} AND t.deleted_at IS NULL
+      WHERE ${whereClause} AND t.deleted_at IS NULL
     `;
 
     const [rows, countResult] = await Promise.all([
-      this.dataSource.query(query, params),
+      this.dataSource.query(dataQuery, dataParams),
       this.dataSource.query(countQuery, params),
     ]);
 
-    const total = parseInt(countResult[0]?.total || '0', 10);
+    const total = parseInt(countResult[0]?.count || '0', 10);
 
     const items = rows.map((row: any) => {
-      const usageStats = row.usageStats || {};
-      const resolvedPlan = row.subStatus
-        ? this.mapTenantPlanToTier(row.tenantPlan)
+      const usageStats = row.usage_stats || {};
+      const resolvedPlan = row.sub_status
+        ? this.mapTenantPlanToTier(row.subscription_plan)
         : PlanTier.NONE;
 
       return {
-        tenantId: row.tenantId,
-        tenantName: row.tenantName || '',
+        tenantId: row.id,
+        tenantName: row.name || '',
         email: row.email || '',
         plan: resolvedPlan,
-        status: row.subStatus || 'none',
+        status: row.sub_status || 'none',
         messagesUsed: usageStats.messagesUsed || 0,
         messagesLimit: PLAN_MESSAGE_LIMITS[resolvedPlan],
-        currentPeriodEnd: row.currentPeriodEnd || null,
+        currentPeriodEnd: row.current_period_end || null,
       };
     });
 
-    // فلترة حسب الباقة (بعد الجلب لأن الباقة مشتقة)
     const filtered = filters.plan
       ? items.filter((i: any) => i.plan === filters.plan)
       : items;
