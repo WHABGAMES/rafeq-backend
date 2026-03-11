@@ -557,7 +557,7 @@ export class SubscriptionManagementService {
       metadata: {},
     } as any);
 
-    const saved = await this.planRepo.save(newPlan) as SubscriptionPlanEntity;
+    const saved = await this.planRepo.save(newPlan) as unknown as SubscriptionPlanEntity;
     this.logger.log(`📦 Created ${slug} plan in DB`);
     return saved;
   }
