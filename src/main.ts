@@ -32,6 +32,7 @@ import { NestExpressApplication } from '@nestjs/platform-express';
 import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
+import { DataSource } from 'typeorm';
 import { csrfCookieMiddleware } from './common/guards/csrf.guard';
 
 async function bootstrap() {
@@ -181,7 +182,6 @@ async function bootstrap() {
 
     // ─── Auto-create subscription tables (safe — IF NOT EXISTS) ─────────────
     try {
-      const { DataSource } = await import('typeorm');
       const ds = app.get(DataSource);
       await ds.query(`DO $$ BEGIN CREATE TYPE plan_type_enum AS ENUM ('free','paid','trial','custom'); EXCEPTION WHEN duplicate_object THEN NULL; END $$`);
       await ds.query(`DO $$ BEGIN CREATE TYPE plan_status_enum AS ENUM ('active','inactive','archived'); EXCEPTION WHEN duplicate_object THEN NULL; END $$`);
@@ -233,7 +233,8 @@ async function bootstrap() {
       `);
       logger.log('✅ Subscription tables ready');
     } catch (e: any) {
-      logger.warn(`⚠️ Subscription tables init: ${e.message}`);
+      logger.error(`❌ SUBSCRIPTION TABLES FAILED: ${e.message}`);
+      logger.error(e.stack);
     }
 
     // ─── Start ────────────────────────────────────────────────────────────────
