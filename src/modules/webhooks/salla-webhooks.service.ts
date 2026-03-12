@@ -145,32 +145,44 @@ export class SallaWebhooksService {
   }
 
   /**
-   * ✅ منع تكرار معالجة نفس الـ webhook
-   * يمنع فقط: PROCESSED و PROCESSING
-   * يسمح بإعادة المحاولة: FAILED / PENDING / SKIPPED
+   * FIX #4: Atomic idempotency check — يمنع Race Condition
+   *
+   * الضمانة الحقيقية: UNIQUE INDEX على webhook_events.idempotency_key (Migration)
+   * هذا الـ method: READ فقط بعد تسجيل الـ webhook في DB
+   *
+   * لماذا لا pessimistic_read: يتطلب transaction نشطة — خطأ runtime خارج transaction
+   * الحل الصحيح: UNIQUE constraint في DB يمنع الـ INSERT المكرر أصلاً
+   *
+   * Returns true  → مكرر (PROCESSED أو PROCESSING) — تجاهل
+   * Returns false → أول مرة — تابع
    */
   async checkDuplicate(idempotencyKey: string): Promise<boolean> {
-    const existing = await this.webhookEventRepository.findOne({
-      where: [
-        { idempotencyKey, status: WebhookStatus.PROCESSED },
-        { idempotencyKey, status: WebhookStatus.PROCESSING },
-      ],
-      select: ['id', 'status', 'eventType'],
-    });
+    try {
+      const existing = await this.webhookEventRepository.findOne({
+        where: [
+          { idempotencyKey, status: WebhookStatus.PROCESSED },
+          { idempotencyKey, status: WebhookStatus.PROCESSING },
+        ],
+        select: ['id', 'status'],
+      });
 
-    if (existing) {
-      this.logger.warn(
-        `🔁 Duplicate webhook BLOCKED — already ${existing.status}`,
-        {
+      if (existing) {
+        this.logger.warn(`🔁 Duplicate webhook BLOCKED — already ${existing.status}`, {
           idempotencyKey: idempotencyKey.substring(0, 16) + '...',
           existingId: existing.id,
-          eventType: (existing as any).eventType,
-        },
-      );
-      return true;
-    }
+        });
+        return true;
+      }
 
-    return false;
+      return false;
+    } catch (error) {
+      // Fail open — لا نُسقط webhook بسبب خطأ في الـ check
+      this.logger.error(`⚠️ Idempotency check failed — proceeding`, {
+        idempotencyKey: idempotencyKey.substring(0, 16) + '...',
+        error: error instanceof Error ? error.message : 'Unknown',
+      });
+      return false;
+    }
   }
 
   async getStoreSecret(merchantId: number): Promise<string | undefined> {
