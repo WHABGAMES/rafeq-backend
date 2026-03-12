@@ -30,6 +30,11 @@ import { SallaWebhookProcessor } from './processors/salla-webhook.processor';
 import { ZidWebhookProcessor } from './processors/zid-webhook.processor';
 import { TemplateSchedulerProcessor } from './processors/template-scheduler.processor';
 
+// Salla sub-handlers (FIX #8: God Class split)
+import { SallaStatusMapper } from './processors/salla/salla-status.mapper';
+import { SallaOrderHandler } from './processors/salla/salla-order.handler';
+import { SallaMiscHandler } from './processors/salla/salla-misc.handler';
+
 // Entities
 import { WebhookEvent } from '@database/entities/webhook-event.entity';
 import { WebhookLog } from './entities/webhook-log.entity';
@@ -120,6 +125,10 @@ import { SmsModule } from '../channels/sms/sms.module';
     TemplateSchedulerProcessor,
     SallaWebhookProcessor,
     ZidWebhookProcessor,
+    // FIX #8: Salla sub-handlers (God Class split)
+    SallaStatusMapper,
+    SallaOrderHandler,
+    SallaMiscHandler,
   ],
 
   exports: [
