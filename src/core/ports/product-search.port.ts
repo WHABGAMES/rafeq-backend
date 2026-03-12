@@ -1,107 +1,147 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║                  RAFIQ PLATFORM — ProductSearchPort                            ║
+ * ║          RAFIQ PLATFORM — Salla Product Search Adapter                         ║
  * ║                                                                                ║
- * ║  FIX #7: AI يعتمد على Salla مباشرة → يجب platform-agnostic                   ║
+ * ║  يُطبّق ProductSearchPort لمنصة سلة                                           ║
+ * ║  AI يستخدم هذا الـ adapter عبر الـ interface — لا يستورده مباشرة             ║
  * ║                                                                                ║
- * ║  المشكلة:                                                                      ║
- * ║    AiModule يستورد SallaApiService مباشرة                                     ║
- * ║    → AI لا يدعم زد أبداً                                                      ║
- * ║    → إصلاح Salla يلمس AI (خرق للـ Platform Isolation)                        ║
- * ║                                                                                ║
- * ║  الحل — Dependency Inversion:                                                  ║
- * ║    AI يعتمد على Interface فقط (هذا الملف)                                     ║
- * ║    كل منصة تُطبّق هذه الـ Interface:                                           ║
- * ║      SallaProductSearchAdapter → يستخدم SallaApiService                       ║
- * ║      ZidProductSearchAdapter   → يستخدم ZidApiService                         ║
- * ║                                                                                ║
- * ║  النتيجة:                                                                      ║
- * ║    AI لا يرى سلة أو زد — يرى فقط ProductSearchPort                           ║
- * ║    إضافة Shopify = adapter جديد فقط، لا مساس بـ AI                            ║
+ * ║  📁 src/integrations/salla/salla-product-search.adapter.ts                    ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
-/**
- * منتج مُوحَّد — مستقل عن المنصة
- * كل adapter يُحوّل بيانات منصته إلى هذا الشكل
- */
-export interface UnifiedProduct {
-  id: string;
-  name: string;
-  description?: string;
-  price: number;
-  currency: string;
-  salePrice?: number;
-  quantity: number;
-  sku?: string;
-  status: 'active' | 'out_of_stock' | 'inactive';
-  /** رابط المنتج للعميل */
-  url?: string;
-  /** صورة المنتج */
-  imageUrl?: string;
+import { Injectable, Logger } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { Store, StorePlatform, StoreStatus } from '../../modules/stores/entities/store.entity';
+import { SallaApiService, SallaProduct } from '../../modules/stores/salla-api.service';
+import { decrypt } from '../../common/utils/encryption.util';
+import {
+  ProductSearchPort,
+  ProductSearchOptions,
+  ProductSearchResult,
+  ProductSearchChunk,
+  UnifiedProduct,
+} from '../../core/ports/product-search.port';
+
+@Injectable()
+export class SallaProductSearchAdapter extends ProductSearchPort {
+  private readonly logger = new Logger(SallaProductSearchAdapter.name);
+
+  constructor(
+    @InjectRepository(Store)
+    private readonly storeRepository: Repository<Store>,
+
+    private readonly sallaApiService: SallaApiService,
+  ) {
+    super();
+  }
+
+  // ─── ProductSearchPort Interface ────────────────────────────────────────────
+
+  supports(platform: string): boolean {
+    return platform === StorePlatform.SALLA;
+  }
+
+  async search(storeId: string, options: ProductSearchOptions): Promise<ProductSearchResult> {
+    const empty: ProductSearchResult = { chunks: [], topScore: 0, gateAPassed: false };
+
+    try {
+      // ─── جلب معلومات المتجر مع access token ───────────────────────────────
+      const store = await this.storeRepository.findOne({
+        where: { id: storeId },
+        select: ['id', 'platform', 'status', 'accessToken'],
+      });
+
+      if (!store) {
+        this.logger.warn(`[Salla] Store not found: ${storeId}`);
+        return empty;
+      }
+
+      if (store.platform !== StorePlatform.SALLA) {
+        // هذا الـ adapter لا يدعم هذه المنصة
+        return empty;
+      }
+
+      if (store.status !== StoreStatus.ACTIVE) {
+        this.logger.warn(`[Salla] Store inactive: ${storeId} (${store.status})`);
+        return empty;
+      }
+
+      if (!store.accessToken) {
+        this.logger.warn(`[Salla] No access token for store: ${storeId}`);
+        return empty;
+      }
+
+      // ─── فك التشفير ──────────────────────────────────────────────────────
+      const accessToken = decrypt(store.accessToken);
+      if (!accessToken) {
+        this.logger.error(`[Salla] Failed to decrypt access token: ${storeId}`);
+        return empty;
+      }
+
+      // ─── البحث عبر Salla API ─────────────────────────────────────────────
+      this.logger.log(`[Salla] Searching products: "${options.keyword}" in ${storeId}`);
+
+      const response = await this.sallaApiService.getProducts(accessToken, {
+        keyword: options.keyword,
+        perPage: options.limit ?? 10,
+        status: options.status === 'all' ? undefined : 'active',
+      });
+
+      if (!response.data || response.data.length === 0) {
+        this.logger.log(`[Salla] No products for: "${options.keyword}"`);
+        return { ...empty, rawCount: 0 };
+      }
+
+      // ─── تحويل إلى UnifiedProduct → chunks ───────────────────────────────
+      const products: UnifiedProduct[] = response.data.map((p: SallaProduct) => ({
+        id:          String(p.id),
+        name:        p.name || '',
+        description: p.description,
+        price:       p.price?.amount ?? p.sale_price?.amount ?? 0,
+        currency:    p.price?.currency ?? 'SAR',
+        salePrice:   p.sale_price?.amount,
+        quantity:    p.quantity ?? 0,
+        sku:         p.sku,
+        status:      p.quantity > 0 ? 'active' : 'out_of_stock',
+        imageUrl:    p.images?.[0]?.url,
+      }));
+
+      const chunks: ProductSearchChunk[] = products.map(p => this.toChunk(p));
+
+      this.logger.log(`[Salla] Found ${chunks.length} products`);
+
+      return {
+        chunks,
+        topScore: chunks.length > 0 ? 0.80 : 0,
+        gateAPassed: chunks.length > 0,
+        rawCount: response.data.length,
+      };
+
+    } catch (error) {
+      this.logger.error(
+        `[Salla] Product search error: ${error instanceof Error ? error.message : 'Unknown'}`,
+        { storeId, keyword: options.keyword },
+      );
+      return empty;
+    }
+  }
+
+  // ─── Private Helpers ────────────────────────────────────────────────────────
+
+  private toChunk(product: UnifiedProduct): ProductSearchChunk {
+    const inStock = product.quantity > 0 ? 'متوفر' : 'غير متوفر';
+    const price = product.salePrice ?? product.price;
+
+    return {
+      title:   product.name,
+      content: [
+        product.description || 'لا يوجد وصف',
+        `السعر: ${price} ${product.currency}`,
+        `الحالة: ${inStock}`,
+        product.sku ? `رمز المنتج: ${product.sku}` : null,
+      ].filter(Boolean).join('\n'),
+      score: 0.80,
+    };
+  }
 }
-
-/**
- * خيارات بحث المنتجات
- */
-export interface ProductSearchOptions {
-  keyword: string;
-  limit?: number;
-  /** حالة المنتج — افتراضياً active فقط */
-  status?: 'active' | 'all';
-}
-
-/**
- * نتيجة بحث منتج واحد — جاهزة للـ AI RAG pipeline
- */
-export interface ProductSearchChunk {
-  title: string;
-  content: string;
-  /** نقاط التطابق — 0.0 إلى 1.0 */
-  score: number;
-}
-
-/**
- * نتيجة البحث الكاملة من الـ adapter
- */
-export interface ProductSearchResult {
-  chunks: ProductSearchChunk[];
-  topScore: number;
-  /** هل نجح البحث وأعاد نتائج ذات صلة؟ */
-  gateAPassed: boolean;
-  /** عدد المنتجات الخام قبل التحويل */
-  rawCount?: number;
-}
-
-/**
- * ╔══════════════════════════════════════════════════════════════════════════════╗
- * ║  ProductSearchPort — الـ Interface الوحيد الذي يراه AI                      ║
- * ║                                                                              ║
- * ║  يجب أن تُطبّق كل منصة هذا الـ interface:                                   ║
- * ║    • SallaProductSearchAdapter  → for Salla stores                           ║
- * ║    • ZidProductSearchAdapter    → for Zid stores                             ║
- * ║    • ShopifyProductSearchAdapter → for Shopify stores (مستقبلاً)             ║
- * ║                                                                              ║
- * ║  القاعدة الصارمة:                                                            ║
- * ║    AI يستدعي search() فقط — لا يعرف المنصة، لا يستورد أي service منصة     ║
- * ╚══════════════════════════════════════════════════════════════════════════════╝
- */
-export abstract class ProductSearchPort {
-  /**
-   * البحث في منتجات المتجر
-   *
-   * @param storeId  معرّف المتجر الداخلي (UUID)
-   * @param options  خيارات البحث (keyword, limit, status)
-   * @returns نتيجة البحث جاهزة للـ RAG pipeline
-   */
-  abstract search(storeId: string, options: ProductSearchOptions): Promise<ProductSearchResult>;
-
-  /**
-   * هل هذا الـ adapter يدعم منصة معينة؟
-   * يُستخدم من الـ ProductSearchFactory لاختيار الـ adapter الصحيح
-   */
-  abstract supports(platform: string): boolean;
-}
-
-/** Token للـ Dependency Injection في NestJS */
-export const PRODUCT_SEARCH_PORT = 'PRODUCT_SEARCH_PORT';
