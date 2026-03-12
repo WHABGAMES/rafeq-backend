@@ -3037,6 +3037,69 @@ Types:
     };
   }
 
+  // ─── Generate Store Info with AI ─────────────────────────────────────────
+  async generateStoreInfo(tenantId: string, description: string): Promise<{
+    store_intro: string;
+    store_description: string;
+    shipping_info: string;
+    return_policy: string;
+    working_hours: string;
+  }> {
+    if (!this.isApiKeyConfigured) {
+      throw new Error('مفتاح OpenAI API غير مكوّن');
+    }
+
+    const systemPrompt = `You are an expert e-commerce content generator.
+Your task is to generate complete store information for an online store based on a very short merchant description.
+
+You must generate the following fields in Arabic:
+1. store_intro - نبذة تعريفية (2 sentences)
+2. store_description - وصف المتجر (3-4 sentences)
+3. shipping_info - معلومات الشحن
+4. return_policy - سياسة الإرجاع
+5. working_hours - أوقات العمل (if applicable, otherwise empty)
+
+Rules:
+- Detect the store business type automatically.
+- If the store sells FOOD → returns should be restricted.
+- If the store sells DIGITAL PRODUCTS → mention instant delivery and limited refunds.
+- If the store sells SERVICES → mention consultation and delivery timeline.
+- If the store sells PHYSICAL PRODUCTS → include shipping and return window.
+- Write in professional Arabic suitable for customers.
+- Content must sound natural and trustworthy.
+- Do NOT invent unrealistic claims.
+- Do NOT make the text too long.
+
+Output ONLY valid JSON with these exact keys: store_intro, store_description, shipping_info, return_policy, working_hours. No markdown, no backticks.`;
+
+    const completion = await this.openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      temperature: 0.7,
+      max_tokens: 800,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: description },
+      ],
+    });
+
+    const raw = (completion.choices[0]?.message?.content || '').trim();
+    // Strip markdown code fences if present
+    const cleaned = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+
+    try {
+      return JSON.parse(cleaned);
+    } catch {
+      this.logger.warn(`generateStoreInfo: failed to parse JSON: ${cleaned.substring(0, 200)}`);
+      return {
+        store_intro: '',
+        store_description: '',
+        shipping_info: '',
+        return_policy: '',
+        working_hours: '',
+      };
+    }
+  }
+
   detectLanguage(text: string): 'ar' | 'en' {
     return /[\u0600-\u06FF]/.test(text) ? 'ar' : 'en';
   }
