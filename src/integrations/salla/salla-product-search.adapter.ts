@@ -104,7 +104,6 @@ export class SallaProductSearchAdapter extends ProductSearchPort {
         quantity:    p.quantity ?? 0,
         sku:         p.sku,
         status:      p.quantity > 0 ? 'active' : 'out_of_stock',
-        url:         p.url,
         imageUrl:    p.images?.[0]?.url,
       }));
 
