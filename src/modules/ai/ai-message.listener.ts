@@ -18,6 +18,8 @@
 
 import { Injectable, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 
 // ✅ Entities — مطابقة لـ @database/entities/index.ts
 import {
@@ -59,6 +61,8 @@ export class AIMessageListener {
   constructor(
     private readonly aiService: AIService,
     private readonly messageService: MessageService,
+    @InjectRepository(Conversation)
+    private readonly conversationRepo: Repository<Conversation>,
   ) {}
 
   /**
@@ -86,18 +90,60 @@ export class AIMessageListener {
         return;
       }
 
-      // تجاهل إذا المحادثة ليست تحت الـ AI
+      // ✅ FIX: التحقق من حالة المحادثة مع دعم انتهاء مدة السكوت
       if (conversation.handler !== ConversationHandler.AI) {
-        this.logger.log(
-          `⏭️ Skipping AI: conversation ${conversation.id} handler=${conversation.handler} (not AI)`,
-        );
-        return;
+        // ─── تحقق: هل مدة السكوت انتهت؟ ───
+        const storeId = payload.channel?.storeId;
+        const settings = await this.aiService.getSettings(conversation.tenantId, storeId);
+
+        if (!settings.enabled) {
+          this.logger.log(`⏭️ Skipping AI: bot is DISABLED for tenant ${conversation.tenantId}`);
+          return;
+        }
+
+        if (settings.silenceOnHandoff && conversation.handler === ConversationHandler.HUMAN) {
+          const aiContext = (conversation.aiContext || {}) as Record<string, unknown>;
+          const handoffAt = aiContext.handoffAt as string | undefined;
+          const silenceMinutes = settings.silenceDurationMinutes || 60;
+
+          let silenceExpired = false;
+          if (handoffAt) {
+            const elapsed = (Date.now() - new Date(handoffAt).getTime()) / 60000;
+            silenceExpired = elapsed >= silenceMinutes;
+          } else {
+            // لا يوجد وقت تحويل → نفترض انتهت المدة
+            silenceExpired = true;
+          }
+
+          if (silenceExpired) {
+            // ✅ مدة السكوت انتهت → نرجّع البوت للعمل
+            this.logger.log(
+              `⏰ Silence expired for conversation ${conversation.id} — re-enabling AI (was ${silenceMinutes}min)`,
+            );
+            await this.conversationRepo.update(
+              { id: conversation.id },
+              { handler: ConversationHandler.AI },
+            );
+            conversation.handler = ConversationHandler.AI;
+            // نكمل المعالجة — لا نرجع
+          } else {
+            this.logger.log(
+              `⏭️ Skipping AI: conversation ${conversation.id} handler=human, silence NOT expired yet`,
+            );
+            return;
+          }
+        } else {
+          this.logger.log(
+            `⏭️ Skipping AI: conversation ${conversation.id} handler=${conversation.handler} (not AI, silence disabled)`,
+          );
+          return;
+        }
       }
 
       // تجاهل الرسائل غير النصية (صور، فيديو، مواقع...)
       if (message.type !== MessageType.TEXT || !message.content?.trim()) {
-        this.logger.log(
-          `⏭️ Skipping AI: message type=${message.type} (not TEXT) or empty content`,
+        this.logger.debug(
+          `Skipping AI response: message type is ${message.type} or content is empty`,
         );
         return;
       }
@@ -111,8 +157,8 @@ export class AIMessageListener {
       const settings = await this.aiService.getSettings(conversation.tenantId, storeId);
 
       if (!settings.enabled) {
-        this.logger.log(
-          `⏭️ Skipping AI: bot is DISABLED for tenant ${conversation.tenantId} store ${storeId || 'none'}`,
+        this.logger.debug(
+          `Skipping AI response: AI is disabled for tenant ${conversation.tenantId}`,
         );
         return;
       }
