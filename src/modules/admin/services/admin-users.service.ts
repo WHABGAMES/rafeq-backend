@@ -27,6 +27,7 @@ import { AuditService } from './audit.service';
 import { AuditAction } from '../entities/audit-log.entity';
 import { AdminUser } from '../entities/admin-user.entity';
 import { MergeHistory, MergeStatus } from '../entities/merge-history.entity';
+import { MailService } from '../../mail/mail.service';
 
 // Note: no explicit type annotation to avoid raw:boolean overload ambiguity (TS2769)
 const ARGON2_OPTIONS = {
@@ -49,6 +50,7 @@ export class AdminUsersService {
     private readonly mergeHistoryRepository: Repository<MergeHistory>,
 
     private readonly auditService: AuditService,
+    private readonly mailService: MailService,
   ) {}
 
   // ─── User Listing ──────────────────────────────────────────────────────────
@@ -251,7 +253,24 @@ export class AdminUsersService {
 
     // ✅ tempPassword يُرسَل للمستخدم عبر قناة آمنة (WhatsApp/Email)
     // لا يُخزَّن في قاعدة البيانات
-    return { tempPassword };
+    
+    // ✅ إرسال إيميل بكلمة المرور الجديدة
+    try {
+      await this.mailService.sendWelcomeCredentials({
+        to: user.email,
+        name: user.first_name || 'التاجر',
+        storeName: user.tenant_name || 'متجرك',
+        email: user.email,
+        password: tempPassword,
+        loginUrl: 'https://rafeq.ai/auth/login',
+        isNewUser: false,
+      });
+      this.logger.log(`✅ Password reset email sent to ${user.email}`);
+    } catch (e: any) {
+      this.logger.warn(`⚠️ Failed to send password reset email to ${user.email}: ${e.message}`);
+    }
+
+    return { tempPassword, emailSent: true };
   }
 
   // ─── Email Change ──────────────────────────────────────────────────────────
