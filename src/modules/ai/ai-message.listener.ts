@@ -88,16 +88,16 @@ export class AIMessageListener {
 
       // تجاهل إذا المحادثة ليست تحت الـ AI
       if (conversation.handler !== ConversationHandler.AI) {
-        this.logger.debug(
-          `Skipping AI response: conversation ${conversation.id} handler is ${conversation.handler}`,
+        this.logger.log(
+          `⏭️ Skipping AI: conversation ${conversation.id} handler=${conversation.handler} (not AI)`,
         );
         return;
       }
 
       // تجاهل الرسائل غير النصية (صور، فيديو، مواقع...)
       if (message.type !== MessageType.TEXT || !message.content?.trim()) {
-        this.logger.debug(
-          `Skipping AI response: message type is ${message.type} or content is empty`,
+        this.logger.log(
+          `⏭️ Skipping AI: message type=${message.type} (not TEXT) or empty content`,
         );
         return;
       }
@@ -111,8 +111,8 @@ export class AIMessageListener {
       const settings = await this.aiService.getSettings(conversation.tenantId, storeId);
 
       if (!settings.enabled) {
-        this.logger.debug(
-          `Skipping AI response: AI is disabled for tenant ${conversation.tenantId}`,
+        this.logger.log(
+          `⏭️ Skipping AI: bot is DISABLED for tenant ${conversation.tenantId} store ${storeId || 'none'}`,
         );
         return;
       }
