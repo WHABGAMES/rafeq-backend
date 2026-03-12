@@ -21,7 +21,7 @@ export class AddMissingOrderStatuses1772900000000 implements MigrationInterface 
     `);
   }
 
-  public async down(queryRunner: QueryRunner): Promise<void> {
+  public async down(_queryRunner: QueryRunner): Promise<void> {
     // PostgreSQL لا يدعم حذف قيمة من enum بدون إعادة بناء كاملة
     // الـ down لا تُنفَّذ في production
   }
