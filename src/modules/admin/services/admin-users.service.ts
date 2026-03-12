@@ -20,23 +20,13 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { InjectDataSource } from '@nestjs/typeorm';
 // ✅ FIX [TS2305]: IsolationLevel removed — use string literal directly
 import { Repository, DataSource } from 'typeorm';
-// ✅ FIX [TS2307]: requires npm install argon2
-import * as argon2 from 'argon2';
+import * as bcrypt from 'bcryptjs';
 import { randomBytes } from 'crypto';
 import { AuditService } from './audit.service';
 import { AuditAction } from '../entities/audit-log.entity';
 import { AdminUser } from '../entities/admin-user.entity';
 import { MergeHistory, MergeStatus } from '../entities/merge-history.entity';
 import { MailService } from '../../mail/mail.service';
-
-// Note: no explicit type annotation to avoid raw:boolean overload ambiguity (TS2769)
-const ARGON2_OPTIONS = {
-  type: argon2.argon2id,
-  memoryCost: 65536,
-  timeCost: 3,
-  parallelism: 4,
-  raw: false,         // explicit false → always returns string, resolves overload
-} as const;
 
 @Injectable()
 export class AdminUsersService {
@@ -235,7 +225,8 @@ export class AdminUsersService {
 
     // كلمة مرور مؤقتة آمنة — 16 حرف base64url
     const tempPassword = randomBytes(12).toString('base64url');
-    const hash = await argon2.hash(tempPassword, ARGON2_OPTIONS);
+    // ✅ FIX: استخدام bcrypt (نفس خوارزمية Login) بدل argon2
+    const hash = await bcrypt.hash(tempPassword, 12);
 
     await this.dataSource.query(
       `UPDATE users SET password = $1, refresh_token = NULL, updated_at = NOW() WHERE id = $2`,
@@ -251,9 +242,6 @@ export class AdminUsersService {
       ipAddress,
     });
 
-    // ✅ tempPassword يُرسَل للمستخدم عبر قناة آمنة (WhatsApp/Email)
-    // لا يُخزَّن في قاعدة البيانات
-    
     // ✅ إرسال إيميل بكلمة المرور الجديدة
     try {
       await this.mailService.sendWelcomeCredentials({
@@ -267,7 +255,7 @@ export class AdminUsersService {
       });
       this.logger.log(`✅ Password reset email sent to ${user.email}`);
     } catch (e: any) {
-      this.logger.warn(`⚠️ Failed to send password reset email to ${user.email}: ${e.message}`);
+      this.logger.warn(`⚠️ Failed to send email to ${user.email}: ${e.message}`);
     }
 
     return { tempPassword, emailSent: true };
