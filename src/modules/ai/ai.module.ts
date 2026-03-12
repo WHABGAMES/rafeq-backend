@@ -1,23 +1,19 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║              RAFIQ PLATFORM - AI Module (Production v3)                        ║
+ * ║              RAFIQ PLATFORM - AI Module (v5 — Platform-Agnostic)              ║
  * ║                                                                                ║
- * ║  ✅ يسجل جميع الـ entities المطلوبة لـ ai.service.ts                          ║
- * ║  ✅ AIMessageListener يربط الرسائل الواردة بالـ AI تلقائياً                    ║
- * ║                                                                                ║
- * ║  🔧 v3 Fixes:                                                                  ║
- * ║  - BUG-1:  إضافة AIMessageListener (الرد التلقائي)                            ║
- * ║  - BUG-12: إزالة HttpModule غير المستخدم                                       ║
- * ║  - BUG-13: إزالة BullModule('ai-processing') غير المستخدم                     ║
- * ║  - BUG-14: إزالة Customer entity غير المستخدم                                  ║
+ * ║  ✅ FIX #7: AI Platform Isolation — لا يستورد SallaApiService مباشرة          ║
+ * ║  ✅ FIX BUG1: inject token صحيح getRepositoryToken(Store)                    ║
+ * ║  ✅ FIX BUG6: useFactory signature متسقة مع constructor                       ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
 import { Module, forwardRef } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { TypeOrmModule } from '@nestjs/typeorm';
+import { TypeOrmModule, getRepositoryToken } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 
-// ✅ Entities — فقط المستخدمة فعلياً في ai.service.ts
+// ✅ Entities
 import { Message, Conversation, Order } from '@database/entities';
 import { StoreSettings } from '../settings/entities/store-settings.entity';
 import { Store } from '../stores/entities/store.entity';
@@ -29,54 +25,33 @@ import { AiController } from './ai.controller';
 import { AIMessageListener } from './ai-message.listener';
 import { AIHandoffListener } from './ai-handoff.listener';
 
-// ✅ BUG-1: MessagingModule مطلوب لـ AIMessageListener → MessageService
 import { MessagingModule } from '../messaging/messaging.module';
-
-// ✅ ChannelsModule مطلوب لـ AIHandoffListener → إرسال إشعارات واتساب
 import { ChannelsModule } from '../channels/channels.module';
-
-// ✅ المهمة 6: GatewayModule مطلوب لـ AIHandoffListener → WebSocket events
 import { GatewayModule } from '../gateway/gateway.module';
-
-// ✅ المهمة 6: MailModule مطلوب لـ AIHandoffListener → إرسال إيميل
 import { MailModule } from '../mail/mail.module';
 
-// ✅ StoresModule مطلوب للبحث في منتجات سلة
+// ✅ FIX #7: Platform-Agnostic Product Search
+import { ProductSearchFactory } from '../../core/ports/product-search.factory';
+import { SallaProductSearchAdapter } from '../../integrations/salla/salla-product-search.adapter';
+import { ZidProductSearchAdapter } from '../../integrations/zid/zid-product-search.adapter';
 import { StoresModule } from '../stores/stores.module';
 
 @Module({
   imports: [
-    // ═══════════════════════════════════════════════════════════════════════════
-    // 📁 Database — فقط الـ entities المستخدمة في ai.service.ts
-    // ═══════════════════════════════════════════════════════════════════════════
     TypeOrmModule.forFeature([
-      KnowledgeBase, // مكتبة المعلومات
-      StoreSettings, // إعدادات البوت (settingsKey='ai')
-      Conversation, // المحادثات (handler, aiContext, etc.)
-      Message, // الرسائل (direction, aiMetadata, etc.)
-      Order, // الطلبات (tool: get_order_status)
-      Store, // المتاجر (للبحث في منتجات سلة)
-      // ❌ BUG-14 FIX: حذف Customer — غير مستخدم في ai.service.ts
+      KnowledgeBase,
+      StoreSettings,
+      Conversation,
+      Message,
+      Order,
+      Store,
     ]),
 
-    // ❌ BUG-12 FIX: حذف HttpModule — الـ service يستخدم openai npm package مباشرة
-    // ❌ BUG-13 FIX: حذف BullModule('ai-processing') — لا يوجد processor يستخدمه
-
-    // ✅ BUG-1 FIX: MessagingModule يوفر MessageService للـ AIMessageListener
     forwardRef(() => MessagingModule),
-
-    // ✅ ChannelsModule يوفر ChannelsService لإرسال إشعارات التحويل البشري
     ChannelsModule,
-
-    // ✅ المهمة 6: WebSocket events عبر Gateway
     GatewayModule,
-
-    // ✅ المهمة 6: إشعارات إيميل عند التحويل البشري
     MailModule,
-
-    // ✅ StoresModule: يوفر SallaApiService للبحث في منتجات سلة
     StoresModule,
-
     ConfigModule,
   ],
 
@@ -84,10 +59,31 @@ import { StoresModule } from '../stores/stores.module';
 
   providers: [
     AIService,
-    AIMessageListener,    // ✅ الرد التلقائي على الرسائل الواردة
-    AIHandoffListener,    // ✅ إشعارات واتساب عند التحويل البشري
+    AIMessageListener,
+    AIHandoffListener,
+
+    // ─── Product Search Adapters ───────────────────────────────────────────
+    SallaProductSearchAdapter,
+    ZidProductSearchAdapter,
+
+    {
+      // ✅ FIX BUG1 + BUG6:
+      // - inject token صحيح: getRepositoryToken(Store) بدل string literal
+      // - useFactory signature: (repo, salla, zid) → new ProductSearchFactory(repo, [...])
+      provide: ProductSearchFactory,
+      useFactory: (
+        storeRepo: Repository<Store>,
+        sallaAdapter: SallaProductSearchAdapter,
+        zidAdapter: ZidProductSearchAdapter,
+      ) => new ProductSearchFactory(storeRepo, [sallaAdapter, zidAdapter]),
+      inject: [
+        getRepositoryToken(Store),   // ✅ TypeORM token الصحيح
+        SallaProductSearchAdapter,
+        ZidProductSearchAdapter,
+      ],
+    },
   ],
 
-  exports: [AIService],
+  exports: [AIService, ProductSearchFactory],
 })
 export class AiModule {}
