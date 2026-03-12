@@ -696,7 +696,7 @@ export class AIService {
         handoff.reason || 'CUSTOMER_REQUEST',
       );
       return {
-        reply: settings.handoffMessage || AI_DEFAULTS.handoffMessage,
+        reply: this.getHandoffMessage(settings),
         confidence: 1,
         shouldHandoff: true,
         handoffReason: handoff.reason,
@@ -770,7 +770,7 @@ export class AIService {
       
       await this.handleHandoff(context, settings, 'CUSTOMER_REQUEST');
       return {
-        reply: settings.handoffMessage || AI_DEFAULTS.handoffMessage,
+        reply: this.getHandoffMessage(settings),
         confidence: 1,
         shouldHandoff: true,
         handoffReason: 'CUSTOMER_REQUEST',
@@ -906,7 +906,7 @@ export class AIService {
         const handoffTool = toolResults.find((r) => r.name === 'request_human_agent');
         if (handoffTool) {
           return {
-            reply: settings.handoffMessage || AI_DEFAULTS.handoffMessage,
+            reply: this.getHandoffMessage(settings),
             confidence: 1,
             shouldHandoff: true,
             handoffReason: 'CUSTOMER_REQUEST',
@@ -1228,7 +1228,7 @@ export class AIService {
       // تحويل تلقائي
       await this.handleHandoff(context, settings, 'NO_MATCH_AFTER_MAX_ATTEMPTS');
       return {
-        reply: settings.handoffMessage || AI_DEFAULTS.handoffMessage,
+        reply: this.getHandoffMessage(settings),
         confidence: 0,
         shouldHandoff: true,
         handoffReason: 'NO_MATCH_AFTER_MAX_ATTEMPTS',
@@ -1322,7 +1322,7 @@ export class AIService {
         const handoffTool = toolResults.find((r) => r.name === 'request_human_agent');
         if (handoffTool) {
           return {
-            reply: settings.handoffMessage || AI_DEFAULTS.handoffMessage,
+            reply: this.getHandoffMessage(settings),
             confidence: 1,
             shouldHandoff: true,
             handoffReason: 'CUSTOMER_REQUEST',
@@ -1650,10 +1650,18 @@ export class AIService {
       : '\n\n⚠️ Language rule: Respond ONLY in English. Do NOT mix English with Arabic in the same response.';
 
     // معلومات المتجر الأساسية
+    if (settings.storeIntroduction)
+      prompt += `\n${isAr ? 'نبذة تعريفية عن المتجر' : 'Store Introduction'}: ${settings.storeIntroduction}`;
     if (settings.storeDescription)
       prompt += `\n${isAr ? 'عن المتجر' : 'About'}: ${settings.storeDescription}`;
-    if (settings.workingHours)
-      prompt += `\n${isAr ? 'أوقات العمل' : 'Hours'}: ${settings.workingHours}`;
+    if (settings.workingHours) {
+      let hoursText = settings.workingHours;
+      try {
+        const parsed = JSON.parse(settings.workingHours);
+        if (parsed.readableText) hoursText = parsed.readableText;
+      } catch { /* plain text — use as-is */ }
+      prompt += `\n${isAr ? 'أوقات العمل' : 'Hours'}: ${hoursText}`;
+    }
     if (settings.returnPolicy)
       prompt += `\n${isAr ? 'سياسة الإرجاع' : 'Returns'}: ${settings.returnPolicy}`;
     if (settings.shippingInfo)
@@ -2639,6 +2647,69 @@ Types:
     return { shouldHandoff: false };
   }
 
+  /**
+   * ✅ التحقق من أوقات العمل — يُستخدم لتحديد رسالة التحويل البشري
+   * إذا خارج الأوقات → يُرجع رسالة خاصة بدل التحويل العادي
+   */
+  getHandoffMessage(settings: AISettings): string {
+    const defaultMsg = settings.handoffMessage || AI_DEFAULTS.handoffMessage;
+
+    if (!settings.workingHours) return defaultMsg;
+
+    try {
+      const parsed = JSON.parse(settings.workingHours);
+      if (!parsed._schedule) return defaultMsg;
+
+      // متاح 24 ساعة — دائماً الرسالة العادية
+      if (parsed.is24h) return defaultMsg;
+
+      const tz = parsed.timezone || 'Asia/Riyadh';
+      const schedule = parsed.schedule;
+      const offMsg = parsed.offHoursMsg || defaultMsg;
+
+      if (!schedule) return defaultMsg;
+
+      // حساب الوقت في المنطقة الزمنية
+      const now = new Date();
+      const formatter = new Intl.DateTimeFormat('en-US', {
+        timeZone: tz,
+        weekday: 'short',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      });
+      const parts = formatter.formatToParts(now);
+      const weekday = parts.find(p => p.type === 'weekday')?.value?.toLowerCase() || '';
+      const hour = parseInt(parts.find(p => p.type === 'hour')?.value || '0');
+      const minute = parseInt(parts.find(p => p.type === 'minute')?.value || '0');
+      const currentMinutes = hour * 60 + minute;
+
+      // تحويل اسم اليوم الإنجليزي لمفتاح الجدول
+      const dayMap: Record<string, string> = { sat: 'sat', sun: 'sun', mon: 'mon', tue: 'tue', wed: 'wed', thu: 'thu', fri: 'fri' };
+      const dayKey = dayMap[weekday] || weekday;
+
+      const todaySchedule = schedule[dayKey];
+      if (!todaySchedule || !todaySchedule.enabled) {
+        // اليوم إجازة
+        return offMsg;
+      }
+
+      // تحقق من الوقت
+      const [fromH, fromM] = (todaySchedule.from || '09:00').split(':').map(Number);
+      const [toH, toM] = (todaySchedule.to || '21:00').split(':').map(Number);
+      const fromMinutes = fromH * 60 + fromM;
+      const toMinutes = toH * 60 + toM;
+
+      if (currentMinutes < fromMinutes || currentMinutes > toMinutes) {
+        return offMsg;
+      }
+
+      return defaultMsg;
+    } catch {
+      return defaultMsg;
+    }
+  }
+
   // 📊 FAILED ATTEMPTS TRACKING — BUG-3 FIX
   // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -3038,7 +3109,7 @@ Types:
   }
 
   // ─── Generate Store Info with AI ─────────────────────────────────────────
-  async generateStoreInfo(tenantId: string, description: string): Promise<{
+  async generateStoreInfo(_tenantId: string, description: string): Promise<{
     store_intro: string;
     store_description: string;
     shipping_info: string;
