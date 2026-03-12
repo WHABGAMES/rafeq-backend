@@ -160,7 +160,6 @@ class UpdateAISettingsDto {
   @IsOptional() @IsString()
   handoffMessage?: string;
 
-  // Response delay (seconds)
   @IsOptional() @IsNumber()
   responseDelay?: number;
 
