@@ -96,7 +96,7 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
    * أو باستخدام @CurrentUser() decorator
    */
   async validate(payload: JwtPayload): Promise<User> {
-    // ✅ Handle impersonation tokens (no tenantId in payload)
+    // ✅ Handle impersonation tokens (admin viewing merchant dashboard)
     if ((payload as any).type === 'impersonation' && payload.sub) {
       const user = await this.userRepository.findOne({
         where: { id: payload.sub },
@@ -104,7 +104,6 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       });
       if (!user) throw new UnauthorizedException('المستخدم غير موجود');
       if (user.status !== UserStatus.ACTIVE) throw new UnauthorizedException('الحساب غير مفعّل');
-      // Mark as impersonation session on request
       (user as any)._impersonation = true;
       (user as any)._impersonatedBy = (payload as any).impersonatedBy;
       (user as any)._viewOnly = (payload as any).viewOnly;
