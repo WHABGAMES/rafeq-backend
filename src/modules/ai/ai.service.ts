@@ -27,6 +27,7 @@ import type {
 // ✅ Entities — مطابقة لـ @database/entities/index.ts
 import { KnowledgeBase, KnowledgeCategory, KnowledgeType } from './entities/knowledge-base.entity';
 import { StoreSettings } from '../settings/entities/store-settings.entity';
+import { Store, StorePlatform, StoreStatus } from '../stores/entities/store.entity';
 import {
   Conversation,
   ConversationHandler,
@@ -36,9 +37,10 @@ import {
 } from '@database/entities';
 
 // ✅ Services
-import { ProductSearchFactory } from '../../core/ports/product-search.factory';
+import { SallaApiService, SallaProduct } from '../stores/salla-api.service';
 
 // ✅ Utils
+import { decrypt } from '@common/utils/encryption.util';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 📌 ENUMS & INTERFACES
@@ -316,7 +318,7 @@ export class AIService {
   constructor(
     private readonly configService: ConfigService,
     private readonly eventEmitter: EventEmitter2,
-    private readonly productSearchFactory: ProductSearchFactory,
+    private readonly sallaApiService: SallaApiService,
 
     @InjectRepository(KnowledgeBase)
     private readonly knowledgeRepo: Repository<KnowledgeBase>,
@@ -333,6 +335,8 @@ export class AIService {
     @InjectRepository(Order)
     private readonly orderRepo: Repository<Order>,
 
+    @InjectRepository(Store)
+    private readonly storeRepo: Repository<Store>,
   ) {
     // ✅ BUG-9 FIX: تحذير واضح إذا API Key مفقود
     const apiKey = this.configService.get<string>('ai.apiKey');
@@ -1645,33 +1649,33 @@ export class AIService {
       ? '\n\n⚠️ قاعدة اللغة: أجب فقط باللغة العربية. ممنوع المزج بين العربية والإنجليزية في نفس الرد.'
       : '\n\n⚠️ Language rule: Respond ONLY in English. Do NOT mix English with Arabic in the same response.';
 
-    // معلومات المتجر الأساسية
+    // معلومات المتجر + RAG: كلها في قسم واحد حتى GPT يعتبرها مصدر إجابة
+    prompt += isAr
+      ? '\n\n=== معلومات متوفرة (مصدرك الوحيد للإجابة) ==='
+      : '\n\n=== Available Information (your ONLY source for answers) ===';
+
+    // معلومات المتجر الأساسية — داخل قسم المعلومات المتوفرة
     if (settings.storeIntroduction)
-      prompt += `\n${isAr ? 'نبذة تعريفية عن المتجر' : 'Store Introduction'}: ${settings.storeIntroduction}`;
+      prompt += `\n[${isAr ? 'نبذة تعريفية عن المتجر' : 'Store Introduction'}]: ${settings.storeIntroduction}`;
     if (settings.storeDescription)
-      prompt += `\n${isAr ? 'عن المتجر' : 'About'}: ${settings.storeDescription}`;
+      prompt += `\n[${isAr ? 'وصف المتجر' : 'About'}]: ${settings.storeDescription}`;
     if (settings.workingHours) {
       let hoursText = settings.workingHours;
       try {
         const parsed = JSON.parse(settings.workingHours);
         if (parsed.readableText) hoursText = parsed.readableText;
       } catch { /* plain text — use as-is */ }
-      prompt += `\n${isAr ? 'أوقات العمل' : 'Hours'}: ${hoursText}`;
+      prompt += `\n[${isAr ? 'أوقات العمل' : 'Hours'}]: ${hoursText}`;
     }
     if (settings.returnPolicy)
-      prompt += `\n${isAr ? 'سياسة الإرجاع' : 'Returns'}: ${settings.returnPolicy}`;
+      prompt += `\n[${isAr ? 'سياسة الإرجاع' : 'Returns'}]: ${settings.returnPolicy}`;
     if (settings.shippingInfo)
-      prompt += `\n${isAr ? 'الشحن' : 'Shipping'}: ${settings.shippingInfo}`;
+      prompt += `\n[${isAr ? 'الشحن' : 'Shipping'}]: ${settings.shippingInfo}`;
 
-    // ✅ RAG: المقاطع المسترجعة فقط (وليس كل المكتبة)
+    // ✅ RAG: المقاطع المسترجعة — في نفس القسم
     if (retrievedChunks.length > 0) {
-      prompt += isAr
-        ? '\n\n=== معلومات متوفرة (مصدرك الوحيد للإجابة) ==='
-        : '\n\n=== Available Information (your ONLY source for answers) ===';
-
       let charsUsed = 0;
       for (const chunk of retrievedChunks) {
-        // ✅ BUG-KB3 FIX: تضمين الجواب لنوع QnA
         const answerPart = chunk.answer ? `\nالجواب: ${chunk.answer}` : '';
         const entry = `\n[${chunk.title}]: ${chunk.content}${answerPart}`;
         if (charsUsed + entry.length > MAX_KNOWLEDGE_CHARS) break;
@@ -1778,43 +1782,94 @@ export class AIService {
     }
     
     try {
-      // ✅ FIX #7: Platform-Agnostic — يدعم Salla وZid وأي منصة مستقبلاً
-      // ProductSearchFactory يختار الـ adapter الصحيح تلقائياً بناءً على platform
+      // جلب معلومات المتجر مع access token
+      const store = await this.storeRepo.findOne({
+        where: { id: storeId },
+        select: ['id', 'platform', 'status', 'accessToken'],
+      });
+
+      // التحقق من أن المتجر موجود ومتصل بسلة
+      if (!store) {
+        this.logger.warn(`🛒 Product search: store ${storeId} not found`);
+        return { chunks: [], topScore: 0, gateAPassed: false };
+      }
+
+      if (store.platform !== StorePlatform.SALLA) {
+        this.logger.debug(`🛒 Product search: store ${storeId} is not Salla (platform: ${store.platform})`);
+        return { chunks: [], topScore: 0, gateAPassed: false };
+      }
+
+      if (store.status !== StoreStatus.ACTIVE) {
+        this.logger.warn(`🛒 Product search: store ${storeId} is not active (status: ${store.status})`);
+        return { chunks: [], topScore: 0, gateAPassed: false };
+      }
+
+      if (!store.accessToken) {
+        this.logger.warn(`🛒 Product search: store ${storeId} has no access token`);
+        return { chunks: [], topScore: 0, gateAPassed: false };
+      }
+
+      // فك تشفير الـ access token
+      const accessToken = decrypt(store.accessToken);
+      if (!accessToken) {
+        this.logger.error(`🛒 Product search: failed to decrypt access token for store ${storeId}`);
+        return { chunks: [], topScore: 0, gateAPassed: false };
+      }
+
       // استخراج كلمات مفتاحية من السؤال
       const words = message.split(/\s+/).filter((w) => w.length > 2);
-      const keyword = words.slice(0, 3).join(' ');
+      const keyword = words.slice(0, 3).join(' '); // أخذ أول 3 كلمات كـ keyword
 
       this.logger.log(`🛒 Searching products: "${keyword}" in store ${storeId}`);
 
+      // ✅ Level 2: Apply timeout to product search
       const searchTimeout = settings?.productSearchTimeout ?? 10000;
-      const factoryResult = await this.withTimeout(
-        this.productSearchFactory.search(storeId, {
+      const response = await this.withTimeout(
+        this.sallaApiService.getProducts(accessToken, {
           keyword,
-          limit: RAG_TOP_K,
+          perPage: RAG_TOP_K,
           status: 'active',
         }),
         searchTimeout,
         'Product search'
       );
 
-      if (!factoryResult.gateAPassed || factoryResult.chunks.length === 0) {
+      if (!response.data || response.data.length === 0) {
         this.logger.log(`🛒 No products found for keyword "${keyword}"`);
         const emptyResult = { chunks: [], topScore: 0, gateAPassed: false };
-
+        
+        // Cache empty results too (to avoid repeated API calls)
         if (enableCache) {
           const cacheKey = `${storeId}:${keyword.toLowerCase()}`;
           this.productCache.set(cacheKey, { result: emptyResult, timestamp: Date.now() });
         }
-
+        
         return emptyResult;
       }
 
-      this.logger.log(`🛒 Found ${factoryResult.chunks.length} products`);
+      // تحويل المنتجات إلى chunks
+      const chunks = response.data.map((product: SallaProduct) => {
+        const price = product.sale_price?.amount || product.price?.amount || 0;
+        const currency = product.price?.currency || 'SAR';
+        const inStock = product.quantity > 0 ? 'متوفر' : 'غير متوفر';
+        
+        return {
+          title: product.name,
+          content: `${product.description || 'لا يوجد وصف'}
+
+السعر: ${price} ${currency}
+الحالة: ${inStock}
+رمز المنتج: ${product.sku || 'غير محدد'}`,
+          score: 0.80, // نقاط ثابتة للمنتجات
+        };
+      });
+
+      this.logger.log(`🛒 Found ${chunks.length} products`);
 
       const result = {
-        chunks: factoryResult.chunks,
-        topScore: factoryResult.topScore,
-        gateAPassed: factoryResult.gateAPassed,
+        chunks,
+        topScore: chunks.length > 0 ? 0.80 : 0,
+        gateAPassed: chunks.length > 0,
       };
       
       // ✅ Level 2: Store result in cache
