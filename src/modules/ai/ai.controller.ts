@@ -38,6 +38,7 @@ import {
   HttpStatus,
   UseGuards,
   Req,
+  BadRequestException,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -458,6 +459,23 @@ export class AiController {
       dto.message,
       storeId,
     );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // GENERATE STORE INFO WITH AI
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Post('generate-store-info')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'إنشاء معلومات المتجر بالذكاء الاصطناعي' })
+  async generateStoreInfo(
+    @Req() req: any,
+    @Body() dto: { description: string },
+  ) {
+    if (!dto.description?.trim()) {
+      throw new BadRequestException('يرجى إدخال وصف المتجر');
+    }
+    return this.aiService.generateStoreInfo(req.user.tenantId, dto.description.trim());
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
