@@ -92,6 +92,9 @@ export interface AISettings {
   fallbackMessage: string;
   handoffMessage: string;
 
+  // Response delay (seconds)
+  responseDelay?: number;
+
   // ✅ Level 2: Dynamic Thresholds
   highSimilarityThreshold?: number; // Default: 0.85 - skip verifier
   mediumSimilarityThreshold?: number; // Default: 0.72 - run verifier
@@ -277,6 +280,7 @@ const AI_DEFAULTS: AISettings = {
   welcomeMessage: 'أهلاً وسهلاً! كيف يمكنني مساعدتك؟ 😊',
   fallbackMessage: 'عذراً، لم أتمكن من فهم طلبك. هل ترغب بتحويلك لأحد موظفينا؟',
   handoffMessage: 'سأحولك الآن لأحد أفراد فريقنا. سيتواصل معك قريباً! 🙋‍♂️',
+  responseDelay: 0,
   // ✅ Level 2: Dynamic Thresholds
   highSimilarityThreshold: 0.85,
   mediumSimilarityThreshold: 0.72,
@@ -2919,6 +2923,12 @@ Types:
             : ('user' as const),
         content: m.content || '',
       }));
+    }
+
+    // ✅ تأخير الرد (إذا مفعّل) — يجعل المحادثة تبدو طبيعية
+    const delaySeconds = settings.responseDelay || 0;
+    if (delaySeconds > 0) {
+      await new Promise(resolve => setTimeout(resolve, delaySeconds * 1000));
     }
 
     return this.processMessage(params.message, context, settings);
