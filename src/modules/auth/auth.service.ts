@@ -967,7 +967,7 @@ export class AuthService implements OnModuleInit {
   async changePassword(userId: string, currentPassword: string, newPassword: string): Promise<void> {
     const user = await this.userRepository.findOne({
       where: { id: userId },
-      select: ['id', 'password', 'preferences'],
+      select: ['id', 'email', 'firstName', 'password', 'preferences'],
     });
 
     if (!user) throw new UnauthorizedException('المستخدم غير موجود');
@@ -994,6 +994,35 @@ export class AuthService implements OnModuleInit {
     });
 
     this.logger.log(`✅ Password changed for user: ${userId}`);
+
+    // ✅ إرسال إيميل تنبيه بتغيير كلمة المرور
+    if (user.email) {
+      try {
+        const now = new Date().toLocaleString('ar-SA', { timeZone: 'Asia/Riyadh', dateStyle: 'long', timeStyle: 'short' });
+        await this.mailService.sendMail({
+          to: user.email,
+          subject: '🔐 تم تغيير كلمة المرور — رفيق',
+          html: `
+            <div dir="rtl" style="font-family:system-ui,Arial;max-width:500px;margin:0 auto;padding:30px;background:#0f172a;color:#e2e8f0;border-radius:16px;">
+              <div style="text-align:center;margin-bottom:24px;">
+                <img src="https://rafeq.ai/images/rafeq-logo.png" alt="رفيق" style="height:40px;" />
+              </div>
+              <h2 style="color:#fff;font-size:20px;margin:0 0 12px;text-align:center;">تم تغيير كلمة المرور ✅</h2>
+              <p style="color:#94a3b8;font-size:14px;line-height:1.8;text-align:center;">
+                مرحباً ${user.firstName || ''},<br/>
+                تم تغيير كلمة مرور حسابك بنجاح في <strong>${now}</strong>.
+              </p>
+              <div style="background:#1e293b;border:1px solid #334155;border-radius:12px;padding:16px;margin:20px 0;text-align:center;">
+                <p style="color:#f59e0b;font-size:13px;margin:0;">⚠️ إذا لم تقم بهذا التغيير، يرجى التواصل مع الدعم فوراً.</p>
+              </div>
+              <p style="color:#64748b;font-size:12px;text-align:center;margin-top:20px;">هذا إشعار تلقائي من منصة رفيق</p>
+            </div>
+          `,
+        });
+      } catch (e: any) {
+        this.logger.warn(`⚠️ Failed to send password change alert to ${user.email}: ${e.message}`);
+      }
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
