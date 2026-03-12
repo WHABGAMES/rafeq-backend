@@ -27,7 +27,7 @@ import type {
 // ✅ Entities — مطابقة لـ @database/entities/index.ts
 import { KnowledgeBase, KnowledgeCategory, KnowledgeType } from './entities/knowledge-base.entity';
 import { StoreSettings } from '../settings/entities/store-settings.entity';
-import { Store, StorePlatform, StoreStatus } from '../stores/entities/store.entity';
+import { Store } from '../stores/entities/store.entity';
 import {
   Conversation,
   ConversationHandler,
@@ -37,10 +37,9 @@ import {
 } from '@database/entities';
 
 // ✅ Services
-import { SallaApiService, SallaProduct } from '../stores/salla-api.service';
+import { ProductSearchFactory } from '../../core/ports/product-search.factory';
 
 // ✅ Utils
-import { decrypt } from '@common/utils/encryption.util';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 📌 ENUMS & INTERFACES
@@ -318,7 +317,7 @@ export class AIService {
   constructor(
     private readonly configService: ConfigService,
     private readonly eventEmitter: EventEmitter2,
-    private readonly sallaApiService: SallaApiService,
+    private readonly productSearchFactory: ProductSearchFactory,
 
     @InjectRepository(KnowledgeBase)
     private readonly knowledgeRepo: Repository<KnowledgeBase>,
@@ -1788,88 +1787,43 @@ export class AIService {
         select: ['id', 'platform', 'status', 'accessToken'],
       });
 
-      // التحقق من أن المتجر موجود ومتصل بسلة
-      if (!store) {
-        this.logger.warn(`🛒 Product search: store ${storeId} not found`);
-        return { chunks: [], topScore: 0, gateAPassed: false };
-      }
-
-      if (store.platform !== StorePlatform.SALLA) {
-        this.logger.debug(`🛒 Product search: store ${storeId} is not Salla (platform: ${store.platform})`);
-        return { chunks: [], topScore: 0, gateAPassed: false };
-      }
-
-      if (store.status !== StoreStatus.ACTIVE) {
-        this.logger.warn(`🛒 Product search: store ${storeId} is not active (status: ${store.status})`);
-        return { chunks: [], topScore: 0, gateAPassed: false };
-      }
-
-      if (!store.accessToken) {
-        this.logger.warn(`🛒 Product search: store ${storeId} has no access token`);
-        return { chunks: [], topScore: 0, gateAPassed: false };
-      }
-
-      // فك تشفير الـ access token
-      const accessToken = decrypt(store.accessToken);
-      if (!accessToken) {
-        this.logger.error(`🛒 Product search: failed to decrypt access token for store ${storeId}`);
-        return { chunks: [], topScore: 0, gateAPassed: false };
-      }
-
+      // ✅ FIX #7: Platform-Agnostic — يدعم Salla وZid وأي منصة مستقبلاً
+      // ProductSearchFactory يختار الـ adapter الصحيح تلقائياً
       // استخراج كلمات مفتاحية من السؤال
       const words = message.split(/\s+/).filter((w) => w.length > 2);
-      const keyword = words.slice(0, 3).join(' '); // أخذ أول 3 كلمات كـ keyword
+      const keyword = words.slice(0, 3).join(' ');
 
       this.logger.log(`🛒 Searching products: "${keyword}" in store ${storeId}`);
 
-      // ✅ Level 2: Apply timeout to product search
       const searchTimeout = settings?.productSearchTimeout ?? 10000;
-      const response = await this.withTimeout(
-        this.sallaApiService.getProducts(accessToken, {
+      const factoryResult = await this.withTimeout(
+        this.productSearchFactory.search(storeId, {
           keyword,
-          perPage: RAG_TOP_K,
+          limit: RAG_TOP_K,
           status: 'active',
         }),
         searchTimeout,
         'Product search'
       );
 
-      if (!response.data || response.data.length === 0) {
+      if (!factoryResult.gateAPassed || factoryResult.chunks.length === 0) {
         this.logger.log(`🛒 No products found for keyword "${keyword}"`);
         const emptyResult = { chunks: [], topScore: 0, gateAPassed: false };
-        
-        // Cache empty results too (to avoid repeated API calls)
+
         if (enableCache) {
           const cacheKey = `${storeId}:${keyword.toLowerCase()}`;
           this.productCache.set(cacheKey, { result: emptyResult, timestamp: Date.now() });
         }
-        
+
         return emptyResult;
       }
 
-      // تحويل المنتجات إلى chunks
-      const chunks = response.data.map((product: SallaProduct) => {
-        const price = product.sale_price?.amount || product.price?.amount || 0;
-        const currency = product.price?.currency || 'SAR';
-        const inStock = product.quantity > 0 ? 'متوفر' : 'غير متوفر';
-        
-        return {
-          title: product.name,
-          content: `${product.description || 'لا يوجد وصف'}
-
-السعر: ${price} ${currency}
-الحالة: ${inStock}
-رمز المنتج: ${product.sku || 'غير محدد'}`,
-          score: 0.80, // نقاط ثابتة للمنتجات
-        };
-      });
-
-      this.logger.log(`🛒 Found ${chunks.length} products`);
+      this.logger.log(`🛒 Found ${factoryResult.chunks.length} products`);
 
       const result = {
-        chunks,
-        topScore: chunks.length > 0 ? 0.80 : 0,
-        gateAPassed: chunks.length > 0,
+        chunks: factoryResult.chunks,
+        topScore: factoryResult.topScore,
+        gateAPassed: factoryResult.gateAPassed,
       };
       
       // ✅ Level 2: Store result in cache
