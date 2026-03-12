@@ -27,7 +27,6 @@ import type {
 // ✅ Entities — مطابقة لـ @database/entities/index.ts
 import { KnowledgeBase, KnowledgeCategory, KnowledgeType } from './entities/knowledge-base.entity';
 import { StoreSettings } from '../settings/entities/store-settings.entity';
-import { Store } from '../stores/entities/store.entity';
 import {
   Conversation,
   ConversationHandler,
@@ -334,8 +333,6 @@ export class AIService {
     @InjectRepository(Order)
     private readonly orderRepo: Repository<Order>,
 
-    @InjectRepository(Store)
-    private readonly storeRepo: Repository<Store>,
   ) {
     // ✅ BUG-9 FIX: تحذير واضح إذا API Key مفقود
     const apiKey = this.configService.get<string>('ai.apiKey');
@@ -1781,14 +1778,8 @@ export class AIService {
     }
     
     try {
-      // جلب معلومات المتجر مع access token
-      const store = await this.storeRepo.findOne({
-        where: { id: storeId },
-        select: ['id', 'platform', 'status', 'accessToken'],
-      });
-
       // ✅ FIX #7: Platform-Agnostic — يدعم Salla وZid وأي منصة مستقبلاً
-      // ProductSearchFactory يختار الـ adapter الصحيح تلقائياً
+      // ProductSearchFactory يختار الـ adapter الصحيح تلقائياً بناءً على platform
       // استخراج كلمات مفتاحية من السؤال
       const words = message.split(/\s+/).filter((w) => w.length > 2);
       const keyword = words.slice(0, 3).join(' ');
