@@ -2659,24 +2659,16 @@ Types:
     try {
       const parsed = JSON.parse(settings.workingHours);
       if (!parsed._schedule) return defaultMsg;
-
-      // متاح 24 ساعة — دائماً الرسالة العادية
       if (parsed.is24h) return defaultMsg;
 
       const tz = parsed.timezone || 'Asia/Riyadh';
       const schedule = parsed.schedule;
-      const offMsg = parsed.offHoursMsg || defaultMsg;
-
       if (!schedule) return defaultMsg;
 
-      // حساب الوقت في المنطقة الزمنية
+      // ─── الوقت الحالي في المنطقة الزمنية ───
       const now = new Date();
       const formatter = new Intl.DateTimeFormat('en-US', {
-        timeZone: tz,
-        weekday: 'short',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false,
+        timeZone: tz, weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false,
       });
       const parts = formatter.formatToParts(now);
       const weekday = parts.find(p => p.type === 'weekday')?.value?.toLowerCase() || '';
@@ -2684,27 +2676,59 @@ Types:
       const minute = parseInt(parts.find(p => p.type === 'minute')?.value || '0');
       const currentMinutes = hour * 60 + minute;
 
-      // تحويل اسم اليوم الإنجليزي لمفتاح الجدول
-      const dayMap: Record<string, string> = { sat: 'sat', sun: 'sun', mon: 'mon', tue: 'tue', wed: 'wed', thu: 'thu', fri: 'fri' };
-      const dayKey = dayMap[weekday] || weekday;
+      // ─── ترتيب الأيام + أسماء عربية ───
+      const dayOrder = ['sat', 'sun', 'mon', 'tue', 'wed', 'thu', 'fri'];
+      const dayNames: Record<string, string> = {
+        sat: 'السبت', sun: 'الأحد', mon: 'الإثنين', tue: 'الثلاثاء',
+        wed: 'الأربعاء', thu: 'الخميس', fri: 'الجمعة',
+      };
+      const dayKey = weekday; // already lowercase short: sat, sun, mon...
 
       const todaySchedule = schedule[dayKey];
-      if (!todaySchedule || !todaySchedule.enabled) {
-        // اليوم إجازة
-        return offMsg;
+
+      // ─── هل نحن داخل أوقات العمل؟ ───
+      if (todaySchedule?.enabled) {
+        const [fromH, fromM] = (todaySchedule.from || '09:00').split(':').map(Number);
+        const [toH, toM] = (todaySchedule.to || '21:00').split(':').map(Number);
+        if (currentMinutes >= fromH * 60 + fromM && currentMinutes <= toH * 60 + toM) {
+          return defaultMsg; // ✅ داخل الأوقات — تحويل عادي
+        }
       }
 
-      // تحقق من الوقت
-      const [fromH, fromM] = (todaySchedule.from || '09:00').split(':').map(Number);
-      const [toH, toM] = (todaySchedule.to || '21:00').split(':').map(Number);
-      const fromMinutes = fromH * 60 + fromM;
-      const toMinutes = toH * 60 + toM;
+      // ─── خارج الأوقات — نبحث عن أقرب يوم/وقت متاح ───
+      const todayIndex = dayOrder.indexOf(dayKey);
 
-      if (currentMinutes < fromMinutes || currentMinutes > toMinutes) {
-        return offMsg;
+      // هل باقي وقت اليوم؟ (العميل أرسل قبل بداية الدوام)
+      if (todaySchedule?.enabled) {
+        const [fromH, fromM] = (todaySchedule.from || '09:00').split(':').map(Number);
+        if (currentMinutes < fromH * 60 + fromM) {
+          // اليوم فيه دوام بس لسه ما بدأ
+          return `عذراً، فريق الدعم البشري غير متاح حالياً.\n\n🕐 الدعم البشري متاح اليوم (${dayNames[dayKey]}) من الساعة ${todaySchedule.from} إلى ${todaySchedule.to}`;
+        }
       }
 
-      return defaultMsg;
+      // ابحث عن أقرب يوم عمل قادم (خلال 7 أيام)
+      for (let offset = 1; offset <= 7; offset++) {
+        const nextIndex = (todayIndex + offset) % 7;
+        const nextDay = dayOrder[nextIndex];
+        const nextSched = schedule[nextDay];
+
+        if (nextSched?.enabled) {
+          let whenLabel: string;
+          if (offset === 1) {
+            whenLabel = `غداً (${dayNames[nextDay]})`;
+          } else if (offset === 2) {
+            whenLabel = `بعد غد (${dayNames[nextDay]})`;
+          } else {
+            whenLabel = `يوم ${dayNames[nextDay]}`;
+          }
+
+          return `عذراً، فريق الدعم البشري غير متاح حالياً.\n\n🕐 الدعم البشري متاح ${whenLabel} من الساعة ${nextSched.from} إلى ${nextSched.to}`;
+        }
+      }
+
+      // لا يوجد أي يوم متاح (كل الأيام إجازة)
+      return parsed.offHoursMsg || 'عذراً، فريق الدعم البشري غير متاح حالياً.';
     } catch {
       return defaultMsg;
     }
