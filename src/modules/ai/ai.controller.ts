@@ -160,6 +160,10 @@ class UpdateAISettingsDto {
   @IsOptional() @IsString()
   handoffMessage?: string;
 
+  // Response delay (seconds)
+  @IsOptional() @IsNumber()
+  responseDelay?: number;
+
   // ✅ Level 2: Dynamic Thresholds
   @IsOptional() @IsNumber()
   highSimilarityThreshold?: number;
