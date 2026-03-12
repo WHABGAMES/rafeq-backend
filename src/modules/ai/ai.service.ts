@@ -1692,23 +1692,25 @@ export class AIService {
     // ✅ القواعد الصارمة — منع الهلوسة
     prompt += isAr
       ? `\n\n=== قواعد صارمة (إلزامية) ===
-1. أجب فقط وحصرياً من المعلومات المتوفرة أعلاه. لا تختلق أو تفترض أي معلومة.
-2. إذا لم تجد الإجابة في المعلومات المتوفرة أعلاه، أجب حرفياً بهذا النص فقط:
+1. أجب من المعلومات المتوفرة أعلاه. لا تختلق أو تفترض أي معلومة.
+2. ✅ معلومات المتجر (النبذة التعريفية، وصف المتجر، الشحن، الإرجاع، أوقات العمل) هي مصادر إجابة صالحة. إذا سأل العميل عن المتجر أو خدماته أو اسمه أو نشاطه، أجب من هذه المعلومات مباشرة.
+3. إذا لم تجد الإجابة في أي من المعلومات المتوفرة أعلاه (لا في معلومات المتجر ولا في المكتبة)، أجب حرفياً بهذا النص فقط:
 "${NO_MATCH_MESSAGE}"
-3. لا تذكر أسعاراً أو منتجات أو تفاصيل غير موجودة في المعلومات المتوفرة.
-4. لا تستخدم معرفتك العامة أبداً. لا تقدم نصائح طبية أو صحية أو ثقافية.
-5. لا تشرح منتجات غير مذكورة أعلاه حتى لو عرفتها.
-6. إذا طلب العميل شخصاً بشرياً، استخدم أداة request_human_agent.
-7. كن موجزاً ومفيداً. لا تتوسع خارج المعلومات المقدمة.`
+4. لا تذكر أسعاراً أو منتجات أو تفاصيل غير موجودة في المعلومات المتوفرة.
+5. لا تستخدم معرفتك العامة أبداً. لا تقدم نصائح طبية أو صحية أو ثقافية.
+6. لا تشرح منتجات غير مذكورة أعلاه حتى لو عرفتها.
+7. إذا طلب العميل شخصاً بشرياً، استخدم أداة request_human_agent.
+8. كن موجزاً ومفيداً. لا تتوسع خارج المعلومات المقدمة.`
       : `\n\n=== Strict Rules (mandatory) ===
-1. ONLY answer from the information provided above. Never make up or assume any information.
-2. If the answer is NOT in the provided information, respond EXACTLY with:
+1. Answer from the information provided above. Never make up or assume any information.
+2. ✅ Store information (introduction, description, shipping, returns, hours) ARE valid answer sources. If the customer asks about the store, its services, or its name, answer from this information directly.
+3. If the answer is NOT in ANY of the provided information (neither store info nor knowledge base), respond EXACTLY with:
 "${NO_MATCH_MESSAGE}"
-3. Do NOT mention prices, products, or details not in the provided information.
-4. NEVER use general knowledge. No medical, health, or cultural advice.
-5. Do NOT explain products not listed above, even if you know about them.
-6. If customer asks for a human, use request_human_agent tool.
-7. Be concise and helpful. Do not expand beyond provided information.`;
+4. Do NOT mention prices, products, or details not in the provided information.
+5. NEVER use general knowledge. No medical, health, or cultural advice.
+6. Do NOT explain products not listed above, even if you know about them.
+7. If customer asks for a human, use request_human_agent tool.
+8. Be concise and helpful. Do not expand beyond provided information.`;
 
     return prompt;
   }
