@@ -340,6 +340,56 @@ async function bootstrap() {
       logger.error(e.stack);
     }
 
+    // ─── Auto-create campaigns table (safe — IF NOT EXISTS) ─────────────────
+    try {
+      const ds = app.get(DataSource);
+
+      await ds.query(`DO $$ BEGIN CREATE TYPE campaign_type_enum AS ENUM ('immediate','scheduled','automated','recurring'); EXCEPTION WHEN duplicate_object THEN NULL; END $$`);
+      await ds.query(`DO $$ BEGIN CREATE TYPE campaign_status_enum AS ENUM ('draft','scheduled','active','paused','completed','cancelled','failed'); EXCEPTION WHEN duplicate_object THEN NULL; END $$`);
+      await ds.query(`DO $$ BEGIN CREATE TYPE campaign_channel_enum AS ENUM ('whatsapp','sms','email','instagram','discord'); EXCEPTION WHEN duplicate_object THEN NULL; END $$`);
+
+      await ds.query(`
+        CREATE TABLE IF NOT EXISTS campaigns (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          tenant_id UUID NOT NULL,
+          store_id UUID,
+          created_by UUID,
+          name VARCHAR(255) NOT NULL,
+          description TEXT,
+          type campaign_type_enum NOT NULL,
+          status campaign_status_enum NOT NULL DEFAULT 'draft',
+          channel campaign_channel_enum NOT NULL DEFAULT 'whatsapp',
+          audience_filter JSONB,
+          estimated_audience INT NOT NULL DEFAULT 0,
+          message_template JSONB NOT NULL DEFAULT '{}',
+          schedule_config JSONB,
+          scheduled_at TIMESTAMPTZ,
+          trigger_config JSONB,
+          stats JSONB NOT NULL DEFAULT '{"totalTargeted":0,"sent":0,"delivered":0,"read":0,"replied":0,"failed":0,"clicked":0,"unsubscribed":0}',
+          started_at TIMESTAMPTZ,
+          completed_at TIMESTAMPTZ,
+          last_run_at TIMESTAMPTZ,
+          next_run_at TIMESTAMPTZ,
+          rate_limit INT NOT NULL DEFAULT 30,
+          stop_on_error_threshold INT,
+          metadata JSONB DEFAULT '{}',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          deleted_at TIMESTAMPTZ
+        )
+      `);
+
+      await ds.query(`CREATE INDEX IF NOT EXISTS idx_campaigns_tenant_status ON campaigns (tenant_id, status)`);
+      await ds.query(`CREATE INDEX IF NOT EXISTS idx_campaigns_tenant_type ON campaigns (tenant_id, type)`);
+      await ds.query(`CREATE INDEX IF NOT EXISTS idx_campaigns_tenant_created ON campaigns (tenant_id, created_at DESC)`);
+      await ds.query(`CREATE INDEX IF NOT EXISTS idx_campaigns_scheduled ON campaigns (scheduled_at) WHERE status = 'scheduled' AND scheduled_at IS NOT NULL`);
+
+      logger.log('✅ Campaigns table ready');
+    } catch (e: any) {
+      logger.error(`❌ CAMPAIGNS TABLE FAILED: ${e.message}`);
+      logger.error(e.stack);
+    }
+
     // ─── Start ────────────────────────────────────────────────────────────────
     await app.listen(port, '0.0.0.0');
 
