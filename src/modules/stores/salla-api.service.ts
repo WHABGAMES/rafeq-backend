@@ -211,6 +211,31 @@ export class SallaApiService {
   }
 
   /**
+   * ✅ بحث عن طلب بالرقم المرجعي (المرئي للعميل)
+   */
+  async searchOrderByReference(accessToken: string, reference: string): Promise<SallaOrder | null> {
+    try {
+      const response = await this.makeRequest<SallaOrder[]>(
+        accessToken,
+        'GET',
+        `/orders?keyword=${encodeURIComponent(reference)}&per_page=5`,
+      );
+
+      const orders = response?.data;
+      if (!orders?.length) return null;
+
+      // ابحث عن الطلب المطابق بالضبط
+      return orders.find((o: SallaOrder) =>
+        String(o.id) === reference ||
+        String(o.reference_id) === reference ||
+        String(o.reference_id)?.includes(reference)
+      ) || orders[0]; // أو أول نتيجة
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * تحديث حالة الطلب
    */
   async updateOrderStatus(
