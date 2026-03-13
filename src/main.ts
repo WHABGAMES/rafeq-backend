@@ -246,6 +246,100 @@ async function bootstrap() {
       logger.error(e.stack);
     }
 
+    // ─── Auto-create suggestions tables (safe — IF NOT EXISTS) ──────────────
+    try {
+      const ds = app.get(DataSource);
+
+      // Enums
+      await ds.query(`DO $$ BEGIN CREATE TYPE suggestion_type_enum AS ENUM ('feature_request','bug_report','new_feature','improvement'); EXCEPTION WHEN duplicate_object THEN NULL; END $$`);
+      await ds.query(`DO $$ BEGIN CREATE TYPE suggestion_status_enum AS ENUM ('under_review','under_study','in_progress','completed','rejected'); EXCEPTION WHEN duplicate_object THEN NULL; END $$`);
+
+      // suggestions
+      await ds.query(`
+        CREATE TABLE IF NOT EXISTS suggestions (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          title VARCHAR(300) NOT NULL,
+          description TEXT NOT NULL,
+          type suggestion_type_enum NOT NULL DEFAULT 'feature_request',
+          merchant_id UUID NOT NULL,
+          tenant_id UUID NOT NULL,
+          merchant_name VARCHAR(255),
+          store_name VARCHAR(255),
+          is_anonymous BOOLEAN NOT NULL DEFAULT false,
+          status suggestion_status_enum NOT NULL DEFAULT 'under_review',
+          is_pinned BOOLEAN NOT NULL DEFAULT false,
+          likes_count INT NOT NULL DEFAULT 0,
+          comments_count INT NOT NULL DEFAULT 0,
+          followers_count INT NOT NULL DEFAULT 0,
+          merged_into_id UUID,
+          has_admin_response BOOLEAN NOT NULL DEFAULT false,
+          admin_response_preview VARCHAR(500),
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          deleted_at TIMESTAMPTZ
+        )
+      `);
+
+      // suggestion_likes
+      await ds.query(`
+        CREATE TABLE IF NOT EXISTS suggestion_likes (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          suggestion_id UUID NOT NULL REFERENCES suggestions(id) ON DELETE CASCADE,
+          merchant_id UUID NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          deleted_at TIMESTAMPTZ,
+          CONSTRAINT uq_suggestion_like_merchant UNIQUE (suggestion_id, merchant_id)
+        )
+      `);
+
+      // suggestion_comments
+      await ds.query(`
+        CREATE TABLE IF NOT EXISTS suggestion_comments (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          suggestion_id UUID NOT NULL REFERENCES suggestions(id) ON DELETE CASCADE,
+          merchant_id UUID,
+          comment TEXT NOT NULL,
+          is_admin BOOLEAN NOT NULL DEFAULT false,
+          admin_id UUID,
+          admin_name VARCHAR(255),
+          merchant_name VARCHAR(255),
+          store_name VARCHAR(255),
+          is_anonymous BOOLEAN NOT NULL DEFAULT false,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          deleted_at TIMESTAMPTZ
+        )
+      `);
+
+      // suggestion_followers
+      await ds.query(`
+        CREATE TABLE IF NOT EXISTS suggestion_followers (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          suggestion_id UUID NOT NULL REFERENCES suggestions(id) ON DELETE CASCADE,
+          merchant_id UUID NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          deleted_at TIMESTAMPTZ,
+          CONSTRAINT uq_suggestion_follower_merchant UNIQUE (suggestion_id, merchant_id)
+        )
+      `);
+
+      // Indexes
+      await ds.query(`CREATE INDEX IF NOT EXISTS idx_suggestions_status_pinned ON suggestions (is_pinned DESC, likes_count DESC, created_at DESC) WHERE deleted_at IS NULL`);
+      await ds.query(`CREATE INDEX IF NOT EXISTS idx_suggestions_merchant ON suggestions (merchant_id)`);
+      await ds.query(`CREATE INDEX IF NOT EXISTS idx_suggestions_type ON suggestions (type)`);
+      await ds.query(`CREATE INDEX IF NOT EXISTS idx_suggestions_created ON suggestions (created_at DESC)`);
+      await ds.query(`CREATE INDEX IF NOT EXISTS idx_suggestion_likes_suggestion ON suggestion_likes (suggestion_id)`);
+      await ds.query(`CREATE INDEX IF NOT EXISTS idx_suggestion_comments_suggestion ON suggestion_comments (suggestion_id, created_at ASC)`);
+      await ds.query(`CREATE INDEX IF NOT EXISTS idx_suggestion_followers_suggestion ON suggestion_followers (suggestion_id)`);
+
+      logger.log('✅ Suggestions tables ready');
+    } catch (e: any) {
+      logger.error(`❌ SUGGESTIONS TABLES FAILED: ${e.message}`);
+      logger.error(e.stack);
+    }
+
     // ─── Start ────────────────────────────────────────────────────────────────
     await app.listen(port, '0.0.0.0');
 
