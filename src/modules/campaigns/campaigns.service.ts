@@ -175,6 +175,43 @@ export class CampaignsService {
     return campaign;
   }
 
+  /**
+   * تحديث حملة (مسودة أو مجدولة فقط)
+   */
+  async update(id: string, tenantId: string, dto: Partial<CreateCampaignDto>): Promise<Campaign> {
+    const campaign = await this.findById(id, tenantId);
+
+    // لا يمكن تعديل حملة نشطة أو مكتملة
+    if ([CampaignStatus.ACTIVE, CampaignStatus.COMPLETED].includes(campaign.status as CampaignStatus)) {
+      throw new BadRequestException('لا يمكن تعديل حملة نشطة أو مكتملة');
+    }
+
+    // تحديث الحقول المسموحة
+    if (dto.name) (campaign as any).name = dto.name;
+    if (dto.channel) (campaign as any).channel = dto.channel;
+    if (dto.type) (campaign as any).type = dto.type;
+    if (dto.scheduledAt) (campaign as any).scheduledAt = dto.scheduledAt;
+    if ((dto as any).messageTemplate) (campaign as any).messageTemplate = (dto as any).messageTemplate;
+    if (dto.segment) (campaign as any).segment = dto.segment;
+
+    return this.campaignRepository.save(campaign);
+  }
+
+  /**
+   * حذف حملة (مسودة أو ملغاة فقط)
+   */
+  async remove(id: string, tenantId: string): Promise<{ deleted: true }> {
+    const campaign = await this.findById(id, tenantId);
+
+    // لا يمكن حذف حملة نشطة
+    if ([CampaignStatus.ACTIVE, CampaignStatus.SCHEDULED].includes(campaign.status as CampaignStatus)) {
+      throw new BadRequestException('لا يمكن حذف حملة نشطة أو مجدولة — ألغِها أولاً');
+    }
+
+    await this.campaignRepository.softRemove(campaign);
+    return { deleted: true };
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════════
   // ⚡ Campaign Actions
   // ═══════════════════════════════════════════════════════════════════════════════
