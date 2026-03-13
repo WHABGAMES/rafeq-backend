@@ -77,7 +77,7 @@ export class AIMessageListener {
    */
   @OnEvent('message.received', { async: true })
   async handleIncomingMessage(payload: MessageReceivedPayload): Promise<void> {
-    const { message, conversation, isNewConversation } = payload;
+    const { message, conversation } = payload;
     const startTime = Date.now();
 
     try {
