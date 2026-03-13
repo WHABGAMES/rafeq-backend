@@ -17,9 +17,15 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { BullModule } from '@nestjs/bullmq';
 
-import { Campaign, Customer } from '@database/entities';
+import { Campaign, Customer, Channel } from '@database/entities';
+import { Store } from '@modules/stores/entities/store.entity';
 import { CampaignsService } from './campaigns.service';
 import { CampaignsController } from './campaigns.controller';
+import { CampaignsProcessor } from './campaigns.processor';
+import { CampaignsScheduler } from './campaigns.scheduler';
+
+// WhatsApp for sending campaign messages
+import { WhatsAppModule } from '@modules/channels/whatsapp/whatsapp.module';
 
 /**
  * ═══════════════════════════════════════════════════════════════════════════════
@@ -57,8 +63,13 @@ import { CampaignsController } from './campaigns.controller';
     // ═══════════════════════════════════════════════════════════════════════════════
     TypeOrmModule.forFeature([
       Campaign,       // الحملات
-      Customer,        // للـ Segmentation
+      Customer,       // للـ Segmentation
+      Channel,        // للـ Processor — جلب قنوات الإرسال
+      Store,          // للـ Processor — ربط القنوات بالمتاجر
     ]),
+
+    // WhatsApp module — للإرسال الفعلي
+    WhatsAppModule,
 
     // ═══════════════════════════════════════════════════════════════════════════════
     // 📬 Queue لمعالجة الحملات
@@ -97,7 +108,11 @@ import { CampaignsController } from './campaigns.controller';
 
   controllers: [CampaignsController],
   
-  providers: [CampaignsService],
+  providers: [
+    CampaignsService,
+    CampaignsProcessor,   // ✅ Queue processor — يعالج إرسال الرسائل
+    CampaignsScheduler,   // ✅ Cron job — يفحص الحملات المجدولة كل دقيقة
+  ],
 
   exports: [CampaignsService],
 })
