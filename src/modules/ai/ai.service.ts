@@ -1735,7 +1735,8 @@ export class AIService {
 6. لا تشرح منتجات غير مذكورة أعلاه حتى لو عرفتها.
 7. إذا طلب العميل شخصاً بشرياً، استخدم أداة request_human_agent.
 8. عند استعلام الطلب: استخدم أداة get_order_status ثم اشرح الحالة بأسلوبك الطبيعي. لا تعرض البيانات الخام — اكتب رد مفيد يوضح للعميل وضع طلبه.
-9. كن موجزاً ومفيداً. لا تتوسع خارج المعلومات المقدمة.`
+9. إذا ذكر العميل طلبه بدون رقم (مثل: "طلبي تأخر"، "وين طلبي"، "متى يوصل طلبي") → اطلب منه رقم الطلب أولاً قبل البحث.
+10. كن موجزاً ومفيداً. لا تتوسع خارج المعلومات المقدمة.`
       : `\n\n=== Strict Rules (mandatory) ===
 1. Answer from the information provided above. Never make up or assume any information.
 2. ✅ Store information (introduction, description, shipping, returns, hours) ARE valid answer sources. If the customer asks about the store, its services, or its name, answer from this information directly.
@@ -1746,7 +1747,8 @@ export class AIService {
 6. Do NOT explain products not listed above, even if you know about them.
 7. If customer asks for a human, use request_human_agent tool.
 8. For order queries: use get_order_status tool then explain the status naturally. Don't show raw data — write a helpful response about the order status.
-9. Be concise and helpful. Do not expand beyond provided information.`;
+9. If customer mentions their order without a number (e.g., "my order is late", "where is my order") → ask for the order number first before searching.
+10. Be concise and helpful. Do not expand beyond provided information.`;
 
     return prompt;
   }
@@ -2035,13 +2037,13 @@ export class AIService {
 - PRODUCT_QUESTION: سؤال عن منتج معين، سعر، توفر، مواصفات (مثل: كم سعر المنتج X، هل متوفر، مواصفات)
 - POLICY_SUPPORT_FAQ: سؤال عن سياسات المتجر، التوصيل، الإرجاع، ساعات العمل، معلومات عامة، أو سؤال عن خدمة/منتج بشكل عام (مثل: متى دوري، كم المدة، اذا طلبت/اشتريت)
 - COMPLAINT_ESCALATION: شكوى أو طلب تصعيد أو استياء (مثل: غير راضي، مشكلة، اشتكي)
-- ORDER_QUERY: استفسار عن حالة طلب موجود فعلياً، بوجود رقم طلب أو طلب تتبع حقيقي (مثل: وين طلبي رقم 1234، حالة الطلب، رقم التتبع)
+- ORDER_QUERY: أي استفسار عن طلب العميل — سواء بوجود رقم طلب (مثل: وين طلبي رقم 1234) أو بدون رقم (مثل: طلبي تأخر، وين طلبي، متى يوصل طلبي، ابي اتتبع طلبي)
 - HUMAN_REQUEST: طلب صريح للتحدث مع موظف أو شخص بشري
 - OUT_OF_SCOPE: سؤال خارج نطاق المتجر تماماً (مثل: سياسة، رياضة، طبخ)
 - UNKNOWN: لا يمكن تحديد النوع
 
 ⚠️ قواعد مهمة:
-- ORDER_QUERY فقط عند وجود رقم طلب أو استفسار عن حالة طلب فعلي (وين طلبي، رقم التتبع)
+- ORDER_QUERY: أي ذكر لطلب العميل (بوجود رقم أو بدونه) — مثل: طلبي تأخر، وين طلبي، ابي اتتبع الطلب
 - "اذا طلبت/اشتريت X متى..." = POLICY_SUPPORT_FAQ (سؤال عام عن الخدمة وليس استفسار طلب)
 - "متى دوري" أو "كم المدة" = POLICY_SUPPORT_FAQ
 - إذا الرسالة تسأل عن معلومة محددة = ليست GREETING/SMALLTALK
@@ -2058,13 +2060,13 @@ Types:
 - PRODUCT_QUESTION: Question about a specific product, price, availability, specs
 - POLICY_SUPPORT_FAQ: Question about store policies, shipping, returns, hours, general info, or general service questions (e.g., if I buy X when will it arrive, how long does it take)
 - COMPLAINT_ESCALATION: Complaint, escalation request, dissatisfaction
-- ORDER_QUERY: ONLY for tracking an existing order with order number or explicit tracking request (e.g., where is my order #1234, tracking number, order status)
+- ORDER_QUERY: Any mention of customer's order — with or without order number (e.g., where is my order #1234, my order is late, track my order, when will my order arrive)
 - HUMAN_REQUEST: Explicit request to speak to a human agent
 - OUT_OF_SCOPE: Question completely outside store scope (politics, sports, cooking)
 - UNKNOWN: Cannot determine
 
 ⚠️ Important rules:
-- ORDER_QUERY is ONLY for existing order tracking (order number, "where is my order", tracking)
+- ORDER_QUERY: any mention of customer's order (with or without number) — e.g., my order is late, where is my order, track my order
 - "If I order/buy X when will..." = POLICY_SUPPORT_FAQ (general service question, NOT order query)
 - "When is my turn" or "how long" = POLICY_SUPPORT_FAQ
 - If message asks for specific info = NOT GREETING/SMALLTALK
