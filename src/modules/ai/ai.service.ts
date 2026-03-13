@@ -1732,7 +1732,8 @@ export class AIService {
 5. لا تستخدم معرفتك العامة أبداً. لا تقدم نصائح طبية أو صحية أو ثقافية.
 6. لا تشرح منتجات غير مذكورة أعلاه حتى لو عرفتها.
 7. إذا طلب العميل شخصاً بشرياً، استخدم أداة request_human_agent.
-8. كن موجزاً ومفيداً. لا تتوسع خارج المعلومات المقدمة.`
+8. عند استعلام الطلب: استخدم أداة get_order_status ثم اشرح الحالة بأسلوبك الطبيعي. لا تعرض البيانات الخام — اكتب رد مفيد يوضح للعميل وضع طلبه.
+9. كن موجزاً ومفيداً. لا تتوسع خارج المعلومات المقدمة.`
       : `\n\n=== Strict Rules (mandatory) ===
 1. Answer from the information provided above. Never make up or assume any information.
 2. ✅ Store information (introduction, description, shipping, returns, hours) ARE valid answer sources. If the customer asks about the store, its services, or its name, answer from this information directly.
@@ -1742,7 +1743,8 @@ export class AIService {
 5. NEVER use general knowledge. No medical, health, or cultural advice.
 6. Do NOT explain products not listed above, even if you know about them.
 7. If customer asks for a human, use request_human_agent tool.
-8. Be concise and helpful. Do not expand beyond provided information.`;
+8. For order queries: use get_order_status tool then explain the status naturally. Don't show raw data — write a helpful response about the order status.
+9. Be concise and helpful. Do not expand beyond provided information.`;
 
     return prompt;
   }
@@ -2293,13 +2295,13 @@ Types:
         type: 'function',
         function: {
           name: 'get_order_status',
-          description: 'Get order status by order ID or reference number',
+          description: 'البحث عن حالة طلب بالرقم. يُرجع بيانات الطلب مع status_context الذي يشرح الحالة. استخدم status_context لتكوين رد طبيعي ومفيد للعميل بأسلوبك. لا تكرر البيانات الخام — اشرح الحالة بشكل ودي.',
           parameters: {
             type: 'object',
             properties: {
               order_id: {
                 type: 'string',
-                description: 'Order ID or reference',
+                description: 'رقم الطلب الذي أرسله العميل',
               },
             },
             required: ['order_id'],
@@ -2403,50 +2405,162 @@ Types:
     orderId: string,
     storeId?: string,
   ): Promise<unknown> {
+    // ─── 1. البحث في الداتابيس المحلية أولاً ───
     const whereConditions: Record<string, unknown>[] = [
       { tenantId, sallaOrderId: orderId },
       { tenantId, referenceId: orderId },
     ];
-
-    // ✅ BUG-16: بحث إضافي بـ storeId لأن tenantId قد يكون null
     if (storeId) {
       whereConditions.push(
         { storeId, sallaOrderId: orderId },
         { storeId, referenceId: orderId },
+        { storeId, zidOrderId: orderId },
       );
     }
 
-    const order = await this.orderRepo.findOne({
-      where: whereConditions,
-    });
+    const localOrder = await this.orderRepo.findOne({ where: whereConditions });
 
-    if (!order) {
-      return { found: false, message: 'لم يتم العثور على طلب بهذا الرقم' };
+    if (localOrder) {
+      return this.formatOrderResponse(localOrder);
     }
 
-    const statusAr: Record<string, string> = {
+    // ─── 2. لم يُوجد محلياً → نبحث في API سلة/زد مباشرة ───
+    if (!storeId) {
+      return { found: false, message: 'لم يتم العثور على طلب بهذا الرقم. يرجى التأكد من صحة الرقم.' };
+    }
+
+    try {
+      const store = await this.storeRepo
+        .createQueryBuilder('store')
+        .addSelect('store.accessToken')
+        .where('store.id = :storeId', { storeId })
+        .andWhere('store.deletedAt IS NULL')
+        .getOne();
+
+      if (!store?.accessToken) {
+        return { found: false, message: 'لم يتم العثور على طلب بهذا الرقم.' };
+      }
+
+      const accessToken = decrypt(store.accessToken);
+      if (!accessToken) {
+        return { found: false, message: 'لم يتم العثور على طلب بهذا الرقم.' };
+      }
+
+      if (store.platform === 'salla') {
+        const orderNum = parseInt(orderId, 10);
+        if (isNaN(orderNum)) {
+          return { found: false, message: 'رقم الطلب غير صالح.' };
+        }
+
+        const response = await this.sallaApiService.getOrder(accessToken, orderNum);
+        const sallaOrder = response?.data;
+
+        if (!sallaOrder) {
+          return { found: false, message: 'لم يتم العثور على طلب بهذا الرقم في المتجر.' };
+        }
+
+        const statusSlug = sallaOrder.status?.slug || 'unknown';
+        const statusName = sallaOrder.status?.name || sallaOrder.status?.customized?.name || statusSlug;
+
+        return {
+          found: true,
+          order_id: String(sallaOrder.id),
+          reference_id: sallaOrder.reference_id,
+          status: statusSlug,
+          status_ar: statusName,
+          status_context: this.getStatusContext(statusSlug),
+          total: sallaOrder.amounts?.total?.amount,
+          currency: sallaOrder.amounts?.total?.currency || 'SAR',
+          payment_status: sallaOrder.payment?.status,
+          payment_method: sallaOrder.payment?.method?.name,
+          items_count: sallaOrder.items?.length || 0,
+          shipping_company: sallaOrder.shipping?.company?.name || null,
+          order_date: sallaOrder.date?.date || null,
+          source: 'salla_api',
+        };
+      }
+
+      // Zid أو منصات أخرى — fallback
+      return { found: false, message: 'لم يتم العثور على طلب بهذا الرقم.' };
+
+    } catch (error) {
+      this.logger.warn(`⚠️ Order lookup via API failed for ${orderId}`, {
+        error: error instanceof Error ? error.message : 'Unknown',
+      });
+      return { found: false, message: 'حدث خطأ أثناء البحث عن الطلب. يرجى المحاولة لاحقاً.' };
+    }
+  }
+
+  /**
+   * ✅ تنسيق بيانات الطلب المحلي للـ GPT
+   */
+  private formatOrderResponse(order: any): unknown {
+    const statusContext = this.getStatusContext(order.status);
+
+    return {
+      found: true,
+      order_id: order.sallaOrderId || order.zidOrderId || order.referenceId,
+      status: order.status,
+      status_ar: this.getStatusArabic(order.status),
+      status_context: statusContext,
+      total: order.totalAmount,
+      currency: order.currency,
+      payment_status: order.paymentStatus,
+      payment_method: order.paymentMethod,
+      items_count: order.items?.length || 0,
+      shipping_company: order.shippingInfo?.carrierName || null,
+      tracking_number: order.shippingInfo?.trackingNumber || null,
+      order_date: order.orderedAt || order.createdAt,
+      source: 'local_db',
+    };
+  }
+
+  /**
+   * ✅ ترجمة حالة الطلب للعربية
+   */
+  private getStatusArabic(status: string): string {
+    const map: Record<string, string> = {
       created: 'تم الإنشاء',
-      processing: 'قيد المعالجة',
+      processing: 'قيد التجهيز',
+      under_review: 'قيد المراجعة',
       pending_payment: 'بانتظار الدفع',
       paid: 'تم الدفع',
       ready_to_ship: 'جاهز للشحن',
       shipped: 'تم الشحن',
-      delivered: 'تم التسليم',
+      delivered: 'تم التوصيل',
       completed: 'مكتمل',
       cancelled: 'ملغي',
       refunded: 'مسترد',
+      restoring: 'قيد الاسترجاع',
+      failed: 'فشل',
+      on_hold: 'معلّق',
+      in_transit: 'في الطريق',
     };
+    return map[status] || status;
+  }
 
-    return {
-      found: true,
-      order_id: order.sallaOrderId,
-      status: order.status,
-      status_ar: statusAr[order.status] || order.status,
-      total: order.totalAmount,
-      currency: order.currency,
-      shipping_info: order.shippingInfo || null,
-      items_count: order.items?.length || 0,
+  /**
+   * ✅ سياق الحالة — يساعد GPT يرد بشكل طبيعي ومفيد
+   */
+  private getStatusContext(status: string): string {
+    const contexts: Record<string, string> = {
+      created: 'الطلب تم استلامه وسيتم معالجته قريباً',
+      processing: 'الطلب قيد التجهيز والتحضير',
+      under_review: 'الطلب قيد المراجعة من الفريق',
+      pending_payment: 'الطلب ينتظر إتمام عملية الدفع',
+      paid: 'تم الدفع بنجاح والطلب سيتم تجهيزه',
+      ready_to_ship: 'الطلب جاهز وسيتم تسليمه لشركة الشحن',
+      shipped: 'الطلب في الطريق مع شركة الشحن وسيصل قريباً',
+      in_transit: 'الطلب في الطريق إليك',
+      delivered: 'الطلب تم توصيله بنجاح',
+      completed: 'الطلب مكتمل وتم إنهاؤه',
+      cancelled: 'الطلب تم إلغاؤه',
+      refunded: 'تم استرداد المبلغ',
+      restoring: 'جاري معالجة طلب الاسترجاع',
+      failed: 'حدثت مشكلة في الطلب',
+      on_hold: 'الطلب معلّق مؤقتاً',
     };
+    return contexts[status] || 'حالة الطلب: ' + status;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
