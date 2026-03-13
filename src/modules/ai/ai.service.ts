@@ -87,6 +87,7 @@ export interface AISettings {
   workingHours: string;
   returnPolicy: string;
   shippingInfo: string;
+  cancellationPolicy: string;
 
   // Custom Messages
   welcomeMessage: string;
@@ -307,6 +308,7 @@ const AI_DEFAULTS: AISettings = {
   workingHours: '',
   returnPolicy: '',
   shippingInfo: '',
+  cancellationPolicy: '',
   welcomeMessage: 'أهلاً وسهلاً! كيف يمكنني مساعدتك؟ 😊',
   fallbackMessage: 'عذراً، لم أتمكن من فهم طلبك. هل ترغب بتحويلك لأحد موظفينا؟',
   handoffMessage: 'سأحولك الآن لأحد أفراد فريقنا. سيتواصل معك قريباً! 🙋‍♂️',
@@ -1702,9 +1704,11 @@ export class AIService {
       prompt += `\n[${isAr ? 'أوقات العمل' : 'Hours'}]: ${hoursText}`;
     }
     if (settings.returnPolicy)
-      prompt += `\n[${isAr ? 'سياسة الإرجاع' : 'Returns'}]: ${settings.returnPolicy}`;
+      prompt += `\n[${isAr ? 'سياسة الإرجاع والاستبدال' : 'Returns & Exchange'}]: ${settings.returnPolicy}`;
     if (settings.shippingInfo)
       prompt += `\n[${isAr ? 'الشحن' : 'Shipping'}]: ${settings.shippingInfo}`;
+    if (settings.cancellationPolicy)
+      prompt += `\n[${isAr ? 'سياسة الإلغاء والتعديل' : 'Cancellation & Modification'}]: ${settings.cancellationPolicy}`;
 
     // ✅ RAG: المقاطع المسترجعة — في نفس القسم
     if (retrievedChunks.length > 0) {
@@ -1727,28 +1731,40 @@ export class AIService {
     prompt += isAr
       ? `\n\n=== قواعد صارمة (إلزامية) ===
 1. أجب من المعلومات المتوفرة أعلاه. لا تختلق أو تفترض أي معلومة.
-2. ✅ معلومات المتجر (النبذة التعريفية، وصف المتجر، الشحن، الإرجاع، أوقات العمل) هي مصادر إجابة صالحة. إذا سأل العميل عن المتجر أو خدماته أو اسمه أو نشاطه، أجب من هذه المعلومات مباشرة.
-3. إذا لم تجد الإجابة في أي من المعلومات المتوفرة أعلاه (لا في معلومات المتجر ولا في المكتبة)، أجب حرفياً بهذا النص فقط:
+2. ✅ معلومات المتجر (النبذة التعريفية، وصف المتجر، الشحن، الإرجاع، الإلغاء، أوقات العمل) هي مصادر إجابة صالحة. إذا سأل العميل عن المتجر أو خدماته أو اسمه أو نشاطه، أجب من هذه المعلومات مباشرة.
+3. ✅ افهم المعنى وليس الكلمة الحرفية. العميل قد يستخدم مرادفات أو لهجات مختلفة:
+   - "استرجاع/استرداد/أبي أرجع/ارجاع/استبدال" = سياسة الإرجاع والاستبدال
+   - "إلغاء/ألغي/أبي ألغي/تعديل الطلب/غيّر الطلب" = سياسة الإلغاء والتعديل
+   - "توصيل/شحن/متى يوصل/كم مدة التوصيل" = معلومات الشحن
+   - "وش تبيعون/خدماتكم/وش تقدمون" = وصف المتجر والنبذة التعريفية
+   إذا سؤال العميل يتعلق بأي معلومة متوفرة (حتى بصياغة مختلفة) → أجب منها.
+4. إذا لم تجد الإجابة في أي من المعلومات المتوفرة أعلاه (لا في معلومات المتجر ولا في المكتبة)، أجب حرفياً بهذا النص فقط:
 "${NO_MATCH_MESSAGE}"
-4. لا تذكر أسعاراً أو منتجات أو تفاصيل غير موجودة في المعلومات المتوفرة.
-5. لا تستخدم معرفتك العامة أبداً. لا تقدم نصائح طبية أو صحية أو ثقافية.
-6. لا تشرح منتجات غير مذكورة أعلاه حتى لو عرفتها.
-7. إذا طلب العميل شخصاً بشرياً، استخدم أداة request_human_agent.
-8. عند استعلام الطلب: استخدم أداة get_order_status ثم اشرح الحالة بأسلوبك الطبيعي. لا تعرض البيانات الخام — اكتب رد مفيد يوضح للعميل وضع طلبه.
-9. إذا ذكر العميل طلبه بدون رقم (مثل: "طلبي تأخر"، "وين طلبي"، "متى يوصل طلبي") → اطلب منه رقم الطلب أولاً قبل البحث.
-10. كن موجزاً ومفيداً. لا تتوسع خارج المعلومات المقدمة.`
+5. لا تذكر أسعاراً أو منتجات أو تفاصيل غير موجودة في المعلومات المتوفرة.
+6. لا تستخدم معرفتك العامة أبداً. لا تقدم نصائح طبية أو صحية أو ثقافية.
+7. لا تشرح منتجات غير مذكورة أعلاه حتى لو عرفتها.
+8. إذا طلب العميل شخصاً بشرياً، استخدم أداة request_human_agent.
+9. عند استعلام الطلب: استخدم أداة get_order_status ثم اشرح الحالة بأسلوبك الطبيعي. إذا كان الطلب رقمي ووجدت digital_content → أرسل الأكواد للعميل. إذا وجدت digital_note → اتبع التعليمات فيها بالضبط.
+10. إذا ذكر العميل طلبه بدون رقم (مثل: "طلبي تأخر"، "وين طلبي"، "متى يوصل طلبي") → اطلب منه رقم الطلب أولاً قبل البحث.
+11. كن موجزاً ومفيداً. لا تتوسع خارج المعلومات المقدمة.`
       : `\n\n=== Strict Rules (mandatory) ===
 1. Answer from the information provided above. Never make up or assume any information.
-2. ✅ Store information (introduction, description, shipping, returns, hours) ARE valid answer sources. If the customer asks about the store, its services, or its name, answer from this information directly.
-3. If the answer is NOT in ANY of the provided information (neither store info nor knowledge base), respond EXACTLY with:
+2. ✅ Store information (introduction, description, shipping, returns, cancellation, hours) ARE valid answer sources. If the customer asks about the store, its services, or its name, answer from this information directly.
+3. ✅ Understand meaning, not exact words. Customers may use synonyms or dialects:
+   - "refund/return/exchange" = return & exchange policy
+   - "cancel/modify order/change order" = cancellation & modification policy
+   - "delivery/shipping/when will it arrive" = shipping info
+   - "what do you sell/your services" = store description
+   If the question relates to any available information (even with different wording) → answer from it.
+4. If the answer is NOT in ANY of the provided information (neither store info nor knowledge base), respond EXACTLY with:
 "${NO_MATCH_MESSAGE}"
-4. Do NOT mention prices, products, or details not in the provided information.
-5. NEVER use general knowledge. No medical, health, or cultural advice.
-6. Do NOT explain products not listed above, even if you know about them.
-7. If customer asks for a human, use request_human_agent tool.
-8. For order queries: use get_order_status tool then explain the status naturally. Don't show raw data — write a helpful response about the order status.
-9. If customer mentions their order without a number (e.g., "my order is late", "where is my order") → ask for the order number first before searching.
-10. Be concise and helpful. Do not expand beyond provided information.`;
+5. Do NOT mention prices, products, or details not in the provided information.
+6. NEVER use general knowledge. No medical, health, or cultural advice.
+7. Do NOT explain products not listed above, even if you know about them.
+8. If customer asks for a human, use request_human_agent tool.
+9. For order queries: use get_order_status tool then explain the status naturally. If the order is digital and has digital_content → send the codes to the customer. If there's a digital_note → follow its instructions exactly.
+10. If customer mentions their order without a number (e.g., "my order is late", "where is my order") → ask for the order number first before searching.
+11. Be concise and helpful. Do not expand beyond provided information.`;
 
     return prompt;
   }
@@ -2286,6 +2302,12 @@ Types:
       return true;
     }
 
+    // ✅ رقم صرف طويل (6+ أرقام) — على الأغلب رقم طلب
+    const isPureOrderNumber = /^\d{6,}$/.test(lower.trim());
+    if (isPureOrderNumber) {
+      return true;
+    }
+
     return false;
   }
 
@@ -2299,13 +2321,13 @@ Types:
         type: 'function',
         function: {
           name: 'get_order_status',
-          description: 'البحث عن حالة طلب بالرقم. يُرجع بيانات الطلب مع status_context الذي يشرح الحالة. استخدم status_context لتكوين رد طبيعي ومفيد للعميل بأسلوبك. لا تكرر البيانات الخام — اشرح الحالة بشكل ودي.',
+          description: 'البحث عن حالة طلب بالرقم. يُرجع بيانات الطلب مع status_context. للطلبات الرقمية المكتملة: إذا وُجد digital_content أرسل الأكواد للعميل. إذا وُجد digital_note اتبع تعليماته.',
           parameters: {
             type: 'object',
             properties: {
               order_id: {
                 type: 'string',
-                description: 'رقم الطلب الذي أرسله العميل',
+                description: 'Order ID or reference',
               },
             },
             required: ['order_id'],
@@ -2364,11 +2386,12 @@ Types:
       try {
         switch (tc.function.name) {
           case 'get_order_status':
-            // ✅ BUG-16 FIX: نمرر storeId أيضاً
+            // ✅ نمرر storeId + customerPhone للتحقق من المحتوى الرقمي
             result = await this.toolGetOrderStatus(
               context.tenantId,
               args.order_id as string,
               context.storeId,
+              context.customerPhone,
             );
             break;
 
@@ -2408,8 +2431,9 @@ Types:
     tenantId: string,
     orderId: string,
     storeId?: string,
+    customerPhone?: string,
   ): Promise<unknown> {
-    // ─── 1. البحث في الداتابيس المحلية أولاً ───
+    // ─── 1. البحث في DB المحلي ───
     const whereConditions: Record<string, unknown>[] = [
       { tenantId, sallaOrderId: orderId },
       { tenantId, referenceId: orderId },
@@ -2423,14 +2447,13 @@ Types:
     }
 
     const localOrder = await this.orderRepo.findOne({ where: whereConditions });
-
     if (localOrder) {
       return this.formatOrderResponse(localOrder);
     }
 
-    // ─── 2. لم يُوجد محلياً → نبحث في API سلة/زد مباشرة ───
+    // ─── 2. البحث في API سلة/زد ───
     if (!storeId) {
-      return { found: false, message: 'لم يتم العثور على طلب بهذا الرقم. يرجى التأكد من صحة الرقم.' };
+      return { found: false, message: 'لم يتم العثور على طلب بهذا الرقم. يرجى التأكد من الرقم.' };
     }
 
     try {
@@ -2451,94 +2474,16 @@ Types:
       }
 
       if (store.platform === 'salla') {
-        try {
-          // ✅ بحث بالرقم المرجعي (reference_id) — الرقم المرئي للعميل
-          let sallaOrder = await this.sallaApiService.searchOrderByReference(accessToken, orderId);
-
-          // ✅ إذا ما لقينا → جرّب بالـ ID المباشر
-          if (!sallaOrder) {
-            const orderNum = parseInt(orderId, 10);
-            if (!isNaN(orderNum)) {
-              try {
-                const directResponse = await this.sallaApiService.getOrder(accessToken, orderNum);
-                if (directResponse?.data) sallaOrder = directResponse.data;
-              } catch { /* 404 — الرقم مش ID داخلي */ }
-            }
-          }
-
-          if (!sallaOrder) {
-            return { found: false, message: 'لم يتم العثور على طلب بهذا الرقم. يرجى التأكد من الرقم.' };
-          }
-
-          const statusSlug = sallaOrder.status?.slug || sallaOrder.status?.name || 'unknown';
-          const statusName = sallaOrder.status?.name || sallaOrder.status?.customized?.name || statusSlug;
-
-          return {
-            found: true,
-            order_id: String(sallaOrder.reference_id || sallaOrder.id),
-            reference_id: sallaOrder.reference_id,
-            status: statusSlug,
-            status_ar: statusName,
-            status_context: this.getStatusContext(statusSlug),
-            total: sallaOrder.amounts?.total?.amount,
-            currency: sallaOrder.amounts?.total?.currency || 'SAR',
-            payment_status: sallaOrder.payment?.status,
-            payment_method: sallaOrder.payment?.method?.name,
-            items_count: sallaOrder.items?.length || 0,
-            shipping_company: sallaOrder.shipping?.company?.name || null,
-            order_date: sallaOrder.date?.date || null,
-            source: 'salla_api',
-          };
-        } catch (sallaError) {
-          this.logger.warn(`⚠️ Salla order lookup failed for ${orderId}`, {
-            error: sallaError instanceof Error ? sallaError.message : 'Unknown',
-          });
-          return { found: false, message: 'حدث خطأ أثناء البحث عن الطلب. يرجى المحاولة لاحقاً أو التواصل مع الدعم.' };
-        }
+        return this.lookupSallaOrder(accessToken, orderId, customerPhone);
       }
 
       if (store.platform === 'zid') {
-        const orderNum = parseInt(orderId, 10);
-        if (isNaN(orderNum)) {
-          return { found: false, message: 'رقم الطلب غير صالح.' };
-        }
-
-        try {
-          const zidTokens: ZidAuthTokens = { managerToken: accessToken };
-          const zidOrder = await this.zidApiService.getOrder(zidTokens, orderNum);
-
-          if (!zidOrder) {
-            return { found: false, message: 'لم يتم العثور على طلب بهذا الرقم في المتجر.' };
-          }
-
-          return {
-            found: true,
-            order_id: String(zidOrder.id),
-            reference_id: zidOrder.order_number,
-            status: zidOrder.status,
-            status_ar: this.getStatusArabic(zidOrder.status),
-            status_context: this.getStatusContext(zidOrder.status),
-            total: zidOrder.total,
-            currency: zidOrder.currency || 'SAR',
-            payment_status: zidOrder.payment_status,
-            payment_method: zidOrder.payment_method,
-            items_count: zidOrder.items?.length || 0,
-            order_date: zidOrder.created_at || null,
-            source: 'zid_api',
-          };
-        } catch (zidError) {
-          this.logger.warn(`⚠️ Zid order lookup failed for ${orderId}`, {
-            error: zidError instanceof Error ? zidError.message : 'Unknown',
-          });
-          return { found: false, message: 'لم يتم العثور على طلب بهذا الرقم.' };
-        }
+        return this.lookupZidOrder(accessToken, orderId);
       }
 
-      // منصات أخرى — fallback
       return { found: false, message: 'لم يتم العثور على طلب بهذا الرقم.' };
-
     } catch (error) {
-      this.logger.warn(`⚠️ Order lookup via API failed for ${orderId}`, {
+      this.logger.warn(`⚠️ Order lookup failed for ${orderId}`, {
         error: error instanceof Error ? error.message : 'Unknown',
       });
       return { found: false, message: 'حدث خطأ أثناء البحث عن الطلب. يرجى المحاولة لاحقاً.' };
@@ -2546,17 +2491,227 @@ Types:
   }
 
   /**
-   * ✅ تنسيق بيانات الطلب المحلي للـ GPT
+   * ✅ بحث في سلة API مع دعم المحتوى الرقمي
+   */
+  private async lookupSallaOrder(accessToken: string, orderId: string, customerPhone?: string): Promise<unknown> {
+    try {
+      // بحث بالرقم المرجعي أولاً
+      let sallaOrder = await this.sallaApiService.searchOrderByReference(accessToken, orderId);
+
+      // fallback: بحث بالـ ID المباشر
+      if (!sallaOrder) {
+        const orderNum = parseInt(orderId, 10);
+        if (!isNaN(orderNum)) {
+          try {
+            const directResponse = await this.sallaApiService.getOrder(accessToken, orderNum);
+            if (directResponse?.data) sallaOrder = directResponse.data;
+          } catch { /* 404 */ }
+        }
+      }
+
+      if (!sallaOrder) {
+        return { found: false, message: 'لم يتم العثور على طلب بهذا الرقم. يرجى التأكد من الرقم.' };
+      }
+
+      const statusSlug = sallaOrder.status?.slug || sallaOrder.status?.name || 'unknown';
+      const statusName = sallaOrder.status?.name || sallaOrder.status?.customized?.name || statusSlug;
+
+      // ✅ كشف المنتج الرقمي
+      const isDigital = this.isDigitalOrder(sallaOrder);
+      const isCompleted = ['completed', 'delivered', 'in_progress'].includes(statusSlug);
+
+      // ✅ تحقق من رقم الجوال للمحتوى الرقمي
+      let digitalContent: unknown = null;
+      let phoneVerified = false;
+      let phoneHint = '';
+
+      if (isDigital && isCompleted && customerPhone) {
+        const orderPhone = this.normalizePhone(
+          (sallaOrder.customer?.mobile_code || '') + (sallaOrder.customer?.mobile || ''),
+        );
+        const whatsappPhone = this.normalizePhone(customerPhone);
+
+        phoneVerified = orderPhone === whatsappPhone;
+
+        if (phoneVerified) {
+          // ✅ نفس الرقم → نرسل المحتوى الرقمي
+          digitalContent = await this.fetchDigitalContent(accessToken, sallaOrder);
+        } else {
+          // ❌ رقم مختلف → نعطيه تلميح
+          const last4 = orderPhone.slice(-4);
+          phoneHint = last4;
+        }
+      }
+
+      const result: Record<string, unknown> = {
+        found: true,
+        order_id: String(sallaOrder.reference_id || sallaOrder.id),
+        reference_id: sallaOrder.reference_id,
+        status: statusSlug,
+        status_ar: statusName,
+        status_context: this.getStatusContext(statusSlug),
+        total: sallaOrder.amounts?.total?.amount,
+        currency: sallaOrder.amounts?.total?.currency || 'SAR',
+        payment_status: sallaOrder.payment?.status,
+        payment_method: sallaOrder.payment?.method?.name,
+        items_count: sallaOrder.items?.length || 0,
+        items: sallaOrder.items?.map((i: any) => i.name).join(', ') || '',
+        shipping_company: sallaOrder.shipping?.company?.name || null,
+        order_date: sallaOrder.date?.date || null,
+        is_digital: isDigital,
+        source: 'salla_api',
+      };
+
+      if (isDigital && isCompleted) {
+        if (phoneVerified && digitalContent) {
+          result.digital_content = digitalContent;
+          result.phone_verified = true;
+          result.digital_note = 'تم التحقق من هوية العميل. المحتوى الرقمي مرفق أدناه — أرسله للعميل.';
+        } else if (!phoneVerified && phoneHint) {
+          result.phone_verified = false;
+          result.phone_hint = phoneHint;
+          result.digital_note = `الطلب رقمي ومكتمل، لكن رقم الواتساب الحالي مختلف عن الرقم المسجّل في الطلب. اطلب من العميل التواصل من الرقم اللي آخره ${phoneHint} أو حوّله للدعم البشري.`;
+        }
+      }
+
+      return result;
+    } catch (sallaError) {
+      this.logger.warn(`⚠️ Salla order lookup failed for ${orderId}`, {
+        error: sallaError instanceof Error ? sallaError.message : 'Unknown',
+      });
+      return { found: false, message: 'حدث خطأ أثناء البحث عن الطلب.' };
+    }
+  }
+
+  /**
+   * ✅ بحث في زد API
+   */
+  private async lookupZidOrder(accessToken: string, orderId: string): Promise<unknown> {
+    const orderNum = parseInt(orderId, 10);
+    if (isNaN(orderNum)) {
+      return { found: false, message: 'رقم الطلب غير صالح.' };
+    }
+
+    try {
+      const zidTokens: ZidAuthTokens = { managerToken: accessToken };
+      const zidOrder = await this.zidApiService.getOrder(zidTokens, orderNum);
+
+      if (!zidOrder) {
+        return { found: false, message: 'لم يتم العثور على طلب بهذا الرقم.' };
+      }
+
+      return {
+        found: true,
+        order_id: String(zidOrder.id),
+        reference_id: zidOrder.order_number,
+        status: zidOrder.status,
+        status_ar: this.getStatusArabic(zidOrder.status),
+        status_context: this.getStatusContext(zidOrder.status),
+        total: zidOrder.total,
+        currency: zidOrder.currency || 'SAR',
+        payment_status: zidOrder.payment_status,
+        payment_method: zidOrder.payment_method,
+        items_count: zidOrder.items?.length || 0,
+        order_date: zidOrder.created_at || null,
+        source: 'zid_api',
+      };
+    } catch (zidError) {
+      this.logger.warn(`⚠️ Zid order lookup failed for ${orderId}`, {
+        error: zidError instanceof Error ? zidError.message : 'Unknown',
+      });
+      return { found: false, message: 'لم يتم العثور على طلب بهذا الرقم.' };
+    }
+  }
+
+  /**
+   * ✅ كشف المنتج الرقمي — لا يحتاج شحن
+   */
+  private isDigitalOrder(order: any): boolean {
+    // لا يوجد شحن
+    if (!order.shipping?.company && !order.shipping?.address) {
+      return true;
+    }
+    // طريقة الشحن رقمية
+    const shippingMethod = order.shipping?.method?.toLowerCase?.() || '';
+    if (shippingMethod.includes('digital') || shippingMethod.includes('رقمي')) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * ✅ تطبيع رقم الجوال — استخراج آخر 9 أرقام (الرقم المحلي)
+   * يتعامل مع كل الصيغ: +971561667877, 0561667877, 971561667877, etc.
+   */
+  private normalizePhone(phone: string): string {
+    // إزالة كل شي غير الأرقام
+    const digits = phone.replace(/\D/g, '');
+    // آخر 9 أرقام = الرقم المحلي بدون كود الدولة أو الصفر
+    if (digits.length >= 9) {
+      return digits.slice(-9);
+    }
+    return digits;
+  }
+
+  /**
+   * ✅ جلب المحتوى الرقمي — أكواد البطاقات من سلة
+   */
+  private async fetchDigitalContent(accessToken: string, order: any): Promise<unknown> {
+    try {
+      // محاولة جلب الأكواد من تفاصيل الطلب
+      const orderId = order.id;
+      const response = await this.sallaApiService.getOrder(accessToken, orderId);
+      const fullOrder = response?.data;
+
+      if (!fullOrder) return null;
+
+      // البحث عن أكواد رقمية في بيانات الطلب
+      const codes: Array<{ product: string; code: string }> = [];
+
+      // الأكواد قد تكون في items.codes أو items.digital أو metadata
+      for (const item of (fullOrder.items || [])) {
+        const itemAny = item as any;
+        if (itemAny.codes?.length) {
+          for (const code of itemAny.codes) {
+            codes.push({ product: item.name, code: String(code.code || code) });
+          }
+        } else if (itemAny.digital?.code) {
+          codes.push({ product: item.name, code: itemAny.digital.code });
+        } else if (itemAny.options?.length) {
+          // بعض المنصات تضع الكود في options
+          const codeOption = itemAny.options.find((o: any) =>
+            o.name?.includes('كود') || o.name?.includes('code') || o.name?.includes('رمز'),
+          );
+          if (codeOption) {
+            codes.push({ product: item.name, code: codeOption.value });
+          }
+        }
+      }
+
+      if (codes.length > 0) {
+        return { type: 'digital_codes', codes };
+      }
+
+      // لم نجد أكواد → ربما تم إرسالها بالإيميل
+      return {
+        type: 'no_codes_found',
+        message: 'المنتج الرقمي تم تنفيذه لكن الأكواد غير متاحة عبر البوت. تم إرسالها للإيميل المسجّل أو يمكن الحصول عليها من صفحة الطلب في المتجر.',
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * ✅ تنسيق بيانات الطلب المحلي
    */
   private formatOrderResponse(order: any): unknown {
-    const statusContext = this.getStatusContext(order.status);
-
     return {
       found: true,
       order_id: order.sallaOrderId || order.zidOrderId || order.referenceId,
       status: order.status,
       status_ar: this.getStatusArabic(order.status),
-      status_context: statusContext,
+      status_context: this.getStatusContext(order.status),
       total: order.totalAmount,
       currency: order.currency,
       payment_status: order.paymentStatus,
@@ -2569,33 +2724,18 @@ Types:
     };
   }
 
-  /**
-   * ✅ ترجمة حالة الطلب للعربية
-   */
   private getStatusArabic(status: string): string {
     const map: Record<string, string> = {
-      created: 'تم الإنشاء',
-      processing: 'قيد التجهيز',
-      under_review: 'قيد المراجعة',
-      pending_payment: 'بانتظار الدفع',
-      paid: 'تم الدفع',
-      ready_to_ship: 'جاهز للشحن',
-      shipped: 'تم الشحن',
-      delivered: 'تم التوصيل',
-      completed: 'مكتمل',
-      cancelled: 'ملغي',
-      refunded: 'مسترد',
-      restoring: 'قيد الاسترجاع',
-      failed: 'فشل',
-      on_hold: 'معلّق',
-      in_transit: 'في الطريق',
+      created: 'تم الإنشاء', processing: 'قيد التجهيز', under_review: 'قيد المراجعة',
+      pending_payment: 'بانتظار الدفع', paid: 'تم الدفع', ready_to_ship: 'جاهز للشحن',
+      shipped: 'تم الشحن', delivered: 'تم التوصيل', completed: 'مكتمل',
+      cancelled: 'ملغي', refunded: 'مسترد', restoring: 'قيد الاسترجاع',
+      failed: 'فشل', on_hold: 'معلّق', in_transit: 'في الطريق',
+      in_progress: 'قيد التنفيذ',
     };
     return map[status] || status;
   }
 
-  /**
-   * ✅ سياق الحالة — يساعد GPT يرد بشكل طبيعي ومفيد
-   */
   private getStatusContext(status: string): string {
     const contexts: Record<string, string> = {
       created: 'الطلب تم استلامه وسيتم معالجته قريباً',
@@ -2613,6 +2753,7 @@ Types:
       restoring: 'جاري معالجة طلب الاسترجاع',
       failed: 'حدثت مشكلة في الطلب',
       on_hold: 'الطلب معلّق مؤقتاً',
+      in_progress: 'جاري تنفيذ الطلب',
     };
     return contexts[status] || 'حالة الطلب: ' + status;
   }
@@ -3347,6 +3488,7 @@ Types:
     store_description: string;
     shipping_info: string;
     return_policy: string;
+    cancellation_policy: string;
     working_hours: string;
   }> {
     if (!this.isApiKeyConfigured) {
@@ -3360,21 +3502,22 @@ You must generate the following fields in Arabic:
 1. store_intro - نبذة تعريفية (2 sentences)
 2. store_description - وصف المتجر (3-4 sentences)
 3. shipping_info - معلومات الشحن
-4. return_policy - سياسة الإرجاع
-5. working_hours - أوقات العمل (if applicable, otherwise empty)
+4. return_policy - سياسة الإرجاع والاستبدال
+5. cancellation_policy - سياسة الإلغاء والتعديل
+6. working_hours - أوقات العمل (if applicable, otherwise empty)
 
 Rules:
 - Detect the store business type automatically.
-- If the store sells FOOD → returns should be restricted.
-- If the store sells DIGITAL PRODUCTS → mention instant delivery and limited refunds.
-- If the store sells SERVICES → mention consultation and delivery timeline.
-- If the store sells PHYSICAL PRODUCTS → include shipping and return window.
+- If the store sells FOOD → returns should be restricted, cancellation before preparation only.
+- If the store sells DIGITAL PRODUCTS → mention instant delivery, limited refunds, no cancellation after delivery.
+- If the store sells SERVICES → mention consultation timeline, cancellation with advance notice.
+- If the store sells PHYSICAL PRODUCTS → include shipping window, return window, cancellation before shipping.
 - Write in professional Arabic suitable for customers.
 - Content must sound natural and trustworthy.
 - Do NOT invent unrealistic claims.
 - Do NOT make the text too long.
 
-Output ONLY valid JSON with these exact keys: store_intro, store_description, shipping_info, return_policy, working_hours. No markdown, no backticks.`;
+Output ONLY valid JSON with these exact keys: store_intro, store_description, shipping_info, return_policy, cancellation_policy, working_hours. No markdown, no backticks.`;
 
     const completion = await this.openai.chat.completions.create({
       model: 'gpt-4o-mini',
@@ -3399,6 +3542,7 @@ Output ONLY valid JSON with these exact keys: store_intro, store_description, sh
         store_description: '',
         shipping_info: '',
         return_policy: '',
+        cancellation_policy: '',
         working_hours: '',
       };
     }
