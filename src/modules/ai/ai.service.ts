@@ -1320,7 +1320,64 @@ export class AIService {
     context: ConversationContext,
     settings: AISettings,
   ): Promise<AIResponse> {
-    // ✅ Smart Retrieve: نجلب مقالات المكتبة + أداة البحث عن الطلب
+    const lower = message.trim().toLowerCase();
+
+    // ✅ كشف: هل في رقم طلب في الرسالة؟
+    const hasNumber = /\d{4,}/.test(lower);
+
+    if (!hasNumber) {
+      // ✅ ما في رقم طلب → اطلب الرقم مباشرة (بدون GPT ولا Smart RAG)
+      const tone = settings.tone || 'friendly';
+      const isAr = settings.language !== 'en';
+
+      const askForNumberMessages: Record<string, Record<string, string[]>> = {
+        formal: {
+          ar: [
+            'لمساعدتك في متابعة طلبك، يرجى تزويدنا برقم الطلب.',
+            'نحتاج رقم الطلب حتى نتمكن من التحقق من حالته. يمكنك إيجاده في صفحة طلباتك.',
+          ],
+          en: [
+            'To assist you with your order, please provide your order number.',
+            'We need the order number to check its status. You can find it in your orders page.',
+          ],
+        },
+        friendly: {
+          ar: [
+            'أقدر أساعدك! بس أحتاج رقم الطلب عشان أشيّك لك على حالته 📦',
+            'تمام! عطني رقم الطلب وأشوف لك وش صار فيه 😊',
+            'حياك! ممكن تعطيني رقم الطلب عشان أقدر أتابعه لك؟',
+          ],
+          en: [
+            'I can help! Just give me the order number so I can check it for you 📦',
+            'Sure! What\'s your order number? I\'ll look it up right away 😊',
+          ],
+        },
+        professional: {
+          ar: [
+            'لأستطيع مساعدتك، يمكنك إعطائي رقم الطلب؟',
+            'أحتاج رقم الطلب للتحقق من حالته. تجده في صفحة طلباتك.',
+          ],
+          en: [
+            'Could you provide the order number so I can check its status?',
+            'I need the order number to look it up. You can find it in your orders page.',
+          ],
+        },
+      };
+
+      const msgs = askForNumberMessages[tone]?.[isAr ? 'ar' : 'en'] || askForNumberMessages.friendly[isAr ? 'ar' : 'en'];
+      const reply = msgs[Math.floor(Math.random() * msgs.length)];
+
+      this.logger.log(`📦 ORDER_QUERY without number: "${message}" → asking for order number`);
+
+      return {
+        reply,
+        confidence: 0.9,
+        intent: 'ORDER_QUERY',
+        shouldHandoff: false,
+      };
+    }
+
+    // ✅ في رقم طلب → نتابع مع GPT + أدوات
     const knowledgeChunks = await this.smartRetrieve(message, context, settings);
     const systemPrompt = this.buildStrictSystemPrompt(settings, context, knowledgeChunks);
 
