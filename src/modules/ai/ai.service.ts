@@ -1173,7 +1173,7 @@ export class AIService {
 
     // زيادة العداد
     await this.incrementFailedAttempts(context);
-    const currentAttempts = (context.failedAttempts || 0) + 1;
+    const currentAttempts = context.failedAttempts || 1;
 
     this.logger.log(`📊 Failed attempts: ${currentAttempts}/${maxAttempts} for conversation ${context.conversationId} (intent: ${intentType})`);
 
@@ -2761,9 +2761,10 @@ Types:
       const current = (aiContext.failedAttempts as number) || 0;
       conv.aiContext = { ...aiContext, failedAttempts: current + 1 };
       await this.conversationRepo.save(conv);
+      context.failedAttempts = current + 1; // ✅ sync context
 
-      this.logger.debug(
-        `Failed attempts → ${current + 1} for conversation ${context.conversationId}`,
+      this.logger.log(
+        `📊 Failed attempts: ${current} → ${current + 1} for conversation ${context.conversationId}`,
       );
     } catch (error) {
       this.logger.error('Failed to increment failed attempts', {
@@ -2779,17 +2780,22 @@ Types:
     context: ConversationContext,
   ): Promise<void> {
     try {
-      if (context.failedAttempts === 0) return;
-
+      // ✅ تحقق من DB مباشرة (لا نعتمد على context القديم)
       const conv = await this.conversationRepo.findOne({
         where: { id: context.conversationId },
       });
       if (!conv) return;
 
       const aiContext = (conv.aiContext || {}) as Record<string, unknown>;
-      if ((aiContext.failedAttempts as number) > 0) {
+      const dbAttempts = (aiContext.failedAttempts as number) || 0;
+
+      if (dbAttempts > 0) {
         conv.aiContext = { ...aiContext, failedAttempts: 0 };
         await this.conversationRepo.save(conv);
+        context.failedAttempts = 0; // ✅ sync context
+        this.logger.log(
+          `🔄 Reset failed attempts: ${dbAttempts} → 0 for conversation ${context.conversationId}`,
+        );
       }
     } catch (error) {
       this.logger.error('Failed to reset failed attempts', {
