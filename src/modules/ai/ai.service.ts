@@ -2451,37 +2451,50 @@ Types:
       }
 
       if (store.platform === 'salla') {
-        const orderNum = parseInt(orderId, 10);
-        if (isNaN(orderNum)) {
-          return { found: false, message: 'رقم الطلب غير صالح.' };
+        try {
+          // ✅ بحث بالرقم المرجعي (reference_id) — الرقم المرئي للعميل
+          let sallaOrder = await this.sallaApiService.searchOrderByReference(accessToken, orderId);
+
+          // ✅ إذا ما لقينا → جرّب بالـ ID المباشر
+          if (!sallaOrder) {
+            const orderNum = parseInt(orderId, 10);
+            if (!isNaN(orderNum)) {
+              try {
+                const directResponse = await this.sallaApiService.getOrder(accessToken, orderNum);
+                if (directResponse?.data) sallaOrder = directResponse.data;
+              } catch { /* 404 — الرقم مش ID داخلي */ }
+            }
+          }
+
+          if (!sallaOrder) {
+            return { found: false, message: 'لم يتم العثور على طلب بهذا الرقم. يرجى التأكد من الرقم.' };
+          }
+
+          const statusSlug = sallaOrder.status?.slug || sallaOrder.status?.name || 'unknown';
+          const statusName = sallaOrder.status?.name || sallaOrder.status?.customized?.name || statusSlug;
+
+          return {
+            found: true,
+            order_id: String(sallaOrder.reference_id || sallaOrder.id),
+            reference_id: sallaOrder.reference_id,
+            status: statusSlug,
+            status_ar: statusName,
+            status_context: this.getStatusContext(statusSlug),
+            total: sallaOrder.amounts?.total?.amount,
+            currency: sallaOrder.amounts?.total?.currency || 'SAR',
+            payment_status: sallaOrder.payment?.status,
+            payment_method: sallaOrder.payment?.method?.name,
+            items_count: sallaOrder.items?.length || 0,
+            shipping_company: sallaOrder.shipping?.company?.name || null,
+            order_date: sallaOrder.date?.date || null,
+            source: 'salla_api',
+          };
+        } catch (sallaError) {
+          this.logger.warn(`⚠️ Salla order lookup failed for ${orderId}`, {
+            error: sallaError instanceof Error ? sallaError.message : 'Unknown',
+          });
+          return { found: false, message: 'حدث خطأ أثناء البحث عن الطلب. يرجى المحاولة لاحقاً أو التواصل مع الدعم.' };
         }
-
-        const response = await this.sallaApiService.getOrder(accessToken, orderNum);
-        const sallaOrder = response?.data;
-
-        if (!sallaOrder) {
-          return { found: false, message: 'لم يتم العثور على طلب بهذا الرقم في المتجر.' };
-        }
-
-        const statusSlug = sallaOrder.status?.slug || 'unknown';
-        const statusName = sallaOrder.status?.name || sallaOrder.status?.customized?.name || statusSlug;
-
-        return {
-          found: true,
-          order_id: String(sallaOrder.id),
-          reference_id: sallaOrder.reference_id,
-          status: statusSlug,
-          status_ar: statusName,
-          status_context: this.getStatusContext(statusSlug),
-          total: sallaOrder.amounts?.total?.amount,
-          currency: sallaOrder.amounts?.total?.currency || 'SAR',
-          payment_status: sallaOrder.payment?.status,
-          payment_method: sallaOrder.payment?.method?.name,
-          items_count: sallaOrder.items?.length || 0,
-          shipping_company: sallaOrder.shipping?.company?.name || null,
-          order_date: sallaOrder.date?.date || null,
-          source: 'salla_api',
-        };
       }
 
       if (store.platform === 'zid') {
