@@ -22,6 +22,8 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
+  Delete,
   Body,
   Param,
   Query,
@@ -116,6 +118,35 @@ export class CampaignsController {
     @Param('id') id: string) {
     const tenantId = user.tenantId;
     return this.campaignsService.findById(id, tenantId);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // PATCH /campaigns/:id - تحديث حملة
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Patch(':id')
+  @ApiOperation({
+    summary: 'تحديث حملة',
+    description: 'تعديل بيانات حملة (مسودة أو مجدولة)',
+  })
+  async update(@CurrentUser() user: any,
+    @Param('id') id: string,
+    @Body() dto: Partial<CreateCampaignDto>) {
+    return this.campaignsService.update(id, user.tenantId, dto);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // DELETE /campaigns/:id - حذف حملة
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Delete(':id')
+  @ApiOperation({
+    summary: 'حذف حملة',
+    description: 'حذف حملة (مسودة فقط أو ملغاة)',
+  })
+  async remove(@CurrentUser() user: any,
+    @Param('id') id: string) {
+    return this.campaignsService.remove(id, user.tenantId);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
