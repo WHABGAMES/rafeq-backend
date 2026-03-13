@@ -152,6 +152,9 @@ class UpdateAISettingsDto {
   shippingInfo?: string;
 
   @IsOptional() @IsString()
+  cancellationPolicy?: string;
+
+  @IsOptional() @IsString()
   welcomeMessage?: string;
 
   @IsOptional() @IsString()
