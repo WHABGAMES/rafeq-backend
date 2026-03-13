@@ -38,6 +38,7 @@ import {
 
 // ✅ Services
 import { SallaApiService, SallaProduct } from '../stores/salla-api.service';
+import { ZidApiService, ZidAuthTokens } from '../stores/zid-api.service';
 
 // ✅ Utils
 import { decrypt } from '@common/utils/encryption.util';
@@ -352,6 +353,7 @@ export class AIService {
     private readonly configService: ConfigService,
     private readonly eventEmitter: EventEmitter2,
     private readonly sallaApiService: SallaApiService,
+    private readonly zidApiService: ZidApiService,
 
     @InjectRepository(KnowledgeBase)
     private readonly knowledgeRepo: Repository<KnowledgeBase>,
@@ -2480,7 +2482,44 @@ Types:
         };
       }
 
-      // Zid أو منصات أخرى — fallback
+      if (store.platform === 'zid') {
+        const orderNum = parseInt(orderId, 10);
+        if (isNaN(orderNum)) {
+          return { found: false, message: 'رقم الطلب غير صالح.' };
+        }
+
+        try {
+          const zidTokens: ZidAuthTokens = { managerToken: accessToken };
+          const zidOrder = await this.zidApiService.getOrder(zidTokens, orderNum);
+
+          if (!zidOrder) {
+            return { found: false, message: 'لم يتم العثور على طلب بهذا الرقم في المتجر.' };
+          }
+
+          return {
+            found: true,
+            order_id: String(zidOrder.id),
+            reference_id: zidOrder.order_number,
+            status: zidOrder.status,
+            status_ar: this.getStatusArabic(zidOrder.status),
+            status_context: this.getStatusContext(zidOrder.status),
+            total: zidOrder.total,
+            currency: zidOrder.currency || 'SAR',
+            payment_status: zidOrder.payment_status,
+            payment_method: zidOrder.payment_method,
+            items_count: zidOrder.items?.length || 0,
+            order_date: zidOrder.created_at || null,
+            source: 'zid_api',
+          };
+        } catch (zidError) {
+          this.logger.warn(`⚠️ Zid order lookup failed for ${orderId}`, {
+            error: zidError instanceof Error ? zidError.message : 'Unknown',
+          });
+          return { found: false, message: 'لم يتم العثور على طلب بهذا الرقم.' };
+        }
+      }
+
+      // منصات أخرى — fallback
       return { found: false, message: 'لم يتم العثور على طلب بهذا الرقم.' };
 
     } catch (error) {
