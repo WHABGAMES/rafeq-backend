@@ -224,12 +224,11 @@ export class SallaApiService {
       const orders = response?.data;
       if (!orders?.length) return null;
 
-      // ابحث عن الطلب المطابق بالضبط
       return orders.find((o: SallaOrder) =>
         String(o.id) === reference ||
         String(o.reference_id) === reference ||
         String(o.reference_id)?.includes(reference)
-      ) || orders[0]; // أو أول نتيجة
+      ) || orders[0];
     } catch {
       return null;
     }
