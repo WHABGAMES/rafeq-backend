@@ -2621,9 +2621,22 @@ Types:
 
       if (isDigital && isCompleted) {
         if (phoneVerified && digitalContent) {
-          result.digital_content = digitalContent;
-          result.phone_verified = true;
-          result.digital_note = 'تم التحقق من هوية العميل. المحتوى الرقمي مرفق أدناه — أرسله للعميل.';
+          const dc = digitalContent as any;
+          if (dc.type === 'digital_codes' && dc.codes?.length) {
+            // ✅ أكواد فعلية متاحة (تطبيقات قديمة)
+            result.digital_content = digitalContent;
+            result.phone_verified = true;
+            result.digital_note = 'تم التحقق من هوية العميل. الأكواد الرقمية مرفقة — أرسلها للعميل مباشرة.';
+          } else if (dc.type === 'digital_url' && dc.url) {
+            // ✅ رابط المحتوى الرقمي من سلة
+            result.digital_content_url = dc.url;
+            result.phone_verified = true;
+            result.digital_note = `تم التحقق من هوية العميل. أرسل للعميل رابط استلام المحتوى الرقمي: ${dc.url} — وأخبره يشيّك على إيميله المسجّل بعد لأن الكود وصله هناك أيضاً.`;
+          } else {
+            // ✅ ما في أكواد ولا رابط — وجّه للإيميل والمتجر
+            result.phone_verified = true;
+            result.digital_note = 'تم التحقق من هوية العميل. أخبره إن المحتوى الرقمي تم إرساله لإيميله المسجّل ويقدر يلاقيه في صفحة طلباته بالمتجر. إذا ما وصله، اعرض عليه التحويل للدعم البشري.';
+          }
         } else if (!phoneVerified && phoneHint) {
           result.phone_verified = false;
           result.phone_hint = phoneHint;
@@ -2715,32 +2728,19 @@ Types:
    */
   private async fetchDigitalContent(accessToken: string, order: any): Promise<unknown> {
     try {
-      // محاولة جلب الأكواد من تفاصيل الطلب
       const orderId = order.id;
       const response = await this.sallaApiService.getOrder(accessToken, orderId);
-      const fullOrder = response?.data;
+      const fullOrder = response?.data as any;
 
       if (!fullOrder) return null;
 
-      // البحث عن أكواد رقمية في بيانات الطلب
+      // ✅ أولاً: جرّب جلب الأكواد مباشرة (للتطبيقات القديمة قبل أغسطس 2024)
       const codes: Array<{ product: string; code: string }> = [];
-
-      // الأكواد قد تكون في items.codes أو items.digital أو metadata
       for (const item of (fullOrder.items || [])) {
         const itemAny = item as any;
         if (itemAny.codes?.length) {
           for (const code of itemAny.codes) {
             codes.push({ product: item.name, code: String(code.code || code) });
-          }
-        } else if (itemAny.digital?.code) {
-          codes.push({ product: item.name, code: itemAny.digital.code });
-        } else if (itemAny.options?.length) {
-          // بعض المنصات تضع الكود في options
-          const codeOption = itemAny.options.find((o: any) =>
-            o.name?.includes('كود') || o.name?.includes('code') || o.name?.includes('رمز'),
-          );
-          if (codeOption) {
-            codes.push({ product: item.name, code: codeOption.value });
           }
         }
       }
@@ -2749,10 +2749,15 @@ Types:
         return { type: 'digital_codes', codes };
       }
 
-      // لم نجد أكواد → ربما تم إرسالها بالإيميل
+      // ✅ ثانياً: جلب رابط المحتوى الرقمي من سلة
+      const digitalUrl = fullOrder.urls?.digital_content || null;
+
       return {
-        type: 'no_codes_found',
-        message: 'المنتج الرقمي تم تنفيذه لكن الأكواد غير متاحة عبر البوت. تم إرسالها للإيميل المسجّل أو يمكن الحصول عليها من صفحة الطلب في المتجر.',
+        type: 'digital_url',
+        url: digitalUrl,
+        message: digitalUrl
+          ? `رابط استلام المحتوى الرقمي: ${digitalUrl}`
+          : null,
       };
     } catch {
       return null;
