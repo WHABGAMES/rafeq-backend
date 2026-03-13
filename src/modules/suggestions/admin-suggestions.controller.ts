@@ -130,6 +130,20 @@ export class AdminSuggestionsController {
   }
 
   // ═══════════════════════════════════════════════════════════
+  // Get Comments (admin view)
+  // ═══════════════════════════════════════════════════════════
+
+  @Get(':id/comments')
+  @ApiOperation({ summary: 'تعليقات الاقتراح' })
+  async getComments(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
+  ) {
+    return this.suggestionsService.getComments(id, Number(page) || 1, Number(limit) || 50);
+  }
+
+  // ═══════════════════════════════════════════════════════════
   // Delete Comment — ⚠️ MUST be before DELETE ':id' to avoid route shadowing
   // ═══════════════════════════════════════════════════════════
 
