@@ -165,15 +165,44 @@ const EMBEDDING_MODEL = 'text-embedding-3-small';
 const NO_MATCH_MESSAGE = 'عذرًا، هذا السؤال خارج نطاق المعلومات المتوفرة لدي حاليًا.\nإذا رغبت، أستطيع تحويلك إلى الدعم البشري لمساعدتك.';
 
 /** رسائل طلب التوضيح (حسب اللغة) — تُستخدم قبل الوصول للحد الأقصى */
-const CLARIFICATION_MESSAGES: Record<string, string[]> = {
-  ar: [
-    'ممكن توضح سؤالك أكثر لو تكرمت؟ أبي أساعدك بشكل أفضل 🙏',
-    'عذرًا، ما قدرت أفهم طلبك بالضبط. ممكن تعيد صياغته بطريقة ثانية؟',
-  ],
-  en: [
-    'Could you clarify your question a bit more? I want to help you better 🙏',
-    'Sorry, I couldn\'t quite understand your request. Could you rephrase it?',
-  ],
+const CLARIFICATION_MESSAGES: Record<string, Record<string, string[]>> = {
+  formal: {
+    ar: [
+      'نعتذر، لم نتمكن من تحديد طلبك بدقة. هل بإمكانك إعادة صياغته؟',
+      'يرجى توضيح استفسارك بشكل أدق حتى نتمكن من مساعدتك.',
+      'لم أتمكن من فهم طلبك. هل يمكنك تقديم تفاصيل إضافية؟',
+    ],
+    en: [
+      'We apologize, but we could not identify your request precisely. Could you rephrase it?',
+      'Please clarify your inquiry so we can assist you better.',
+      'I was unable to understand your request. Could you provide more details?',
+    ],
+  },
+  friendly: {
+    ar: [
+      'ممكن توضح أكثر عشان أقدر أساعدك؟ 🙏',
+      'ما فهمت طلبك بالضبط، ممكن تعيد صياغته بطريقة ثانية؟',
+      'أبي أساعدك بس أحتاج تفاصيل أكثر شوي 😊',
+      'ممكن تقول لي بالضبط وش تبي عشان أقدر أخدمك؟',
+    ],
+    en: [
+      'Could you clarify that a bit more? I want to help! 🙏',
+      'I didn\'t quite get that. Could you rephrase it?',
+      'I\'d love to help — can you give me a bit more detail? 😊',
+    ],
+  },
+  professional: {
+    ar: [
+      'أحتاج توضيح أكثر لسؤالك حتى أتمكن من مساعدتك.',
+      'لم أستطع تحديد طلبك. هل يمكنك إعادة صياغته؟',
+      'ممكن توضح سؤالك بشكل أدق؟ أريد أن أساعدك بأفضل طريقة.',
+    ],
+    en: [
+      'I need more clarification to assist you properly.',
+      'Could you rephrase your question? I want to help effectively.',
+      'I couldn\'t determine your request. Could you provide more detail?',
+    ],
+  },
 };
 
 /** رسالة عرض التحويل البشري — عند الوصول للحد الأقصى */
@@ -1097,25 +1126,23 @@ export class AIService {
     }
 
     if (isPureGreeting) {
-      // ✅ FIX-C: رسالة الترحيب المخصصة فقط للتحيات الحقيقية
-      if (settings.welcomeMessage) return settings.welcomeMessage;
-
-      // ردود حسب النبرة
-      const greetings: Record<string, Record<string, string>> = {
+      // ✅ ردود ترحيب متنوعة حسب النبرة — بدون رسالة ثابتة
+      const greetings: Record<string, Record<string, string[]>> = {
         formal: {
-          ar: 'مرحبًا بك. كيف يمكنني مساعدتك اليوم؟',
-          en: 'Welcome. How may I assist you today?',
+          ar: ['مرحبًا بك. كيف يمكنني مساعدتك اليوم؟', 'أهلاً وسهلاً. كيف أستطيع خدمتك؟', 'حيّاك الله. تفضل بطلبك.'],
+          en: ['Welcome. How may I assist you today?', 'Hello. How can I help you?', 'Good day. Please go ahead with your request.'],
         },
         friendly: {
-          ar: 'أهلاً وسهلاً! كيف أقدر أساعدك؟ 😊',
-          en: 'Hi there! How can I help you? 😊',
+          ar: ['أهلين! كيف أقدر أساعدك؟ 😊', 'حيّاك! وش أقدر أسوي لك اليوم؟', 'هلا وغلا! كيف أخدمك؟ 😊', 'يا هلا فيك! تفضل كيف أساعدك؟'],
+          en: ['Hi there! How can I help you? 😊', 'Hey! What can I do for you today?', 'Welcome! How can I assist you? 😊'],
         },
         professional: {
-          ar: 'مرحبًا بك. أنا هنا لمساعدتك. تفضل بسؤالك.',
-          en: 'Hello. I\'m here to help. Please go ahead with your question.',
+          ar: ['مرحبًا بك. أنا هنا لمساعدتك، تفضل بسؤالك.', 'أهلاً. كيف أستطيع مساعدتك؟', 'حياك الله. تفضل بطلبك وسأساعدك.'],
+          en: ['Hello. I\'m here to help. Please go ahead with your question.', 'Welcome. How can I assist you?', 'Hi. What can I help you with today?'],
         },
       };
-      return greetings[tone]?.[isAr ? 'ar' : 'en'] || greetings.friendly[isAr ? 'ar' : 'en'];
+      const greetArr = greetings[tone]?.[isAr ? 'ar' : 'en'] || greetings.friendly[isAr ? 'ar' : 'en'];
+      return greetArr[Math.floor(Math.random() * greetArr.length)];
     }
 
     if (isThanks) {
@@ -1189,11 +1216,12 @@ export class AIService {
       timestamp: new Date(),
     });
 
-    // ✅ لم يصل للحد → اطلب توضيح
+    // ✅ لم يصل للحد → اطلب توضيح (حسب النبرة)
     if (currentAttempts < maxAttempts) {
-      const clarifyMsgs = CLARIFICATION_MESSAGES[lang] || CLARIFICATION_MESSAGES.ar;
-      const clarifyIndex = Math.min(currentAttempts - 1, clarifyMsgs.length - 1);
-      const clarifyMsg = clarifyMsgs[clarifyIndex];
+      const tone = settings.tone || 'friendly';
+      const toneMessages = CLARIFICATION_MESSAGES[tone] || CLARIFICATION_MESSAGES.friendly;
+      const clarifyMsgs = toneMessages[lang] || toneMessages.ar;
+      const clarifyMsg = clarifyMsgs[Math.floor(Math.random() * clarifyMsgs.length)];
 
       return {
         reply: clarifyMsg,
@@ -2761,11 +2789,9 @@ Types:
       const current = (aiContext.failedAttempts as number) || 0;
       conv.aiContext = { ...aiContext, failedAttempts: current + 1 };
       await this.conversationRepo.save(conv);
-      context.failedAttempts = current + 1; // ✅ sync context
+      context.failedAttempts = current + 1;
 
-      this.logger.log(
-        `📊 Failed attempts: ${current} → ${current + 1} for conversation ${context.conversationId}`,
-      );
+      this.logger.log(`📊 Failed attempts: ${current} → ${current + 1} for conversation ${context.conversationId}`);
     } catch (error) {
       this.logger.error('Failed to increment failed attempts', {
         error: error instanceof Error ? error.message : 'Unknown',
@@ -2780,7 +2806,6 @@ Types:
     context: ConversationContext,
   ): Promise<void> {
     try {
-      // ✅ تحقق من DB مباشرة (لا نعتمد على context القديم)
       const conv = await this.conversationRepo.findOne({
         where: { id: context.conversationId },
       });
@@ -2792,10 +2817,8 @@ Types:
       if (dbAttempts > 0) {
         conv.aiContext = { ...aiContext, failedAttempts: 0 };
         await this.conversationRepo.save(conv);
-        context.failedAttempts = 0; // ✅ sync context
-        this.logger.log(
-          `🔄 Reset failed attempts: ${dbAttempts} → 0 for conversation ${context.conversationId}`,
-        );
+        context.failedAttempts = 0;
+        this.logger.log(`🔄 Reset failed attempts: ${dbAttempts} → 0 for conversation ${context.conversationId}`);
       }
     } catch (error) {
       this.logger.error('Failed to reset failed attempts', {
