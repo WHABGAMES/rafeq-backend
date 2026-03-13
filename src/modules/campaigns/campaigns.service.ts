@@ -88,6 +88,10 @@ export class CampaignsService {
       channel: dto.channel,
       scheduledAt: dto.scheduledAt,
       status: dto.scheduledAt ? CampaignStatus.SCHEDULED : CampaignStatus.DRAFT,
+      // ✅ حفظ قالب الرسالة — بدونه الحملة ما ترسل شي
+      messageTemplate: dto.customTemplate
+        ? { type: 'text', body: dto.customTemplate.content, mediaUrl: dto.customTemplate.mediaUrl }
+        : (dto as any).messageTemplate || { type: 'text', body: '' },
       stats: {
         totalTargeted: 0,
         sent: 0,
