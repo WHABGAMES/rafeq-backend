@@ -84,6 +84,7 @@ export class WidgetService {
     const allowed = [
       'isEnabled', 'whatsappNumber', 'welcomeMessage', 'prefilledMessage',
       'position', 'buttonColor', 'headerColor', 'size',
+      'buttonStyle', 'buttonAnimation', 'buttonText', 'popupStyle',
       'showOnMobile', 'showTooltip', 'tooltipText',
       'agentName', 'agentAvatarUrl', 'offlineMessage',
     ];
@@ -119,6 +120,10 @@ export class WidgetService {
       btnColor: settings.buttonColor,
       headerColor: settings.headerColor,
       size: settings.size,
+      btnStyle: settings.buttonStyle || 'classic',
+      btnAnim: settings.buttonAnimation || 'pulse',
+      btnText: settings.buttonText || '',
+      popupStyle: settings.popupStyle || 'whatsapp',
       mobile: settings.showOnMobile,
       tooltip: settings.showTooltip,
       tooltipText: settings.tooltipText,
