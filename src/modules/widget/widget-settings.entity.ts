@@ -26,6 +26,28 @@ export enum WidgetSize {
   LARGE = 'large',
 }
 
+export enum ButtonStyle {
+  CLASSIC = 'classic',       // دائري كلاسيكي
+  ROUNDED = 'rounded',       // مستطيل مدور
+  PILL = 'pill',             // كبسولة مع نص
+  SQUARE = 'square',         // مربع مدور
+  MINIMAL = 'minimal',       // شفاف بحدود
+}
+
+export enum PopupStyle {
+  WHATSAPP = 'whatsapp',     // شبيه واتساب الأصلي
+  MODERN = 'modern',         // تصميم عصري نظيف
+  MINIMAL = 'minimal',       // بسيط بدون هيدر
+  BUBBLE = 'bubble',         // فقاعة محادثة
+}
+
+export enum ButtonAnimation {
+  PULSE = 'pulse',           // نبض
+  BOUNCE = 'bounce',         // ارتداد
+  SHAKE = 'shake',           // اهتزاز
+  NONE = 'none',             // بدون
+}
+
 @Entity('widget_settings')
 @Index(['storeId'], { unique: true })
 export class WidgetSettings {
@@ -66,6 +88,20 @@ export class WidgetSettings {
 
   @Column({ name: 'size', type: 'enum', enum: WidgetSize, default: WidgetSize.MEDIUM })
   size: WidgetSize;
+
+  // ─── Button Style ─────────────────────────────
+  @Column({ name: 'button_style', type: 'varchar', length: 20, default: 'classic' })
+  buttonStyle: string;
+
+  @Column({ name: 'button_animation', type: 'varchar', length: 20, default: 'pulse' })
+  buttonAnimation: string;
+
+  @Column({ name: 'button_text', type: 'varchar', length: 50, nullable: true })
+  buttonText: string;
+
+  // ─── Popup Style ──────────────────────────────
+  @Column({ name: 'popup_style', type: 'varchar', length: 20, default: 'whatsapp' })
+  popupStyle: string;
 
   @Column({ name: 'show_on_mobile', type: 'boolean', default: true })
   showOnMobile: boolean;
