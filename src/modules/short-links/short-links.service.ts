@@ -13,8 +13,6 @@ import * as crypto from 'crypto';
 
 import { ShortLink, LinkClick } from './short-link.entity';
 
-const CHARSET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-
 @Injectable()
 export class ShortLinksService {
   private readonly logger = new Logger(ShortLinksService.name);
@@ -31,12 +29,22 @@ export class ShortLinksService {
   // 🔑 Generate unique short code (7 chars, base62)
   // ═══════════════════════════════════════════════════════════════
 
-  private generateCode(length = 6): string {
-    const bytes = crypto.randomBytes(length);
+  private generateCode(): string {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'.split('');
+    const bytes = crypto.randomBytes(6);
+    const used = new Set<number>();
     let code = '';
-    for (let i = 0; i < length; i++) {
-      code += CHARSET[bytes[i] % 36];
+
+    for (let i = 0; i < 6; i++) {
+      let idx = bytes[i] % chars.length;
+      // Ensure no duplicate characters
+      while (used.has(idx)) {
+        idx = (idx + 1) % chars.length;
+      }
+      used.add(idx);
+      code += chars[idx];
     }
+
     return code;
   }
 
@@ -46,8 +54,18 @@ export class ShortLinksService {
       const exists = await this.linkRepo.findOne({ where: { shortCode: code }, select: ['id'] });
       if (!exists) return code;
     }
-    // Fallback: longer code
-    return this.generateCode(8);
+    // Fallback: 8 chars (still no duplicates possible with 36 charset)
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'.split('');
+    const bytes = crypto.randomBytes(8);
+    const used = new Set<number>();
+    let code = '';
+    for (let i = 0; i < 8; i++) {
+      let idx = bytes[i] % chars.length;
+      while (used.has(idx)) idx = (idx + 1) % chars.length;
+      used.add(idx);
+      code += chars[idx];
+    }
+    return code;
   }
 
   // ═══════════════════════════════════════════════════════════════
