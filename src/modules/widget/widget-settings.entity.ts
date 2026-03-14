@@ -99,6 +99,10 @@ export class WidgetSettings {
   @Column({ name: 'button_text', type: 'varchar', length: 50, nullable: true })
   buttonText: string;
 
+  // ─── Custom Icon ──────────────────────────────
+  @Column({ name: 'custom_icon_url', type: 'text', nullable: true })
+  customIconUrl?: string;
+
   // ─── Popup Style ──────────────────────────────
   @Column({ name: 'popup_style', type: 'varchar', length: 20, default: 'whatsapp' })
   popupStyle: string;
