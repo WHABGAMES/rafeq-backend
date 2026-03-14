@@ -51,11 +51,13 @@ export class WidgetPublicController {
    * Otherwise NestJS treats "embed.js" as a storeId param
    */
   @Get('embed.js')
-  @Header('Content-Type', 'application/javascript; charset=utf-8')
-  @Header('Access-Control-Allow-Origin', '*')
-  @Header('Cache-Control', 'public, max-age=3600')
   @ApiOperation({ summary: 'Widget embed script' })
   getEmbedScript(@Res() res: Response) {
+    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
     res.send(EMBED_SCRIPT);
   }
 
