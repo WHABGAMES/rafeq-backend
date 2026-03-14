@@ -444,6 +444,8 @@ async function bootstrap() {
       await ds.query(`ALTER TABLE widget_settings ADD COLUMN IF NOT EXISTS bottom_offset INT NOT NULL DEFAULT 20`);
       await ds.query(`ALTER TABLE widget_settings ADD COLUMN IF NOT EXISTS show_on_hover BOOLEAN NOT NULL DEFAULT false`);
       await ds.query(`ALTER TABLE widget_settings ADD COLUMN IF NOT EXISTS auto_open_seconds INT NOT NULL DEFAULT 0`);
+      await ds.query(`ALTER TABLE widget_settings ADD COLUMN IF NOT EXISTS custom_icon_url TEXT`);
+      await ds.query(`ALTER TABLE widget_settings ALTER COLUMN custom_icon_url TYPE TEXT`);
 
       logger.log('✅ Widget settings table ready');
     } catch (e: any) {
