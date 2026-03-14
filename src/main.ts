@@ -134,12 +134,18 @@ async function bootstrap() {
     app.enableCors({
       origin: (origin, callback) => {
         if (!origin) { callback(null, true); return; }
+        // Whitelisted origins
         if (corsOrigins.includes(origin)) {
           callback(null, true);
-        } else {
-          logger.warn(`🚫 CORS blocked origin: ${origin}`);
-          callback(new Error('Not allowed by CORS'));
+          return;
         }
+        // ✅ Allow all Salla store domains (*.salla.sa) for widget embed
+        if (origin.endsWith('.salla.sa') || origin.endsWith('.salla.dev')) {
+          callback(null, true);
+          return;
+        }
+        logger.warn(`🚫 CORS blocked origin: ${origin}`);
+        callback(new Error('Not allowed by CORS'));
       },
       methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
       allowedHeaders: [
