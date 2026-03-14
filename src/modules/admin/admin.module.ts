@@ -26,6 +26,7 @@ import { MergeHistory } from './entities/merge-history.entity';
 import { WhatsappSettings } from './entities/whatsapp-settings.entity';
 import { MessageTemplate } from './entities/message-template.entity';
 import { MessageLog } from './entities/message-log.entity';
+import { Conversation, Message } from '@database/entities';
 
 // Services
 import { AuditService } from './services/audit.service';
@@ -56,6 +57,12 @@ import { NotificationEventListener } from './listeners/notification-event.listen
 
 // ✅ NEW: BillingModule — مطلوب لـ SubscriptionManagementService في AdminSubscriptionsController
 import { BillingModule } from '../billing/billing.module';
+
+// ✅ NEW: InboxModule — مطلوب لصندوق رسائل الأدمن
+import { InboxModule } from '../inbox/inbox.module';
+
+// ✅ NEW: Admin Inbox Controller
+import { AdminInboxController } from './controllers/admin-inbox.controller';
 
 // ─── [C-2] Startup Validation ─────────────────────────────────────────────────
 // يُنفَّذ قبل أي شيء عند تحميل الـ module
@@ -90,6 +97,8 @@ if (!jwtSecret) {
       WhatsappSettings,
       MessageTemplate,
       MessageLog,
+      Conversation,  // ✅ مطلوب لـ AdminInboxController
+      Message,       // ✅ مطلوب لـ AdminInboxController
     ]),
 
     // ✅ JwtModule يستخدم نفس الـ secret المُتحقَّق منه أعلاه
@@ -129,6 +138,9 @@ if (!jwtSecret) {
 
     // ✅ NEW: BillingModule — يوفر SubscriptionManagementService
     BillingModule,
+
+    // ✅ NEW: InboxModule — يوفر InboxService لصندوق رسائل الأدمن
+    InboxModule,
   ],
 
   controllers: [
@@ -141,6 +153,8 @@ if (!jwtSecret) {
     SystemHealthController,
     // ✅ NEW: إدارة اشتراكات التجار
     AdminSubscriptionsController,
+    // ✅ NEW: صندوق رسائل الأدمن
+    AdminInboxController,
   ],
 
   providers: [
