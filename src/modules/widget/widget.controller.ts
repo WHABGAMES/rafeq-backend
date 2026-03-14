@@ -3,12 +3,13 @@
  * ║              RAFIQ PLATFORM - Widget Controller                                 ║
  * ║                                                                                ║
  * ║  Public endpoints (no auth):                                                   ║
- * ║    GET /widget/:storeId/config   → Widget config JSON                          ║
- * ║    POST /widget/:storeId/track   → Track click/impression                      ║
+ * ║    GET /widget/embed.js             → Widget JavaScript (MUST be first!)       ║
+ * ║    GET /widget/:storeId/config      → Widget config JSON                       ║
+ * ║    POST /widget/:storeId/track      → Track click/impression                   ║
  * ║                                                                                ║
  * ║  Merchant endpoints (JWT auth):                                                ║
- * ║    GET /widget/settings          → Get widget settings                         ║
- * ║    PUT /widget/settings          → Update widget settings                      ║
+ * ║    GET /widget/settings             → Get widget settings                      ║
+ * ║    PUT /widget/settings             → Update widget settings                   ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -24,13 +25,17 @@ import {
   HttpStatus,
   UseGuards,
   Header,
+  NotFoundException,
 } from '@nestjs/common';
 import { Response } from 'express';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { WidgetService } from './widget.service';
+import { Store } from '../stores/entities/store.entity';
 
 // ═══════════════════════════════════════════════════════════════
 // 🌐 PUBLIC CONTROLLER — no auth required
@@ -42,8 +47,20 @@ export class WidgetPublicController {
   constructor(private readonly widgetService: WidgetService) {}
 
   /**
+   * ✅ embed.js MUST be BEFORE :storeId routes
+   * Otherwise NestJS treats "embed.js" as a storeId param
+   */
+  @Get('embed.js')
+  @Header('Content-Type', 'application/javascript; charset=utf-8')
+  @Header('Access-Control-Allow-Origin', '*')
+  @Header('Cache-Control', 'public, max-age=3600')
+  @ApiOperation({ summary: 'Widget embed script' })
+  getEmbedScript(@Res() res: Response) {
+    res.send(EMBED_SCRIPT);
+  }
+
+  /**
    * Widget config — called by embed.js
-   * CORS enabled, returns config JSON
    */
   @Get(':storeId/config')
   @Header('Access-Control-Allow-Origin', '*')
@@ -51,11 +68,7 @@ export class WidgetPublicController {
   @ApiOperation({ summary: 'Widget config (public)' })
   async getConfig(@Param('storeId') storeId: string) {
     const config = await this.widgetService.getPublicConfig(storeId);
-
-    if (!config) {
-      return { enabled: false };
-    }
-
+    if (!config) return { enabled: false };
     return config;
   }
 
@@ -76,18 +89,6 @@ export class WidgetPublicController {
       await this.widgetService.trackImpression(storeId);
     }
   }
-
-  /**
-   * Serve the embed JavaScript
-   */
-  @Get('embed.js')
-  @Header('Content-Type', 'application/javascript; charset=utf-8')
-  @Header('Access-Control-Allow-Origin', '*')
-  @Header('Cache-Control', 'public, max-age=3600')
-  @ApiOperation({ summary: 'Widget embed script' })
-  getEmbedScript(@Res() res: Response) {
-    res.send(EMBED_SCRIPT);
-  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -99,12 +100,36 @@ export class WidgetPublicController {
 @UseGuards(JwtAuthGuard)
 @Controller({ path: 'widget/settings', version: '1' })
 export class WidgetSettingsController {
-  constructor(private readonly widgetService: WidgetService) {}
+  constructor(
+    private readonly widgetService: WidgetService,
+
+    @InjectRepository(Store)
+    private readonly storeRepo: Repository<Store>,
+  ) {}
+
+  /**
+   * Find the merchant's store from their tenantId
+   * User entity has tenantId but NOT storeId
+   */
+  private async findStoreId(tenantId: string): Promise<string> {
+    const store = await this.storeRepo.findOne({
+      where: { tenantId },
+      select: ['id'],
+      order: { createdAt: 'DESC' },
+    });
+
+    if (!store) {
+      throw new NotFoundException('لم يتم العثور على متجر لهذا الحساب');
+    }
+
+    return store.id;
+  }
 
   @Get()
   @ApiOperation({ summary: 'Get widget settings' })
   async getSettings(@CurrentUser() user: any) {
-    return this.widgetService.getSettings(user.storeId, user.tenantId);
+    const storeId = await this.findStoreId(user.tenantId);
+    return this.widgetService.getSettings(storeId, user.tenantId);
   }
 
   @Put()
@@ -113,7 +138,8 @@ export class WidgetSettingsController {
     @CurrentUser() user: any,
     @Body() body: Record<string, unknown>,
   ) {
-    return this.widgetService.updateSettings(user.storeId, user.tenantId, body as any);
+    const storeId = await this.findStoreId(user.tenantId);
+    return this.widgetService.updateSettings(storeId, user.tenantId, body as any);
   }
 }
 
@@ -204,21 +230,21 @@ const EMBED_SCRIPT = `
     var popup = document.createElement('div');
     popup.id = 'rafeq-wa-popup';
     popup.innerHTML = '<div id="rafeq-wa-header" style="position:relative;">' +
-      '<div class="avatar">' + (c.avatar ? '<img src="'+c.avatar+'" alt="">' : '👤') + '</div>' +
-      '<div class="info"><div class="name">'+(c.agent||'فريق الدعم')+'</div><div class="status">متصل الآن ● </div></div>' +
-      '<button id="rafeq-wa-close">✕</button>' +
+      '<div class="avatar">' + (c.avatar ? '<img src="'+c.avatar+'" alt="">' : '\\uD83D\\uDC64') + '</div>' +
+      '<div class="info"><div class="name">'+(c.agent||'\\u0641\\u0631\\u064A\\u0642 \\u0627\\u0644\\u062F\\u0639\\u0645')+'</div><div class="status">\\u0645\\u062A\\u0635\\u0644 \\u0627\\u0644\\u0622\\u0646 \\u25CF </div></div>' +
+      '<button id="rafeq-wa-close">\\u2715</button>' +
       '</div>' +
-      '<div id="rafeq-wa-body"><div id="rafeq-wa-msg">'+(c.welcome||'مرحباً!')+'</div></div>' +
-      '<div id="rafeq-wa-footer"><a id="rafeq-wa-start" href="'+waUrl+'" target="_blank" rel="noopener">بدء المحادثة ←</a></div>';
+      '<div id="rafeq-wa-body"><div id="rafeq-wa-msg">'+(c.welcome||'\\u0645\\u0631\\u062D\\u0628\\u0627\\u064B!')+'</div></div>' +
+      '<div id="rafeq-wa-footer"><a id="rafeq-wa-start" href="'+waUrl+'" target="_blank" rel="noopener">\\u0628\\u062F\\u0621 \\u0627\\u0644\\u0645\\u062D\\u0627\\u062F\\u062B\\u0629 \\u2190</a></div>';
 
     var tooltip = document.createElement('div');
     tooltip.id = 'rafeq-wa-tooltip';
-    tooltip.textContent = c.tooltipText || 'تحتاج مساعدة؟';
+    tooltip.textContent = c.tooltipText || '\\u062A\\u062D\\u062A\\u0627\\u062C \\u0645\\u0633\\u0627\\u0639\\u062F\\u0629\\u061F';
 
     var btn = document.createElement('button');
     btn.id = 'rafeq-wa-btn';
     btn.innerHTML = waSvg;
-    btn.setAttribute('aria-label','تواصل معنا عبر واتساب');
+    btn.setAttribute('aria-label','WhatsApp');
 
     wrap.appendChild(popup);
     wrap.appendChild(tooltip);
