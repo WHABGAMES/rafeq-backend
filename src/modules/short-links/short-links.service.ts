@@ -72,8 +72,8 @@ export class ShortLinksService {
       tenantId,
       shortCode,
       originalUrl: dto.url,
-      title: dto.title || null,
-      expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : null,
+      title: dto.title || undefined,
+      expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
     });
 
     await this.linkRepo.save(link);
@@ -198,7 +198,7 @@ export class ShortLinksService {
         deviceType: device.type,
         browser: device.browser,
         os: device.os,
-        referrer: req.referrer ? req.referrer.substring(0, 500) : null,
+        referrer: req.referrer ? req.referrer.substring(0, 500) : undefined,
         referrerSource: source,
         clickedAt: new Date(),
       });
