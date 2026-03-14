@@ -2,14 +2,10 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║              RAFIQ PLATFORM - Admin Inbox Controller                            ║
  * ║                                                                                ║
- * ║  صندوق الرسائل للأدمن — يشوف محادثات كل التجار                               ║
+ * ║  صندوق الرسائل للأدمن — محادثات رقم الواتساب الإداري فقط                      ║
  * ║                                                                                ║
- * ║  GET    /admin/inbox              → كل المحادثات (كل التجار)                   ║
- * ║  GET    /admin/inbox/stats        → إحصائيات عامة                              ║
- * ║  GET    /admin/inbox/:id/messages → رسائل محادثة                               ║
- * ║  POST   /admin/inbox/:id/messages → إرسال رسالة                                ║
- * ║  PATCH  /admin/inbox/:id/status   → تغيير حالة                                ║
- * ║  POST   /admin/inbox/:id/read     → علامة مقروء                                ║
+ * ║  يعرض فقط المحادثات المربوطة برقم واتساب الأدمن المسجل                        ║
+ * ║  في whatsapp_settings (phoneNumberId)                                          ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -26,6 +22,7 @@ import {
   HttpStatus,
   UseGuards,
   NotFoundException,
+  Logger,
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -33,8 +30,9 @@ import { Repository } from 'typeorm';
 
 import { AdminJwtGuard, AdminPermissionGuard } from '../guards/admin.guards';
 import { CurrentAdmin } from '../decorators/current-admin.decorator';
+import { WhatsappSettings } from '../entities/whatsapp-settings.entity';
 
-import { Conversation, Message, ConversationStatus } from '@database/entities';
+import { Conversation, Message, ConversationStatus, Channel } from '@database/entities';
 import { InboxService } from '@modules/inbox/inbox.service';
 
 @ApiTags('Admin: صندوق الرسائل')
@@ -42,6 +40,8 @@ import { InboxService } from '@modules/inbox/inbox.service';
 @UseGuards(AdminJwtGuard, AdminPermissionGuard)
 @ApiBearerAuth('Admin-JWT')
 export class AdminInboxController {
+  private readonly logger = new Logger(AdminInboxController.name);
+
   constructor(
     @InjectRepository(Conversation)
     private readonly conversationRepo: Repository<Conversation>,
@@ -49,32 +49,68 @@ export class AdminInboxController {
     @InjectRepository(Message)
     private readonly messageRepo: Repository<Message>,
 
+    @InjectRepository(Channel)
+    private readonly channelRepo: Repository<Channel>,
+
+    @InjectRepository(WhatsappSettings)
+    private readonly whatsappSettingsRepo: Repository<WhatsappSettings>,
+
     private readonly inboxService: InboxService,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════
-  // 📋 كل المحادثات — بدون فلتر tenant
+  // 🔑 Helper: Get admin WhatsApp channel IDs
+  // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * يجلب IDs القنوات المربوطة برقم واتساب الأدمن
+   * 1. يقرأ phoneNumberId من whatsapp_settings
+   * 2. يبحث عن channels فيها نفس الـ phoneNumberId
+   * 3. يرجع IDs هالقنوات
+   */
+  private async getAdminChannelIds(): Promise<string[]> {
+    // 1. Get admin WhatsApp settings
+    const settings = await this.whatsappSettingsRepo.findOne({ where: {} });
+    if (!settings || !settings.phoneNumberId) {
+      this.logger.warn('Admin WhatsApp settings not found or phoneNumberId missing');
+      return [];
+    }
+
+    // 2. Find channels with matching phoneNumberId
+    const channels = await this.channelRepo.find({
+      where: { whatsappPhoneNumberId: settings.phoneNumberId },
+      select: ['id'],
+    });
+
+    return channels.map(c => c.id);
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // 📋 المحادثات — فقط رقم الأدمن
   // ═══════════════════════════════════════════════════════════════
 
   @Get()
-  @ApiOperation({ summary: 'كل المحادثات (كل التجار)' })
+  @ApiOperation({ summary: 'محادثات رقم واتساب الأدمن' })
   async getConversations(
     @Query('status') status?: string,
     @Query('search') search?: string,
-    @Query('tenantId') tenantId?: string,
     @Query('page') page = 1,
     @Query('limit') limit = 30,
   ) {
+    // Get admin's channel IDs
+    const adminChannelIds = await this.getAdminChannelIds();
+
+    if (adminChannelIds.length === 0) {
+      return { conversations: [], total: 0, page: 1, totalPages: 0 };
+    }
+
     const qb = this.conversationRepo
       .createQueryBuilder('conv')
       .leftJoinAndSelect('conv.channel', 'channel')
       .leftJoinAndSelect('conv.assignedTo', 'agent')
+      // ✅ فقط محادثات رقم الأدمن
+      .where('conv.channelId IN (:...channelIds)', { channelIds: adminChannelIds })
       .andWhere("(conv.customerExternalId IS NULL OR conv.customerExternalId NOT LIKE :broadcast)", { broadcast: '%broadcast%' });
-
-    // Optional: filter by tenant
-    if (tenantId) {
-      qb.andWhere('conv.tenantId = :tenantId', { tenantId });
-    }
 
     if (status && status !== 'all') {
       qb.andWhere('conv.status = :status', { status });
@@ -127,7 +163,7 @@ export class AdminInboxController {
       lastMessageAt: (conv.lastMessageAt || conv.createdAt)?.toISOString() || '',
       unreadCount: conv.messagesCount || 0,
       assignedTo: conv.assignedToId || null,
-      assignedName: (conv as any).assignedTo?.firstName || null,
+      tags: conv.tags || [],
       createdAt: conv.createdAt?.toISOString() || '',
     }));
 
@@ -135,17 +171,25 @@ export class AdminInboxController {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // 📊 إحصائيات عامة
+  // 📊 إحصائيات — فقط رقم الأدمن
   // ═══════════════════════════════════════════════════════════════
 
   @Get('stats')
   @ApiOperation({ summary: 'إحصائيات صندوق الرسائل' })
   async getStats() {
+    const adminChannelIds = await this.getAdminChannelIds();
+    if (adminChannelIds.length === 0) {
+      return { total: 0, open: 0, pending: 0, closed: 0 };
+    }
+
+    const base = this.conversationRepo.createQueryBuilder('conv')
+      .where('conv.channelId IN (:...channelIds)', { channelIds: adminChannelIds });
+
     const [total, open, pending, closed] = await Promise.all([
-      this.conversationRepo.count(),
-      this.conversationRepo.count({ where: { status: ConversationStatus.OPEN } }),
-      this.conversationRepo.count({ where: { status: ConversationStatus.PENDING } }),
-      this.conversationRepo.count({ where: { status: ConversationStatus.CLOSED } }),
+      base.clone().getCount(),
+      base.clone().andWhere('conv.status = :s', { s: ConversationStatus.OPEN }).getCount(),
+      base.clone().andWhere('conv.status = :s', { s: ConversationStatus.PENDING }).getCount(),
+      base.clone().andWhere('conv.status = :s', { s: ConversationStatus.CLOSED }).getCount(),
     ]);
 
     return { total, open, pending, closed };
@@ -186,7 +230,6 @@ export class AdminInboxController {
     const conv = await this.conversationRepo.findOne({ where: { id } });
     if (!conv) throw new NotFoundException('المحادثة غير موجودة');
 
-    // Use InboxService with conversation's tenantId
     return this.inboxService.sendMessage(id, body.content, admin.id, conv.tenantId);
   }
 
