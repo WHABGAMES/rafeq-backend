@@ -75,6 +75,7 @@ import { InboxModule } from '@modules/inbox/inbox.module';
 import { BillingModule } from '@modules/billing/billing.module';
 import { AnalyticsModule } from '@modules/analytics/analytics.module';
 import { WidgetModule } from '@modules/widget/widget.module';
+import { ShortLinksModule } from '@modules/short-links/short-links.module';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 📦 NEW Modules - الوحدات الجديدة
@@ -463,6 +464,9 @@ import { SuggestionsModule } from '@modules/suggestions/suggestions.module';
 
     // 💬 ويدجت واتساب للمتاجر
     WidgetModule,
+
+    // 🔗 روابط مختصرة
+    ShortLinksModule,
   ],
 
   // ═══════════════════════════════════════════════════════════════════════════════
