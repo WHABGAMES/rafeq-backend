@@ -13,7 +13,7 @@ import * as crypto from 'crypto';
 
 import { ShortLink, LinkClick } from './short-link.entity';
 
-const BASE62 = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const CHARSET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
 @Injectable()
 export class ShortLinksService {
@@ -31,11 +31,11 @@ export class ShortLinksService {
   // 🔑 Generate unique short code (7 chars, base62)
   // ═══════════════════════════════════════════════════════════════
 
-  private generateCode(length = 7): string {
+  private generateCode(length = 6): string {
     const bytes = crypto.randomBytes(length);
     let code = '';
     for (let i = 0; i < length; i++) {
-      code += BASE62[bytes[i] % 62];
+      code += CHARSET[bytes[i] % 36];
     }
     return code;
   }
@@ -47,7 +47,7 @@ export class ShortLinksService {
       if (!exists) return code;
     }
     // Fallback: longer code
-    return this.generateCode(10);
+    return this.generateCode(8);
   }
 
   // ═══════════════════════════════════════════════════════════════
