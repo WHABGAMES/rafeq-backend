@@ -159,7 +159,7 @@ const EMBED_SCRIPT = `
   var storeId = cfg.storeId;
   if(!storeId){ console.warn('RafeqWidget: missing storeId'); return; }
 
-  var API = (cfg.apiUrl || 'https://api.rafeq.ai') + '/api/v1/widget';
+  var API = (cfg.apiUrl || 'https://api.rafeq.ai') + '/api/widget';
 
   // Fetch config
   fetch(API + '/' + storeId + '/config')
