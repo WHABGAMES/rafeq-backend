@@ -464,8 +464,9 @@ export class MessageService implements OnModuleInit {
         tenantId: data.tenantId,
         isNewConversation,
       }, {
+        delay: 5000, // ✅ 5 ثواني تأخير — شبكة أمان: يتحقق إذا AI رد، وإذا لا يعيد الإطلاق
         attempts: 3,
-        backoff: { type: 'exponential', delay: 1000 },
+        backoff: { type: 'exponential', delay: 3000 },
       });
 
       const duration = Date.now() - startTime;
