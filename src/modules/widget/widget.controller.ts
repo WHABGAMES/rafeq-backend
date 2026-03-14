@@ -181,8 +181,8 @@ const EMBED_SCRIPT = `
 
   function render(c){
     var isRight = (c.position||'bottom-right').indexOf('right')>-1;
-    var sizes = {small:44,medium:56,large:68};
-    var sz = sizes[c.size]||56;
+    var sz = c.iconSize||60;
+    var bOff = c.bottomOff||20;
     var phone = (c.phone||'').replace(/[^0-9]/g,'');
     var pf = encodeURIComponent(c.prefilled||'');
     var waUrl = 'https://wa.me/'+phone+(pf?'?text='+pf:'');
@@ -239,7 +239,7 @@ const EMBED_SCRIPT = `
     // Build CSS
     var style=document.createElement('style');
     style.textContent=[
-      '#rw-wrap{position:fixed;bottom:20px;z-index:999999;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;direction:rtl;}'
+      '#rw-wrap{position:fixed;bottom:'+bOff+'px;z-index:999999;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;direction:rtl;}'
       +(isRight?'#rw-wrap{right:20px;}':'#rw-wrap{left:20px;}'),
       '#rw-btn{width:'+btnW+(typeof btnW==='number'?'px':'')+';height:'+btnH+'px;border-radius:'+btnR+';background:'+(bs==='minimal'?'transparent':bc)+';border:'+(bs==='minimal'?'2px solid '+bc:'none')+';cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;box-shadow:'+(bs==='minimal'?'none':'0 4px 16px rgba(0,0,0,.2)')+';transition:transform .2s,box-shadow .2s;padding:'+btnPad+';}',
       '#rw-btn:hover{transform:scale(1.08);box-shadow:0 6px 24px rgba(0,0,0,.25);}',
@@ -282,6 +282,20 @@ const EMBED_SCRIPT = `
     });
     document.getElementById('rw-x').addEventListener('click',function(e){e.stopPropagation();pop.classList.remove('open');isOpen=false;});
     document.addEventListener('click',function(e){if(isOpen&&!wrap.contains(e.target)){pop.classList.remove('open');isOpen=false;}});
+
+    // Show popup on hover
+    if(c.hoverOpen){
+      btn.addEventListener('mouseenter',function(){
+        if(!isOpen){pop.classList.add('open');tip.classList.remove('show');isOpen=true;track('click');}
+      });
+    }
+
+    // Auto-open popup after idle time
+    if(c.autoOpen>0){
+      setTimeout(function(){
+        if(!isOpen){pop.classList.add('open');tip.classList.remove('show');isOpen=true;track('click');}
+      }, c.autoOpen*1000);
+    }
   }
 })();
 `;
