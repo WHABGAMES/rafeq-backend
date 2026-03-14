@@ -416,6 +416,10 @@ async function bootstrap() {
           button_color VARCHAR(7) NOT NULL DEFAULT '#25D366',
           header_color VARCHAR(7) NOT NULL DEFAULT '#075E54',
           size widget_size_enum NOT NULL DEFAULT 'medium',
+          button_style VARCHAR(20) NOT NULL DEFAULT 'classic',
+          button_animation VARCHAR(20) NOT NULL DEFAULT 'pulse',
+          button_text VARCHAR(50),
+          popup_style VARCHAR(20) NOT NULL DEFAULT 'whatsapp',
           show_on_mobile BOOLEAN NOT NULL DEFAULT true,
           show_tooltip BOOLEAN NOT NULL DEFAULT true,
           tooltip_text VARCHAR(100) NOT NULL DEFAULT 'تحتاج مساعدة؟',
@@ -430,6 +434,12 @@ async function bootstrap() {
       `);
 
       await ds.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_widget_store ON widget_settings (store_id)`);
+
+      // Add new columns if they don't exist (safe for existing tables)
+      await ds.query(`ALTER TABLE widget_settings ADD COLUMN IF NOT EXISTS button_style VARCHAR(20) NOT NULL DEFAULT 'classic'`);
+      await ds.query(`ALTER TABLE widget_settings ADD COLUMN IF NOT EXISTS button_animation VARCHAR(20) NOT NULL DEFAULT 'pulse'`);
+      await ds.query(`ALTER TABLE widget_settings ADD COLUMN IF NOT EXISTS button_text VARCHAR(50)`);
+      await ds.query(`ALTER TABLE widget_settings ADD COLUMN IF NOT EXISTS popup_style VARCHAR(20) NOT NULL DEFAULT 'whatsapp'`);
 
       logger.log('✅ Widget settings table ready');
     } catch (e: any) {
