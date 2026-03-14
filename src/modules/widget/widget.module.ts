@@ -10,10 +10,11 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { WidgetSettings } from './widget-settings.entity';
 import { WidgetService } from './widget.service';
 import { WidgetPublicController, WidgetSettingsController } from './widget.controller';
+import { Store } from '../stores/entities/store.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([WidgetSettings]),
+    TypeOrmModule.forFeature([WidgetSettings, Store]),
   ],
   controllers: [
     WidgetPublicController,
