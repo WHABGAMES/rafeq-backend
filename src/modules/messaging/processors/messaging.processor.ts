@@ -15,14 +15,18 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, MoreThan } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
 // Entities
 import {
   Message,
   MessageStatus,
+  MessageDirection,
+  MessageType,
+  MessageSender,
   Conversation,
+  ConversationHandler,
   Channel,
 } from '@database/entities';
 
@@ -207,21 +211,90 @@ export class MessagingProcessor extends WorkerHost {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // 📥 PROCESS INCOMING — معالجة إضافية للرسائل الواردة
+  // 📥 PROCESS INCOMING — شبكة أمان: يتحقق إذا AI رد على الرسالة
   // ═══════════════════════════════════════════════════════════════════════════
 
+  /**
+   * يعمل بعد 5 ثواني من حفظ الرسالة الواردة.
+   * يتحقق: هل AI رد على هالرسالة؟
+   * إذا لا (حدث ضياع EventEmitter بسبب Bad MAC أو غيره) → يعيد إطلاق الحدث.
+   *
+   * هذا يحل مشكلة:
+   * - Bad MAC errors اللي تسبب ضياع EventEmitter
+   * - أي crash أو خطأ بين حفظ الرسالة وإطلاق الحدث
+   * - race conditions مع Baileys duplicate messages
+   */
   private async handleProcessIncoming(
     job: Job<ProcessIncomingJobData>,
   ): Promise<{ status: string }> {
-    const { messageId, isNewConversation } = job.data;
+    const { messageId, conversationId, channelId, tenantId } = job.data;
 
-    this.logger.debug(
-      `📥 [process-incoming] messageId: ${messageId}, isNew: ${isNewConversation}`,
-    );
+    try {
+      // 1. Load the incoming message
+      const message = await this.messageRepo.findOne({ where: { id: messageId } });
+      if (!message) {
+        return { status: 'message_not_found' };
+      }
 
-    // المعالجة الإضافية تحصل عبر EventEmitter (مثل AI auto-reply)
-    // هذا الـ job يضمن أن الأحداث تُعالج حتى لو حصل خطأ
+      // 2. Skip if not inbound text (AI only responds to text)
+      if (message.direction !== MessageDirection.INBOUND || message.type !== MessageType.TEXT) {
+        return { status: 'not_ai_eligible' };
+      }
 
-    return { status: 'processed' };
+      // 3. Load conversation
+      const conversation = await this.conversationRepo.findOne({ where: { id: conversationId } });
+      if (!conversation) {
+        return { status: 'conversation_not_found' };
+      }
+
+      // 4. Skip if not AI-handled
+      if (conversation.handler !== ConversationHandler.AI) {
+        return { status: 'not_ai_handled' };
+      }
+
+      // 5. Check if AI already responded AFTER this message
+      const aiResponse = await this.messageRepo.findOne({
+        where: {
+          conversationId,
+          sender: MessageSender.AI,
+          createdAt: MoreThan(message.createdAt),
+        },
+        order: { createdAt: 'ASC' },
+      });
+
+      if (aiResponse) {
+        // AI already responded — EventEmitter worked fine
+        return { status: 'ai_already_responded' };
+      }
+
+      // 6. ⚠️ AI did NOT respond — re-emit the event
+      this.logger.warn(
+        `🔄 [SAFETY NET] AI did not respond to message ${messageId} within 5s — re-emitting event`,
+      );
+
+      const channel = await this.channelRepo.findOne({ where: { id: channelId } });
+      if (!channel) {
+        return { status: 'channel_not_found' };
+      }
+
+      this.eventEmitter.emit('message.received', {
+        message,
+        conversation,
+        channel,
+        isNewConversation: false,
+      });
+
+      this.logger.log(
+        `✅ [SAFETY NET] Re-emitted message.received for ${messageId} — AI should now respond`,
+      );
+
+      return { status: 'ai_re_triggered' };
+
+    } catch (error: any) {
+      this.logger.error(
+        `❌ [SAFETY NET] Failed for message ${messageId}: ${error.message}`,
+      );
+      throw error; // BullMQ will retry
+    }
   }
 }
