@@ -24,7 +24,6 @@ import {
   HttpCode,
   HttpStatus,
   UseGuards,
-  Header,
   NotFoundException,
 } from '@nestjs/common';
 import { Response } from 'express';
@@ -63,15 +62,22 @@ export class WidgetPublicController {
 
   /**
    * Widget config — called by embed.js
+   * Must handle CORS manually to ensure headers on errors too
    */
   @Get(':storeId/config')
-  @Header('Access-Control-Allow-Origin', '*')
-  @Header('Cache-Control', 'public, max-age=60')
   @ApiOperation({ summary: 'Widget config (public)' })
-  async getConfig(@Param('storeId') storeId: string) {
-    const config = await this.widgetService.getPublicConfig(storeId);
-    if (!config) return { enabled: false };
-    return config;
+  async getConfig(@Param('storeId') storeId: string, @Res() res: Response) {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET');
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.setHeader('Cache-Control', 'public, max-age=60');
+
+    try {
+      const config = await this.widgetService.getPublicConfig(storeId);
+      res.json(config || { enabled: false });
+    } catch {
+      res.json({ enabled: false });
+    }
   }
 
   /**
@@ -79,17 +85,21 @@ export class WidgetPublicController {
    */
   @Post(':storeId/track')
   @HttpCode(HttpStatus.NO_CONTENT)
-  @Header('Access-Control-Allow-Origin', '*')
   @ApiOperation({ summary: 'Track widget event' })
   async track(
     @Param('storeId') storeId: string,
+    @Res() res: Response,
     @Body() body: { event: 'click' | 'impression' },
   ) {
-    if (body.event === 'click') {
-      await this.widgetService.trackClick(storeId);
-    } else if (body.event === 'impression') {
-      await this.widgetService.trackImpression(storeId);
-    }
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+
+    try {
+      if (body.event === 'click') await this.widgetService.trackClick(storeId);
+      else if (body.event === 'impression') await this.widgetService.trackImpression(storeId);
+    } catch {}
+
+    res.status(204).send();
   }
 }
 
