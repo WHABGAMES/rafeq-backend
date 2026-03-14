@@ -1,21 +1,57 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║              RAFIQ PLATFORM - Widget Service                                   ║
+ * ║                                                                                ║
+ * ║  يدعم البحث بـ storeId (UUID) أو sallaMerchantId (رقم سلة)                   ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
 import { WidgetSettings } from './widget-settings.entity';
+import { Store } from '../stores/entities/store.entity';
 
 @Injectable()
 export class WidgetService {
+  private readonly logger = new Logger(WidgetService.name);
+
   constructor(
     @InjectRepository(WidgetSettings)
     private readonly repo: Repository<WidgetSettings>,
+
+    @InjectRepository(Store)
+    private readonly storeRepo: Repository<Store>,
   ) {}
+
+  /**
+   * يحل storeId من UUID أو رقم سلة
+   * سلة Snippet يرسل {{store.id}} = رقم سلة (مثل 1852572916)
+   * قاعدة بياناتنا تستخدم UUID
+   */
+  private async resolveStoreId(identifier: string): Promise<string | null> {
+    // إذا كان UUID → استخدمه مباشرة
+    if (identifier.includes('-') && identifier.length > 30) {
+      return identifier;
+    }
+
+    // إذا كان رقم → ابحث بـ sallaMerchantId
+    const numericId = parseInt(identifier, 10);
+    if (!isNaN(numericId)) {
+      const store = await this.storeRepo.findOne({
+        where: { sallaMerchantId: numericId },
+        select: ['id'],
+      });
+
+      if (store) {
+        this.logger.log(`Resolved sallaMerchantId ${numericId} → storeId ${store.id}`);
+        return store.id;
+      }
+    }
+
+    return null;
+  }
 
   /**
    * جلب إعدادات الويدجت لمتجر — يُنشئ default إذا ما لقى
@@ -45,7 +81,6 @@ export class WidgetService {
       settings = this.repo.create({ storeId, tenantId, whatsappNumber: '' });
     }
 
-    // Update only allowed fields
     const allowed = [
       'isEnabled', 'whatsappNumber', 'welcomeMessage', 'prefilledMessage',
       'position', 'buttonColor', 'headerColor', 'size',
@@ -63,9 +98,12 @@ export class WidgetService {
   }
 
   /**
-   * جلب config عام (بدون بيانات حساسة) — للـ embed script
+   * جلب config عام — يقبل UUID أو رقم سلة
    */
-  async getPublicConfig(storeId: string): Promise<Record<string, unknown> | null> {
+  async getPublicConfig(identifier: string): Promise<Record<string, unknown> | null> {
+    const storeId = await this.resolveStoreId(identifier);
+    if (!storeId) return null;
+
     const settings = await this.repo.findOne({ where: { storeId, isEnabled: true } });
 
     if (!settings || !settings.whatsappNumber) {
@@ -91,16 +129,18 @@ export class WidgetService {
   }
 
   /**
-   * Track click
+   * Track click — يقبل UUID أو رقم سلة
    */
-  async trackClick(storeId: string): Promise<void> {
-    await this.repo.increment({ storeId }, 'totalClicks', 1);
+  async trackClick(identifier: string): Promise<void> {
+    const storeId = await this.resolveStoreId(identifier);
+    if (storeId) await this.repo.increment({ storeId }, 'totalClicks', 1);
   }
 
   /**
-   * Track impression
+   * Track impression — يقبل UUID أو رقم سلة
    */
-  async trackImpression(storeId: string): Promise<void> {
-    await this.repo.increment({ storeId }, 'totalImpressions', 1);
+  async trackImpression(identifier: string): Promise<void> {
+    const storeId = await this.resolveStoreId(identifier);
+    if (storeId) await this.repo.increment({ storeId }, 'totalImpressions', 1);
   }
 }
