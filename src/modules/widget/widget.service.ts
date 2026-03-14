@@ -4,7 +4,7 @@
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
@@ -12,8 +12,6 @@ import { WidgetSettings } from './widget-settings.entity';
 
 @Injectable()
 export class WidgetService {
-  private readonly logger = new Logger(WidgetService.name);
-
   constructor(
     @InjectRepository(WidgetSettings)
     private readonly repo: Repository<WidgetSettings>,
