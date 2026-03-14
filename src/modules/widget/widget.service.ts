@@ -85,6 +85,7 @@ export class WidgetService {
       'isEnabled', 'whatsappNumber', 'welcomeMessage', 'prefilledMessage',
       'position', 'buttonColor', 'headerColor', 'size',
       'buttonStyle', 'buttonAnimation', 'buttonText', 'popupStyle',
+      'iconSizePx', 'bottomOffset', 'showOnHover', 'autoOpenSeconds',
       'showOnMobile', 'showTooltip', 'tooltipText',
       'agentName', 'agentAvatarUrl', 'offlineMessage',
     ];
@@ -124,6 +125,10 @@ export class WidgetService {
       btnAnim: settings.buttonAnimation || 'pulse',
       btnText: settings.buttonText || '',
       popupStyle: settings.popupStyle || 'whatsapp',
+      iconSize: settings.iconSizePx || 60,
+      bottomOff: settings.bottomOffset || 20,
+      hoverOpen: settings.showOnHover || false,
+      autoOpen: settings.autoOpenSeconds || 0,
       mobile: settings.showOnMobile,
       tooltip: settings.showTooltip,
       tooltipText: settings.tooltipText,
