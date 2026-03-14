@@ -227,7 +227,7 @@ export class MessagingProcessor extends WorkerHost {
   private async handleProcessIncoming(
     job: Job<ProcessIncomingJobData>,
   ): Promise<{ status: string }> {
-    const { messageId, conversationId, channelId, tenantId } = job.data;
+    const { messageId, conversationId, channelId } = job.data;
 
     try {
       // 1. Load the incoming message
