@@ -440,6 +440,10 @@ async function bootstrap() {
       await ds.query(`ALTER TABLE widget_settings ADD COLUMN IF NOT EXISTS button_animation VARCHAR(20) NOT NULL DEFAULT 'pulse'`);
       await ds.query(`ALTER TABLE widget_settings ADD COLUMN IF NOT EXISTS button_text VARCHAR(50)`);
       await ds.query(`ALTER TABLE widget_settings ADD COLUMN IF NOT EXISTS popup_style VARCHAR(20) NOT NULL DEFAULT 'whatsapp'`);
+      await ds.query(`ALTER TABLE widget_settings ADD COLUMN IF NOT EXISTS icon_size_px INT NOT NULL DEFAULT 60`);
+      await ds.query(`ALTER TABLE widget_settings ADD COLUMN IF NOT EXISTS bottom_offset INT NOT NULL DEFAULT 20`);
+      await ds.query(`ALTER TABLE widget_settings ADD COLUMN IF NOT EXISTS show_on_hover BOOLEAN NOT NULL DEFAULT false`);
+      await ds.query(`ALTER TABLE widget_settings ADD COLUMN IF NOT EXISTS auto_open_seconds INT NOT NULL DEFAULT 0`);
 
       logger.log('✅ Widget settings table ready');
     } catch (e: any) {
