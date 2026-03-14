@@ -34,13 +34,13 @@ export class ShortLink {
   originalUrl: string;
 
   @Column({ name: 'title', type: 'varchar', length: 200, nullable: true })
-  title: string;
+  title?: string;
 
   @Column({ name: 'is_active', type: 'boolean', default: true })
   isActive: boolean;
 
   @Column({ name: 'expires_at', type: 'timestamptz', nullable: true })
-  expiresAt: Date;
+  expiresAt?: Date;
 
   @Column({ name: 'total_clicks', type: 'integer', default: 0 })
   totalClicks: number;
@@ -71,25 +71,25 @@ export class LinkClick {
   tenantId: string;
 
   @Column({ name: 'country', type: 'varchar', length: 50, nullable: true })
-  country: string;
+  country?: string;
 
   @Column({ name: 'city', type: 'varchar', length: 100, nullable: true })
-  city: string;
+  city?: string;
 
   @Column({ name: 'device_type', type: 'varchar', length: 20, nullable: true })
-  deviceType: string;
+  deviceType?: string;
 
   @Column({ name: 'browser', type: 'varchar', length: 50, nullable: true })
-  browser: string;
+  browser?: string;
 
   @Column({ name: 'os', type: 'varchar', length: 50, nullable: true })
-  os: string;
+  os?: string;
 
   @Column({ name: 'referrer', type: 'varchar', length: 500, nullable: true })
-  referrer: string;
+  referrer?: string;
 
   @Column({ name: 'referrer_source', type: 'varchar', length: 30, nullable: true })
-  referrerSource: string;
+  referrerSource?: string;
 
   @Column({ name: 'clicked_at', type: 'timestamptz', default: () => 'NOW()' })
   clickedAt: Date;
