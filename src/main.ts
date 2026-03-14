@@ -390,6 +390,47 @@ async function bootstrap() {
       logger.error(e.stack);
     }
 
+    // ─── Auto-create widget_settings table ──────────────────────────────
+    try {
+      const ds = app.get(DataSource);
+
+      await ds.query(`DO $$ BEGIN CREATE TYPE widget_position_enum AS ENUM ('bottom-right','bottom-left'); EXCEPTION WHEN duplicate_object THEN NULL; END $$`);
+      await ds.query(`DO $$ BEGIN CREATE TYPE widget_size_enum AS ENUM ('small','medium','large'); EXCEPTION WHEN duplicate_object THEN NULL; END $$`);
+
+      await ds.query(`
+        CREATE TABLE IF NOT EXISTS widget_settings (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          store_id UUID NOT NULL,
+          tenant_id UUID NOT NULL,
+          is_enabled BOOLEAN NOT NULL DEFAULT true,
+          whatsapp_number VARCHAR(20) NOT NULL DEFAULT '',
+          welcome_message VARCHAR(500) NOT NULL DEFAULT 'مرحباً! كيف نقدر نساعدك؟ 👋',
+          prefilled_message VARCHAR(300) NOT NULL DEFAULT 'مرحبا، أحتاج مساعدة بخصوص طلبي',
+          position widget_position_enum NOT NULL DEFAULT 'bottom-right',
+          button_color VARCHAR(7) NOT NULL DEFAULT '#25D366',
+          header_color VARCHAR(7) NOT NULL DEFAULT '#075E54',
+          size widget_size_enum NOT NULL DEFAULT 'medium',
+          show_on_mobile BOOLEAN NOT NULL DEFAULT true,
+          show_tooltip BOOLEAN NOT NULL DEFAULT true,
+          tooltip_text VARCHAR(100) NOT NULL DEFAULT 'تحتاج مساعدة؟',
+          agent_name VARCHAR(100) NOT NULL DEFAULT 'فريق الدعم',
+          agent_avatar_url VARCHAR(500),
+          offline_message VARCHAR(300),
+          total_clicks INT NOT NULL DEFAULT 0,
+          total_impressions INT NOT NULL DEFAULT 0,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `);
+
+      await ds.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_widget_store ON widget_settings (store_id)`);
+
+      logger.log('✅ Widget settings table ready');
+    } catch (e: any) {
+      logger.error(`❌ WIDGET TABLE FAILED: ${e.message}`);
+      logger.error(e.stack);
+    }
+
     // ─── Start ────────────────────────────────────────────────────────────────
     await app.listen(port, '0.0.0.0');
 
