@@ -35,7 +35,6 @@ import { AdminJwtGuard, AdminPermissionGuard } from '../guards/admin.guards';
 import { CurrentAdmin } from '../decorators/current-admin.decorator';
 
 import { Conversation, Message, ConversationStatus } from '@database/entities';
-import { MessageSender } from '@database/entities/message.entity';
 import { InboxService } from '@modules/inbox/inbox.service';
 
 @ApiTags('Admin: صندوق الرسائل')
