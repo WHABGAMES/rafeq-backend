@@ -26,7 +26,7 @@ import { MergeHistory } from './entities/merge-history.entity';
 import { WhatsappSettings } from './entities/whatsapp-settings.entity';
 import { MessageTemplate } from './entities/message-template.entity';
 import { MessageLog } from './entities/message-log.entity';
-import { Conversation, Message } from '@database/entities';
+import { Conversation, Message, Channel } from '@database/entities';
 
 // Services
 import { AuditService } from './services/audit.service';
@@ -99,6 +99,7 @@ if (!jwtSecret) {
       MessageLog,
       Conversation,  // ✅ مطلوب لـ AdminInboxController
       Message,       // ✅ مطلوب لـ AdminInboxController
+      Channel,       // ✅ مطلوب لـ AdminInboxController — فلترة بالرقم الإداري
     ]),
 
     // ✅ JwtModule يستخدم نفس الـ secret المُتحقَّق منه أعلاه
