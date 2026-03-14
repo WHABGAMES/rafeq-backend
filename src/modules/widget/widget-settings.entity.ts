@@ -103,6 +103,19 @@ export class WidgetSettings {
   @Column({ name: 'popup_style', type: 'varchar', length: 20, default: 'whatsapp' })
   popupStyle: string;
 
+  // ─── Advanced Appearance ──────────────────────
+  @Column({ name: 'icon_size_px', type: 'integer', default: 60 })
+  iconSizePx: number;
+
+  @Column({ name: 'bottom_offset', type: 'integer', default: 20 })
+  bottomOffset: number;
+
+  @Column({ name: 'show_on_hover', type: 'boolean', default: false })
+  showOnHover: boolean;
+
+  @Column({ name: 'auto_open_seconds', type: 'integer', default: 0 })
+  autoOpenSeconds: number;
+
   @Column({ name: 'show_on_mobile', type: 'boolean', default: true })
   showOnMobile: boolean;
 
