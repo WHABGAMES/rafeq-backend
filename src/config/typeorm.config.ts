@@ -115,6 +115,7 @@ const buildConfig = (configService: ConfigService): TypeOrmModuleOptions => {
     synchronize,
     migrations: [__dirname + '/../database/migrations/*{.ts,.js}'],
     migrationsRun: true,
+    migrationsTransactionMode: 'each',
     logging: isDevelopment
       ? ['error', 'warn', 'migration']
       : configService.get<boolean>('database.logging', false)
