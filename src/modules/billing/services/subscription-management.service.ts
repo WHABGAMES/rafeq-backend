@@ -369,53 +369,78 @@ export class SubscriptionManagementService {
   }> {
     const { page = 1, limit = 50 } = { page: filters.page || 1, limit: filters.limit || 50 };
 
-    const whereConditions: string[] = ['1=1'];
+    const whereConditions: string[] = ['u.deleted_at IS NULL', 't.deleted_at IS NULL'];
     const params: any[] = [];
     let idx = 1;
 
     if (filters.search) {
-      whereConditions.push(`(t.name ILIKE $${idx} OR t.email ILIKE $${idx})`);
+      whereConditions.push(
+        `(t.name ILIKE $${idx} OR t.email ILIKE $${idx} OR u.email ILIKE $${idx} OR u.first_name ILIKE $${idx} OR u.last_name ILIKE $${idx})`,
+      );
       params.push(`%${filters.search}%`);
+      idx++;
+    }
+
+    if (filters.plan === PlanTier.BASIC) {
+      whereConditions.push(`t.subscription_plan = $${idx}`);
+      params.push('basic');
+      idx++;
+    } else if (filters.plan === PlanTier.PROFESSIONAL) {
+      whereConditions.push(`t.subscription_plan IN ($${idx}, $${idx + 1})`);
+      params.push('pro', 'enterprise');
+      idx += 2;
+    } else if (filters.plan === PlanTier.NONE) {
+      whereConditions.push(`(t.subscription_plan = $${idx} OR t.subscription_plan IS NULL)`);
+      params.push('free');
       idx++;
     }
 
     const whereClause = whereConditions.join(' AND ');
 
-    // ✅ نفس نمط admin-users.service.ts — LIMIT/OFFSET كـ parameters
     const dataQuery = `
       SELECT
-        t.id, t.name, t.email, t.subscription_plan,
-        t.subscription_ends_at, t.created_at AS subscribed_at,
+        u.id AS user_id,
+        u.email AS user_email,
+        u.first_name,
+        u.last_name,
+        u.role AS user_role,
+        u.status AS user_status,
+        u.preferences AS user_preferences,
+        u.created_at AS user_created_at,
+        t.id,
+        t.name,
+        t.subscription_plan,
+        t.subscription_ends_at,
+        COALESCE(s.created_at, t.created_at) AS subscribed_at,
         s.status AS sub_status,
         s.usage_stats,
-        s.current_period_end,
-        (
-          SELECT COUNT(*)::int
-          FROM users u
-          WHERE u.tenant_id = t.id
-            AND u.deleted_at IS NULL
-        ) AS accounts_count,
-        (
-          SELECT COALESCE(json_agg(u.email ORDER BY u.created_at), '[]'::json)
-          FROM users u
-          WHERE u.tenant_id = t.id
-            AND u.deleted_at IS NULL
-        ) AS account_emails
-      FROM tenants t
-      LEFT JOIN subscriptions s
-        ON s.tenant_id = t.id
-        AND s.status IN ('active','trialing','past_due','cancelling')
+        s.current_period_end
+      FROM users u
+      INNER JOIN tenants t
+        ON t.id = u.tenant_id
+      LEFT JOIN LATERAL (
+        SELECT
+          s1.status,
+          s1.usage_stats,
+          s1.current_period_end,
+          s1.created_at
+        FROM subscriptions s1
+        WHERE s1.tenant_id = t.id
+          AND s1.status IN ('active','trialing','past_due','cancelling')
+        ORDER BY s1.created_at DESC
+        LIMIT 1
+      ) s ON TRUE
       WHERE ${whereClause}
-        AND t.deleted_at IS NULL
-      ORDER BY t.created_at DESC
+      ORDER BY u.created_at DESC
       LIMIT $${idx} OFFSET $${idx + 1}
     `;
     const dataParams = [...params, limit, (page - 1) * limit];
 
     const countQuery = `
       SELECT COUNT(*) AS count
-      FROM tenants t
-      WHERE ${whereClause} AND t.deleted_at IS NULL
+      FROM users u
+      INNER JOIN tenants t ON t.id = u.tenant_id
+      WHERE ${whereClause}
     `;
 
     const [rows, countResult] = await Promise.all([
@@ -429,11 +454,13 @@ export class SubscriptionManagementService {
       const usageStats = row.usage_stats || {};
       const resolvedPlan = this.mapTenantPlanToTier(row.subscription_plan || 'free');
       const endsAt = row.subscription_ends_at ? new Date(row.subscription_ends_at) : null;
-      const accountEmails: string[] = Array.isArray(row.account_emails)
-        ? row.account_emails.filter((e: unknown) => typeof e === 'string' && e.length > 0)
-        : [];
-      const fallbackEmail = row.email ? [row.email] : [];
-      const normalizedEmails = accountEmails.length ? accountEmails : fallbackEmail;
+      const accountName = [row.first_name, row.last_name]
+        .filter((v: unknown) => typeof v === 'string' && v.trim().length > 0)
+        .join(' ')
+        .trim() || row.user_email || '';
+      const prefs = row.user_preferences && typeof row.user_preferences === 'object'
+        ? row.user_preferences
+        : {};
       const now = new Date();
       let daysRemaining: number | null = null;
       if (endsAt) {
@@ -443,9 +470,12 @@ export class SubscriptionManagementService {
       return {
         tenantId: row.id,
         tenantName: row.name || '',
-        email: normalizedEmails[0] || '',
-        accountEmails: normalizedEmails,
-        accountsCount: Number(row.accounts_count || normalizedEmails.length || 0),
+        accountId: row.user_id,
+        accountName,
+        email: row.user_email || '',
+        accountRole: row.user_role || '',
+        accountStatus: row.user_status || '',
+        settingsCount: Object.keys(prefs).length,
         plan: resolvedPlan,
         status: row.sub_status || (resolvedPlan !== PlanTier.NONE ? 'active' : 'none'),
         messagesUsed: usageStats.messagesUsed || 0,
@@ -457,11 +487,7 @@ export class SubscriptionManagementService {
       };
     });
 
-    const filtered = filters.plan
-      ? items.filter((i: any) => i.plan === filters.plan)
-      : items;
-
-    return { items: filtered, total, page, limit };
+    return { items, total, page, limit };
   }
 
   // ─── 7. إعادة تعيين الاستخدام الشهري ──────────────────────────────────
