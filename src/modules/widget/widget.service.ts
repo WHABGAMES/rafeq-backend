@@ -88,7 +88,7 @@ export class WidgetService {
       'iconSizePx', 'bottomOffset', 'showOnHover', 'autoOpenSeconds',
       'showOnMobile', 'showTooltip', 'tooltipText',
       'agentName', 'agentAvatarUrl', 'offlineMessage',
-      'customIconUrl',   // ✅ لوقو الأيقونة المخصصة
+      'customIconUrl',
     ];
 
     for (const key of allowed) {
@@ -136,7 +136,7 @@ export class WidgetService {
       agent: settings.agentName,
       avatar: settings.agentAvatarUrl,
       offline: settings.offlineMessage,
-      customIcon: settings.customIconUrl || null,  // ✅ لوقو مخصص
+      customIcon: settings.customIconUrl || null,
     };
   }
 
