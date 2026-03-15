@@ -36,6 +36,7 @@ import Redis from 'ioredis';
 
 import { User, UserStatus, UserRole, AuthProvider } from '@database/entities/user.entity';
 import { Tenant, TenantStatus, SubscriptionPlan } from '@database/entities/tenant.entity';
+import { TrustedDevice } from './trusted-device.entity';
 import { OtpService, OtpChannel } from './otp.service';
 import { MailService } from '../mail/mail.service';
 import { ZidOAuthService, ZidTokenResponse, ZidStoreInfo } from '../stores/zid-oauth.service';
@@ -196,6 +197,9 @@ export class AuthService implements OnModuleInit {
 
     @Inject(forwardRef(() => ZidOAuthService))
     private readonly zidOAuthService: ZidOAuthService,
+
+    @InjectRepository(TrustedDevice)
+    private readonly deviceRepository: Repository<TrustedDevice>,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -1494,6 +1498,100 @@ export class AuthService implements OnModuleInit {
       this.logger.error('OAuth state verification failed', error);
       return false;
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 📱 TRUSTED DEVICES
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async trackDevice(userId: string, tenantId: string, req: { ip?: string; userAgent?: string }): Promise<void> {
+    try {
+      // Get tenantId if not provided
+      let tid = tenantId;
+      if (!tid) {
+        const user = await this.userRepository.findOne({ where: { id: userId }, select: ['tenantId'] });
+        tid = user?.tenantId || '';
+      }
+      if (!tid) return;
+
+      const ua = req.userAgent || '';
+      const ip = req.ip || 'unknown';
+      const parsed = this.parseUA(ua);
+
+      // Check if same device (same IP + browser + OS)
+      const existing = await this.deviceRepository.findOne({
+        where: { userId, ipAddress: ip, browser: parsed.browser, os: parsed.os, isActive: true },
+      });
+
+      if (existing) {
+        existing.lastActiveAt = new Date();
+        existing.userAgent = ua;
+        await this.deviceRepository.save(existing);
+      } else {
+        await this.deviceRepository.save({
+          userId,
+          tenantId,
+          deviceName: `${parsed.deviceType} • ${parsed.os}`,
+          browser: parsed.browser,
+          os: parsed.os,
+          ipAddress: ip,
+          userAgent: ua,
+          lastActiveAt: new Date(),
+        });
+      }
+    } catch (err) {
+      this.logger.error(`Failed to track device: ${(err as Error).message}`);
+    }
+  }
+
+  async getDevices(userId: string): Promise<TrustedDevice[]> {
+    return this.deviceRepository.find({
+      where: { userId, isActive: true },
+      order: { lastActiveAt: 'DESC' },
+    });
+  }
+
+  async revokeDevice(userId: string, deviceId: string): Promise<boolean> {
+    const device = await this.deviceRepository.findOne({ where: { id: deviceId, userId } });
+    if (!device) return false;
+    device.isActive = false;
+    await this.deviceRepository.save(device);
+    return true;
+  }
+
+  async revokeAllDevices(userId: string, exceptDeviceIp?: string): Promise<number> {
+    const devices = await this.deviceRepository.find({ where: { userId, isActive: true } });
+    let count = 0;
+    for (const d of devices) {
+      if (exceptDeviceIp && d.ipAddress === exceptDeviceIp) continue;
+      d.isActive = false;
+      await this.deviceRepository.save(d);
+      count++;
+    }
+    return count;
+  }
+
+  private parseUA(ua: string): { deviceType: string; browser: string; os: string } {
+    const lower = ua.toLowerCase();
+    let deviceType = 'كمبيوتر';
+    if (/mobile|android|iphone|ipod/.test(lower)) deviceType = 'جوال';
+    else if (/tablet|ipad/.test(lower)) deviceType = 'تابلت';
+
+    let browser = 'متصفح';
+    if (/edg/i.test(ua)) browser = 'Edge';
+    else if (/chrome|crios/i.test(ua) && !/edg/i.test(ua)) browser = 'Chrome';
+    else if (/firefox|fxios/i.test(ua)) browser = 'Firefox';
+    else if (/safari/i.test(ua) && !/chrome/i.test(ua)) browser = 'Safari';
+    else if (/opera|opr/i.test(ua)) browser = 'Opera';
+
+    let os = 'نظام';
+    if (/windows/i.test(ua)) os = 'Windows';
+    else if (/mac os|macintosh/i.test(ua)) os = 'macOS';
+    else if (/android/i.test(ua)) os = 'Android';
+    else if (/iphone|ipad|ipod/i.test(ua)) os = 'iOS';
+    else if (/linux/i.test(ua)) os = 'Linux';
+
+    return { deviceType, browser, os };
   }
 
 }
