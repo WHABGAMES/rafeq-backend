@@ -19,7 +19,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { InjectDataSource } from '@nestjs/typeorm';
 // ✅ FIX [TS2305]: IsolationLevel removed — use string literal directly
-import { Repository, DataSource } from 'typeorm';
+import { Repository, DataSource, QueryRunner } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
 import { randomBytes } from 'crypto';
 import { AuditService } from './audit.service';
@@ -407,6 +407,146 @@ export class AdminUsersService {
 
   // ─── Account Merge ─────────────────────────────────────────────────────────
 
+  async hardDeleteMerchantData(userId: string, admin: AdminUser, ipAddress: string) {
+    const [targetUser] = await this.dataSource.query(
+      `SELECT id, email, role, tenant_id FROM users WHERE id = $1`,
+      [userId],
+    );
+
+    if (!targetUser) {
+      throw new NotFoundException(`User ${userId} not found`);
+    }
+    if (!targetUser.tenant_id) {
+      throw new BadRequestException('User is not linked to a tenant');
+    }
+    if (targetUser.role !== 'owner') {
+      throw new BadRequestException('Full merchant deletion is allowed only for owner accounts');
+    }
+
+    const tenantId: string = targetUser.tenant_id;
+    const [tenant] = await this.dataSource.query(
+      `SELECT id, name FROM tenants WHERE id = $1`,
+      [tenantId],
+    );
+    if (!tenant) {
+      throw new NotFoundException(`Tenant ${tenantId} not found`);
+    }
+
+    const tenantUsers = await this.dataSource.query(
+      `SELECT id, email, role FROM users WHERE tenant_id = $1`,
+      [tenantId],
+    );
+    const tenantStores = await this.dataSource.query(
+      `SELECT id, name, platform FROM stores WHERE tenant_id = $1`,
+      [tenantId],
+    );
+
+    const userIds: string[] = tenantUsers.map((u: any) => u.id);
+    const storeIds: string[] = tenantStores.map((s: any) => s.id);
+
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction('SERIALIZABLE');
+
+    try {
+      await queryRunner.query(`SELECT pg_advisory_xact_lock($1)`, [this.hashForLock(tenantId)]);
+
+      const tenantScopedCleanup = await this.cleanupTenantScopedTables(
+        queryRunner,
+        tenantId,
+        storeIds,
+        userIds,
+      );
+      if (tenantScopedCleanup.unresolved.length > 0) {
+        throw new ConflictException(
+          `Unable to clean dependent tables: ${tenantScopedCleanup.unresolved.join(', ')}`,
+        );
+      }
+
+      let deletedMergeHistory = 0;
+      let deletedMessageLogs = 0;
+
+      if (userIds.length > 0 && (await this.tableExists(queryRunner, 'merge_history'))) {
+        deletedMergeHistory = await this.deleteWithCount(
+          queryRunner,
+          `DELETE FROM merge_history
+           WHERE source_user_id IN (${this.makeInPlaceholders(userIds.length)})
+              OR target_user_id IN (${this.makeInPlaceholders(userIds.length, userIds.length)})`,
+          [...userIds, ...userIds],
+        );
+      }
+
+      if (userIds.length > 0 && (await this.tableExists(queryRunner, 'message_logs'))) {
+        deletedMessageLogs = await this.deleteWithCount(
+          queryRunner,
+          `DELETE FROM message_logs
+           WHERE recipient_user_id IN (${this.makeInPlaceholders(userIds.length)})`,
+          userIds,
+        );
+      }
+
+      const deletedUsers = await this.deleteWithCount(
+        queryRunner,
+        `DELETE FROM users WHERE tenant_id = $1`,
+        [tenantId],
+      );
+      const deletedStores = await this.deleteWithCount(
+        queryRunner,
+        `DELETE FROM stores WHERE tenant_id = $1`,
+        [tenantId],
+      );
+      const deletedTenants = await this.deleteWithCount(
+        queryRunner,
+        `DELETE FROM tenants WHERE id = $1`,
+        [tenantId],
+      );
+
+      await queryRunner.commitTransaction();
+
+      await this.auditService.log({
+        actor: admin,
+        action: 'user.hard_deleted',
+        targetType: 'tenant',
+        targetId: tenantId,
+        metadata: {
+          deletedOwnerUserId: userId,
+          deletedOwnerEmail: targetUser.email,
+          tenantName: tenant.name,
+          usersDeleted: deletedUsers,
+          storesDeleted: deletedStores,
+          tenantsDeleted: deletedTenants,
+          mergeHistoryDeleted: deletedMergeHistory,
+          messageLogsDeleted: deletedMessageLogs,
+          tenantScopedCleanup: tenantScopedCleanup.deletedByTable,
+        },
+        ipAddress,
+      });
+
+      this.logger.warn(
+        `Hard-deleted tenant ${tenantId} by ${admin.email} (users=${deletedUsers}, stores=${deletedStores})`,
+      );
+
+      return {
+        success: true,
+        tenantId,
+        usersDeleted: deletedUsers,
+        storesDeleted: deletedStores,
+        tenantDeleted: deletedTenants > 0,
+        cleanup: {
+          mergeHistoryDeleted: deletedMergeHistory,
+          messageLogsDeleted: deletedMessageLogs,
+          byTable: tenantScopedCleanup.deletedByTable,
+        },
+      };
+    } catch (err) {
+      await queryRunner.rollbackTransaction();
+      this.logger.error(`Hard delete failed for tenant ${tenantId}`, err as any);
+      throw err;
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
   async previewMerge(sourceUserId: string, targetUserId: string) {
     if (sourceUserId === targetUserId) {
       throw new BadRequestException('Cannot merge user with themselves');
@@ -591,6 +731,153 @@ export class AdminUsersService {
    * يحوّل UUID إلى رقم int لاستخدامه في pg_advisory_xact_lock
    * يضمن نفس الـ lock لنفس الـ UUID في كل مرة
    */
+  private makeInPlaceholders(length: number, offset = 0): string {
+    return Array.from({ length }, (_, i) => `$${i + 1 + offset}`).join(', ');
+  }
+
+  private quoteIdentifier(name: string): string {
+    return `"${name.replace(/"/g, '""')}"`;
+  }
+
+  private readDeletedCount(result: any): number {
+    const rawCount = Array.isArray(result) ? result[0]?.deleted_count : 0;
+    const count = Number(rawCount ?? 0);
+    return Number.isFinite(count) ? count : 0;
+  }
+
+  private async deleteWithCount(
+    queryRunner: QueryRunner,
+    deleteSql: string,
+    params: unknown[],
+  ): Promise<number> {
+    const result = await queryRunner.query(
+      `WITH deleted AS (${deleteSql} RETURNING 1)
+       SELECT COUNT(*)::int AS deleted_count FROM deleted`,
+      params,
+    );
+    return this.readDeletedCount(result);
+  }
+
+  private async tableExists(queryRunner: QueryRunner, tableName: string): Promise<boolean> {
+    const [row] = await queryRunner.query(
+      `SELECT to_regclass($1) IS NOT NULL AS "exists"`,
+      [`public.${tableName}`],
+    );
+
+    const value = row?.exists;
+    return value === true || value === 't' || value === 1 || value === '1';
+  }
+
+  private async cleanupTenantScopedTables(
+    queryRunner: QueryRunner,
+    tenantId: string,
+    storeIds: string[],
+    userIds: string[],
+  ): Promise<{ deletedByTable: Record<string, number>; unresolved: string[] }> {
+    const scopedTables = await queryRunner.query(`
+      SELECT
+        c.table_schema,
+        c.table_name,
+        array_agg(c.column_name)::text[] AS columns
+      FROM information_schema.columns c
+      WHERE c.table_schema = 'public'
+        AND c.column_name IN ('tenant_id', 'store_id', 'user_id')
+        AND c.table_name NOT IN (
+          'tenants',
+          'stores',
+          'users',
+          'admin_users',
+          'audit_logs',
+          'merge_history',
+          'message_logs'
+        )
+      GROUP BY c.table_schema, c.table_name
+      ORDER BY c.table_name
+    `);
+
+    const plans: Array<{
+      tableName: string;
+      tableRef: string;
+      sql: string;
+      params: unknown[];
+    }> = [];
+
+    for (const row of scopedTables) {
+      const columns: string[] = Array.isArray(row.columns) ? row.columns : [];
+      let condition = '';
+      let params: unknown[] = [];
+
+      if (columns.includes('tenant_id')) {
+        condition = `"tenant_id" = $1`;
+        params = [tenantId];
+      } else if (columns.includes('store_id') && storeIds.length > 0) {
+        condition = `"store_id" IN (${this.makeInPlaceholders(storeIds.length)})`;
+        params = storeIds;
+      } else if (columns.includes('user_id') && userIds.length > 0) {
+        condition = `"user_id" IN (${this.makeInPlaceholders(userIds.length)})`;
+        params = userIds;
+      } else {
+        continue;
+      }
+
+      const tableRef = `${this.quoteIdentifier(row.table_schema)}.${this.quoteIdentifier(row.table_name)}`;
+      const tableName = `${row.table_schema}.${row.table_name}`;
+
+      plans.push({
+        tableName,
+        tableRef,
+        params,
+        sql: `WITH deleted AS (DELETE FROM ${tableRef} WHERE ${condition} RETURNING 1)
+              SELECT COUNT(*)::int AS deleted_count FROM deleted`,
+      });
+    }
+
+    return this.applyDeletionPlansWithRetries(queryRunner, plans);
+  }
+
+  private async applyDeletionPlansWithRetries(
+    queryRunner: QueryRunner,
+    plans: Array<{ tableName: string; tableRef: string; sql: string; params: unknown[] }>,
+  ): Promise<{ deletedByTable: Record<string, number>; unresolved: string[] }> {
+    const deletedByTable: Record<string, number> = {};
+    let pending = [...plans];
+    const maxPasses = Math.max(2, plans.length + 2);
+
+    for (let pass = 0; pass < maxPasses && pending.length > 0; pass++) {
+      let progressed = false;
+      const nextPending: typeof pending = [];
+
+      for (let i = 0; i < pending.length; i++) {
+        const plan = pending[i];
+        const savepoint = `sp_purge_${pass}_${i}`;
+
+        await queryRunner.query(`SAVEPOINT ${savepoint}`);
+        try {
+          const result = await queryRunner.query(plan.sql, plan.params);
+          await queryRunner.query(`RELEASE SAVEPOINT ${savepoint}`);
+
+          const deletedCount = this.readDeletedCount(result);
+          deletedByTable[plan.tableName] = (deletedByTable[plan.tableName] || 0) + deletedCount;
+          progressed = true;
+        } catch {
+          await queryRunner.query(`ROLLBACK TO SAVEPOINT ${savepoint}`);
+          await queryRunner.query(`RELEASE SAVEPOINT ${savepoint}`);
+          nextPending.push(plan);
+        }
+      }
+
+      pending = nextPending;
+      if (!progressed && pending.length > 0) {
+        break;
+      }
+    }
+
+    return {
+      deletedByTable,
+      unresolved: pending.map((p) => p.tableRef),
+    };
+  }
+
   private hashForLock(uuid: string): number {
     let hash = 0;
     for (let i = 0; i < uuid.length; i++) {
