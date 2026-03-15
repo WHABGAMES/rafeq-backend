@@ -159,9 +159,17 @@ export class AdminUsersService {
     let idx = 1;
 
     if (filters.search) {
-      conditions.push(
-        `(s.name ILIKE $${idx} OR u.email ILIKE $${idx} OR t.name ILIKE $${idx})`,
-      );
+      conditions.push(`(
+        s.name ILIKE $${idx}
+        OR EXISTS (
+          SELECT 1 FROM tenants t2 WHERE t2.id = s.tenant_id AND t2.name ILIKE $${idx}
+        )
+        OR EXISTS (
+          SELECT 1 FROM users u2
+          JOIN tenants t3 ON t3.id = u2.tenant_id
+          WHERE t3.id = s.tenant_id AND u2.email ILIKE $${idx}
+        )
+      )`);
       params.push(`%${filters.search}%`);
       idx++;
     }
@@ -174,27 +182,31 @@ export class AdminUsersService {
 
     const where = conditions.join(' AND ');
 
+    // ✅ استخدام sub-queries بدلاً من JOIN لتجنب row duplication
     const dataQuery = `
-      SELECT DISTINCT ON (s.id)
-        s.id, s.name, s.platform, s.status, s.created_at,
-        t.id AS tenant_id, t.name AS tenant_name,
-        u.id AS owner_id, u.email AS owner_email,
-        COALESCE(u.first_name || ' ' || u.last_name, u.email) AS owner_name
+      SELECT
+        s.id,
+        s.name,
+        s.platform,
+        s.status,
+        s.created_at,
+        s.tenant_id,
+        (SELECT t.name FROM tenants t WHERE t.id = s.tenant_id LIMIT 1) AS tenant_name,
+        (SELECT u.id FROM users u WHERE u.tenant_id = s.tenant_id AND u.role = 'owner' LIMIT 1) AS owner_id,
+        (SELECT u.email FROM users u WHERE u.tenant_id = s.tenant_id AND u.role = 'owner' LIMIT 1) AS owner_email,
+        (SELECT COALESCE(u.first_name || ' ' || u.last_name, u.email)
+         FROM users u WHERE u.tenant_id = s.tenant_id AND u.role = 'owner' LIMIT 1) AS owner_name
       FROM stores s
-      LEFT JOIN tenants t ON t.id = s.tenant_id
-      LEFT JOIN users u ON u.tenant_id = t.id AND u.role = 'owner'
-      WHERE s.id IS NOT NULL AND ${where}
-      ORDER BY s.id, s.created_at DESC
+      WHERE ${where}
+      ORDER BY s.created_at DESC
       LIMIT $${idx} OFFSET $${idx + 1}
     `;
     const dataParams = [...params, limit, (page - 1) * limit];
 
     const countQuery = `
-      SELECT COUNT(DISTINCT s.id) AS count
+      SELECT COUNT(*) AS count
       FROM stores s
-      LEFT JOIN tenants t ON t.id = s.tenant_id
-      LEFT JOIN users u ON u.tenant_id = t.id AND u.role = 'owner'
-      WHERE s.id IS NOT NULL AND ${where}
+      WHERE ${where}
     `;
 
     const [items, countResult] = await Promise.all([
