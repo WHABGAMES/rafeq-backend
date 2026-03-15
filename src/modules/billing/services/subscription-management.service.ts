@@ -369,13 +369,13 @@ export class SubscriptionManagementService {
   }> {
     const { page = 1, limit = 50 } = { page: filters.page || 1, limit: filters.limit || 50 };
 
-    const whereConditions: string[] = ['u.deleted_at IS NULL', 't.deleted_at IS NULL'];
+    const whereConditions: string[] = ['t.deleted_at IS NULL'];
     const params: any[] = [];
     let idx = 1;
 
     if (filters.search) {
       whereConditions.push(
-        `(t.name ILIKE $${idx} OR t.email ILIKE $${idx} OR u.email ILIKE $${idx} OR u.first_name ILIKE $${idx} OR u.last_name ILIKE $${idx})`,
+        `(t.name ILIKE $${idx} OR t.email ILIKE $${idx} OR owner.email ILIKE $${idx} OR owner.first_name ILIKE $${idx} OR owner.last_name ILIKE $${idx})`,
       );
       params.push(`%${filters.search}%`);
       idx++;
@@ -399,14 +399,15 @@ export class SubscriptionManagementService {
 
     const dataQuery = `
       SELECT
-        u.id AS user_id,
-        u.email AS user_email,
-        u.first_name,
-        u.last_name,
-        u.role AS user_role,
-        u.status AS user_status,
-        u.preferences AS user_preferences,
-        u.created_at AS user_created_at,
+        owner.id AS user_id,
+        owner.email AS user_email,
+        owner.first_name,
+        owner.last_name,
+        owner.role AS user_role,
+        owner.status AS user_status,
+        owner.preferences AS user_preferences,
+        owner.created_at AS user_created_at,
+        uc.users_count,
         t.id,
         t.name,
         t.subscription_plan,
@@ -415,9 +416,31 @@ export class SubscriptionManagementService {
         s.status AS sub_status,
         s.usage_stats,
         s.current_period_end
-      FROM users u
-      INNER JOIN tenants t
-        ON t.id = u.tenant_id
+      FROM tenants t
+      LEFT JOIN LATERAL (
+        SELECT
+          u1.id,
+          u1.email,
+          u1.first_name,
+          u1.last_name,
+          u1.role,
+          u1.status,
+          u1.preferences,
+          u1.created_at
+        FROM users u1
+        WHERE u1.tenant_id = t.id
+          AND u1.deleted_at IS NULL
+        ORDER BY
+          CASE WHEN u1.role = 'owner' THEN 0 ELSE 1 END,
+          u1.created_at ASC
+        LIMIT 1
+      ) owner ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*)::int AS users_count
+        FROM users u2
+        WHERE u2.tenant_id = t.id
+          AND u2.deleted_at IS NULL
+      ) uc ON TRUE
       LEFT JOIN LATERAL (
         SELECT
           s1.status,
@@ -431,15 +454,27 @@ export class SubscriptionManagementService {
         LIMIT 1
       ) s ON TRUE
       WHERE ${whereClause}
-      ORDER BY u.created_at DESC
+      ORDER BY t.created_at DESC
       LIMIT $${idx} OFFSET $${idx + 1}
     `;
     const dataParams = [...params, limit, (page - 1) * limit];
 
     const countQuery = `
       SELECT COUNT(*) AS count
-      FROM users u
-      INNER JOIN tenants t ON t.id = u.tenant_id
+      FROM tenants t
+      LEFT JOIN LATERAL (
+        SELECT
+          u1.email,
+          u1.first_name,
+          u1.last_name
+        FROM users u1
+        WHERE u1.tenant_id = t.id
+          AND u1.deleted_at IS NULL
+        ORDER BY
+          CASE WHEN u1.role = 'owner' THEN 0 ELSE 1 END,
+          u1.created_at ASC
+        LIMIT 1
+      ) owner ON TRUE
       WHERE ${whereClause}
     `;
 
@@ -483,6 +518,7 @@ export class SubscriptionManagementService {
         email: row.user_email || '',
         accountRole: row.user_role || '',
         accountStatus: row.user_status || '',
+        accountsCount: Number.isFinite(Number(row.users_count)) ? Number(row.users_count) : 0,
         settingsCount: Object.keys(prefs).length,
         plan: resolvedPlan,
         status: row.sub_status || (resolvedPlan !== PlanTier.NONE ? 'active' : 'none'),
