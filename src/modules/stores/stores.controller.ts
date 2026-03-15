@@ -37,6 +37,7 @@ import { UpdateStoreSettingsDto } from './dto/update-store-settings.dto';
 // Auth
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { User } from '@database/entities';
+import { SubscriptionPlan as TenantSubscriptionPlan, Tenant } from '@database/entities/tenant.entity';
 
 // Entities
 import { Store, StoreStatus, StorePlatform } from './entities/store.entity';
@@ -55,6 +56,9 @@ interface StoreResponse {
   platform: string;
   platformName?: string;  // 🆕 اسم المنصة (للمتاجر الأخرى)
   status: 'connected' | 'disconnected' | 'pending' | 'error';
+  subscriptionPlan: 'free' | 'basic' | 'pro' | 'enterprise';
+  subscriptionStatus: 'none' | 'active' | 'expired';
+  subscriptionEndsAt: string | null;
   url: string | null;
   lastSync: string | null;
   createdAt: string;
@@ -65,7 +69,31 @@ interface StoreResponse {
   };
 }
 
-function transformStoreResponse(store: Store, stats?: { orders: number; products: number; customers: number }): StoreResponse {
+interface TenantSubscriptionSnapshot {
+  plan: 'free' | 'basic' | 'pro' | 'enterprise';
+  status: 'none' | 'active' | 'expired';
+  endsAt: string | null;
+}
+
+function resolveTenantSubscriptionSnapshot(tenant?: Tenant): TenantSubscriptionSnapshot {
+  const plan = (tenant?.subscriptionPlan || TenantSubscriptionPlan.FREE) as TenantSubscriptionSnapshot['plan'];
+  const endsAt = tenant?.subscriptionEndsAt ? new Date(tenant.subscriptionEndsAt) : null;
+  const status: TenantSubscriptionSnapshot['status'] = plan === TenantSubscriptionPlan.FREE
+    ? 'none'
+    : (endsAt && endsAt.getTime() < Date.now() ? 'expired' : 'active');
+
+  return {
+    plan,
+    status,
+    endsAt: endsAt ? endsAt.toISOString() : null,
+  };
+}
+
+function transformStoreResponse(
+  store: Store,
+  stats?: { orders: number; products: number; customers: number },
+  subscription?: TenantSubscriptionSnapshot,
+): StoreResponse {
   const statusMap: Record<string, 'connected' | 'disconnected' | 'pending' | 'error'> = {
     [StoreStatus.ACTIVE]: 'connected',
     [StoreStatus.PENDING]: 'pending',
@@ -90,6 +118,9 @@ function transformStoreResponse(store: Store, stats?: { orders: number; products
     platform: store.platform,
     platformName: store.platform === StorePlatform.OTHER ? store.otherPlatformName : undefined,
     status: statusMap[store.status] || 'disconnected',
+    subscriptionPlan: subscription?.plan || 'free',
+    subscriptionStatus: subscription?.status || 'none',
+    subscriptionEndsAt: subscription?.endsAt || null,
     url,
     lastSync: store.lastSyncedAt ? store.lastSyncedAt.toISOString() : null,
     createdAt: store.createdAt.toISOString(),
@@ -123,6 +154,7 @@ export class StoresController {
     this.logger.debug(`Fetching stores for tenant: ${req.user.tenantId}`);
     
     const stores = await this.storesService.findByTenant(req.user.tenantId);
+    const subscriptionSnapshot = resolveTenantSubscriptionSnapshot(req.user?.tenant);
     
     this.logger.debug(`Found ${stores.length} stores`);
     
@@ -139,7 +171,7 @@ export class StoresController {
           this.logger.warn(`Failed to get stats for store ${store.id}: ${err}`);
         }
       }
-      results.push(transformStoreResponse(store, stats));
+      results.push(transformStoreResponse(store, stats, subscriptionSnapshot));
     }
     
     return results;
@@ -168,6 +200,7 @@ export class StoresController {
     @Param('id', ParseUUIDPipe) id: string,
   ): Promise<StoreResponse> {
     const store = await this.storesService.findById(req.user.tenantId, id);
+    const subscriptionSnapshot = resolveTenantSubscriptionSnapshot(req.user?.tenant);
     
     let stats = { orders: 0, products: 0, customers: 0 };
     // 🔧 FIX: لا نتحقق من store.accessToken لأنها select: false
@@ -179,7 +212,7 @@ export class StoresController {
       }
     }
     
-    return transformStoreResponse(store, stats);
+    return transformStoreResponse(store, stats, subscriptionSnapshot);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -198,6 +231,7 @@ export class StoresController {
     @Param('id', ParseUUIDPipe) id: string,
   ): Promise<StoreResponse> {
     this.logger.log(`Syncing store: ${id} for tenant: ${req.user.tenantId}`);
+    const subscriptionSnapshot = resolveTenantSubscriptionSnapshot(req.user?.tenant);
     
     const store = await this.storesService.syncStore(req.user.tenantId, id);
     
@@ -211,7 +245,7 @@ export class StoresController {
     
     this.logger.log(`Store synced successfully: ${id}`, { stats });
     
-    return transformStoreResponse(store, stats);
+    return transformStoreResponse(store, stats, subscriptionSnapshot);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -227,7 +261,8 @@ export class StoresController {
     @Body() dto: UpdateStoreSettingsDto,
   ): Promise<StoreResponse> {
     const store = await this.storesService.updateSettings(req.user.tenantId, id, dto.settings);
-    return transformStoreResponse(store);
+    const subscriptionSnapshot = resolveTenantSubscriptionSnapshot(req.user?.tenant);
+    return transformStoreResponse(store, undefined, subscriptionSnapshot);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
