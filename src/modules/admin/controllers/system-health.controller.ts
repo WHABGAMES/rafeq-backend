@@ -129,9 +129,9 @@ export class SystemHealthController {
     try {
       const [result] = await this.dataSource.query(`
         SELECT
-          COUNT(*) FILTER (WHERE status = 'active')    AS active,
-          COUNT(*) FILTER (WHERE status = 'suspended') AS suspended,
-          COUNT(*)                                      AS total
+          COUNT(*) FILTER (WHERE status = 'active'    AND deleted_at IS NULL) AS active,
+          COUNT(*) FILTER (WHERE status = 'suspended' AND deleted_at IS NULL) AS suspended,
+          COUNT(*) FILTER (WHERE deleted_at IS NULL)                          AS total
         FROM stores
       `);
       return {
