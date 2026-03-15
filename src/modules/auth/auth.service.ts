@@ -81,6 +81,7 @@ export interface UserProfile {
   authProvider?: string;
   preferences?: Record<string, any>;
   createdAt: Date;
+  subscriptionPlan?: string;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -949,6 +950,13 @@ export class AuthService implements OnModuleInit {
       throw new UnauthorizedException('المستخدم غير موجود');
     }
 
+    // Get subscription plan from tenant
+    let subscriptionPlan = 'free';
+    try {
+      const tenant = await this.tenantRepository.findOne({ where: { id: user.tenantId }, select: ['subscriptionPlan'] });
+      if (tenant) subscriptionPlan = tenant.subscriptionPlan || 'free';
+    } catch {}
+
     return {
       id: user.id,
       email: user.email,
@@ -961,6 +969,7 @@ export class AuthService implements OnModuleInit {
       authProvider: user.authProvider,
       preferences: user.preferences,
       createdAt: user.createdAt,
+      subscriptionPlan,
     };
   }
 
