@@ -208,11 +208,14 @@ export class ShortLinksService {
     try {
       const device = this.parseDevice(req.userAgent || '');
       const source = this.parseReferrerSource(req.referrer || '');
+      const geo = await this.resolveGeo(req.ip || '');
 
       // Save click record
       await this.clickRepo.save({
         linkId: link.id,
         tenantId: link.tenantId,
+        country: geo.country,
+        city: geo.city,
         deviceType: device.type,
         browser: device.browser,
         os: device.os,
@@ -225,6 +228,25 @@ export class ShortLinksService {
       await this.linkRepo.increment({ id: link.id }, 'totalClicks', 1);
     } catch (err) {
       this.logger.error(`Failed to track click for ${link.shortCode}: ${(err as Error).message}`);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // 🌍 Resolve IP → Country/City (free GeoIP API)
+  // ═══════════════════════════════════════════════════════════════
+
+  private async resolveGeo(ip: string): Promise<{ country?: string; city?: string }> {
+    if (!ip || ip === '127.0.0.1' || ip === '::1') return {};
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 2000); // 2s timeout
+      const res = await fetch(`http://ip-api.com/json/${ip}?fields=country,city&lang=ar`, { signal: controller.signal });
+      clearTimeout(timeout);
+      if (!res.ok) return {};
+      const data = await res.json();
+      return { country: data.country || undefined, city: data.city || undefined };
+    } catch {
+      return {}; // API down or timeout — don't block tracking
     }
   }
 
