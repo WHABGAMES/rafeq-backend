@@ -153,78 +153,83 @@ export class AdminUsersService {
     search?: string;
     status?: string;
   }) {
-    const { page = 1, limit = 30 } = filters;
-    const conditions: string[] = ['1=1'];
-    const params: any[] = [];
-    let idx = 1;
+    const page   = Math.max(1,   filters.page  || 1);
+    const limit  = Math.min(100, filters.limit || 30);
+    const offset = (page - 1) * limit;
 
-    if (filters.search) {
-      conditions.push(`(
-        s.name ILIKE $${idx}
-        OR EXISTS (
-          SELECT 1 FROM tenants t2 WHERE t2.id = s.tenant_id AND t2.name ILIKE $${idx}
-        )
-        OR EXISTS (
-          SELECT 1 FROM users u2
-          JOIN tenants t3 ON t3.id = u2.tenant_id
-          WHERE t3.id = s.tenant_id AND u2.email ILIKE $${idx}
-        )
-      )`);
-      params.push(`%${filters.search}%`);
-      idx++;
+    // Build WHERE clause with parameterized values
+    const conditions: string[] = [];
+    const filterParams: unknown[] = [];
+
+    if (filters.search?.trim()) {
+      filterParams.push(`%${filters.search.trim()}%`);
+      conditions.push(`s.name ILIKE $${filterParams.length}`);
     }
 
-    if (filters.status) {
-      conditions.push(`s.status = $${idx}`);
-      params.push(filters.status);
-      idx++;
+    if (filters.status?.trim()) {
+      filterParams.push(filters.status.trim());
+      conditions.push(`s.status::text = $${filterParams.length}`);
     }
 
-    const where = conditions.join(' AND ');
+    const whereClause = conditions.length > 0
+      ? `WHERE ${conditions.join(' AND ')}`
+      : '';
 
-    // ✅ استخدام sub-queries بدلاً من JOIN لتجنب row duplication
-    // ✅ نُظهر كل المتاجر بما فيها soft-deleted مع is_deleted indicator
-    const dataQuery = `
+    // LIMIT and OFFSET appended after filter params
+    const allParams: unknown[] = [...filterParams, limit, offset];
+    const limitIdx  = filterParams.length + 1;
+    const offsetIdx = filterParams.length + 2;
+
+    const sql = `
       SELECT
         s.id,
         s.name,
         s.platform,
-        s.status,
+        s.status::text       AS status,
         s.created_at,
-        s.deleted_at,
-        CASE WHEN s.deleted_at IS NOT NULL THEN true ELSE false END AS is_deleted,
         s.tenant_id,
-        (SELECT t.name FROM tenants t WHERE t.id = s.tenant_id LIMIT 1) AS tenant_name,
-        (SELECT u.id FROM users u WHERE u.tenant_id = s.tenant_id AND u.role = 'owner' LIMIT 1) AS owner_id,
-        (SELECT u.email FROM users u WHERE u.tenant_id = s.tenant_id AND u.role = 'owner' LIMIT 1) AS owner_email,
-        (SELECT COALESCE(u.first_name || ' ' || u.last_name, u.email)
-         FROM users u WHERE u.tenant_id = s.tenant_id AND u.role = 'owner' LIMIT 1) AS owner_name
+        t.name               AS tenant_name,
+        u.id                 AS owner_id,
+        u.email              AS owner_email,
+        COALESCE(u.first_name || ' ' || u.last_name, u.email) AS owner_name
       FROM stores s
-      WHERE ${where}
-      ORDER BY s.deleted_at NULLS FIRST, s.created_at DESC
-      LIMIT $${idx} OFFSET $${idx + 1}
+      LEFT JOIN tenants t ON t.id = s.tenant_id
+      LEFT JOIN LATERAL (
+        SELECT id, email, first_name, last_name
+        FROM   users
+        WHERE  tenant_id = t.id AND role = 'owner'
+        LIMIT  1
+      ) u ON true
+      ${whereClause}
+      ORDER BY s.created_at DESC
+      LIMIT  $${limitIdx}
+      OFFSET $${offsetIdx}
     `;
-    const dataParams = [...params, limit, (page - 1) * limit];
 
-    const countQuery = `
-      SELECT COUNT(*) AS count
+    const countSql = `
+      SELECT COUNT(*)::int AS count
       FROM stores s
-      WHERE ${where}
+      ${whereClause}
     `;
 
-    const [items, countResult] = await Promise.all([
-      this.dataSource.query(dataQuery, dataParams),
-      this.dataSource.query(countQuery, params),
+    this.logger.log(
+      `📦 getAllStores | page=${page} limit=${limit} offset=${offset} | params=${JSON.stringify(filterParams)}`,
+    );
+
+    const [rows, countResult] = await Promise.all([
+      this.dataSource.query(sql, allParams),
+      this.dataSource.query(countSql, filterParams),
     ]);
 
+    this.logger.log(`📦 getAllStores | rows=${rows?.length ?? 0} total=${countResult[0]?.count ?? 0}`);
+
     return {
-      items,
-      total: parseInt(countResult[0]?.count || '0'),
+      items: rows ?? [],
+      total: countResult[0]?.count ?? 0,
       page,
       limit,
     };
   }
-
   async getUserById(userId: string) {
     // ✅ أعمدة محددة صراحةً — لا password، لا refresh_token
     const [user] = await this.dataSource.query(
