@@ -29,11 +29,14 @@ import {
   Post,
   Body,
   Get,
+  Delete,
+  Param,
   UseGuards,
   Request,
   HttpCode,
   HttpStatus,
   Logger,
+  NotFoundException,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -103,9 +106,16 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'تسجيل الدخول بالإيميل وكلمة المرور' })
   @ApiResponse({ status: 200, type: LoginResponseDto })
-  async login(@Body() dto: LoginDto): Promise<LoginResponseDto> {
+  async login(@Body() dto: LoginDto, @Request() req: any): Promise<LoginResponseDto> {
     this.logger.log(`Login attempt: ${this.maskEmail(dto.email)}`);
-    return this.authService.login(dto.email, dto.password);
+    const result = await this.authService.login(dto.email, dto.password);
+    // Track device async — don't block login
+    if (result?.user?.id) {
+      const ip = (req.headers?.['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || '';
+      const ua = req.headers?.['user-agent'] || '';
+      this.authService.trackDevice(result.user.id, (result as any).tenantId || '', { ip, userAgent: ua }).catch(() => {});
+    }
+    return result;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -298,5 +308,37 @@ export class AuthController {
   async resetPassword(@Body() dto: ResetPasswordDto): Promise<MessageResponseDto> {
     this.logger.log(`Reset password attempt: ${this.maskEmail(dto.email)}`);
     return this.authService.resetPassword(dto.token, dto.email, dto.newPassword);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 📱 TRUSTED DEVICES
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Get('devices')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'قائمة الأجهزة الموثوقة' })
+  async getDevices(@Request() req: any) {
+    return this.authService.getDevices(req.user.sub);
+  }
+
+  @Delete('devices/:id')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'إلغاء ثقة جهاز' })
+  async revokeDevice(@Request() req: any, @Param('id') id: string) {
+    const ok = await this.authService.revokeDevice(req.user.sub, id);
+    if (!ok) throw new NotFoundException('الجهاز غير موجود');
+    return { message: 'تم إلغاء الثقة' };
+  }
+
+  @Delete('devices')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'تسجيل الخروج من جميع الأجهزة' })
+  async revokeAllDevices(@Request() req: any) {
+    const ip = (req.headers?.['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip;
+    const count = await this.authService.revokeAllDevices(req.user.sub, ip);
+    return { message: `تم تسجيل الخروج من ${count} جهاز` };
   }
 }
