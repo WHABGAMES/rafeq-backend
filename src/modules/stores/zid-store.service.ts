@@ -67,6 +67,7 @@ export class ZidStoreService {
     data: ConnectZidStoreData,
   ): Promise<Store> {
     const { tokens, storeInfo } = data;
+    await this.assertTenantOwnerIdentityMatch(tenantId, storeInfo.email);
 
     const existingStore = await this.storeRepository.findOne({
       where: { zidStoreId: storeInfo.id },
@@ -148,6 +149,44 @@ export class ZidStoreService {
     });
 
     return savedStore;
+  }
+
+  private normalizeEmail(email?: string | null): string {
+    return (email || '').trim().toLowerCase();
+  }
+
+  private async getTenantPrimaryOwnerEmail(tenantId: string): Promise<string | null> {
+    const rows = await this.storeRepository.manager.query(
+      `
+      SELECT email
+      FROM users
+      WHERE tenant_id = $1
+        AND deleted_at IS NULL
+      ORDER BY
+        CASE WHEN role = 'owner' THEN 0 ELSE 1 END,
+        created_at ASC
+      LIMIT 1
+      `,
+      [tenantId],
+    );
+
+    const email = this.normalizeEmail(rows?.[0]?.email);
+    return email || null;
+  }
+
+  private async assertTenantOwnerIdentityMatch(tenantId: string, incomingEmail?: string): Promise<void> {
+    const incoming = this.normalizeEmail(incomingEmail);
+    if (!incoming) return;
+
+    const owner = await this.getTenantPrimaryOwnerEmail(tenantId);
+    if (!owner || owner === incoming) return;
+
+    this.logger.warn(
+      `⛔ Tenant owner mismatch on Zid connect: tenant=${tenantId}, tenantOwner=${owner}, incoming=${incoming}`,
+    );
+    throw new ConflictException(
+      'هذا المتجر يتبع تاجرًا آخر (اختلاف الإيميل)، ولا يمكن ربطه بهذا الحساب.',
+    );
   }
 
   private async updateZidStoreConnection(
