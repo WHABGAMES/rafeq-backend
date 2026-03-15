@@ -145,6 +145,71 @@ export class AdminUsersService {
     };
   }
 
+  // ─── Store Listing ────────────────────────────────────────────────────────
+
+  async getAllStores(filters: {
+    page?: number;
+    limit?: number;
+    search?: string;
+    status?: string;
+  }) {
+    const { page = 1, limit = 30 } = filters;
+    const conditions: string[] = ['1=1'];
+    const params: any[] = [];
+    let idx = 1;
+
+    if (filters.search) {
+      conditions.push(
+        `(s.name ILIKE $${idx} OR u.email ILIKE $${idx} OR t.name ILIKE $${idx})`,
+      );
+      params.push(`%${filters.search}%`);
+      idx++;
+    }
+
+    if (filters.status) {
+      conditions.push(`s.status = $${idx}`);
+      params.push(filters.status);
+      idx++;
+    }
+
+    const where = conditions.join(' AND ');
+
+    const dataQuery = `
+      SELECT
+        s.id, s.name, s.platform, s.status, s.created_at,
+        t.id AS tenant_id, t.name AS tenant_name,
+        u.id AS owner_id, u.email AS owner_email,
+        COALESCE(u.first_name || ' ' || u.last_name, u.email) AS owner_name
+      FROM stores s
+      LEFT JOIN tenants t ON t.id = s.tenant_id
+      LEFT JOIN users u ON u.tenant_id = t.id AND u.role = 'owner'
+      WHERE ${where}
+      ORDER BY s.created_at DESC
+      LIMIT $${idx} OFFSET $${idx + 1}
+    `;
+    const dataParams = [...params, limit, (page - 1) * limit];
+
+    const countQuery = `
+      SELECT COUNT(DISTINCT s.id) AS count
+      FROM stores s
+      LEFT JOIN tenants t ON t.id = s.tenant_id
+      LEFT JOIN users u ON u.tenant_id = t.id AND u.role = 'owner'
+      WHERE ${where}
+    `;
+
+    const [items, countResult] = await Promise.all([
+      this.dataSource.query(dataQuery, dataParams),
+      this.dataSource.query(countQuery, params),
+    ]);
+
+    return {
+      items,
+      total: parseInt(countResult[0]?.count || '0'),
+      page,
+      limit,
+    };
+  }
+
   async getUserById(userId: string) {
     // ✅ أعمدة محددة صراحةً — لا password، لا refresh_token
     const [user] = await this.dataSource.query(
