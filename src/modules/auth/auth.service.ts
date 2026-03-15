@@ -274,7 +274,7 @@ export class AuthService implements OnModuleInit {
   // 🔑 LOGIN - Email + Password
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  async login(email: string, password: string): Promise<LoginResult> {
+  async login(email: string, password: string, deviceInfo?: { ip: string; ua: string }): Promise<LoginResult> {
     this.logger.log(`Login attempt for: ${this.maskEmail(email)}`);
 
     const isLocked = await this.checkAccountLocked(email);
@@ -317,7 +317,16 @@ export class AuthService implements OnModuleInit {
     await this.clearLoginAttempts(email);
     await this.userRepository.update(user.id, { lastLoginAt: new Date() });
 
-    const tokens = await this.generateTokens(user);
+    // تتبع الجهاز وربط توكنه بالـ JWT
+    let deviceToken: string | undefined;
+    if (deviceInfo?.ip) {
+      deviceToken = await this.trackDevice(user.id, user.tenantId, {
+        ip: deviceInfo.ip,
+        userAgent: deviceInfo.ua,
+      });
+    }
+
+    const tokens = await this.generateTokens(user, deviceToken || undefined);
 
     this.logger.log(`✅ Login successful: ${this.maskEmail(email)}`);
 
@@ -1375,18 +1384,22 @@ export class AuthService implements OnModuleInit {
    * 🔧 FIX C-02: Access token max 30m, default 15m
    * 🔧 FIX C-03: Refresh secret validated at startup via onModuleInit
    */
-  private async generateTokens(user: Pick<User, 'id' | 'email' | 'tenantId' | 'role'>): Promise<{
+  private async generateTokens(
+    user: Pick<User, 'id' | 'email' | 'tenantId' | 'role'>,
+    deviceToken?: string,
+  ): Promise<{
     accessToken: string;
     refreshToken: string;
   }> {
     const accessJti = uuidv4();
     const refreshJti = uuidv4();
 
-    const basePayload = {
+    const basePayload: Record<string, unknown> = {
       sub: user.id,
       email: user.email,
       tenantId: user.tenantId,
       role: user.role,
+      ...(deviceToken && { deviceToken }),
     };
 
     // ✅ FIX: نقرأ JWT_ACCESS_EXPIRATION أولاً (الاسم الصحيح) ثم JWT_EXPIRES_IN كـ fallback
@@ -1513,9 +1526,14 @@ export class AuthService implements OnModuleInit {
   // 📱 TRUSTED DEVICES
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  async trackDevice(userId: string, tenantId: string, req: { ip?: string; userAgent?: string }): Promise<void> {
+  // ─── trackDevice ────────────────────────────────────────────────────────────
+  // يُرجع deviceToken الخاص بالجهاز لاستخدامه في الـ JWT
+  async trackDevice(
+    userId: string,
+    tenantId: string,
+    req: { ip?: string; userAgent?: string },
+  ): Promise<string> {
     try {
-      // Always lookup tenantId from user to be reliable
       const user = await this.userRepository.findOne({ where: { id: userId } });
       const tid = user?.tenantId || tenantId || '';
 
@@ -1523,7 +1541,6 @@ export class AuthService implements OnModuleInit {
       const ip = req.ip || 'unknown';
       const parsed = this.parseUA(ua);
 
-      // Check if same device (same IP + browser + OS)
       const existing = await this.deviceRepository.findOne({
         where: { userId, ipAddress: ip, browser: parsed.browser, os: parsed.os, isActive: true },
       });
@@ -1531,9 +1548,15 @@ export class AuthService implements OnModuleInit {
       if (existing) {
         existing.lastActiveAt = new Date();
         existing.userAgent = ua;
+        // تأكد أن الجهاز القديم عنده deviceToken
+        if (!existing.deviceToken) {
+          existing.deviceToken = uuidv4();
+        }
         await this.deviceRepository.save(existing);
         this.logger.log(`📱 Device updated: ${parsed.browser}/${parsed.os} for user ${userId}`);
+        return existing.deviceToken;
       } else {
+        const deviceToken = uuidv4();
         await this.deviceRepository.save({
           userId,
           tenantId: tid || undefined,
@@ -1542,30 +1565,57 @@ export class AuthService implements OnModuleInit {
           os: parsed.os,
           ipAddress: ip,
           userAgent: ua,
+          deviceToken,
           lastActiveAt: new Date(),
         });
         this.logger.log(`📱 New device: ${parsed.browser}/${parsed.os} IP:${ip} user:${userId}`);
+        return deviceToken;
       }
     } catch (err) {
       this.logger.error(`Failed to track device: ${(err as Error).message}`);
+      return '';
     }
   }
 
-  async getDevices(userId: string): Promise<TrustedDevice[]> {
-    return this.deviceRepository.find({
+  // ─── getDevices ──────────────────────────────────────────────────────────────
+  // يُرجع الأجهزة مع حقل isCurrent بناءً على IP + Browser + OS
+  async getDevices(
+    userId: string,
+    currentIp?: string,
+    currentUA?: string,
+  ): Promise<Array<TrustedDevice & { isCurrent: boolean }>> {
+    const devices = await this.deviceRepository.find({
       where: { userId, isActive: true },
       order: { lastActiveAt: 'DESC' },
     });
+    const parsed = currentUA ? this.parseUA(currentUA) : null;
+    return devices.map((d) => ({
+      ...d,
+      isCurrent: !!(
+        currentIp &&
+        parsed &&
+        d.ipAddress === currentIp &&
+        d.browser === parsed.browser &&
+        d.os === parsed.os
+      ),
+    }));
   }
 
+  // ─── revokeDevice ────────────────────────────────────────────────────────────
+  // يُلغي الثقة ويُبطل الـ JWT الخاص بالجهاز فوراً عبر Redis
   async revokeDevice(userId: string, deviceId: string): Promise<boolean> {
     const device = await this.deviceRepository.findOne({ where: { id: deviceId, userId } });
     if (!device) return false;
     device.isActive = false;
     await this.deviceRepository.save(device);
+    // إبطال الـ JWT الخاص بهذا الجهاز فوراً (7 أيام TTL = أقصى عمر للـ refresh token)
+    if (device.deviceToken) {
+      await this.redis.set(`device_revoked:${device.deviceToken}`, '1', 'EX', 604800);
+    }
     return true;
   }
 
+  // ─── revokeAllDevices ────────────────────────────────────────────────────────
   async revokeAllDevices(userId: string, exceptDeviceIp?: string): Promise<number> {
     const devices = await this.deviceRepository.find({ where: { userId, isActive: true } });
     let count = 0;
@@ -1573,6 +1623,9 @@ export class AuthService implements OnModuleInit {
       if (exceptDeviceIp && d.ipAddress === exceptDeviceIp) continue;
       d.isActive = false;
       await this.deviceRepository.save(d);
+      if (d.deviceToken) {
+        await this.redis.set(`device_revoked:${d.deviceToken}`, '1', 'EX', 604800);
+      }
       count++;
     }
     return count;
