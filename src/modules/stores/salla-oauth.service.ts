@@ -12,7 +12,7 @@
  * ╚══════════════════════════════════════════════════════════════════════════════╝
  */
 
-import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException, ConflictException } from '@nestjs/common';
 import { TenantsService } from '../tenants/tenants.service';
 import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
@@ -259,10 +259,16 @@ export class SallaOAuthService {
 
       const tokens = response.data;
       const merchantInfo = await this.fetchMerchantInfo(tokens.access_token);
+      await this.assertTenantOwnerIdentityMatch(tenantId, merchantInfo);
 
       let store = await this.findStoreBySallaMerchantId(merchantInfo.id);
 
       if (store) {
+        if (store.tenantId && store.tenantId !== tenantId) {
+          throw new ConflictException(
+            'هذا المتجر مربوط مسبقاً بتاجر آخر، ولا يمكن ربطه على هذا الحساب.',
+          );
+        }
         store.tenantId = tenantId;
         // 🔐 تشفير التوكنات
         store.accessToken = encrypt(tokens.access_token) ?? undefined;
@@ -628,6 +634,47 @@ export class SallaOAuthService {
    */
   private getOwnerEmail(merchantInfo: SallaMerchantInfo): string {
     return merchantInfo.ownerEmail || merchantInfo.email;
+  }
+
+  private normalizeEmail(email?: string | null): string {
+    return (email || '').trim().toLowerCase();
+  }
+
+  private async getTenantPrimaryOwnerEmail(tenantId: string): Promise<string | null> {
+    const rows = await this.storeRepository.manager.query(
+      `
+      SELECT email
+      FROM users
+      WHERE tenant_id = $1
+        AND deleted_at IS NULL
+      ORDER BY
+        CASE WHEN role = 'owner' THEN 0 ELSE 1 END,
+        created_at ASC
+      LIMIT 1
+      `,
+      [tenantId],
+    );
+
+    const email = this.normalizeEmail(rows?.[0]?.email);
+    return email || null;
+  }
+
+  private async assertTenantOwnerIdentityMatch(
+    tenantId: string,
+    merchantInfo: SallaMerchantInfo,
+  ): Promise<void> {
+    const tenantOwnerEmail = await this.getTenantPrimaryOwnerEmail(tenantId);
+    const incomingOwnerEmail = this.normalizeEmail(this.getOwnerEmail(merchantInfo));
+
+    if (!tenantOwnerEmail || !incomingOwnerEmail) return;
+    if (tenantOwnerEmail === incomingOwnerEmail) return;
+
+    this.logger.warn(
+      `⛔ Tenant owner mismatch on Salla connect: tenant=${tenantId}, tenantOwner=${tenantOwnerEmail}, incomingOwner=${incomingOwnerEmail}, merchant=${merchantInfo.id}`,
+    );
+    throw new ConflictException(
+      'هذا المتجر يتبع تاجرًا آخر (اختلاف إيميل المالك)، ولا يمكن ربطه بهذا الحساب.',
+    );
   }
 
   /**
