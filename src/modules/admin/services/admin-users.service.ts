@@ -183,6 +183,7 @@ export class AdminUsersService {
     const where = conditions.join(' AND ');
 
     // ✅ استخدام sub-queries بدلاً من JOIN لتجنب row duplication
+    // ✅ نُظهر كل المتاجر بما فيها soft-deleted مع is_deleted indicator
     const dataQuery = `
       SELECT
         s.id,
@@ -190,6 +191,8 @@ export class AdminUsersService {
         s.platform,
         s.status,
         s.created_at,
+        s.deleted_at,
+        CASE WHEN s.deleted_at IS NOT NULL THEN true ELSE false END AS is_deleted,
         s.tenant_id,
         (SELECT t.name FROM tenants t WHERE t.id = s.tenant_id LIMIT 1) AS tenant_name,
         (SELECT u.id FROM users u WHERE u.tenant_id = s.tenant_id AND u.role = 'owner' LIMIT 1) AS owner_id,
@@ -198,7 +201,7 @@ export class AdminUsersService {
          FROM users u WHERE u.tenant_id = s.tenant_id AND u.role = 'owner' LIMIT 1) AS owner_name
       FROM stores s
       WHERE ${where}
-      ORDER BY s.created_at DESC
+      ORDER BY s.deleted_at NULLS FIRST, s.created_at DESC
       LIMIT $${idx} OFFSET $${idx + 1}
     `;
     const dataParams = [...params, limit, (page - 1) * limit];
