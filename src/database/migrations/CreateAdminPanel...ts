@@ -5,7 +5,7 @@ export class CreateAdminPanelTables1708300000000 implements MigrationInterface {
 
   public async up(queryRunner: QueryRunner): Promise<void> {
 
-    // ─── ENUMs — آمن للتشغيل مرات متعددة ────────────────────────────────────
+    // ─── admin ENUMs ──────────────────────────────────────────────────────────
     await queryRunner.query(`
       DO $$ BEGIN
         CREATE TYPE admin_role_enum AS ENUM ('owner', 'admin', 'support');
@@ -34,7 +34,6 @@ export class CreateAdminPanelTables1708300000000 implements MigrationInterface {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
-
       CREATE INDEX IF NOT EXISTS idx_admin_email ON admin_users (email);
       CREATE INDEX IF NOT EXISTS idx_admin_role ON admin_users (role);
     `);
@@ -54,14 +53,13 @@ export class CreateAdminPanelTables1708300000000 implements MigrationInterface {
         user_agent TEXT,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
-
       CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_logs (actor_id);
       CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs (action);
       CREATE INDEX IF NOT EXISTS idx_audit_target ON audit_logs (target_type, target_id);
       CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs (created_at DESC);
     `);
 
-    // ─── audit_logs rules — آمنة لأن RULE اسمها يكون unique per table ────────
+    // ─── audit_logs immutability rules ────────────────────────────────────────
     await queryRunner.query(`
       DO $$ BEGIN
         IF NOT EXISTS (
@@ -71,7 +69,6 @@ export class CreateAdminPanelTables1708300000000 implements MigrationInterface {
           CREATE RULE no_update_audit AS ON UPDATE TO audit_logs DO INSTEAD NOTHING;
         END IF;
       END $$;
-
       DO $$ BEGIN
         IF NOT EXISTS (
           SELECT 1 FROM pg_rules
@@ -104,7 +101,6 @@ export class CreateAdminPanelTables1708300000000 implements MigrationInterface {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
-
       CREATE INDEX IF NOT EXISTS idx_merge_source ON merge_history (source_user_id);
       CREATE INDEX IF NOT EXISTS idx_merge_target ON merge_history (target_user_id);
     `);
@@ -132,44 +128,6 @@ export class CreateAdminPanelTables1708300000000 implements MigrationInterface {
       );
     `);
 
-    // ─── message_templates ────────────────────────────────────────────────────
-    await queryRunner.query(`
-      DO $$ BEGIN
-        CREATE TYPE trigger_event_enum AS ENUM (
-          'NEW_MERCHANT_REGISTERED', 'SUBSCRIPTION_EXPIRING', 'SUBSCRIPTION_EXPIRED',
-          'PAYMENT_RECEIVED', 'ACCOUNT_SUSPENDED', 'WELCOME_MESSAGE', 'CUSTOM_MANUAL_SEND'
-        );
-      EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-
-      DO $$ BEGIN
-        CREATE TYPE message_channel_enum AS ENUM ('whatsapp', 'email', 'both');
-      EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-
-      DO $$ BEGIN
-        CREATE TYPE message_language_enum AS ENUM ('ar', 'en');
-      EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-
-      CREATE TABLE IF NOT EXISTS message_templates (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        name VARCHAR(255) NOT NULL,
-        trigger_event trigger_event_enum NOT NULL,
-        channel message_channel_enum NOT NULL DEFAULT 'whatsapp',
-        language message_language_enum NOT NULL DEFAULT 'ar',
-        content TEXT NOT NULL,
-        subject VARCHAR(500),
-        is_active BOOLEAN NOT NULL DEFAULT true,
-        version_history JSONB NOT NULL DEFAULT '[]',
-        version INT NOT NULL DEFAULT 1,
-        created_by UUID NOT NULL,
-        updated_by UUID,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_template_active
-        ON message_templates (trigger_event, channel, language, is_active);
-    `);
-
     // ─── message_logs ─────────────────────────────────────────────────────────
     await queryRunner.query(`
       DO $$ BEGIN
@@ -192,51 +150,23 @@ export class CreateAdminPanelTables1708300000000 implements MigrationInterface {
         sent_at TIMESTAMPTZ,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
-
       CREATE INDEX IF NOT EXISTS idx_msglog_recipient ON message_logs (recipient_user_id);
       CREATE INDEX IF NOT EXISTS idx_msglog_status ON message_logs (status, created_at DESC);
     `);
 
-    // ─── Seed default templates — idempotent ──────────────────────────────────
-    await queryRunner.query(`
-      INSERT INTO message_templates (name, trigger_event, channel, language, content, created_by)
-      SELECT * FROM (VALUES
-        (
-          'مرحبا بالتاجر الجديد',
-          'NEW_MERCHANT_REGISTERED'::trigger_event_enum,
-          'whatsapp'::message_channel_enum,
-          'ar'::message_language_enum,
-          'مرحبًا {{merchant_name}} 👋
-
-تم إنشاء حسابك في منصة رفيق AI بنجاح.
-
-بيانات الدخول:
-📧 البريد: {{email}}
-🔑 كلمة المرور المؤقتة: {{temporary_password}}
-
-🔗 رابط الدخول:
-{{login_url}}
-
-فريق رفيق يتمنى لك تجربة ناجحة 🚀',
-          '00000000-0000-0000-0000-000000000000'::UUID
-        )
-      ) AS v(name, trigger_event, channel, language, content, created_by)
-      WHERE NOT EXISTS (SELECT 1 FROM message_templates LIMIT 1);
-    `);
+    // ─── NOTE ─────────────────────────────────────────────────────────────────
+    // message_templates جدول التجار — لا نُنشئه هنا لتجنب التعارض مع schema التجار
+    // seed data الأدمن تذهب لـ admin_notification_templates عبر migration منفصلة
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`
       DROP TABLE IF EXISTS message_logs;
-      DROP TABLE IF EXISTS message_templates;
       DROP TABLE IF EXISTS whatsapp_settings;
       DROP TABLE IF EXISTS merge_history;
       DROP TABLE IF EXISTS audit_logs;
       DROP TABLE IF EXISTS admin_users;
       DROP TYPE IF EXISTS message_status_enum;
-      DROP TYPE IF EXISTS message_language_enum;
-      DROP TYPE IF EXISTS message_channel_enum;
-      DROP TYPE IF EXISTS trigger_event_enum;
       DROP TYPE IF EXISTS whatsapp_provider_enum;
       DROP TYPE IF EXISTS merge_status_enum;
       DROP TYPE IF EXISTS admin_status_enum;
