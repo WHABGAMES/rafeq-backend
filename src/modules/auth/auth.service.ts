@@ -1506,13 +1506,9 @@ export class AuthService implements OnModuleInit {
 
   async trackDevice(userId: string, tenantId: string, req: { ip?: string; userAgent?: string }): Promise<void> {
     try {
-      // Get tenantId if not provided
-      let tid = tenantId;
-      if (!tid) {
-        const user = await this.userRepository.findOne({ where: { id: userId }, select: ['tenantId'] });
-        tid = user?.tenantId || '';
-      }
-      if (!tid) return;
+      // Always lookup tenantId from user to be reliable
+      const user = await this.userRepository.findOne({ where: { id: userId } });
+      const tid = user?.tenantId || tenantId || '';
 
       const ua = req.userAgent || '';
       const ip = req.ip || 'unknown';
@@ -1527,10 +1523,11 @@ export class AuthService implements OnModuleInit {
         existing.lastActiveAt = new Date();
         existing.userAgent = ua;
         await this.deviceRepository.save(existing);
+        this.logger.log(`📱 Device updated: ${parsed.browser}/${parsed.os} for user ${userId}`);
       } else {
         await this.deviceRepository.save({
           userId,
-          tenantId,
+          tenantId: tid || undefined,
           deviceName: `${parsed.deviceType} • ${parsed.os}`,
           browser: parsed.browser,
           os: parsed.os,
@@ -1538,6 +1535,7 @@ export class AuthService implements OnModuleInit {
           userAgent: ua,
           lastActiveAt: new Date(),
         });
+        this.logger.log(`📱 New device: ${parsed.browser}/${parsed.os} IP:${ip} user:${userId}`);
       }
     } catch (err) {
       this.logger.error(`Failed to track device: ${(err as Error).message}`);
