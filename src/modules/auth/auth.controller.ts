@@ -122,14 +122,16 @@ export class AuthController {
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'تسجيل حساب جديد' })
   @ApiResponse({ status: 201 })
-  async register(@Body() dto: RegisterDto): Promise<LoginResponseDto> {
+  async register(@Body() dto: RegisterDto, @Request() req: any): Promise<LoginResponseDto> {
     this.logger.log(`Register attempt: ${this.maskEmail(dto.email)}`);
-    return this.authService.register({
+    const result = await this.authService.register({
       email: dto.email,
       password: dto.password,
       name: dto.name,
       storeName: dto.storeName,
     });
+    this._trackDeviceAsync(result?.user?.id, result, req);
+    return result;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -147,8 +149,10 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'التحقق من رمز الإيميل وتسجيل الدخول' })
   @ApiResponse({ status: 200, type: LoginResponseDto })
-  async verifyEmailOtp(@Body() dto: VerifyEmailOtpDto): Promise<LoginResponseDto> {
-    return this.authService.verifyEmailOtp(dto.email, dto.otp);
+  async verifyEmailOtp(@Body() dto: VerifyEmailOtpDto, @Request() req: any): Promise<LoginResponseDto> {
+    const result = await this.authService.verifyEmailOtp(dto.email, dto.otp);
+    this._trackDeviceAsync(result?.user?.id, result, req);
+    return result;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -159,8 +163,10 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'تسجيل الدخول عبر Google' })
   @ApiResponse({ status: 200, type: LoginResponseDto })
-  async googleAuth(@Body() dto: GoogleAuthDto): Promise<LoginResponseDto> {
-    return this.authService.googleAuth(dto.idToken);
+  async googleAuth(@Body() dto: GoogleAuthDto, @Request() req: any): Promise<LoginResponseDto> {
+    const result = await this.authService.googleAuth(dto.idToken);
+    this._trackDeviceAsync(result?.user?.id, result, req);
+    return result;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -177,8 +183,10 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'معالجة callback من سلة' })
   @ApiResponse({ status: 200, type: LoginResponseDto })
-  async sallaCallback(@Body() dto: SallaAuthDto): Promise<LoginResponseDto> {
-    return this.authService.sallaAuth(dto.code, dto.state);
+  async sallaCallback(@Body() dto: SallaAuthDto, @Request() req: any): Promise<LoginResponseDto> {
+    const result = await this.authService.sallaAuth(dto.code, dto.state);
+    this._trackDeviceAsync(result?.user?.id, result, req);
+    return result;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -195,8 +203,10 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'معالجة callback من زد' })
   @ApiResponse({ status: 200, type: LoginResponseDto })
-  async zidCallback(@Body() dto: ZidAuthDto): Promise<LoginResponseDto> {
-    return this.authService.zidAuth(dto.code, dto.state);
+  async zidCallback(@Body() dto: ZidAuthDto, @Request() req: any): Promise<LoginResponseDto> {
+    const result = await this.authService.zidAuth(dto.code, dto.state);
+    this._trackDeviceAsync(result?.user?.id, result, req);
+    return result;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -315,9 +325,10 @@ export class AuthController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'قائمة الأجهزة الموثوقة' })
   async getDevices(@Request() req: any) {
+    const userId = req.user?.id || req.user?.sub;
     const currentIp = (req.headers?.['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || '';
     const currentUA = req.headers?.['user-agent'] || '';
-    return this.authService.getDevices(req.user.sub, currentIp, currentUA);
+    return this.authService.getDevices(userId, currentIp, currentUA);
   }
 
   @Delete('devices/:id')
@@ -325,7 +336,8 @@ export class AuthController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'إلغاء ثقة جهاز' })
   async revokeDevice(@Request() req: any, @Param('id') id: string) {
-    const ok = await this.authService.revokeDevice(req.user.sub, id);
+    const userId = req.user?.id || req.user?.sub;
+    const ok = await this.authService.revokeDevice(userId, id);
     if (!ok) throw new NotFoundException('الجهاز غير موجود');
     return { message: 'تم إلغاء الثقة' };
   }
@@ -335,8 +347,21 @@ export class AuthController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'تسجيل الخروج من جميع الأجهزة' })
   async revokeAllDevices(@Request() req: any) {
+    const userId = req.user?.id || req.user?.sub;
     const ip = (req.headers?.['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip;
-    const count = await this.authService.revokeAllDevices(req.user.sub, ip);
+    const count = await this.authService.revokeAllDevices(userId, ip);
     return { message: `تم تسجيل الخروج من ${count} جهاز` };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔧 PRIVATE HELPER — تتبع الجهاز بعد أي نوع من تسجيل الدخول
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  private _trackDeviceAsync(userId: string | undefined, result: any, req: any): void {
+    if (!userId) return;
+    const tenantId = result?.user?.tenantId || '';
+    const ip = (req.headers?.['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || '';
+    const ua = req.headers?.['user-agent'] || '';
+    this.authService.trackDevice(userId, tenantId, { ip, userAgent: ua }).catch(() => {});
   }
 }
