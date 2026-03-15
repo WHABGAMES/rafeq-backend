@@ -108,13 +108,9 @@ export class AuthController {
   @ApiResponse({ status: 200, type: LoginResponseDto })
   async login(@Body() dto: LoginDto, @Request() req: any): Promise<LoginResponseDto> {
     this.logger.log(`Login attempt: ${this.maskEmail(dto.email)}`);
-    const result = await this.authService.login(dto.email, dto.password);
-    // Track device async — don't block login
-    if (result?.user?.id) {
-      const ip = (req.headers?.['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || '';
-      const ua = req.headers?.['user-agent'] || '';
-      this.authService.trackDevice(result.user.id, (result as any).tenantId || '', { ip, userAgent: ua }).catch(() => {});
-    }
+    const ip = (req.headers?.['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || '';
+    const ua = req.headers?.['user-agent'] || '';
+    const result = await this.authService.login(dto.email, dto.password, { ip, ua });
     return result;
   }
 
@@ -319,7 +315,9 @@ export class AuthController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'قائمة الأجهزة الموثوقة' })
   async getDevices(@Request() req: any) {
-    return this.authService.getDevices(req.user.sub);
+    const currentIp = (req.headers?.['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || '';
+    const currentUA = req.headers?.['user-agent'] || '';
+    return this.authService.getDevices(req.user.sub, currentIp, currentUA);
   }
 
   @Delete('devices/:id')
