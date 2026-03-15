@@ -2,8 +2,8 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║  Migration: CreateTrustedDevices1773580000000                                  ║
  * ║                                                                               ║
- * ║  يُنشئ جدول trusted_devices ويُضيف عمود device_token إذا كان الجدول موجوداً  ║
- * ║  آمن للتشغيل في أي وقت — يتحقق من وجود الجدول/الأعمدة قبل الإنشاء          ║
+ * ║  يُنشئ جدول trusted_devices ويُضيف عمود device_token إذا كان موجوداً مسبقاً  ║
+ * ║  آمن للتشغيل في أي وقت — IF NOT EXISTS في كل خطوة                           ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -13,10 +13,10 @@ export class CreateTrustedDevices1773580000000 implements MigrationInterface {
   name = 'CreateTrustedDevices1773580000000';
 
   async up(queryRunner: QueryRunner): Promise<void> {
-    // ─── إنشاء الجدول إذا لم يكن موجوداً ─────────────────────────────────────
+    // ─── إنشاء الجدول كاملاً إذا لم يكن موجوداً ──────────────────────────────
     await queryRunner.query(`
       CREATE TABLE IF NOT EXISTS "trusted_devices" (
-        "id"             UUID              NOT NULL DEFAULT uuid_generate_v4(),
+        "id"             UUID              NOT NULL DEFAULT gen_random_uuid(),
         "user_id"        UUID              NOT NULL,
         "tenant_id"      UUID,
         "device_name"    VARCHAR(100)      NOT NULL,
@@ -32,13 +32,13 @@ export class CreateTrustedDevices1773580000000 implements MigrationInterface {
       )
     `);
 
-    // ─── إنشاء الـ index على user_id ──────────────────────────────────────────
+    // ─── index على user_id ────────────────────────────────────────────────────
     await queryRunner.query(`
       CREATE INDEX IF NOT EXISTS "IDX_trusted_devices_user_id"
       ON "trusted_devices" ("user_id")
     `);
 
-    // ─── إضافة عمود device_token إذا كان الجدول موجوداً مسبقاً بدونه ──────────
+    // ─── إضافة device_token إذا كان الجدول موجوداً مسبقاً بدونه ──────────────
     await queryRunner.query(`
       DO $$
       BEGIN
