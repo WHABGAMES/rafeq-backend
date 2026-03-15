@@ -93,6 +93,7 @@ export class SettingsService {
       logo: null,
       dateFormat: 'DD/MM/YYYY',
       timeFormat: '12h',
+      autoShortenLinks: false,
     };
 
     if (!storeId) return defaults;
