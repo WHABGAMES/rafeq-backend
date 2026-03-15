@@ -19,13 +19,14 @@
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, Inject } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User, UserStatus } from '@database/entities/user.entity';
+import Redis from 'ioredis';
 
 /**
  * 📌 JWT Payload Interface
@@ -33,12 +34,13 @@ import { User, UserStatus } from '@database/entities/user.entity';
  * البيانات المخزنة داخل الـ Token
  */
 export interface JwtPayload {
-  sub: string;        // User ID (subject)
-  email: string;      // البريد
-  tenantId: string;   // معرّف المتجر
-  role: string;       // الدور (owner, manager, agent)
-  iat?: number;       // Issued At (وقت الإصدار)
-  exp?: number;       // Expiration (وقت الانتهاء)
+  sub: string;
+  email: string;
+  tenantId: string;
+  role: string;
+  deviceToken?: string;   // توكن الجهاز لإبطال الجلسة فوراً
+  iat?: number;
+  exp?: number;
 }
 
 /**
@@ -52,6 +54,8 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     configService: ConfigService,
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
+    @Inject('REDIS_CLIENT')
+    private readonly redis: Redis,
   ) {
     super({
       // ═══════════════════════════════════════════════════════════════════════════════
@@ -115,13 +119,19 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       throw new UnauthorizedException('Invalid token payload');
     }
 
+    // ✅ التحقق من أن الجهاز لم يُلغَ ثقته
+    if (payload.deviceToken) {
+      const revoked = await this.redis.get(`device_revoked:${payload.deviceToken}`);
+      if (revoked) throw new UnauthorizedException('تم إلغاء ثقة هذا الجهاز');
+    }
+
     // البحث عن المستخدم
     const user = await this.userRepository.findOne({
       where: {
         id: payload.sub,
         tenantId: payload.tenantId,
       },
-      relations: ['tenant'], // جلب بيانات المتجر أيضاً
+      relations: ['tenant'],
     });
 
     // التحقق من وجود المستخدم
