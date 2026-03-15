@@ -271,8 +271,8 @@ export class ZidOAuthController {
           params.code,
           params.state!,
         );
-        // ✅ FIX: استخدام zidApiService.getStoreInfo مع fallback
-        // إذا فشل getStoreInfo → نستمر بـ minimal info (لا نُوقف الـ flow)
+        // ✅ لازم نقرأ بيانات المتجر الفعلية قبل الربط للتحقق من الهوية.
+        // إذا فشل getStoreInfo لا نكمل الربط حتى لا يحصل دمج خاطئ بين التجار.
         let rawStoreInfo: Awaited<ReturnType<typeof this.zidApiService.getStoreInfo>>;
         try {
           rawStoreInfo = await this.zidApiService.getStoreInfo({
@@ -281,11 +281,8 @@ export class ZidOAuthController {
             storeId: undefined,
           });
         } catch (storeInfoErr: any) {
-          this.logger.warn(`⚠️ getStoreInfo failed in dashboard flow: ${storeInfoErr.message} — using minimal info`);
-          rawStoreInfo = {
-            id: '', uuid: '', name: 'متجر زد', email: '', mobile: '',
-            url: '', currency: 'SAR', language: 'ar', logo: undefined,
-          };
+          this.logger.warn(`⚠️ getStoreInfo failed in dashboard flow: ${storeInfoErr.message} — aborting connect`);
+          throw new BadRequestException('تعذر التحقق من بيانات متجر زد، حاول مرة أخرى.');
         }
         const storeInfo = { ...rawStoreInfo, created_at: new Date().toISOString() };
 
