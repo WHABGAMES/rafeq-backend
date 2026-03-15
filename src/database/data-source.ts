@@ -57,6 +57,8 @@ const AppDataSource = new DataSource({
   entities: [
     path.join(__dirname, 'entities', '*.entity.{ts,js}'),
     path.join(__dirname, '..', 'modules', '**', 'entities', '*.entity.{ts,js}'),
+    // entities خارج مجلد entities مثل TrustedDevice
+    path.join(__dirname, '..', 'modules', '**', '*.entity.{ts,js}'),
   ],
 
   // ─── Migrations ──────────────────────────────────────────────────────────
