@@ -31,6 +31,17 @@ import { TriggerEvent, MessageChannel, MessageLanguage } from '../entities/messa
 export class AdminStoresController {
   constructor(private readonly adminUsersService: AdminUsersService) {}
 
+  @Get()
+  @RequirePermissions(PERMISSIONS.USERS_READ)
+  getStores(
+    @Query('page') page = 1,
+    @Query('limit') limit = 30,
+    @Query('search') search?: string,
+    @Query('status') status?: string,
+  ) {
+    return this.adminUsersService.getAllStores({ page: +page, limit: +limit, search, status });
+  }
+
   @Post(':id/transfer')
   @RequirePermissions(PERMISSIONS.STORES_TRANSFER)
   @HttpCode(HttpStatus.OK)
