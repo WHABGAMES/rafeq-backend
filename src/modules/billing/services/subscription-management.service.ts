@@ -388,7 +388,19 @@ export class SubscriptionManagementService {
         t.subscription_ends_at, t.created_at AS subscribed_at,
         s.status AS sub_status,
         s.usage_stats,
-        s.current_period_end
+        s.current_period_end,
+        (
+          SELECT COUNT(*)::int
+          FROM users u
+          WHERE u.tenant_id = t.id
+            AND u.deleted_at IS NULL
+        ) AS accounts_count,
+        (
+          SELECT COALESCE(json_agg(u.email ORDER BY u.created_at), '[]'::json)
+          FROM users u
+          WHERE u.tenant_id = t.id
+            AND u.deleted_at IS NULL
+        ) AS account_emails
       FROM tenants t
       LEFT JOIN subscriptions s
         ON s.tenant_id = t.id
@@ -417,6 +429,11 @@ export class SubscriptionManagementService {
       const usageStats = row.usage_stats || {};
       const resolvedPlan = this.mapTenantPlanToTier(row.subscription_plan || 'free');
       const endsAt = row.subscription_ends_at ? new Date(row.subscription_ends_at) : null;
+      const accountEmails: string[] = Array.isArray(row.account_emails)
+        ? row.account_emails.filter((e: unknown) => typeof e === 'string' && e.length > 0)
+        : [];
+      const fallbackEmail = row.email ? [row.email] : [];
+      const normalizedEmails = accountEmails.length ? accountEmails : fallbackEmail;
       const now = new Date();
       let daysRemaining: number | null = null;
       if (endsAt) {
@@ -426,7 +443,9 @@ export class SubscriptionManagementService {
       return {
         tenantId: row.id,
         tenantName: row.name || '',
-        email: row.email || '',
+        email: normalizedEmails[0] || '',
+        accountEmails: normalizedEmails,
+        accountsCount: Number(row.accounts_count || normalizedEmails.length || 0),
         plan: resolvedPlan,
         status: row.sub_status || (resolvedPlan !== PlanTier.NONE ? 'active' : 'none'),
         messagesUsed: usageStats.messagesUsed || 0,
