@@ -3,32 +3,28 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 /**
  * ✅ v22 Migration: إضافة 'in_progress' إلى OrderStatus enum
  *
- * المشكلة:
- * سلة ترسل slug='in_progress' لحالة "قيد التنفيذ"
- * كان يُحفَظ في DB كـ 'processing' → يرسل نفس قالب "تم التنفيذ"
- *
- * الحل:
- * إضافة 'in_progress' كقيمة مستقلة في PostgreSQL enum
- * حتى يُحفَظ كل طلب بحالته الصحيحة ويُرسَل القالب المناسب
+ * PostgreSQL BUG FIX:
+ * ALTER TYPE ... ADD VALUE لا يصبح مرئياً داخل نفس الـ transaction
+ * الحل: transaction: false — يشغّل الـ migration خارج transaction
+ * فيصبح ADD VALUE مرئياً فوراً للـ UPDATE في نفس الـ migration
  */
 export class AddInProgressOrderStatus1772800000000 implements MigrationInterface {
   name = 'AddInProgressOrderStatus1772800000000';
 
+  // ✅ تعطيل الـ transaction لأن ALTER TYPE ADD VALUE لا يعمل داخل transaction
+  transaction = false;
+
   public async up(queryRunner: QueryRunner): Promise<void> {
-    // ─── إضافة القيمة الجديدة إلى enum في PostgreSQL ──────────────────────────
-    // PostgreSQL لا يسمح بـ DROP/RECREATE enum إذا يستخدمه column
-    // ALTER TYPE ... ADD VALUE هو الطريقة الصحيحة
+    // ─── إضافة القيمة الجديدة إلى enum ───────────────────────────────────────
     await queryRunner.query(`
-      ALTER TYPE "public"."orders_status_enum" 
+      ALTER TYPE "public"."orders_status_enum"
       ADD VALUE IF NOT EXISTS 'in_progress';
     `);
 
-    // ─── تحديث السجلات القديمة: 'processing' من مصدر سلة → 'in_progress' ──────
-    // ملاحظة: نتحقق أولاً من metadata لمعرفة المصدر الأصلي
-    // الطلبات القديمة بدون metadata تبقى 'processing' (لا تأثير على القوالب)
+    // ─── تحديث السجلات القديمة ────────────────────────────────────────────────
     await queryRunner.query(`
       UPDATE orders
-      SET status = 'in_progress'
+      SET status = 'in_progress'::orders_status_enum
       WHERE status = 'processing'
         AND (
           metadata->>'originalSlug' = 'in_progress'
@@ -39,9 +35,6 @@ export class AddInProgressOrderStatus1772800000000 implements MigrationInterface
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    // Rollback: إعادة 'in_progress' → 'processing'
-    // ملاحظة: PostgreSQL لا يدعم DROP VALUE من enum
-    // الحل: نُحدّث السجلات فقط
     await queryRunner.query(`
       UPDATE orders
       SET status = 'processing'
