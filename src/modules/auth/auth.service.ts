@@ -1527,7 +1527,6 @@ export class AuthService implements OnModuleInit {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   // ─── trackDevice ────────────────────────────────────────────────────────────
-  // يُرجع deviceToken الخاص بالجهاز لاستخدامه في الـ JWT
   async trackDevice(
     userId: string,
     tenantId: string,
@@ -1545,19 +1544,16 @@ export class AuthService implements OnModuleInit {
         where: { userId, ipAddress: ip, browser: parsed.browser, os: parsed.os, isActive: true },
       });
 
+      let savedDevice: TrustedDevice;
+
       if (existing) {
+        // حفظ البيانات الأساسية أولاً بدون deviceToken لتجنب خطأ عمود غير موجود
         existing.lastActiveAt = new Date();
         existing.userAgent = ua;
-        // تأكد أن الجهاز القديم عنده deviceToken
-        if (!existing.deviceToken) {
-          existing.deviceToken = uuidv4();
-        }
-        await this.deviceRepository.save(existing);
+        savedDevice = await this.deviceRepository.save(existing);
         this.logger.log(`📱 Device updated: ${parsed.browser}/${parsed.os} for user ${userId}`);
-        return existing.deviceToken;
       } else {
-        const deviceToken = uuidv4();
-        await this.deviceRepository.save({
+        savedDevice = await this.deviceRepository.save({
           userId,
           tenantId: tid || undefined,
           deviceName: `${parsed.deviceType} • ${parsed.os}`,
@@ -1565,11 +1561,21 @@ export class AuthService implements OnModuleInit {
           os: parsed.os,
           ipAddress: ip,
           userAgent: ua,
-          deviceToken,
           lastActiveAt: new Date(),
         });
         this.logger.log(`📱 New device: ${parsed.browser}/${parsed.os} IP:${ip} user:${userId}`);
-        return deviceToken;
+      }
+
+      // محاولة تحديث deviceToken بشكل منفصل - إذا فشل نكمل بدونه
+      try {
+        if (!savedDevice.deviceToken) {
+          savedDevice.deviceToken = uuidv4();
+          await this.deviceRepository.save(savedDevice);
+        }
+        return savedDevice.deviceToken!;
+      } catch {
+        this.logger.warn('⚠️ device_token column missing — run SQL migration');
+        return '';
       }
     } catch (err) {
       this.logger.error(`Failed to track device: ${(err as Error).message}`);
