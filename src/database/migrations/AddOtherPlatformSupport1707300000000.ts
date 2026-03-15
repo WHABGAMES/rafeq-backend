@@ -11,6 +11,9 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 export class AddOtherPlatformSupport1707300000000 implements MigrationInterface {
   name = 'AddOtherPlatformSupport1707300000000';
 
+  // ✅ تعطيل الـ transaction لأن ALTER TYPE ADD VALUE لا يعمل داخل transaction
+  transaction = false;
+
   public async up(queryRunner: QueryRunner): Promise<void> {
     // 1. إضافة 'other' للـ enum
     await queryRunner.query(`
