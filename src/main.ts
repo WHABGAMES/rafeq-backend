@@ -501,6 +501,34 @@ async function bootstrap() {
       logger.error(e.stack);
     }
 
+    // ─── Auto-create trusted_devices table ─────────────────────────
+    try {
+      const ds = app.get(DataSource);
+
+      await ds.query(`
+        CREATE TABLE IF NOT EXISTS trusted_devices (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          user_id UUID NOT NULL,
+          tenant_id UUID NOT NULL,
+          device_name VARCHAR(100) NOT NULL,
+          browser VARCHAR(50) NOT NULL,
+          os VARCHAR(50) NOT NULL,
+          ip_address VARCHAR(45) NOT NULL,
+          user_agent TEXT,
+          is_active BOOLEAN NOT NULL DEFAULT true,
+          last_active_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `);
+
+      await ds.query(`CREATE INDEX IF NOT EXISTS idx_trusted_devices_user ON trusted_devices (user_id)`);
+
+      logger.log('✅ Trusted devices table ready');
+    } catch (e: any) {
+      logger.error(`❌ TRUSTED DEVICES TABLE FAILED: ${e.message}`);
+      logger.error(e.stack);
+    }
+
     // ─── Start ────────────────────────────────────────────────────────────────
     await app.listen(port, '0.0.0.0');
 
