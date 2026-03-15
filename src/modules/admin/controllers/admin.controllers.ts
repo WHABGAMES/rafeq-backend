@@ -42,6 +42,13 @@ export class AdminStoresController {
     return this.adminUsersService.getAllStores({ page: +page, limit: +limit, search, status });
   }
 
+  // ─── DEBUG: raw store count ───────────────────────────────────────────────
+  @Get('debug-count')
+  @RequirePermissions(PERMISSIONS.USERS_READ)
+  async debugStoreCount() {
+    return this.adminUsersService.debugStoreCount();
+  }
+
   @Post(':id/transfer')
   @RequirePermissions(PERMISSIONS.STORES_TRANSFER)
   @HttpCode(HttpStatus.OK)
