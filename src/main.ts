@@ -509,7 +509,7 @@ async function bootstrap() {
         CREATE TABLE IF NOT EXISTS trusted_devices (
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
           user_id UUID NOT NULL,
-          tenant_id UUID NOT NULL,
+          tenant_id UUID,
           device_name VARCHAR(100) NOT NULL,
           browser VARCHAR(50) NOT NULL,
           os VARCHAR(50) NOT NULL,
@@ -521,6 +521,7 @@ async function bootstrap() {
         )
       `);
 
+      await ds.query(`ALTER TABLE trusted_devices ALTER COLUMN tenant_id DROP NOT NULL`).catch(() => {});
       await ds.query(`CREATE INDEX IF NOT EXISTS idx_trusted_devices_user ON trusted_devices (user_id)`);
 
       logger.log('✅ Trusted devices table ready');
