@@ -264,8 +264,11 @@ const EMBED_SCRIPT = `
     pop.innerHTML='<button id="rw-x">\\u2715</button>'+popupHTML;
     var tip=document.createElement('div');tip.id='rw-tip';
     tip.textContent=c.tooltipText||'\\u062A\\u062D\\u062A\\u0627\\u062C \\u0645\\u0633\\u0627\\u0639\\u062F\\u0629\\u061F';
+    var btnIcon = c.customIcon
+      ? '<img src="'+c.customIcon+'" style="width:'+(sz*0.55)+'px;height:'+(sz*0.55)+'px;object-fit:contain;border-radius:4px;" alt="icon">'
+      : waSvg;
     var btn=document.createElement('button');btn.id='rw-btn';
-    btn.innerHTML=waSvg+(bt?'<span id="rw-btn-txt">'+bt+'</span>':'');
+    btn.innerHTML=btnIcon+(bt?'<span id="rw-btn-txt">'+bt+'</span>':'');
     btn.setAttribute('aria-label','WhatsApp');
 
     wrap.appendChild(pop);wrap.appendChild(tip);wrap.appendChild(btn);
