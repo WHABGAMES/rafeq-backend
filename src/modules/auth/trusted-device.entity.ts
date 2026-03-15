@@ -21,8 +21,8 @@ export class TrustedDevice {
   @Column({ name: 'user_id', type: 'uuid' })
   userId: string;
 
-  @Column({ name: 'tenant_id', type: 'uuid' })
-  tenantId: string;
+  @Column({ name: 'tenant_id', type: 'uuid', nullable: true })
+  tenantId?: string;
 
   @Column({ name: 'device_name', type: 'varchar', length: 100 })
   deviceName: string;
