@@ -39,6 +39,12 @@ export class TrustedDevice {
   @Column({ name: 'user_agent', type: 'text', nullable: true })
   userAgent?: string;
 
+  /**
+   * توكن فريد لكل جهاز — يُخزَّن في JWT ويُستخدم لإبطاله فوراً عند إلغاء الثقة
+   */
+  @Column({ name: 'device_token', type: 'varchar', length: 64, nullable: true, unique: true })
+  deviceToken?: string;
+
   @Column({ name: 'is_active', type: 'boolean', default: true })
   isActive: boolean;
 
