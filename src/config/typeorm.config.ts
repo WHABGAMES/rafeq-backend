@@ -113,7 +113,7 @@ const buildConfig = (configService: ConfigService): TypeOrmModuleOptions => {
     ssl: sslConfig,
     entities,
     synchronize,
-    migrations: [__dirname + '/../../database/migrations/*{.ts,.js}'],
+    migrations: [__dirname + '/../database/migrations/*{.ts,.js}'],
     migrationsRun: true,
     logging: isDevelopment
       ? ['error', 'warn', 'migration']
