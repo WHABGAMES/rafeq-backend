@@ -243,7 +243,7 @@ export class ShortLinksService {
       const res = await fetch(`http://ip-api.com/json/${ip}?fields=country,city&lang=ar`, { signal: controller.signal });
       clearTimeout(timeout);
       if (!res.ok) return {};
-      const data = await res.json();
+      const data = await res.json() as { country?: string; city?: string };
       return { country: data.country || undefined, city: data.city || undefined };
     } catch {
       return {}; // API down or timeout — don't block tracking
