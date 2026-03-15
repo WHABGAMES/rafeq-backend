@@ -175,7 +175,7 @@ export class AdminUsersService {
     const where = conditions.join(' AND ');
 
     const dataQuery = `
-      SELECT
+      SELECT DISTINCT ON (s.id)
         s.id, s.name, s.platform, s.status, s.created_at,
         t.id AS tenant_id, t.name AS tenant_name,
         u.id AS owner_id, u.email AS owner_email,
@@ -183,8 +183,8 @@ export class AdminUsersService {
       FROM stores s
       LEFT JOIN tenants t ON t.id = s.tenant_id
       LEFT JOIN users u ON u.tenant_id = t.id AND u.role = 'owner'
-      WHERE ${where}
-      ORDER BY s.created_at DESC
+      WHERE s.id IS NOT NULL AND ${where}
+      ORDER BY s.id, s.created_at DESC
       LIMIT $${idx} OFFSET $${idx + 1}
     `;
     const dataParams = [...params, limit, (page - 1) * limit];
@@ -194,7 +194,7 @@ export class AdminUsersService {
       FROM stores s
       LEFT JOIN tenants t ON t.id = s.tenant_id
       LEFT JOIN users u ON u.tenant_id = t.id AND u.role = 'owner'
-      WHERE ${where}
+      WHERE s.id IS NOT NULL AND ${where}
     `;
 
     const [items, countResult] = await Promise.all([
