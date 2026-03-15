@@ -454,6 +454,14 @@ export class SubscriptionManagementService {
       const usageStats = row.usage_stats || {};
       const resolvedPlan = this.mapTenantPlanToTier(row.subscription_plan || 'free');
       const endsAt = row.subscription_ends_at ? new Date(row.subscription_ends_at) : null;
+      const messagesUsed = Number.isFinite(Number(usageStats.messagesUsed))
+        ? Math.max(0, Number(usageStats.messagesUsed))
+        : 0;
+      const usageLimit = Number.isFinite(Number(usageStats.messagesLimit))
+        ? Math.max(0, Number(usageStats.messagesLimit))
+        : 0;
+      const messagesLimit = usageLimit > 0 ? usageLimit : PLAN_MESSAGE_LIMITS[resolvedPlan];
+      const messagesRemaining = Math.max(0, messagesLimit - messagesUsed);
       const accountName = [row.first_name, row.last_name]
         .filter((v: unknown) => typeof v === 'string' && v.trim().length > 0)
         .join(' ')
@@ -478,8 +486,9 @@ export class SubscriptionManagementService {
         settingsCount: Object.keys(prefs).length,
         plan: resolvedPlan,
         status: row.sub_status || (resolvedPlan !== PlanTier.NONE ? 'active' : 'none'),
-        messagesUsed: usageStats.messagesUsed || 0,
-        messagesLimit: PLAN_MESSAGE_LIMITS[resolvedPlan],
+        messagesUsed,
+        messagesLimit,
+        messagesRemaining,
         currentPeriodEnd: row.current_period_end || null,
         subscribedAt: row.subscribed_at || null,
         subscriptionEndsAt: row.subscription_ends_at || null,
