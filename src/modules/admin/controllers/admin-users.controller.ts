@@ -159,4 +159,22 @@ export class AdminUsersController {
   ) {
     return this.adminUsersService.softDeleteUser(id, admin, ip);
   }
+
+  // ─── HARD DELETE — حذف كامل وإطلاقي من قاعدة البيانات ────────────────────
+  // يحذف: المستخدم + جميع مستخدمي الـ tenant + المتاجر + الـ tenant + البيانات المرتبطة
+  // ⚠️ مقتصر على AdminRole.OWNER فقط — لا يمكن التراجع
+  @Post(':id/hard-delete')
+  @RequirePermissions(PERMISSIONS.USERS_HARD_DELETE)
+  @HttpCode(HttpStatus.OK)
+  hardDelete(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: { confirmText: string },
+    @CurrentAdmin() admin: AdminUser,
+    @AdminIp() ip: string,
+  ) {
+    if (body.confirmText !== 'HARD-DELETE') {
+      throw new BadRequestException('يجب كتابة HARD-DELETE للتأكيد');
+    }
+    return this.adminUsersService.hardDeleteMerchantData(id, admin, ip);
+  }
 }
