@@ -331,7 +331,7 @@ export class WhatsappSettingsService implements OnModuleInit {
       templateId?: string;
       triggerEvent?: string;
     },
-  ): Promise<{ success: boolean; messageLogId: string | null }> {
+  ): Promise<{ success: boolean; messageLogId: string | null; savedMessageId?: string | null }> {
     const settings = await this.settingsRepo.findOne({ where: {} });
 
     if (!settings?.isActive) {
@@ -366,20 +366,21 @@ export class WhatsappSettingsService implements OnModuleInit {
       });
 
       // ✅ إنشاء/تحديث conversation في admin inbox عند نجاح الإرسال
+      let savedMessageId: string | null = null;
       if (result.success && settings.phoneNumberId) {
         try {
-          await this.createOrUpdateAdminConversation(
+          const saved = await this.createOrUpdateAdminConversation(
             settings.phoneNumberId,
             recipientPhone,
             message,
           );
+          savedMessageId = saved?.messageId || null;
         } catch (e) {
-          // لا نوقف العملية إذا فشل إنشاء الـ conversation
           this.logger.warn(`⚠️ Failed to create admin conversation: ${(e as Error).message}`);
         }
       }
 
-      return { success: result.success, messageLogId: log.id };
+      return { success: result.success, messageLogId: log.id, savedMessageId };
     } catch (err) {
       await this.messageLogRepo.update(log.id, {
         status: MessageStatus.FAILED,
@@ -400,7 +401,7 @@ export class WhatsappSettingsService implements OnModuleInit {
     phoneNumberId: string,
     recipientPhone: string,
     messageContent: string,
-  ): Promise<void> {
+  ): Promise<{ conversationId: string; messageId: string } | null> {
     // 1. ابحث عن channel بنفس phoneNumberId أو أي channel واتساب متاح
     let channel = await this.dataSource.query(
       `SELECT id, store_id FROM channels WHERE whatsapp_phone_number_id = $1 LIMIT 1`,
@@ -420,7 +421,7 @@ export class WhatsappSettingsService implements OnModuleInit {
 
     if (!channel) {
       this.logger.warn(`No WhatsApp channel found — cannot create admin conversation for ${recipientPhone}`);
-      return;
+      return null;
     }
 
     // 2. احصل على tenant_id من store
@@ -431,7 +432,7 @@ export class WhatsappSettingsService implements OnModuleInit {
 
     if (!store?.tenant_id) {
       this.logger.debug(`No tenant found for store ${channel.store_id} — skipping`);
-      return;
+      return null;
     }
 
     const tenantId: string = store.tenant_id;
@@ -472,18 +473,20 @@ export class WhatsappSettingsService implements OnModuleInit {
       conversationId = newConv.id;
     }
 
-    // 5. أضف الرسالة
-    await this.dataSource.query(
+    // 5. أضف الرسالة وأرجع الـ ID
+    const [newMsg] = await this.dataSource.query(
       `INSERT INTO messages
          (id, tenant_id, conversation_id, direction, type, status, sender,
           content, metadata, delivered_at, created_at, updated_at)
        VALUES
          (gen_random_uuid(), $1, $2, 'outbound', 'text', 'sent', 'agent',
-          $3, '{}', $4, $4, $4)`,
+          $3, '{}', $4, $4, $4)
+       RETURNING id, content, sender, direction, status, created_at`,
       [tenantId, conversationId, messageContent, now],
     );
 
     this.logger.log(`✅ Admin conversation created/updated: ${conversationId}`);
+    return { conversationId, messageId: newMsg.id };
   }
 
   // ─── API Call (Private) ───────────────────────────────────────────────────
