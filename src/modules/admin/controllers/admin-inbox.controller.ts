@@ -253,28 +253,8 @@ export class AdminInboxController {
       throw new BadRequestException('فشل إرسال الرسالة عبر واتساب — تأكد من إعدادات واتساب الإداري');
     }
 
-    // ✅ حفظ الرسالة في جدول messages ليظهر في المحادثة
-    const now = new Date();
-    await this.messageRepo.save(
-      this.messageRepo.create({
-        tenantId: conv.tenantId,
-        conversationId: id,
-        direction: 'outbound' as any,
-        type: 'text' as any,
-        status: 'sent' as any,
-        sender: 'agent' as any,
-        content: body.content.trim(),
-        metadata: { sentBy: admin.id, sentByEmail: admin.email },
-        deliveredAt: now,
-      }),
-    );
-
-    // تحديث lastMessageAt في المحادثة
-    await this.conversationRepo.update(id, {
-      lastMessageAt: now,
-      messagesCount: () => '"messages_count" + 1' as any,
-    });
-
+    // ✅ الرسالة تُحفظ تلقائياً في createOrUpdateAdminConversation داخل whatsappSettingsService
+    // لا حاجة لحفظ ثانٍ هنا — كان يُسبب تكرار الرسائل في المحادثة
     return { success: true, messageLogId: result.messageLogId };
   }
 
