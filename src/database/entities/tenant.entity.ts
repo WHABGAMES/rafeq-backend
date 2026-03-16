@@ -118,6 +118,7 @@ export class Tenant extends BaseEntity {
    * 💰 خطة الاشتراك
    */
   @Column({
+    name: 'subscription_plan',
     type: 'enum',
     enum: SubscriptionPlan,
     default: SubscriptionPlan.FREE,
