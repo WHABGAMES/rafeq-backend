@@ -253,9 +253,19 @@ export class AdminInboxController {
       throw new BadRequestException('فشل إرسال الرسالة عبر واتساب — تأكد من إعدادات واتساب الإداري');
     }
 
-    // ✅ الرسالة تُحفظ تلقائياً في createOrUpdateAdminConversation داخل whatsappSettingsService
-    // لا حاجة لحفظ ثانٍ هنا — كان يُسبب تكرار الرسائل في المحادثة
-    return { success: true, messageLogId: result.messageLogId };
+    // ✅ الرسالة تُحفظ في createOrUpdateAdminConversation — نُرجعها للفرونتيند
+    const msgId = result.savedMessageId;
+    return {
+      id: msgId || `sent-${Date.now()}`,
+      conversationId: id,
+      content: body.content.trim(),
+      sender: 'agent',
+      direction: 'outbound',
+      status: 'sent',
+      timestamp: new Date().toISOString(),
+      read: true,
+      messageLogId: result.messageLogId,
+    };
   }
 
   // ═══════════════════════════════════════════════════════════════
