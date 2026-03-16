@@ -168,6 +168,57 @@ export class WhatsappSettingsService implements OnModuleInit {
         error: err instanceof Error ? err.message : 'Unknown',
       });
     }
+
+    // ✅ إنشاء admin channel تلقائياً إذا لم يكن موجوداً
+    await this.ensureAdminChannel().catch(e =>
+      this.logger.warn(`⚠️ ensureAdminChannel: ${e?.message}`),
+    );
+  }
+
+  /**
+   * ✅ ينشئ channel إداري مخصص لربط محادثات الأدمن
+   * يُستدعى مرة واحدة عند startup — idempotent
+   */
+  private async ensureAdminChannel(): Promise<void> {
+    const settings = await this.settingsRepo.findOne({ where: {} });
+    if (!settings?.isActive || !settings.phoneNumberId) return;
+
+    // تحقق من وجود channel بهذا الرقم
+    const [existing] = await this.dataSource.query(
+      `SELECT id FROM channels WHERE whatsapp_phone_number_id = $1 LIMIT 1`,
+      [settings.phoneNumberId],
+    );
+    if (existing) return; // موجود مسبقاً ✅
+
+    // ابحث عن أي store لربط الـ channel بها
+    const [anyStore] = await this.dataSource.query(
+      `SELECT id, tenant_id FROM stores WHERE deleted_at IS NULL LIMIT 1`,
+    );
+    if (!anyStore) {
+      this.logger.debug('ensureAdminChannel: no stores found yet — will retry on next startup');
+      return;
+    }
+
+    // أنشئ admin channel
+    await this.dataSource.query(
+      `INSERT INTO channels
+         (id, store_id, type, name, status, is_official,
+          whatsapp_phone_number_id, whatsapp_phone_number,
+          connected_at, settings, created_at, updated_at)
+       VALUES
+         (gen_random_uuid(), $1, 'whatsapp_official', $2, 'connected', true,
+          $3, $4,
+          NOW(), '{}', NOW(), NOW())
+       ON CONFLICT DO NOTHING`,
+      [
+        anyStore.id,
+        `Admin WhatsApp (${settings.phoneNumber || settings.phoneNumberId})`,
+        settings.phoneNumberId,
+        settings.phoneNumber || '',
+      ],
+    );
+
+    this.logger.log(`✅ Admin WhatsApp channel created for phoneNumberId: ${settings.phoneNumberId}`);
   }
 
   // ─── Settings Management ──────────────────────────────────────────────────
