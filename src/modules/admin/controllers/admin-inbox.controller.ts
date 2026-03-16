@@ -227,7 +227,7 @@ export class AdminInboxController {
   @ApiOperation({ summary: 'إرسال رسالة من الأدمن عبر WhatsApp Admin Settings' })
   async sendMessage(
     @Param('id') id: string,
-    @CurrentAdmin() admin: any,
+    @CurrentAdmin() _admin: any,
     @Body() body: { content: string },
   ) {
     const conv = await this.conversationRepo.findOne({ where: { id } });
