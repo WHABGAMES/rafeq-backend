@@ -350,14 +350,25 @@ export class WhatsappSettingsService implements OnModuleInit {
     recipientPhone: string,
     messageContent: string,
   ): Promise<void> {
-    // 1. ابحث عن channel بنفس phoneNumberId
-    const [channel] = await this.dataSource.query(
+    // 1. ابحث عن channel بنفس phoneNumberId أو أي channel واتساب متاح
+    let channel = await this.dataSource.query(
       `SELECT id, store_id FROM channels WHERE whatsapp_phone_number_id = $1 LIMIT 1`,
       [phoneNumberId],
-    );
+    ).then(rows => rows[0] || null);
+
+    // Fallback: أي channel واتساب متاح إذا لم يُوجد برقم محدد
+    if (!channel) {
+      const [fallback] = await this.dataSource.query(
+        `SELECT id, store_id FROM channels WHERE type IN ('whatsapp_official','whatsapp_qr') AND status = 'connected' LIMIT 1`,
+      );
+      if (fallback) {
+        channel = fallback;
+        this.logger.debug(`Using fallback channel ${channel.id} for admin conversation`);
+      }
+    }
 
     if (!channel) {
-      this.logger.debug(`No channel found for phoneNumberId ${phoneNumberId} — skipping conversation creation`);
+      this.logger.warn(`No WhatsApp channel found — cannot create admin conversation for ${recipientPhone}`);
       return;
     }
 
