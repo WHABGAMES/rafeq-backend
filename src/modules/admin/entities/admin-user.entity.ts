@@ -34,6 +34,7 @@ export const PERMISSIONS = {
   USERS_CHANGE_EMAIL: 'users.change_email',
   USERS_MERGE: 'users.merge',
   USERS_DELETE: 'users.delete',
+  USERS_HARD_DELETE: 'users.hard_delete',  // ✅ حذف كامل من DB (owner only)
   STORES_TRANSFER: 'stores.transfer',
   AUDIT_READ: 'audit.read',
   SYSTEM_METRICS: 'system.metrics',
