@@ -377,10 +377,118 @@ export class WhatsAppController {
     }
   }
 
+  // ─── Admin Inbox Conversation ────────────────────────────────────────────────
+
+  /**
+   * ✅ ينشئ أو يُحدّث conversation في admin inbox عند وصول رسالة على رقم الأدمن
+   * يُرجع conversationId لإمكانية الاستخدام لاحقاً
+   */
+  private async createOrUpdateAdminInboxConversation(
+    channelId: string,
+    tenantId: string,
+    senderPhone: string,
+    senderName: string | null,
+    content: string,
+    externalMessageId: string,
+    timestamp: Date,
+  ): Promise<void> {
+    // تحقق من عدم التكرار
+    const [existingMsg] = await this.dataSource.query(
+      `SELECT id FROM messages WHERE external_id = $1 LIMIT 1`,
+      [externalMessageId],
+    );
+    if (existingMsg) {
+      this.logger.debug(`Duplicate admin message: ${externalMessageId}`);
+      return;
+    }
+
+    // ابحث عن conversation مفتوحة لنفس الرقم
+    const [existingConv] = await this.dataSource.query(
+      `SELECT id FROM conversations
+       WHERE channel_id = $1
+         AND (customer_phone = $2 OR customer_external_id = $2)
+         AND status IN ('open', 'pending', 'assigned')
+       ORDER BY last_message_at DESC NULLS LAST
+       LIMIT 1`,
+      [channelId, senderPhone],
+    );
+
+    let conversationId: string;
+
+    if (existingConv) {
+      conversationId = existingConv.id;
+      // تحديث بيانات المحادثة
+      await this.dataSource.query(
+        `UPDATE conversations
+         SET last_message_at = $1,
+             messages_count = messages_count + 1
+             ${senderName ? `, customer_name = COALESCE(NULLIF(customer_name, ''), $3)` : ''}
+         WHERE id = $2`,
+        senderName
+          ? [timestamp, conversationId, senderName]
+          : [timestamp, conversationId],
+      );
+    } else {
+      // إنشاء conversation جديدة
+      const [newConv] = await this.dataSource.query(
+        `INSERT INTO conversations
+           (id, tenant_id, channel_id,
+            customer_phone, customer_external_id, customer_name,
+            status, handler, messages_count, last_message_at,
+            ai_context, metadata, tags, created_at, updated_at)
+         VALUES
+           (gen_random_uuid(), $1, $2,
+            $3, $3, $4,
+            'open', 'human', 1, $5,
+            '{}', '{}', '{}', $5, $5)
+         RETURNING id`,
+        [tenantId, channelId, senderPhone, senderName || 'عميل', timestamp],
+      );
+      conversationId = newConv.id;
+      this.logger.log(`📝 New admin inbox conversation: ${conversationId} for ${senderPhone}`);
+    }
+
+    // إضافة الرسالة
+    await this.dataSource.query(
+      `INSERT INTO messages
+         (id, tenant_id, conversation_id,
+          direction, type, status, sender,
+          external_id, content, metadata,
+          delivered_at, created_at, updated_at)
+       VALUES
+         (gen_random_uuid(), $1, $2,
+          'inbound', 'text', 'delivered', 'customer',
+          $3, $4, '{}',
+          $5, $5, $5)`,
+      [tenantId, conversationId, externalMessageId, content, timestamp],
+    );
+
+    this.logger.log(`✅ Admin inbox conversation updated: ${conversationId}`);
+  }
+
   /**
    * FIX-2: معالجة webhook الإداري مع حفظ status updates
+   * ✅ FIX-3: ينشئ Conversation + Message في جداول المحادثات ليظهر في admin inbox
    */
   private async processAdminWebhook(payload: WhatsAppWebhookPayload): Promise<void> {
+    // ✅ جلب channel الأدمن مرة واحدة لكل الرسائل
+    const adminSettings = await this.whatsappSettingsRepo.findOne({ where: {} });
+    const adminChannel = adminSettings?.phoneNumberId
+      ? await this.channelRepository.findOne({
+          where: { whatsappPhoneNumberId: adminSettings.phoneNumberId },
+        })
+      : null;
+
+    // جلب tenantId من store المرتبط بـ admin channel
+    let adminTenantId: string | null = null;
+    if (adminChannel?.storeId) {
+      const [store] = await this.dataSource.query(
+        `SELECT tenant_id FROM stores WHERE id = $1 LIMIT 1`,
+        [adminChannel.storeId],
+      );
+      adminTenantId = store?.tenant_id || null;
+    }
+
     for (const entry of payload.entry || []) {
       for (const change of entry.changes || []) {
 
@@ -401,13 +509,29 @@ export class WhatsAppController {
             else content = `[${msg.type || 'رسالة'}]`;
 
             const phone = msg.from?.replace(/\D/g, '') || null;
+            const senderName = change.value?.contacts?.[0]?.profile?.name || null;
+            const now = new Date(parseInt(msg.timestamp) * 1000);
 
+            // ✅ حفظ في message_logs للتتبع
             await this.dataSource.query(`
               INSERT INTO message_logs
                 (id, channel, direction, recipient_phone, content, trigger_event, status, attempts, sent_at, created_at)
               VALUES
                 (gen_random_uuid(), 'whatsapp', 'inbound', $1, $2, 'inbound', 'received', 0, NOW(), NOW())
             `, [phone, content]);
+
+            // ✅ إنشاء/تحديث Conversation في admin inbox
+            if (adminChannel && adminTenantId && phone) {
+              await this.createOrUpdateAdminInboxConversation(
+                adminChannel.id,
+                adminTenantId,
+                phone,
+                senderName,
+                content || '',
+                msg.id,
+                now,
+              );
+            }
 
             this.logger.log(`✅ Saved inbound admin WhatsApp message`, { from: phone, type: msg.type });
           } catch (err) {
