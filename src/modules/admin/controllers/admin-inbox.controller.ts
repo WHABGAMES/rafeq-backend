@@ -34,6 +34,7 @@ import { WhatsappSettings } from '../entities/whatsapp-settings.entity';
 
 import { Conversation, Message, ConversationStatus, Channel } from '@database/entities';
 import { InboxService } from '@modules/inbox/inbox.service';
+import { WhatsappSettingsService } from '../services/whatsapp-settings.service';
 
 @ApiTags('Admin: صندوق الرسائل')
 @Controller({ path: 'admin/inbox', version: '1' })
@@ -56,6 +57,7 @@ export class AdminInboxController {
     private readonly whatsappSettingsRepo: Repository<WhatsappSettings>,
 
     private readonly inboxService: InboxService,
+    private readonly whatsappSettingsService: WhatsappSettingsService,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════
@@ -221,7 +223,7 @@ export class AdminInboxController {
 
   @Post(':id/messages')
   @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({ summary: 'إرسال رسالة من الأدمن' })
+  @ApiOperation({ summary: 'إرسال رسالة من الأدمن عبر WhatsApp Admin Settings' })
   async sendMessage(
     @Param('id') id: string,
     @CurrentAdmin() admin: any,
@@ -230,7 +232,49 @@ export class AdminInboxController {
     const conv = await this.conversationRepo.findOne({ where: { id } });
     if (!conv) throw new NotFoundException('المحادثة غير موجودة');
 
-    return this.inboxService.sendMessage(id, body.content, admin.id, conv.tenantId);
+    if (!body.content?.trim()) {
+      throw new BadRequestException('محتوى الرسالة مطلوب');
+    }
+
+    const recipientPhone = conv.customerPhone || conv.customerExternalId;
+    if (!recipientPhone) {
+      throw new BadRequestException('لا يوجد رقم هاتف للمستلم');
+    }
+
+    // ✅ الإرسال عبر Admin WhatsApp credentials (يفكّ التشفير تلقائياً)
+    const result = await this.whatsappSettingsService.sendMessage(
+      recipientPhone,
+      body.content.trim(),
+      { recipientUserId: undefined, triggerEvent: 'admin.manual' },
+    );
+
+    if (!result.success) {
+      throw new BadRequestException('فشل إرسال الرسالة عبر واتساب — تأكد من إعدادات واتساب الإداري');
+    }
+
+    // ✅ حفظ الرسالة في جدول messages ليظهر في المحادثة
+    const now = new Date();
+    await this.messageRepo.save(
+      this.messageRepo.create({
+        tenantId: conv.tenantId,
+        conversationId: id,
+        direction: 'outbound' as any,
+        type: 'text' as any,
+        status: 'sent' as any,
+        sender: 'agent' as any,
+        content: body.content.trim(),
+        metadata: { sentBy: admin.id, sentByEmail: admin.email },
+        deliveredAt: now,
+      }),
+    );
+
+    // تحديث lastMessageAt في المحادثة
+    await this.conversationRepo.update(id, {
+      lastMessageAt: now,
+      messagesCount: () => '"messages_count" + 1' as any,
+    });
+
+    return { success: true, messageLogId: result.messageLogId };
   }
 
   // ═══════════════════════════════════════════════════════════════
