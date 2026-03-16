@@ -471,13 +471,28 @@ export class WhatsAppController {
    * ✅ FIX-3: ينشئ Conversation + Message في جداول المحادثات ليظهر في admin inbox
    */
   private async processAdminWebhook(payload: WhatsAppWebhookPayload): Promise<void> {
-    // ✅ جلب channel الأدمن مرة واحدة لكل الرسائل
+    // ✅ جلب channel الأدمن — مع fallback لأي channel واتساب متاح
     const adminSettings = await this.whatsappSettingsRepo.findOne({ where: {} });
-    const adminChannel = adminSettings?.phoneNumberId
+
+    let adminChannel = adminSettings?.phoneNumberId
       ? await this.channelRepository.findOne({
           where: { whatsappPhoneNumberId: adminSettings.phoneNumberId },
         })
       : null;
+
+    // Fallback: أي channel واتساب متاح
+    if (!adminChannel) {
+      adminChannel = await this.channelRepository.findOne({
+        where: [
+          { type: ChannelType.WHATSAPP_OFFICIAL },
+          { type: 'whatsapp_qr' as any },
+        ],
+        order: { connectedAt: 'DESC' },
+      }) || null;
+      if (adminChannel) {
+        this.logger.debug(`Using fallback channel ${adminChannel.id} for admin inbox`);
+      }
+    }
 
     // جلب tenantId من store المرتبط بـ admin channel
     let adminTenantId: string | null = null;
