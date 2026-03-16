@@ -314,6 +314,20 @@ export class WhatsappSettingsService implements OnModuleInit {
         errorMessage: result.error,
       });
 
+      // ✅ إنشاء/تحديث conversation في admin inbox عند نجاح الإرسال
+      if (result.success && settings.phoneNumberId) {
+        try {
+          await this.createOrUpdateAdminConversation(
+            settings.phoneNumberId,
+            recipientPhone,
+            message,
+          );
+        } catch (e) {
+          // لا نوقف العملية إذا فشل إنشاء الـ conversation
+          this.logger.warn(`⚠️ Failed to create admin conversation: ${(e as Error).message}`);
+        }
+      }
+
       return { success: result.success, messageLogId: log.id };
     } catch (err) {
       await this.messageLogRepo.update(log.id, {
@@ -323,6 +337,91 @@ export class WhatsappSettingsService implements OnModuleInit {
       });
       return { success: false, messageLogId: log.id };
     }
+  }
+
+  // ─── Admin Conversation (Private) ───────────────────────────────────────────
+
+  /**
+   * ✅ ينشئ أو يُحدّث conversation في admin inbox عند إرسال رسالة إدارية
+   * يبحث عن channel بـ phoneNumberId الأدمن ثم ينشئ conversation + message
+   */
+  private async createOrUpdateAdminConversation(
+    phoneNumberId: string,
+    recipientPhone: string,
+    messageContent: string,
+  ): Promise<void> {
+    // 1. ابحث عن channel بنفس phoneNumberId
+    const [channel] = await this.dataSource.query(
+      `SELECT id, store_id FROM channels WHERE whatsapp_phone_number_id = $1 LIMIT 1`,
+      [phoneNumberId],
+    );
+
+    if (!channel) {
+      this.logger.debug(`No channel found for phoneNumberId ${phoneNumberId} — skipping conversation creation`);
+      return;
+    }
+
+    // 2. احصل على tenant_id من store
+    const [store] = await this.dataSource.query(
+      `SELECT tenant_id FROM stores WHERE id = $1 LIMIT 1`,
+      [channel.store_id],
+    );
+
+    if (!store?.tenant_id) {
+      this.logger.debug(`No tenant found for store ${channel.store_id} — skipping`);
+      return;
+    }
+
+    const tenantId: string = store.tenant_id;
+    const now = new Date();
+
+    // 3. ابحث عن conversation موجودة (OUTBOUND للمستلم نفسه)
+    const [existingConv] = await this.dataSource.query(
+      `SELECT id FROM conversations
+       WHERE channel_id = $1
+         AND customer_phone = $2
+         AND status IN ('open','pending','assigned')
+       ORDER BY last_message_at DESC
+       LIMIT 1`,
+      [channel.id, recipientPhone],
+    );
+
+    let conversationId: string;
+
+    if (existingConv) {
+      // 4a. تحديث last_message_at
+      conversationId = existingConv.id;
+      await this.dataSource.query(
+        `UPDATE conversations SET last_message_at = $1, messages_count = messages_count + 1 WHERE id = $2`,
+        [now, conversationId],
+      );
+    } else {
+      // 4b. إنشاء conversation جديدة
+      const [newConv] = await this.dataSource.query(
+        `INSERT INTO conversations
+           (id, tenant_id, channel_id, customer_phone, customer_external_id,
+            status, handler, messages_count, last_message_at, ai_context, metadata, tags, created_at, updated_at)
+         VALUES
+           (gen_random_uuid(), $1, $2, $3, $3,
+            'open', 'human', 1, $4, '{}', '{}', '{}', $4, $4)
+         RETURNING id`,
+        [tenantId, channel.id, recipientPhone, now],
+      );
+      conversationId = newConv.id;
+    }
+
+    // 5. أضف الرسالة
+    await this.dataSource.query(
+      `INSERT INTO messages
+         (id, tenant_id, conversation_id, direction, type, status, sender,
+          content, metadata, delivered_at, created_at, updated_at)
+       VALUES
+         (gen_random_uuid(), $1, $2, 'outbound', 'text', 'sent', 'agent',
+          $3, '{}', $4, $4, $4)`,
+      [tenantId, conversationId, messageContent, now],
+    );
+
+    this.logger.log(`✅ Admin conversation created/updated: ${conversationId}`);
   }
 
   // ─── API Call (Private) ───────────────────────────────────────────────────
