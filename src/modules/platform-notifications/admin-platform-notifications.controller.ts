@@ -26,8 +26,6 @@ import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { PlatformNotificationsService } from './platform-notifications.service';
 import {
   PlatformNotificationType,
-  PlatformNotificationDisplay,
-  PlatformNotificationColor,
 } from './platform-notification.entity';
 
 // ✅ Admin guards — مسار صحيح من modules/platform-notifications
