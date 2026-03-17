@@ -92,6 +92,7 @@ import { GatewayModule } from '@modules/gateway/gateway.module';
 import { MailModule } from '@modules/mail/mail.module';
 import { EmployeeNotificationsModule } from '@modules/employee-notifications/employee-notifications.module';
 import { AdminModule } from '@modules/admin/admin.module';
+import { PlatformNotificationsModule } from '@modules/platform-notifications/platform-notifications.module';
 import { SuggestionsModule } from '@modules/suggestions/suggestions.module';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -458,6 +459,7 @@ import { SuggestionsModule } from '@modules/suggestions/suggestions.module';
 
     // 🛡️ لوحة الأدمن — إدارة المنصة
     AdminModule,
+    PlatformNotificationsModule,
 
     // 💡 الاقتراحات والمشاكل
     SuggestionsModule,
