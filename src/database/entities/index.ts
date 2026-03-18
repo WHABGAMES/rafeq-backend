@@ -67,6 +67,14 @@ export { Subscription, SubscriptionStatus, BillingInterval, PaymentProvider, Usa
 export { KnowledgeBase, KnowledgeCategory, KnowledgeType } from '../../modules/ai/entities/knowledge-base.entity';
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// CONVERSION ELEMENTS ENTITIES
+// ═══════════════════════════════════════════════════════════════════════════════
+export { ConversionElement, ElementType, ElementStatus, ElementPosition } from '../../modules/conversion-elements/entities/conversion-element.entity';
+export { ElementEvent, ElementEventType } from '../../modules/conversion-elements/entities/element-event.entity';
+export { ElementAnalyticsDaily } from '../../modules/conversion-elements/entities/element-analytics-daily.entity';
+export { ABTest, ABTestStatus } from '../../modules/conversion-elements/entities/ab-test.entity';
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // ALL ENTITIES ARRAY
 // ═══════════════════════════════════════════════════════════════════════════════
 import { Tenant } from './tenant.entity';
@@ -86,6 +94,10 @@ import { SubscriptionPlan } from './subscription-plan.entity';
 import { Subscription } from './subscription.entity';
 import { ScheduledTemplateSend } from './scheduled-template-send.entity';
 import { KnowledgeBase } from '../../modules/ai/entities/knowledge-base.entity';
+import { ConversionElement } from '../../modules/conversion-elements/entities/conversion-element.entity';
+import { ElementEvent } from '../../modules/conversion-elements/entities/element-event.entity';
+import { ElementAnalyticsDaily } from '../../modules/conversion-elements/entities/element-analytics-daily.entity';
+import { ABTest } from '../../modules/conversion-elements/entities/ab-test.entity';
 
 export const allEntities = [
   Tenant,
@@ -104,4 +116,8 @@ export const allEntities = [
   Subscription,
   ScheduledTemplateSend,
   KnowledgeBase,
+  ConversionElement,
+  ElementEvent,
+  ElementAnalyticsDaily,
+  ABTest,
 ];
