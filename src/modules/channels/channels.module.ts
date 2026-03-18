@@ -2,9 +2,8 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║                    RAFIQ PLATFORM - Channels Module                            ║
  * ║                                                                                ║
- * ║  ✅ إصلاحات:                                                                   ║
- * ║  - إزالة EventEmitterModule.forRoot() المكرر (موجود في AppModule)              ║
- * ║  - الاحتفاظ بباقي التبعيات كما هي                                              ║
+ * ║  ✅ v3: إضافة WhatsAppCleanupListener لتنظيف المحادثات عند الفصل            ║
+ * ║  ✅ إزالة EventEmitterModule.forRoot() المكرر (موجود في AppModule)            ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -17,6 +16,7 @@ import { Channel } from './entities/channel.entity';
 import { ChannelsService } from './channels.service';
 import { ChannelsController } from './channels.controller';
 import { WhatsAppBaileysService } from './whatsapp/whatsapp-baileys.service';
+import { WhatsAppCleanupListener } from './listeners/whatsapp-cleanup.listener';
 
 @Module({
   imports: [
@@ -31,11 +31,13 @@ import { WhatsAppBaileysService } from './whatsapp/whatsapp-baileys.service';
   providers: [
     ChannelsService,
     WhatsAppBaileysService,
+    WhatsAppCleanupListener,
   ],
   exports: [
     ChannelsService,
     WhatsAppBaileysService,
-    TypeOrmModule, // ✅ تصدير TypeOrmModule ليستخدمه WhatsAppModule
+    WhatsAppCleanupListener,
+    TypeOrmModule,
   ],
 })
 export class ChannelsModule {}
