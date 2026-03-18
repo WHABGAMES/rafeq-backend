@@ -94,6 +94,7 @@ import { EmployeeNotificationsModule } from '@modules/employee-notifications/emp
 import { AdminModule } from '@modules/admin/admin.module';
 import { PlatformNotificationsModule } from '@modules/platform-notifications/platform-notifications.module';
 import { SuggestionsModule } from '@modules/suggestions/suggestions.module';
+import { ConversionElementsModule } from './modules/conversion-elements/conversion-elements.module';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // تعريف الوحدة
@@ -469,6 +470,9 @@ import { SuggestionsModule } from '@modules/suggestions/suggestions.module';
 
     // 🔗 روابط مختصرة
     ShortLinksModule,
+
+    // 🎯 عناصر تحسين التحويل (CRO)
+    ConversionElementsModule,
   ],
 
   // ═══════════════════════════════════════════════════════════════════════════════
