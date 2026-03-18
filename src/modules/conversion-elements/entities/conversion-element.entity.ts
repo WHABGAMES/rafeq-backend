@@ -22,20 +22,40 @@ import { BaseEntity } from '../../../database/entities/base.entity';
 
 // ─── Element Types ──────────────────────────────────────────────
 export enum ElementType {
-  SOCIAL_PROOF     = 'social_proof',      // "اشترى 5 أشخاص هذا المنتج"
-  URGENCY_COUNTDOWN = 'urgency_countdown', // عد تنازلي
-  URGENCY_SCARCITY = 'urgency_scarcity',   // "بقي 3 فقط!"
-  UPSELL           = 'upsell',             // منتجات ذات صلة
-  CROSS_SELL       = 'cross_sell',         // "اشتريت X، جرب Y"
-  SMART_OFFER      = 'smart_offer',        // عرض ذكي (popup/banner)
-  SPIN_WHEEL       = 'spin_wheel',         // عجلة الحظ
-  WHATSAPP_CTA     = 'whatsapp_cta',       // زر واتساب ذكي
-  LEAD_FORM        = 'lead_form',          // نموذج بيانات
-  FREE_SHIPPING_BAR = 'free_shipping_bar', // "أضف X للشحن المجاني"
-  ANNOUNCEMENT_BAR = 'announcement_bar',   // شريط إعلانات
-  STICKY_ATC       = 'sticky_atc',         // زر أضف للسلة ثابت
-  TRUST_BADGES     = 'trust_badges',       // شارات الثقة
-  REVIEWS_WIDGET   = 'reviews_widget',     // عرض التقييمات
+  // تحسين معدل التحويل
+  SOCIAL_PROOF      = 'social_proof',         // تنبيه بعمليات الشراء
+  URGENCY_COUNTDOWN = 'urgency_countdown',    // عد تنازلي
+  URGENCY_SCARCITY  = 'urgency_scarcity',     // إعلان المنتج (عدد المشاهدين)
+  UPSELL            = 'upsell',               // اقتراحات ذكية
+  CROSS_SELL        = 'cross_sell',           // منتجات يتم شراؤها معاً
+  FREE_SHIPPING_BAR = 'free_shipping_bar',    // شريط الشحن المجاني
+  STICKY_ATC        = 'sticky_atc',           // زر أضف للسلة ثابت
+  PAGE_VISITORS     = 'page_visitors',        // زوار الصفحة اليوم
+  VISITORS_BAR      = 'visitors_bar',         // شريط زوار الموقع
+  LIVE_ORDERS       = 'live_orders',          // عدد الطلبات الآن
+  // التخفيضات والعروض
+  SMART_OFFER       = 'smart_offer',          // تنبيه الخصم
+  SPIN_WHEEL        = 'spin_wheel',           // عجلة الحظ
+  ANNOUNCEMENT_BAR  = 'announcement_bar',     // شريط القسائم
+  COUPON_WIDGET     = 'coupon_widget',        // كوبون خصم
+  DISCOUNT_BAR      = 'discount_bar',         // شريط الخصم
+  COUPON_ALERT      = 'coupon_alert',         // تنبيه القسائم
+  // زيادة التفاعل
+  WHATSAPP_CTA      = 'whatsapp_cta',         // تواصل معنا (واتساب)
+  WHATSAPP_BAR      = 'whatsapp_bar',         // شريط واتساب
+  LEAD_FORM         = 'lead_form',            // طلب عرض سعر
+  STORE_STORIES     = 'store_stories',        // قصص المتجر التفاعلية
+  MINI_STORIES      = 'mini_stories',         // قصص مصغّرة تفاعلية
+  // تحسين خدمة العملاء
+  TRUST_BADGES      = 'trust_badges',         // شارات الثقة
+  REVIEWS_WIDGET    = 'reviews_widget',       // آراء العملاء
+  COOKIE_POLICY     = 'cookie_policy',        // سياسة الكوكيز
+  ASK_PRODUCT       = 'ask_product',          // اسألنا عن المنتج
+  RATE_US           = 'rate_us',              // قيّمنا
+  CUSTOMER_SATISFACTION = 'customer_satisfaction', // رضا العملاء
+  // التسويق والمبيعات
+  NEWSLETTER        = 'newsletter',           // النشرة البريدية
+  MOBILE_SUBSCRIBE  = 'mobile_subscribe',     // اشتراك الجوال
 }
 
 // ─── Display Position ───────────────────────────────────────────
