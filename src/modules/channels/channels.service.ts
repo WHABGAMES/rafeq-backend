@@ -20,6 +20,7 @@ import * as crypto from 'crypto';
 
 import { Channel, ChannelType, ChannelStatus } from './entities/channel.entity';
 import { WhatsAppBaileysService, QRSessionResult } from './whatsapp/whatsapp-baileys.service';
+import { WhatsAppCleanupListener } from './listeners/whatsapp-cleanup.listener';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DTOs
@@ -48,6 +49,8 @@ export class ChannelsService {
     private readonly httpService: HttpService,
     
     private readonly whatsappBaileysService: WhatsAppBaileysService,
+
+    private readonly whatsappCleanupListener: WhatsAppCleanupListener,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -100,7 +103,14 @@ export class ChannelsService {
   async disconnect(id: string, storeId: string): Promise<void> {
     const channel = await this.findById(id, storeId);
 
-    // حذف الجلسة من Baileys (إذا كانت WhatsApp QR)
+    // ① تنظيف المحادثات والرسائل المرتبطة بالقناة
+    try {
+      await this.whatsappCleanupListener.cleanupChannelData(id);
+    } catch (error) {
+      this.logger.warn(`⚠️ Cleanup conversations failed for ${id}: ${error instanceof Error ? error.message : 'Unknown'}`);
+    }
+
+    // ② حذف الجلسة من Baileys (إذا كانت WhatsApp QR)
     if (channel.type === ChannelType.WHATSAPP_QR) {
       try {
         await this.whatsappBaileysService.deleteSession(id);
@@ -109,7 +119,7 @@ export class ChannelsService {
       }
     }
 
-    // ✅ حذف نهائي من قاعدة البيانات (بدل تغيير الحالة فقط)
+    // ③ حذف نهائي من قاعدة البيانات
     await this.channelRepository.remove(channel);
 
     this.logger.log(`✅ Channel ${id} disconnected and removed for store ${storeId}`);
@@ -123,6 +133,14 @@ export class ChannelsService {
   async softDisconnect(id: string, storeId: string): Promise<void> {
     const channel = await this.findById(id, storeId);
 
+    // ① تنظيف المحادثات والرسائل
+    try {
+      await this.whatsappCleanupListener.cleanupChannelData(id);
+    } catch (error) {
+      this.logger.warn(`⚠️ Cleanup failed during soft-disconnect for ${id}: ${error instanceof Error ? error.message : 'Unknown'}`);
+    }
+
+    // ② حذف جلسة Baileys
     if (channel.type === ChannelType.WHATSAPP_QR) {
       try {
         await this.whatsappBaileysService.deleteSession(id);
@@ -131,6 +149,7 @@ export class ChannelsService {
       }
     }
 
+    // ③ تحديث حالة القناة (بدون حذف السجل)
     // ✅ Fix: null يمسح القيمة في DB. undefined يتخطاها (لا تُحدَّث).
     await this.channelRepository.update(id, {
       status: ChannelStatus.DISCONNECTED,
@@ -259,6 +278,7 @@ export class ChannelsService {
       this.logger.log(`🧹 Cleaning ${deadChannels.length} dead QR channel(s) for store ${storeId}`);
       for (const dead of deadChannels) {
         try {
+          await this.whatsappCleanupListener.cleanupChannelData(dead.id);
           await this.whatsappBaileysService.deleteSession(dead.id);
         } catch {
           // تجاهل أخطاء حذف الجلسات الميتة
@@ -575,6 +595,7 @@ export class ChannelsService {
     if (toRemove.length > 0) {
       for (const ch of toRemove) {
         try {
+          await this.whatsappCleanupListener.cleanupChannelData(ch.id);
           await this.whatsappBaileysService.deleteSession(ch.id);
         } catch {
           // تجاهل
