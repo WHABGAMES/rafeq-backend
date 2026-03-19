@@ -79,9 +79,12 @@ export class AdminInboxController {
       return [];
     }
 
-    // 2. Find channels with matching phoneNumberId
+    // 2. Find admin channels (by flag first, fallback to phoneNumberId)
     const channels = await this.channelRepo.find({
-      where: { whatsappPhoneNumberId: settings.phoneNumberId },
+      where: [
+        { isAdminChannel: true },
+        { whatsappPhoneNumberId: settings.phoneNumberId },
+      ],
       select: ['id'],
     });
 
