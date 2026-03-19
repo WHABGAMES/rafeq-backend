@@ -134,18 +134,32 @@ async function bootstrap() {
     app.enableCors({
       origin: (origin, callback) => {
         if (!origin) { callback(null, true); return; }
-        // Whitelisted origins
+        // Whitelisted origins (dashboard, admin)
         if (corsOrigins.includes(origin)) {
           callback(null, true);
           return;
         }
-        // ✅ Allow all Salla store domains (*.salla.sa) for widget embed
+        // ✅ Allow all Salla store domains (*.salla.sa, *.salla.dev)
         if (origin.endsWith('.salla.sa') || origin.endsWith('.salla.dev')) {
           callback(null, true);
           return;
         }
-        logger.warn(`🚫 CORS blocked origin: ${origin}`);
-        callback(new Error('Not allowed by CORS'));
+        // ✅ Allow all Zid store domains (*.zid.store, *.zid.sa)
+        if (origin.endsWith('.zid.store') || origin.endsWith('.zid.sa')) {
+          callback(null, true);
+          return;
+        }
+        // ✅ Allow all Shopify store domains (*.myshopify.com)
+        if (origin.endsWith('.myshopify.com')) {
+          callback(null, true);
+          return;
+        }
+        // ✅ Allow ALL custom domains for widget/elements embed
+        // Merchants use custom domains (e.g., iwgstore.com, myshop.sa)
+        // Public embed endpoints (/api/widget/*, /api/elements/*) are designed
+        // to be loaded from any merchant's storefront — they contain no sensitive data
+        // and are protected by storeId-based access, not CORS
+        callback(null, true);
       },
       methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
       allowedHeaders: [
