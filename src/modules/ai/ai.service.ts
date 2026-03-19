@@ -1009,15 +1009,17 @@ export class AIService {
         return this.handleNoMatch(context, settings, lang, intentResult.intent);
       }
 
-      // ✅ Step 5: Lightweight Grounding — كشف الهلوسة بدون API call
-      // الفكرة: إذا الرد يحتوي معلومات (أرقام، أسعار، مواعيد) وما فيه أي تقاطع مع المكتبة
-      // → على الأغلب GPT يهلوس من معرفته العامة
-      const groundingCheck = this.lightweightGroundingCheck(finalReply, knowledgeChunks);
+      // ✅ Step 5: Trust GPT — الذكاء الاصطناعي هو المحرك الأساسي
+      // GPT استلم كل المعلومات (مكتبة + منتجات + إعدادات) وفهم السياق
+      // إذا أجاب → نثق فيه (لأنه فهم المعنى مش الكلمات)
+      // الفحص الحرفي القديم كان يقتل ردود صحيحة لأن GPT يصيغ بأسلوبه
       
+      // ✅ مراقبة فقط (log بدون block) — للتعلم المستقبلي
+      const groundingCheck = this.lightweightGroundingCheck(finalReply, knowledgeChunks);
       if (!groundingCheck.passed) {
-        this.logger.warn(`🛡️ Lightweight grounding FAILED: ${groundingCheck.reason}`);
-        
-        this.eventEmitter.emit('ai.grounding_failed', {
+        // نسجل للمراقبة فقط — لا نمنع الرد
+        this.logger.log(`📊 Grounding monitor (NOT blocking): ${groundingCheck.reason}`);
+        this.eventEmitter.emit('ai.grounding_monitor', {
           tenantId: context.tenantId,
           storeId: context.storeId,
           conversationId: context.conversationId,
@@ -1026,10 +1028,8 @@ export class AIService {
           reason: groundingCheck.reason,
           intent: intentResult.intent,
           timestamp: new Date(),
+          blocked: false, // ✅ لم يُمنع — للمراقبة فقط
         });
-
-        // بدل ما نمنع الرد بالكامل → نطلب توضيح
-        return this.handleNoMatch(context, settings, lang, intentResult.intent);
       }
 
       // ✅ نجح الرد
@@ -1377,91 +1377,89 @@ export class AIService {
       };
     }
 
-    // ✅ في رقم طلب → نتابع مع GPT + أدوات
-    const knowledgeChunks = await this.smartRetrieve(message, context, settings);
-    const systemPrompt = this.buildStrictSystemPrompt(settings, context, knowledgeChunks);
+    // ✅ في رقم طلب → نبحث الطلب مباشرة (بدون انتظار GPT يقرر)
+    // هذا يحل مشكلة: GPT أحياناً ما يستخدم get_order_status لأن المحادثة فيها رد سابق
+    const orderNumberMatch = message.match(/\d{4,}/);
+    const orderNumber = orderNumberMatch ? orderNumberMatch[0] : '';
 
-    const messages: ChatCompletionMessageParam[] = [
-      { role: 'system', content: systemPrompt },
-      ...context.previousMessages.slice(-10).map((m) => ({
-        role: m.role as 'user' | 'assistant',
-        content: m.content,
-      })),
-      { role: 'user', content: message },
-    ];
-
-    const tools = this.getAvailableTools();
+    this.logger.log(`📦 ORDER_QUERY with number: "${orderNumber}" → direct lookup`);
 
     try {
+      // ✅ STEP 1: بحث مباشر عن الطلب — بدون GPT
+      const orderResult = await this.toolGetOrderStatus(
+        context.tenantId,
+        orderNumber,
+        context.storeId,
+        context.customerPhone,
+      ) as Record<string, unknown>;
+
+      // ✅ STEP 2: إذا ما لقى الطلب → نخبر العميل
+      if (!orderResult || orderResult.found === false) {
+        this.logger.log(`📦 Order ${orderNumber} not found → informing customer`);
+        const isAr = settings.language !== 'en';
+        const notFoundMsg = isAr
+          ? `لم نتمكن من العثور على طلب برقم ${orderNumber}. يرجى التأكد من الرقم والمحاولة مرة أخرى.`
+          : `We couldn't find an order with number ${orderNumber}. Please verify the number and try again.`;
+        return {
+          reply: notFoundMsg,
+          confidence: 0.8,
+          intent: 'ORDER_QUERY',
+          shouldHandoff: false,
+          toolsUsed: ['get_order_status'],
+        };
+      }
+
+      // ✅ STEP 3: لقينا الطلب → نرسل بيانات الطلب لـ GPT ليصيغ الرد بأسلوب المتجر
+      const orderData = JSON.stringify(orderResult);
+      const knowledgeChunks = await this.smartRetrieve(message, context, settings, {
+        intent: IntentType.ORDER_QUERY,
+        confidence: 1,
+        allowedSources: ['library'],
+      });
+      const systemPrompt = this.buildStrictSystemPrompt(settings, context, knowledgeChunks);
+
+      const formatMessages: ChatCompletionMessageParam[] = [
+        { role: 'system', content: systemPrompt },
+        ...context.previousMessages.slice(-6).map((m) => ({
+          role: m.role as 'user' | 'assistant',
+          content: m.content,
+        })),
+        { role: 'user', content: message },
+        { role: 'assistant', content: '', tool_calls: [{ id: 'direct_order_lookup', type: 'function' as const, function: { name: 'get_order_status', arguments: JSON.stringify({ order_id: orderNumber }) } }] },
+        { role: 'tool', tool_call_id: 'direct_order_lookup', content: orderData },
+      ];
+
       const completion = await this.openai.chat.completions.create({
         model: settings.model || AI_DEFAULTS.model,
-        messages,
-        tools: tools.length > 0 ? tools : undefined,
-        tool_choice: tools.length > 0 ? 'auto' : undefined,
+        messages: formatMessages,
         temperature: 0.3,
         max_tokens: settings.maxTokens || 1000,
       });
 
-      const assistantMsg = completion.choices[0]?.message;
-      if (!assistantMsg) throw new Error('No response from OpenAI');
+      const finalReply = completion.choices[0]?.message?.content || '';
 
-      let finalReply = assistantMsg.content || '';
-      const toolsUsed: string[] = [];
-
-      if (assistantMsg.tool_calls?.length) {
-        const toolResults = await this.executeToolCalls(assistantMsg.tool_calls, context, settings);
-        toolsUsed.push(...toolResults.map((r) => r.name));
-
-        const handoffTool = toolResults.find((r) => r.name === 'request_human_agent');
-        if (handoffTool) {
-          return {
-            reply: this.getHandoffMessage(settings),
-            confidence: 1,
-            shouldHandoff: true,
-            handoffReason: 'CUSTOMER_REQUEST',
-            toolsUsed,
-          };
-        }
-
-        const toolMessages: ChatCompletionMessageParam[] = [
-          ...messages,
-          assistantMsg as ChatCompletionMessageParam,
-          ...toolResults.map((r) => ({
-            role: 'tool' as const,
-            tool_call_id: r.toolCallId,
-            content: JSON.stringify(r.result),
-          })),
-        ];
-
-        const followUp = await this.openai.chat.completions.create({
-          model: settings.model || AI_DEFAULTS.model,
-          messages: toolMessages,
-          temperature: 0.3,
-          max_tokens: settings.maxTokens || 1000,
-        });
-
-        finalReply = followUp.choices[0]?.message?.content || finalReply;
-      }
-
-      // ✅ FIX: إذا GPT رد بـ NO_MATCH_MESSAGE → handleNoMatch
-      const isNoMatch = finalReply.includes('خارج نطاق المعلومات') || finalReply.includes('outside the scope');
-      
-      if (isNoMatch && knowledgeChunks.length === 0) {
-        this.logger.warn('🔄 ORDER_QUERY: no chunks & no tool result — falling back to handleNoMatch');
-        const lang = settings.language !== 'en' ? 'ar' : 'en';
-        return this.handleNoMatch(context, settings, lang, IntentType.ORDER_QUERY);
+      if (!finalReply) {
+        const status = (orderResult as any).status || (orderResult as any).statusAr || 'unknown';
+        const isAr = settings.language !== 'en';
+        return {
+          reply: isAr ? `طلبك برقم ${orderNumber} حالته: ${status}.` : `Your order #${orderNumber} status: ${status}.`,
+          confidence: 0.9,
+          intent: 'ORDER_QUERY',
+          shouldHandoff: false,
+          toolsUsed: ['get_order_status'],
+        };
       }
 
       await this.resetFailedAttempts(context);
 
       return {
         reply: finalReply,
-        confidence: knowledgeChunks.length > 0 ? 0.9 : 0.7,
+        confidence: 0.95,
         intent: 'ORDER_QUERY',
         shouldHandoff: false,
-        toolsUsed,
+        toolsUsed: ['get_order_status'],
         ragAudit: {
-          answer_source: toolsUsed.length > 0 ? 'tool' : (knowledgeChunks.length > 0 ? 'library' : 'none'),
+          answer_source: 'tool',
           similarity_score: 0,
           verifier_result: 'SKIPPED',
           final_decision: 'ANSWER',
@@ -1471,14 +1469,15 @@ export class AIService {
         },
       };
     } catch (error) {
-      this.logger.error('Order query failed', {
+      this.logger.error(`📦 Direct order lookup failed for ${orderNumber}`, {
         error: error instanceof Error ? error.message : 'Unknown',
       });
       return {
         reply: settings.fallbackMessage || AI_DEFAULTS.fallbackMessage,
         confidence: 0,
         shouldHandoff: true,
-        handoffReason: 'AI_ERROR',
+        handoffReason: 'ORDER_LOOKUP_FAILED',
+        intent: 'ORDER_QUERY',
       };
     }
   }
@@ -1503,12 +1502,19 @@ export class AIService {
    */
   private lightweightGroundingCheck(
     answer: string,
-    knowledgeChunks: Array<{ title: string; content: string; answer?: string }>,
+    knowledgeChunks: Array<{ title: string; content: string; score: number; answer?: string }>,
   ): { passed: boolean; reason?: string } {
     // إذا ما فيه مقالات أصلاً — ما نقدر نحكم
     if (knowledgeChunks.length === 0) {
       return { passed: false, reason: 'No knowledge entries to ground against' };
     }
+
+    // ✅ FIX: إذا المكتبة فيها مقالات بأجوبة صريحة (Q&A) → الفحص أخف
+    // لأن التاجر حدد الجواب بنفسه — ما نحتاج نشك فيه
+    const hasExplicitAnswers = knowledgeChunks.some(c => c.answer && c.answer.trim().length > 0);
+    
+    // ✅ FIX: مكتبة صغيرة (≤5 مقالات) → GPT شاف كل شي → الفحص أخف
+    const isSmallKB = knowledgeChunks.length <= 5;
 
     // نجمع كل محتوى المكتبة في نص واحد
     const allKBContent = knowledgeChunks
@@ -1517,17 +1523,16 @@ export class AIService {
       .toLowerCase();
 
     // ✅ فحص 1: استخراج الأرقام والأسعار من الرد
-    // إذا GPT ذكر رقم (سعر، مدة، نسبة) وهذا الرقم مش موجود بالمكتبة → مشبوه
     const numbersInAnswer = answer.match(/\d+/g) || [];
     const suspiciousNumbers = numbersInAnswer.filter((n) => {
-      // تجاهل أرقام صغيرة شائعة (1، 2، مقاطع تنسيق)
       const num = parseInt(n);
       if (num <= 2) return false;
       return !allKBContent.includes(n);
     });
 
-    // إذا أكثر من 2 أرقام مشبوهة → غالباً هلوسة
-    if (suspiciousNumbers.length > 2) {
+    // ✅ FIX: رفع الحد من 2 إلى 4 للمكتبات الصغيرة/Q&A
+    const maxSuspicious = (hasExplicitAnswers || isSmallKB) ? 5 : 2;
+    if (suspiciousNumbers.length > maxSuspicious) {
       return {
         passed: false,
         reason: `Answer contains ${suspiciousNumbers.length} numbers not found in KB: ${suspiciousNumbers.slice(0, 3).join(', ')}`,
@@ -1535,21 +1540,24 @@ export class AIService {
     }
 
     // ✅ فحص 2: كلمات محتوى مهمة
-    // نستخرج كلمات من الرد (> 3 أحرف) ونشيك كم منها موجود بالمكتبة
     const answerWords = answer
-      .replace(/[^\u0600-\u06FFa-zA-Z0-9\s]/g, '') // أزل الرموز
+      .replace(/[^\u0600-\u06FFa-zA-Z0-9\s]/g, '')
       .split(/\s+/)
       .filter((w) => w.length > 3);
 
     if (answerWords.length === 0) {
-      return { passed: true }; // رد قصير جداً — ما فيه شي نفحصه
+      return { passed: true };
     }
 
     const matchedWords = answerWords.filter((w) => allKBContent.includes(w.toLowerCase()));
     const matchRatio = matchedWords.length / answerWords.length;
 
-    // إذا أقل من 15% من كلمات الرد موجودة بالمكتبة → مشبوه جداً
-    if (matchRatio < 0.15 && answerWords.length > 5) {
+    // ✅ FIX: للمكتبات الصغيرة/Q&A → حد أقل (5% بدل 15%)
+    // لأن GPT يصيغ الجواب بأسلوبه — الكلمات مختلفة لكن المعنى صحيح
+    const minMatchRatio = (hasExplicitAnswers || isSmallKB) ? 0.05 : 0.15;
+    const minWords = (hasExplicitAnswers || isSmallKB) ? 8 : 5;
+    
+    if (matchRatio < minMatchRatio && answerWords.length > minWords) {
       return {
         passed: false,
         reason: `Only ${Math.round(matchRatio * 100)}% of answer words found in KB (${matchedWords.length}/${answerWords.length})`,
@@ -1784,44 +1792,52 @@ export class AIService {
       prompt += `\n\n${isAr ? 'اسم العميل' : 'Customer'}: ${context.customerName}`;
     }
 
-    // ✅ القواعد الصارمة — منع الهلوسة
+    // ✅ القواعد الصارمة — منع الهلوسة مع ذكاء سياقي
     prompt += isAr
-      ? `\n\n=== قواعد صارمة (إلزامية) ===
-1. أجب من المعلومات المتوفرة أعلاه. لا تختلق أو تفترض أي معلومة.
-2. ✅ معلومات المتجر (النبذة التعريفية، وصف المتجر، الشحن، الإرجاع، الإلغاء، أوقات العمل) هي مصادر إجابة صالحة. إذا سأل العميل عن المتجر أو خدماته أو اسمه أو نشاطه، أجب من هذه المعلومات مباشرة.
-3. ✅ افهم المعنى وليس الكلمة الحرفية. العميل قد يستخدم مرادفات أو لهجات مختلفة:
-   - "استرجاع/استرداد/أبي أرجع/ارجاع/استبدال" = سياسة الإرجاع والاستبدال
-   - "إلغاء/ألغي/أبي ألغي/تعديل الطلب/غيّر الطلب" = سياسة الإلغاء والتعديل
-   - "توصيل/شحن/متى يوصل/كم مدة التوصيل" = معلومات الشحن
-   - "وش تبيعون/خدماتكم/وش تقدمون" = وصف المتجر والنبذة التعريفية
-   إذا سؤال العميل يتعلق بأي معلومة متوفرة (حتى بصياغة مختلفة) → أجب منها.
-4. إذا لم تجد الإجابة في أي من المعلومات المتوفرة أعلاه (لا في معلومات المتجر ولا في المكتبة)، أجب حرفياً بهذا النص فقط:
+      ? `\n\n=== قواعد ذكية (إلزامية) ===
+1. أنت تفهم المعنى والسياق — لست محرك بحث كلمات. إذا فهمت أن سؤال العميل يتعلق بمعلومة متوفرة أعلاه (حتى لو بصياغة مختلفة تماماً) → أجب منها مباشرة.
+2. ✅ أولوية مصادر الإجابة (بالترتيب):
+   أ) المكتبة (الأسئلة والأجوبة أعلاه) — أعلى أولوية
+   ب) معلومات المتجر (النبذة، الوصف، الشحن، الإرجاع، الإلغاء، أوقات العمل)
+   ج) المنتجات (إن وُجدت أعلاه)
+   إذا الجواب في أي مصدر من هذه المصادر → أجب فوراً.
+3. ✅ افهم نية العميل وليس كلماته الحرفية:
+   - "عندكم X" = "متوفر X" = "فيه X" = "يوجد X" = "تقدرون توفرون X" = "أبي X" → كلها سؤال واحد: هل X متوفر؟
+   - "كم سعره" = "بكم" = "السعر" = "أسعاركم" → سؤال عن السعر
+   - "وين طلبي" = "طلبي تأخر" = "متى يوصل" = "حالة الطلب" → استفسار طلب
+   - "ارجاع" = "استرداد" = "أبي أرجع" = "استبدال" → سياسة الإرجاع
+   - "إلغاء" = "ألغي" = "تعديل" = "غيّر" → سياسة الإلغاء
+   - أي صياغة أخرى بنفس المعنى → افهمها بذكاء وأجب
+4. ✅ قاعدة ذهبية: إذا سؤال العميل عن نفس الموضوع الموجود في المكتبة (حتى بكلمات مختلفة 100%) → هذا تطابق ويجب أن تجيب. لا تطلب توضيح أبداً إذا الجواب متوفر.
+5. ❌ لا تختلق معلومات جديدة. لا تذكر أسعاراً أو منتجات غير مذكورة أعلاه.
+6. ❌ لا تستخدم معرفتك العامة أبداً. لا تقدم نصائح طبية أو صحية.
+7. إذا فعلاً لا يوجد أي معلومة متعلقة بسؤال العميل في جميع المصادر أعلاه، أجب حرفياً:
 "${NO_MATCH_MESSAGE}"
-5. لا تذكر أسعاراً أو منتجات أو تفاصيل غير موجودة في المعلومات المتوفرة.
-6. لا تستخدم معرفتك العامة أبداً. لا تقدم نصائح طبية أو صحية أو ثقافية.
-7. لا تشرح منتجات غير مذكورة أعلاه حتى لو عرفتها.
 8. إذا طلب العميل شخصاً بشرياً، استخدم أداة request_human_agent.
 9. عند استعلام الطلب: استخدم أداة get_order_status ثم اشرح الحالة بأسلوبك الطبيعي. إذا كان الطلب رقمي ووجدت digital_content → أرسل الأكواد للعميل. إذا وجدت digital_note → اتبع التعليمات فيها بالضبط.
-10. إذا ذكر العميل طلبه بدون رقم (مثل: "طلبي تأخر"، "وين طلبي"، "متى يوصل طلبي") → اطلب منه رقم الطلب أولاً قبل البحث.
-11. كن موجزاً ومفيداً. لا تتوسع خارج المعلومات المقدمة.`
-      : `\n\n=== Strict Rules (mandatory) ===
-1. Answer from the information provided above. Never make up or assume any information.
-2. ✅ Store information (introduction, description, shipping, returns, cancellation, hours) ARE valid answer sources. If the customer asks about the store, its services, or its name, answer from this information directly.
-3. ✅ Understand meaning, not exact words. Customers may use synonyms or dialects:
-   - "refund/return/exchange" = return & exchange policy
-   - "cancel/modify order/change order" = cancellation & modification policy
-   - "delivery/shipping/when will it arrive" = shipping info
-   - "what do you sell/your services" = store description
-   If the question relates to any available information (even with different wording) → answer from it.
-4. If the answer is NOT in ANY of the provided information (neither store info nor knowledge base), respond EXACTLY with:
+10. إذا ذكر العميل طلبه بدون رقم → اطلب رقم الطلب.
+11. كن موجزاً ومفيداً.`
+      : `\n\n=== Smart Rules (mandatory) ===
+1. You understand meaning and context — you are NOT a keyword search engine. If you understand the customer's question relates to available information above (even with completely different wording) → answer directly.
+2. ✅ Answer source priority (in order):
+   a) Knowledge base (Q&A above) — highest priority
+   b) Store info (description, shipping, returns, cancellation, hours)
+   c) Products (if listed above)
+   If the answer exists in any source → answer immediately.
+3. ✅ Understand customer intent, not literal words:
+   - "do you have X" = "is X available" = "can I get X" = "I want X" → all mean: is X available?
+   - "how much" = "price" = "cost" → price question
+   - "where is my order" = "order is late" = "when will it arrive" → order inquiry
+   - Any other phrasing with same meaning → understand intelligently and answer
+4. ✅ Golden rule: If the customer's question is about the same topic in the knowledge base (even with 100% different words) → this IS a match and you MUST answer. NEVER ask for clarification if the answer is available.
+5. ❌ Do NOT fabricate information. Do NOT mention prices or products not listed above.
+6. ❌ NEVER use general knowledge. No medical, health, or cultural advice.
+7. If truly NO information relates to the customer's question in ALL sources above, respond EXACTLY with:
 "${NO_MATCH_MESSAGE}"
-5. Do NOT mention prices, products, or details not in the provided information.
-6. NEVER use general knowledge. No medical, health, or cultural advice.
-7. Do NOT explain products not listed above, even if you know about them.
 8. If customer asks for a human, use request_human_agent tool.
-9. For order queries: use get_order_status tool then explain the status naturally. If the order is digital and has digital_content → send the codes to the customer. If there's a digital_note → follow its instructions exactly.
-10. If customer mentions their order without a number (e.g., "my order is late", "where is my order") → ask for the order number first before searching.
-11. Be concise and helpful. Do not expand beyond provided information.`;
+9. For order queries: use get_order_status tool. For digital orders with digital_content → send codes. If digital_note exists → follow its instructions.
+10. If customer mentions order without number → ask for order number.
+11. Be concise and helpful.`;
 
     return prompt;
   }
@@ -1873,6 +1889,13 @@ export class AIService {
     topScore: number;
     gateAPassed: boolean;
   }> {
+    // ✅ FIX: Skip product search if the message is purely numeric (likely order number)
+    // Salla API returns 422 for numeric-only keywords
+    const cleanMsg = message.replace(/\s+/g, '');
+    if (/^\d+$/.test(cleanMsg) && cleanMsg.length >= 4) {
+      this.logger.log(`⏭️ Skipping product search: "${message}" looks like an order number, not a product query`);
+      return { chunks: [], topScore: 0, gateAPassed: false };
+    }
     // ✅ Level 2: Check cache first if enabled
     const enableCache = settings?.enableProductCache ?? true;
     const cacheTTL = (settings?.productCacheTTL ?? 300) * 1000; // Convert to ms
@@ -2065,9 +2088,10 @@ export class AIService {
         break;
         
       case IntentType.OUT_OF_SCOPE:
-        // Out of scope - no search needed
-        strategy = undefined;
-        allowedSources = [];
+        // ✅ FIX: حتى لو Intent classifier قال "خارج النطاق"
+        // نحمّل المكتبة ونخلي GPT يقرر — Intent classifier ممكن يغلط
+        strategy = settings.searchPriority;
+        allowedSources = ['library', 'products'];
         break;
         
       default:
