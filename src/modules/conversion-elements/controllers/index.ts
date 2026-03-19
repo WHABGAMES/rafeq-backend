@@ -88,6 +88,34 @@ export class ElementsPublicController {
     }
   }
 
+  @Get(':storeId/debug')
+  @ApiOperation({ summary: 'Debug: check active elements for a store' })
+  async debugElements(@Param('storeId') storeId: string, @Res() res: Response) {
+    this.setCorsHeaders(res);
+    res.setHeader('Cache-Control', 'no-cache');
+
+    try {
+      const elements = await this.elementsService.getPublicElements(storeId);
+      res.json({
+        storeId,
+        resolvedAt: new Date().toISOString(),
+        activeCount: elements.length,
+        elements: elements.map(el => ({
+          id: (el as any).id,
+          type: (el as any).type,
+          position: (el as any).position,
+          targeting: (el as any).targeting,
+          behavior: (el as any).behavior,
+        })),
+        hint: elements.length === 0
+          ? 'لا توجد عناصر نشطة — تأكد أن العنصر بحالة active وليس draft'
+          : 'العناصر موجودة — إذا لا تظهر أضف ?rfq_debug=1 لرابط المتجر',
+      });
+    } catch (e: any) {
+      res.json({ error: e.message, storeId });
+    }
+  }
+
   /**
    * CORS preflight handler for track endpoints.
    * Browsers send OPTIONS before POST from cross-origin storefronts.
@@ -351,6 +379,13 @@ const ELEMENTS_EMBED_SCRIPT = `
   if(!storeId){ console.warn('Rafeq: missing storeId'); return; }
   var API = (cfg.apiUrl || 'https://api.rafeq.ai') + '/api/elements';
 
+  // ─── Debug Mode ──────────────────────────────────────────────
+  var urlParams = new URLSearchParams(window.location.search);
+  var DEBUG = urlParams.get('rfq_debug')==='1' || localStorage.getItem('rfq_debug')==='1';
+  var FORCE = urlParams.get('rfq_force')==='1';
+  function dbg(){if(DEBUG)console.log.apply(console,['%c[Rafeq Elements]','color:#10b981;font-weight:bold'].concat(Array.prototype.slice.call(arguments)))}
+  if(DEBUG){dbg('✅ Debug ON | storeId='+storeId+' | API='+API);if(FORCE)dbg('⚡ FORCE mode — bypassing frequency & targeting')}
+
   // ─── Session & Visitor IDs ──────────────────────────────────
   var SESSION_KEY = 'rfq_sid';
   var VISITOR_KEY = 'rfq_vid';
@@ -539,10 +574,12 @@ const ELEMENTS_EMBED_SCRIPT = `
 
   // ─── Main Init ────────────────────────────────────────────
   function init(){
+    dbg('🔄 Fetching active elements...');
     fetch(API+'/'+storeId+'/active')
       .then(function(r){return r.json()})
       .then(function(data){
         var elements = data.elements || [];
+        dbg('📦 Received '+elements.length+' element(s)', elements.map(function(e){return e.type+' ('+e.id.slice(0,8)+'...)'}));
         var abGroups = {};
 
         elements.forEach(function(el){
@@ -553,8 +590,9 @@ const ELEMENTS_EMBED_SCRIPT = `
             return;
           }
 
-          if(!matchesTargeting(el)) return;
-          if(!shouldShow(el)) return;
+          if(!FORCE && !matchesTargeting(el)){dbg('⛔ Targeting blocked: '+el.type, el.targeting);return}
+          if(!FORCE && !shouldShow(el)){dbg('⛔ Frequency blocked: '+el.type+' (already shown)',el.behavior&&el.behavior.frequency);return}
+          dbg('✅ Rendering: '+el.type);
           scheduleElement(el);
         });
 
@@ -563,12 +601,14 @@ const ELEMENTS_EMBED_SCRIPT = `
           var variants = abGroups[testId];
           var chosen = getABVariant(testId);
           var el = variants.find(function(v){return v.variant===chosen}) || variants[0];
-          if(el && matchesTargeting(el) && shouldShow(el)){
+          if(el && (FORCE || (matchesTargeting(el) && shouldShow(el)))){
             scheduleElement(el);
           }
         });
+
+        if(elements.length===0) dbg('⚠️ No active elements for this store');
       })
-      .catch(function(e){console.warn('Rafeq Elements:',e)});
+      .catch(function(e){console.warn('Rafeq Elements:',e);dbg('❌ Fetch error:',e)});
   }
 
   function scheduleElement(el){
