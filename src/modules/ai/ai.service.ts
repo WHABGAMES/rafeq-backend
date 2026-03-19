@@ -113,6 +113,13 @@ export interface AISettings {
   productCacheTTL?: number; // Default: 300 seconds
   skipVerifierOnHighConfidence?: boolean; // Default: true
   
+  // ✅ Product Source — مصدر بيانات المنتجات
+  productSource?: 'salla_api' | 'website_scrape' | 'none'; // Default: 'salla_api'
+  productActiveOnly?: boolean; // Default: true — المنتجات المعروضة فقط
+  websiteUrl?: string; // URL for website scraping mode
+  websiteScrapedAt?: string; // Last scrape timestamp
+  websiteProducts?: Array<{ name: string; price: string; available: boolean; url: string; description?: string }>; // Cached scraped products
+  
   // ✅ Level 2: Timeouts and Rate Limits
   openaiTimeout?: number; // Default: 30000 ms (30 seconds)
   productSearchTimeout?: number; // Default: 10000 ms (10 seconds)
@@ -322,6 +329,8 @@ const AI_DEFAULTS: AISettings = {
   // ✅ Level 2: Performance Settings
   enableParallelSearch: true,
   enableProductCache: true,
+  productSource: 'salla_api',
+  productActiveOnly: true,
   productCacheTTL: 300,
   skipVerifierOnHighConfidence: true,
   // ✅ Level 2: Timeouts and Rate Limits
@@ -1682,13 +1691,43 @@ export class AIService {
       }
     }
 
-    // ═══ 2. جلب منتجات سلة (إذا مطلوب) ═══
-    if (canSearchProducts && context.storeId) {
+    // ═══ 2. جلب المنتجات (حسب إعداد مصدر المنتجات) ═══
+    const productSource = settings?.productSource || 'salla_api';
+    if (canSearchProducts && context.storeId && productSource !== 'none') {
       try {
-        const productResult = await this.searchProducts(message, context.storeId, settings);
-        if (productResult.chunks.length > 0) {
-          chunks.push(...productResult.chunks);
-          this.logger.log(`🛒 Added ${productResult.chunks.length} product results`);
+        if (productSource === 'website_scrape' && settings?.websiteProducts?.length) {
+          // ✅ MODE: Website Scrape — استخدم المنتجات المحفوظة من scraping
+          const query = message.toLowerCase();
+          const words = query.split(/\s+/).filter((w: string) => w.length > 2);
+          const matchedProducts = (settings.websiteProducts || []).filter((p: any) => {
+            const pName = (p.name || '').toLowerCase();
+            const pDesc = (p.description || '').toLowerCase();
+            return pName.includes(query) || query.includes(pName) || words.some((w: string) => pName.includes(w) || pDesc.includes(w));
+          });
+
+          if (matchedProducts.length > 0) {
+            chunks.push(...matchedProducts.slice(0, 5).map((p: any) => ({
+              title: `منتج: ${p.name}`,
+              content: `المنتج: ${p.name}\nالسعر: ${p.price}\nالحالة: ${p.available ? 'متوفر ✅' : 'غير متوفر ❌'}${p.description ? '\nالوصف: ' + p.description : ''}${p.url ? '\nالرابط: ' + p.url : ''}`,
+              score: 0.8,
+            })));
+            this.logger.log(`🌐 Website products: found ${matchedProducts.length} matches`);
+          } else {
+            // لم يجد تطابق → أرسل أول 10 منتجات لـ GPT يقرر
+            chunks.push(...(settings.websiteProducts || []).slice(0, 10).map((p: any) => ({
+              title: `منتج: ${p.name}`,
+              content: `${p.name} — ${p.price} — ${p.available ? 'متوفر' : 'غير متوفر'}`,
+              score: 0.5,
+            })));
+            this.logger.log(`🌐 Website products: loaded ${Math.min(10, (settings.websiteProducts||[]).length)} for GPT evaluation`);
+          }
+        } else {
+          // ✅ MODE: Salla/Zid API — البحث المباشر
+          const productResult = await this.searchProducts(message, context.storeId, settings);
+          if (productResult.chunks.length > 0) {
+            chunks.push(...productResult.chunks);
+            this.logger.log(`🛒 Salla API: ${productResult.chunks.length} products found`);
+          }
         }
       } catch (error) {
         this.logger.warn('Smart Retrieve: Product search failed — continuing with library only');
