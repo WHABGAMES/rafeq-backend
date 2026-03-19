@@ -207,6 +207,22 @@ class UpdateAISettingsDto {
 
   @IsOptional() @IsNumber()
   retryDelay?: number;
+
+  // ✅ Product Source Settings
+  @IsOptional() @IsString()
+  productSource?: 'salla_api' | 'website_scrape' | 'none';
+
+  @IsOptional() @IsBoolean()
+  productActiveOnly?: boolean;
+
+  @IsOptional() @IsString()
+  websiteUrl?: string;
+
+  @IsOptional() @IsArray()
+  websiteProducts?: any[];
+
+  @IsOptional() @IsString()
+  websiteScrapedAt?: string;
 }
 
 class AddKnowledgeDto {
