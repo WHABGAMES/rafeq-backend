@@ -202,11 +202,11 @@ export class WhatsappSettingsService implements OnModuleInit {
     // أنشئ admin channel
     await this.dataSource.query(
       `INSERT INTO channels
-         (id, store_id, type, name, status, is_official,
+         (id, store_id, type, name, status, is_official, is_admin_channel,
           whatsapp_phone_number_id, whatsapp_phone_number,
           connected_at, settings, created_at, updated_at)
        VALUES
-         (gen_random_uuid(), $1, 'whatsapp_official', $2, 'connected', true,
+         (gen_random_uuid(), $1, 'whatsapp_official', $2, 'connected', true, true,
           $3, $4,
           NOW(), '{}', NOW(), NOW())
        ON CONFLICT DO NOTHING`,
