@@ -269,7 +269,7 @@ export class MessagingProcessor extends WorkerHost {
 
       // 6. ⚠️ AI did NOT respond — re-emit the event
       this.logger.warn(
-        `🔄 [SAFETY NET] AI did not respond to message ${messageId} within 5s — re-emitting event`,
+        `🔄 [SAFETY NET] AI did not respond to message ${messageId} within 15s — re-emitting event`,
       );
 
       const channel = await this.channelRepo.findOne({ where: { id: channelId } });
