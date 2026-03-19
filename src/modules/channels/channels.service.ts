@@ -83,13 +83,13 @@ export class ChannelsService {
 
   async findAll(storeId: string): Promise<Channel[]> {
     return this.channelRepository.find({
-      where: { storeId },
+      where: { storeId, isAdminChannel: false },
       order: { createdAt: 'DESC' },
     });
   }
 
   async findById(id: string, storeId: string): Promise<Channel> {
-    const channel = await this.channelRepository.findOne({ where: { id, storeId } });
+    const channel = await this.channelRepository.findOne({ where: { id, storeId, isAdminChannel: false } });
     if (!channel) throw new NotFoundException('Channel not found');
     return channel;
   }
@@ -382,6 +382,7 @@ export class ChannelsService {
 
     const duplicates = allQRChannels.filter(ch => {
       if (ch.id === keepChannelId) return false;
+      if (ch.isAdminChannel) return false; // حماية قنوات الأدمن
       if (!ch.whatsappPhoneNumber) return false;
       return this.phonesMatch(ch.whatsappPhoneNumber, normalizedPhone);
     });
