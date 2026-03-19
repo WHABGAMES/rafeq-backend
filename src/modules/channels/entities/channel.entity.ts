@@ -307,6 +307,14 @@ export class Channel extends BaseEntity {
   })
   errorCount: number;
 
+  @Column({
+    name: 'is_admin_channel',
+    type: 'boolean',
+    default: false,
+    comment: 'قناة إدارية (لا تظهر للتجار)',
+  })
+  isAdminChannel: boolean;
+
   // ═══════════════════════════════════════════════════════════════════════════════
   // 🛠️ Computed Properties
   // ═══════════════════════════════════════════════════════════════════════════════
