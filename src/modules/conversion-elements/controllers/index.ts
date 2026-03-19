@@ -410,6 +410,47 @@ const ELEMENTS_EMBED_SCRIPT = `
   var eventBuffer = [];
   var flushTimer = null;
 
+  // ─── Seeded Random Number System ────────────────────────────
+  // Consistent across all devices for the same element at the same time
+  function seedHash(str){
+    var h=0;for(var i=0;i<str.length;i++){h=((h<<5)-h)+str.charCodeAt(i);h|=0;}
+    return Math.abs(h);
+  }
+
+  /**
+   * Returns a stable number between min and max for a given elementId.
+   * Changes slowly every 10 minutes. All devices see the same value.
+   */
+  function getStableCount(elementId, min, max){
+    var range = max - min;
+    if(range <= 0) return min;
+    // 10-minute time window = same number for all devices
+    var timeSlot = Math.floor(Date.now() / 600000);
+    var seed = seedHash(elementId + '_' + storeId + '_' + timeSlot);
+    return min + (seed % (range + 1));
+  }
+
+  /**
+   * Starts a smooth counter that drifts ±1~2 every interval.
+   * All devices start from the same base (getStableCount).
+   * Drift is tiny so numbers stay close across devices.
+   */
+  function startSmoothCounter(elementId, min, max, intervalMs, counterEl){
+    var count = getStableCount(elementId, min, max);
+    if(counterEl) counterEl.textContent = count;
+
+    setInterval(function(){
+      // Small drift: -1, 0, or +1
+      var drift = Math.floor(Math.random() * 3) - 1;
+      count = Math.max(min, Math.min(max, count + drift));
+      if(counterEl){
+        counterEl.textContent = count;
+      }
+    }, intervalMs || 6000);
+
+    return count;
+  }
+
   // ─── Device Detection ──────────────────────────────────────
   function getDevice(){
     var w=window.innerWidth;
@@ -707,7 +748,9 @@ const ELEMENTS_EMBED_SCRIPT = `
   function renderScarcity(el){
     var c = el.content || {};
     var sc = c.scarcity || {};
-    var stock = sc.currentStock || Math.floor(Math.random()*8)+1;
+    var min = sc.minStock || 1;
+    var max = sc.maxStock || 8;
+    var stock = getStableCount(el.id, min, max);
     var d = el.design || {};
 
     var badge = document.createElement('div');
@@ -1011,36 +1054,33 @@ const ELEMENTS_EMBED_SCRIPT = `
   function renderPageVisitors(el){
     var c=el.content||{};var v=c.visitors||{};var d=el.design||{};
     var min=v.minCount||10;var max=v.maxCount||200;
-    var count=Math.floor(Math.random()*(max-min))+min;
     var badge=document.createElement('div');
     badge.style.cssText='position:fixed;bottom:20px;'+(el.position==='bottom_left'?'left':'right')+':20px;z-index:999990;padding:10px 18px;background:'+(d.bgColor||'#fff')+';color:'+(d.textColor||'#1f2937')+';border-radius:'+(d.borderRadius||10)+'px;font-size:13px;font-weight:600;direction:rtl;font-family:inherit;box-shadow:0 4px 16px rgba(0,0,0,.1);display:flex;align-items:center;gap:8px;';
-    badge.innerHTML=(v.showLiveIcon!==false?'<span style="width:8px;height:8px;border-radius:50%;background:#22c55e;animation:rfqPulse 2s ease infinite;display:inline-block"></span>':'')+' <span id="rfq-pv-count">'+count+'</span> '+(v.text||'يتصفحون هذه الصفحة');
+    badge.innerHTML=(v.showLiveIcon!==false?'<span style="width:8px;height:8px;border-radius:50%;background:#22c55e;animation:rfqPulse 2s ease infinite;display:inline-block"></span>':'')+' <span id="rfq-pv-count"></span> '+(v.text||'يتصفحون هذه الصفحة');
     document.body.appendChild(badge);
-    setInterval(function(){count+=Math.floor(Math.random()*5)-2;count=Math.max(min,Math.min(max,count));document.getElementById('rfq-pv-count').textContent=count},5000);
+    startSmoothCounter(el.id, min, max, 6000, document.getElementById('rfq-pv-count'));
     badge.addEventListener('click',function(){track('element_click',el.id)});
   }
 
   function renderVisitorsBar(el){
     var c=el.content||{};var vb=c.visitorsBar||{};var d=el.design||{};
     var min=vb.minCount||50;var max=vb.maxCount||1000;
-    var count=Math.floor(Math.random()*(max-min))+min;
     var bar=document.createElement('div');
     bar.style.cssText='position:fixed;bottom:0;left:0;right:0;z-index:999989;padding:10px 20px;background:'+(d.bgColor||'#1e293b')+';color:'+(d.textColor||'#fff')+';text-align:center;font-size:13px;font-weight:500;direction:rtl;font-family:inherit;display:flex;align-items:center;justify-content:center;gap:8px;';
-    bar.innerHTML='👥 <strong id="rfq-vb-count">'+count+'</strong> '+(vb.text||'شخص يتصفحون الموقع الآن');
+    bar.innerHTML='👥 <strong id="rfq-vb-count"></strong> '+(vb.text||'شخص يتصفحون الموقع الآن');
     document.body.appendChild(bar);
-    setInterval(function(){count+=Math.floor(Math.random()*7)-3;count=Math.max(min,Math.min(max,count));document.getElementById('rfq-vb-count').textContent=count},8000);
+    startSmoothCounter(el.id, min, max, 8000, document.getElementById('rfq-vb-count'));
   }
 
   function renderLiveOrders(el){
     var c=el.content||{};var lo=c.liveOrders||{};var d=el.design||{};
     var min=lo.minCount||3;var max=lo.maxCount||30;
-    var count=Math.floor(Math.random()*(max-min))+min;
     var badge=document.createElement('div');
     badge.style.cssText='position:fixed;bottom:20px;'+(el.position==='bottom_left'?'left':'right')+':20px;z-index:999990;padding:10px 18px;background:'+(d.bgColor||'#fff')+';color:'+(d.textColor||'#1f2937')+';border-radius:'+(d.borderRadius||10)+'px;font-size:13px;font-weight:600;direction:rtl;font-family:inherit;box-shadow:0 4px 16px rgba(0,0,0,.1);';
-    badge.innerHTML='📦 <strong id="rfq-lo-count">'+count+'</strong> '+(lo.text||'طلب يتم تجهيزه الآن');
+    badge.innerHTML='📦 <strong id="rfq-lo-count"></strong> '+(lo.text||'طلب يتم تجهيزه الآن');
     document.body.appendChild(badge);
     var interval=(lo.updateInterval||8)*1000;
-    setInterval(function(){count+=Math.floor(Math.random()*3)-1;count=Math.max(min,Math.min(max,count));document.getElementById('rfq-lo-count').textContent=count},interval);
+    startSmoothCounter(el.id, min, max, interval, document.getElementById('rfq-lo-count'));
     badge.addEventListener('click',function(){track('element_click',el.id)});
   }
 
