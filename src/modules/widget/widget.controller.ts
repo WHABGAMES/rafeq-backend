@@ -298,5 +298,14 @@ const EMBED_SCRIPT = `
       }, c.autoOpen*1000);
     }
   }
+
+  // ─── Load Conversion Elements embed.js automatically ──────
+  // This ensures ONE snippet powers ALL Rafeq features
+  if(!window.__rafeqElements){
+    var elScript = document.createElement('script');
+    elScript.src = ((window.RafeqWidgetConfig||{}).apiUrl || 'https://api.rafeq.ai') + '/api/elements/embed.js';
+    elScript.async = true;
+    document.head.appendChild(elScript);
+  }
 })();
 `;
