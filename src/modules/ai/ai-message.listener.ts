@@ -57,6 +57,8 @@ interface MessageReceivedPayload {
 @Injectable()
 export class AIMessageListener {
   private readonly logger = new Logger(AIMessageListener.name);
+  // ✅ In-memory lock: prevents duplicate AI processing when safety net re-emits
+  private readonly processingMessages = new Set<string>();
 
   constructor(
     private readonly aiService: AIService,
@@ -79,6 +81,15 @@ export class AIMessageListener {
   async handleIncomingMessage(payload: MessageReceivedPayload): Promise<void> {
     const { message, conversation } = payload;
     const startTime = Date.now();
+
+    // ✅ Dedup: prevent duplicate processing (safety net re-emit protection)
+    if (this.processingMessages.has(message.id)) {
+      this.logger.log(`⏭️ Skipping duplicate: message ${message.id} is already being processed`);
+      return;
+    }
+    this.processingMessages.add(message.id);
+    // Auto-cleanup after 30s to prevent memory leak
+    setTimeout(() => this.processingMessages.delete(message.id), 30000);
 
     try {
       // ──────────────────────────────────────────────────────────────────────
