@@ -210,6 +210,22 @@ export class ShortLinksService {
       const source = this.parseReferrerSource(req.referrer || '');
       const geo = await this.resolveGeo(req.ip || '');
 
+      // ✅ Dedup: same IP + browser + link = 1 click per 24 hours
+      const visitorHash = this.hashVisitor(req.ip || '', req.userAgent || '');
+      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+      const recentClick = await this.clickRepo
+        .createQueryBuilder('c')
+        .where('c.link_id = :linkId', { linkId: link.id })
+        .andWhere('c.visitor_hash = :visitorHash', { visitorHash })
+        .andWhere('c.clicked_at > :since', { since: twentyFourHoursAgo })
+        .getOne();
+
+      if (recentClick) {
+        this.logger.debug(`🔁 Duplicate click skipped for ${link.shortCode} (same visitor within 24h)`);
+        return;
+      }
+
       // Save click record
       await this.clickRepo.save({
         linkId: link.id,
@@ -221,6 +237,7 @@ export class ShortLinksService {
         os: device.os,
         referrer: req.referrer ? req.referrer.substring(0, 500) : undefined,
         referrerSource: source,
+        visitorHash,
         clickedAt: new Date(),
       });
 
@@ -229,6 +246,15 @@ export class ShortLinksService {
     } catch (err) {
       this.logger.error(`Failed to track click for ${link.shortCode}: ${(err as Error).message}`);
     }
+  }
+
+  /**
+   * ✅ Hash IP + User-Agent for unique visitor identification
+   * No personal data stored — only a hash
+   */
+  private hashVisitor(ip: string, userAgent: string): string {
+    const crypto = require('crypto');
+    return crypto.createHash('sha256').update(`${ip}|${userAgent}`).digest('hex').substring(0, 32);
   }
 
   // ═══════════════════════════════════════════════════════════════
