@@ -91,6 +91,10 @@ export class LinkClick {
   @Column({ name: 'referrer_source', type: 'varchar', length: 30, nullable: true })
   referrerSource?: string;
 
+  @Column({ name: 'visitor_hash', type: 'varchar', length: 32, nullable: true })
+  @Index()
+  visitorHash?: string;
+
   @Column({ name: 'clicked_at', type: 'timestamptz', default: () => 'NOW()' })
   clickedAt: Date;
 }
