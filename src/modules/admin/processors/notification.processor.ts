@@ -11,6 +11,7 @@ export interface NotificationJobData {
   recipientEmail?: string;
   recipientUserId?: string;
   triggerEvent?: string;
+  tenantId?: string;
 }
 
 @Processor('notifications')
@@ -22,11 +23,12 @@ export class NotificationProcessor extends WorkerHost {
   }
 
   async process(job: Job<NotificationJobData>): Promise<void> {
-    const { content, channel, recipientPhone, templateId, triggerEvent, recipientUserId } = job.data;
+    const { content, channel, recipientPhone, templateId, triggerEvent, recipientUserId, tenantId } = job.data;
 
     this.logger.log(`Processing notification job ${job.id}`, {
       channel,
       triggerEvent,
+      tenantId: tenantId || 'global',
       attempt: job.attemptsMade + 1,
     });
 
@@ -35,6 +37,7 @@ export class NotificationProcessor extends WorkerHost {
         recipientUserId,
         templateId,
         triggerEvent,
+        tenantId,
       });
 
       if (!result.success) {
