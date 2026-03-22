@@ -15,7 +15,7 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import { Repository, DataSource, IsNull } from 'typeorm';
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'crypto';
 import { WhatsappSettings, WhatsappProvider } from '../entities/whatsapp-settings.entity';
 import { MessageLog, MessageStatus } from '../entities/message-log.entity';
@@ -176,57 +176,74 @@ export class WhatsappSettingsService implements OnModuleInit {
   }
 
   /**
-   * ✅ ينشئ channel إداري مخصص لربط محادثات الأدمن
+   * ✅ FIX: ينشئ channel إداري مخصص لكل تاجر لديه إعدادات واتساب نشطة
    * يُستدعى مرة واحدة عند startup — idempotent
    */
   private async ensureAdminChannel(): Promise<void> {
-    const settings = await this.settingsRepo.findOne({ where: {} });
-    if (!settings?.isActive || !settings.phoneNumberId) return;
+    // ✅ FIX: جلب كل إعدادات واتساب النشطة (لكل التجار)
+    const allSettings = await this.settingsRepo.find({
+      where: { isActive: true },
+    });
 
-    // تحقق من وجود channel بهذا الرقم
-    const [existing] = await this.dataSource.query(
-      `SELECT id FROM channels WHERE whatsapp_phone_number_id = $1 LIMIT 1`,
-      [settings.phoneNumberId],
-    );
-    if (existing) return; // موجود مسبقاً ✅
+    for (const settings of allSettings) {
+      if (!settings.phoneNumberId) continue;
 
-    // ابحث عن أي store لربط الـ channel بها
-    const [anyStore] = await this.dataSource.query(
-      `SELECT id, tenant_id FROM stores WHERE deleted_at IS NULL LIMIT 1`,
-    );
-    if (!anyStore) {
-      this.logger.debug('ensureAdminChannel: no stores found yet — will retry on next startup');
-      return;
+      // تحقق من وجود channel بهذا الرقم
+      const [existing] = await this.dataSource.query(
+        `SELECT id FROM channels WHERE whatsapp_phone_number_id = $1 LIMIT 1`,
+        [settings.phoneNumberId],
+      );
+      if (existing) continue; // موجود مسبقاً ✅
+
+      // ✅ FIX: ابحث عن store مرتبط بنفس الـ tenant
+      const storeQuery = settings.tenantId
+        ? `SELECT id, tenant_id FROM stores WHERE tenant_id = $1 AND deleted_at IS NULL LIMIT 1`
+        : `SELECT id, tenant_id FROM stores WHERE deleted_at IS NULL LIMIT 1`;
+      const storeParams = settings.tenantId ? [settings.tenantId] : [];
+
+      const [store] = await this.dataSource.query(storeQuery, storeParams);
+      if (!store) {
+        this.logger.debug(`ensureAdminChannel: no store found for tenant ${settings.tenantId || 'global'} — will retry on next startup`);
+        continue;
+      }
+
+      // أنشئ admin channel
+      await this.dataSource.query(
+        `INSERT INTO channels
+           (id, store_id, type, name, status, is_official, is_admin_channel,
+            whatsapp_phone_number_id, whatsapp_phone_number,
+            connected_at, settings, created_at, updated_at)
+         VALUES
+           (gen_random_uuid(), $1, 'whatsapp_official', $2, 'connected', true, true,
+            $3, $4,
+            NOW(), '{}', NOW(), NOW())
+         ON CONFLICT DO NOTHING`,
+        [
+          store.id,
+          `Admin WhatsApp (${settings.phoneNumber || settings.phoneNumberId})`,
+          settings.phoneNumberId,
+          settings.phoneNumber || '',
+        ],
+      );
+
+      this.logger.log(`✅ Admin WhatsApp channel created for tenant: ${settings.tenantId || 'global'}, phoneNumberId: ${settings.phoneNumberId}`);
     }
-
-    // أنشئ admin channel
-    await this.dataSource.query(
-      `INSERT INTO channels
-         (id, store_id, type, name, status, is_official, is_admin_channel,
-          whatsapp_phone_number_id, whatsapp_phone_number,
-          connected_at, settings, created_at, updated_at)
-       VALUES
-         (gen_random_uuid(), $1, 'whatsapp_official', $2, 'connected', true, true,
-          $3, $4,
-          NOW(), '{}', NOW(), NOW())
-       ON CONFLICT DO NOTHING`,
-      [
-        anyStore.id,
-        `Admin WhatsApp (${settings.phoneNumber || settings.phoneNumberId})`,
-        settings.phoneNumberId,
-        settings.phoneNumber || '',
-      ],
-    );
-
-    this.logger.log(`✅ Admin WhatsApp channel created for phoneNumberId: ${settings.phoneNumberId}`);
   }
 
   // ─── Settings Management ──────────────────────────────────────────────────
 
-  async getSettings(): Promise<
+  async getSettings(tenantId?: string): Promise<
     (Omit<WhatsappSettings, 'accessTokenEncrypted'> & { maskedToken: string }) | null
   > {
-    const settings = await this.settingsRepo.findOne({ where: {} });
+    // ✅ FIX CRITICAL: عزل تام بين التجار
+    // tenantId موجود → إعدادات هذا التاجر فقط
+    // tenantId غير موجود → الإعدادات العامة القديمة (tenant_id IS NULL) فقط
+    // بدون هذا الفلتر: findOne({ where: {} }) يرجع سجل عشوائي = تسريب بيانات!
+    const where = tenantId
+      ? { tenantId }
+      : { tenantId: IsNull() as any };
+
+    const settings = await this.settingsRepo.findOne({ where });
     if (!settings) return null;
 
     const { accessTokenEncrypted, ...rest } = settings;
@@ -240,6 +257,7 @@ export class WhatsappSettingsService implements OnModuleInit {
   }
 
   async upsertSettings(data: {
+    tenantId?: string;
     phoneNumber: string;
     provider: WhatsappProvider;
     accessToken: string;
@@ -249,11 +267,18 @@ export class WhatsappSettingsService implements OnModuleInit {
     webhookVerifyToken?: string;
     isActive?: boolean;
   }): Promise<WhatsappSettings> {
-    let settings = await this.settingsRepo.findOne({ where: {} });
+    // ✅ FIX CRITICAL: فلترة حسب التاجر عند البحث عن إعدادات موجودة
+    // بدون IsNull: findOne({ where: {} }) يلقط سجل أي تاجر ويكتب فوقه!
+    const where = data.tenantId
+      ? { tenantId: data.tenantId }
+      : { tenantId: IsNull() as any };
+
+    let settings = await this.settingsRepo.findOne({ where });
     const encrypted = this.encrypt(data.accessToken);
 
     if (settings) {
       Object.assign(settings, {
+        tenantId: data.tenantId,
         phoneNumber: data.phoneNumber,
         provider: data.provider,
         accessTokenEncrypted: encrypted,
@@ -265,6 +290,7 @@ export class WhatsappSettingsService implements OnModuleInit {
       });
     } else {
       settings = this.settingsRepo.create({
+        tenantId: data.tenantId,
         phoneNumber: data.phoneNumber,
         provider: data.provider,
         accessTokenEncrypted: encrypted,
@@ -279,8 +305,12 @@ export class WhatsappSettingsService implements OnModuleInit {
     return this.settingsRepo.save(settings);
   }
 
-  async toggleActive(isActive: boolean): Promise<void> {
-    const settings = await this.settingsRepo.findOne({ where: {} });
+  async toggleActive(isActive: boolean, tenantId?: string): Promise<void> {
+    const where = tenantId
+      ? { tenantId }
+      : { tenantId: IsNull() as any };
+
+    const settings = await this.settingsRepo.findOne({ where });
     if (!settings) throw new NotFoundException('WhatsApp settings not configured');
     settings.isActive = isActive;
     await this.settingsRepo.save(settings);
@@ -293,8 +323,12 @@ export class WhatsappSettingsService implements OnModuleInit {
    * sendViaWhatsappApi (private) ترجع ApiCallResult { success, response?, error? }
    * — نوعان مختلفان، نعمل explicit mapping بينهما
    */
-  async sendTestMessage(phoneNumber: string): Promise<{ success: boolean; message: string }> {
-    const settings = await this.settingsRepo.findOne({ where: {} });
+  async sendTestMessage(phoneNumber: string, tenantId?: string): Promise<{ success: boolean; message: string }> {
+    const where = tenantId
+      ? { tenantId }
+      : { tenantId: IsNull() as any };
+
+    const settings = await this.settingsRepo.findOne({ where });
 
     if (!settings?.isActive) {
       throw new BadRequestException('WhatsApp integration is not active');
@@ -330,9 +364,15 @@ export class WhatsappSettingsService implements OnModuleInit {
       recipientUserId?: string;
       templateId?: string;
       triggerEvent?: string;
+      tenantId?: string;
     },
   ): Promise<{ success: boolean; messageLogId: string | null; savedMessageId?: string | null }> {
-    const settings = await this.settingsRepo.findOne({ where: {} });
+    // ✅ FIX CRITICAL: فلترة حسب التاجر
+    const where = options?.tenantId
+      ? { tenantId: options.tenantId }
+      : { tenantId: IsNull() as any };
+
+    const settings = await this.settingsRepo.findOne({ where });
 
     if (!settings?.isActive) {
       this.logger.warn('WhatsApp not active — skipping send');
