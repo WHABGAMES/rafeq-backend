@@ -65,8 +65,8 @@ export class WhatsappController {
 
   @Get('settings')
   @RequirePermissions(PERMISSIONS.WHATSAPP_MANAGE)
-  getSettings() {
-    return this.whatsappService.getSettings();
+  getSettings(@Query('tenantId') tenantId?: string) {
+    return this.whatsappService.getSettings(tenantId);
   }
 
   @Post('connect')
@@ -75,6 +75,7 @@ export class WhatsappController {
   connect(
     @Body()
     body: {
+      tenantId?: string;
       phoneNumber: string;
       provider: WhatsappProvider;
       accessToken: string;
@@ -100,8 +101,8 @@ export class WhatsappController {
   @Post('toggle')
   @RequirePermissions(PERMISSIONS.WHATSAPP_MANAGE)
   @HttpCode(HttpStatus.OK)
-  toggle(@Body() body: { isActive: boolean }) {
-    return this.whatsappService.toggleActive(body.isActive);
+  toggle(@Body() body: { isActive: boolean; tenantId?: string }) {
+    return this.whatsappService.toggleActive(body.isActive, body.tenantId);
   }
 
   @Get('messages')
@@ -123,8 +124,8 @@ export class WhatsappController {
   @Post('test')
   @RequirePermissions(PERMISSIONS.WHATSAPP_MANAGE)
   @HttpCode(HttpStatus.OK)
-  test(@Body() body: { phoneNumber: string }) {
-    return this.whatsappService.sendTestMessage(body.phoneNumber);
+  test(@Body() body: { phoneNumber: string; tenantId?: string }) {
+    return this.whatsappService.sendTestMessage(body.phoneNumber, body.tenantId);
   }
 }
 
