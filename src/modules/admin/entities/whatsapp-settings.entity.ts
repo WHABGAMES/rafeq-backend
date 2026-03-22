@@ -4,6 +4,7 @@ import {
   PrimaryGeneratedColumn,
   CreateDateColumn,
   UpdateDateColumn,
+  Index,
 } from 'typeorm';
 
 export enum WhatsappProvider {
@@ -13,9 +14,25 @@ export enum WhatsappProvider {
 }
 
 @Entity('whatsapp_settings')
+@Index(['tenantId'], { unique: true, where: '"tenant_id" IS NOT NULL' })
 export class WhatsappSettings {
   @PrimaryGeneratedColumn('uuid')
   id: string;
+
+  /**
+   * ✅ FIX: إضافة tenant_id لعزل إعدادات واتساب لكل تاجر
+   *
+   * كل تاجر لديه إعداداته الخاصة (رقم واتساب، توكن، إلخ)
+   * بدون هذا الحقل، كل التجار يشاركون نفس الإعدادات!
+   */
+  @Column({
+    name: 'tenant_id',
+    type: 'uuid',
+    nullable: true,
+    comment: 'معرّف التاجر — كل تاجر لديه إعدادات واتساب مستقلة',
+  })
+  @Index()
+  tenantId?: string;
 
   @Column({ name: 'phone_number', type: 'varchar', length: 30 })
   phoneNumber: string;
