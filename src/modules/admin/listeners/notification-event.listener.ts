@@ -32,6 +32,7 @@ export interface AccountSuspendedPayload {
   email: string;
   phone?: string;
   reason?: string;
+  tenantId?: string;
 }
 
 // ─── Event Listeners ──────────────────────────────────────────────────────────
@@ -65,6 +66,7 @@ export class NotificationEventListener {
       {
         recipientUserId: payload.userId,
         recipientEmail: payload.email,
+        tenantId: payload.tenantId,
       },
     );
   }
@@ -82,7 +84,7 @@ export class NotificationEventListener {
         merchant_name: payload.email.split('@')[0],
         email: payload.email,
       },
-      { recipientEmail: payload.email },
+      { recipientEmail: payload.email, tenantId: payload.tenantId },
     );
   }
 
@@ -104,6 +106,7 @@ export class NotificationEventListener {
       {
         recipientUserId: payload.userId,
         recipientEmail: payload.email,
+        tenantId: payload.tenantId,
       },
     );
   }
@@ -128,7 +131,7 @@ export class NotificationEventListener {
         payment_amount: payload.amount,
         plan_name: payload.planName,
       },
-      { recipientUserId: payload.userId },
+      { recipientUserId: payload.userId, tenantId: payload.tenantId },
     );
   }
 
@@ -165,7 +168,7 @@ export class NotificationEventListener {
           plan_name: sub.plan_name,
           expiry_date: new Date(sub.end_date).toLocaleDateString('ar-SA'),
         },
-        { recipientUserId: sub.user_id },
+        { recipientUserId: sub.user_id, tenantId: sub.tenant_id },
       );
     }
   }
