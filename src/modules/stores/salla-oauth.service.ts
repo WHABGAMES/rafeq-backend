@@ -473,10 +473,17 @@ export class SallaOAuthService {
       }
 
       // 4. إنشاء/تحديث المستخدم + إرسال بيانات الدخول (إيميل + واتساب)
-      // ✅ استخدام بيانات المالك الشخصية (وليس بيانات المتجر)
-      const ownerEmail = this.getOwnerEmail(merchantInfo);
-      const ownerMobile = this.getOwnerMobile(merchantInfo);
-      const ownerName = this.getOwnerName(merchantInfo);
+      // ✅ FIX: عند إعادة التثبيت، نستخدم المالك المحفوظ في المتجر
+      //    وليس بيانات الشخص اللي أعاد التثبيت (قد يكون شخص ثاني!)
+      const ownerEmail = (!isNewStore && savedStore.sallaOwnerEmail)
+        ? savedStore.sallaOwnerEmail
+        : this.getOwnerEmail(merchantInfo);
+      const ownerMobile = (!isNewStore && savedStore.sallaOwnerMobile)
+        ? savedStore.sallaOwnerMobile
+        : this.getOwnerMobile(merchantInfo);
+      const ownerName = (!isNewStore && savedStore.sallaOwnerName)
+        ? savedStore.sallaOwnerName
+        : this.getOwnerName(merchantInfo);
 
       let isNewUser = false;
       try {
@@ -769,10 +776,10 @@ export class SallaOAuthService {
       store.sallaAvatar = merchantInfo.avatar || store.sallaAvatar;
       store.sallaPlan = merchantInfo.plan || store.sallaPlan;
 
-      // ✅ بيانات المالك الشخصية
-      if (merchantInfo.ownerEmail) store.sallaOwnerEmail = merchantInfo.ownerEmail;
-      if (merchantInfo.ownerMobile) store.sallaOwnerMobile = merchantInfo.ownerMobile;
-      if (merchantInfo.ownerName) store.sallaOwnerName = merchantInfo.ownerName;
+      // ✅ FIX: لا نستبدل المالك الأصلي عند إعادة التثبيت
+      if (merchantInfo.ownerEmail && !store.sallaOwnerEmail) store.sallaOwnerEmail = merchantInfo.ownerEmail;
+      if (merchantInfo.ownerMobile && !store.sallaOwnerMobile) store.sallaOwnerMobile = merchantInfo.ownerMobile;
+      if (merchantInfo.ownerName && !store.sallaOwnerName) store.sallaOwnerName = merchantInfo.ownerName;
       
       this.logger.log(`📦 Updated store for merchant ${merchantId}`);
     } else {
@@ -812,10 +819,17 @@ export class SallaOAuthService {
 
     // 👤 إنشاء/تحديث المستخدم + إرسال بيانات الدخول
     // ✅ FIX PERF: يُنفَّذ بشكل غير متزامن بعد الرد على سلة فوراً
-    // ✅ FIX EMAIL: يستخدم إيميل المالك الشخصي (وليس إيميل المتجر)
-    const ownerEmail = this.getOwnerEmail(merchantInfo);
-    const ownerMobile = this.getOwnerMobile(merchantInfo);
-    const ownerName = this.getOwnerName(merchantInfo);
+    // ✅ FIX: عند إعادة التثبيت، نستخدم المالك المحفوظ في المتجر
+    const isExistingStore = !!savedStore.sallaOwnerEmail;
+    const ownerEmail = (isExistingStore && savedStore.sallaOwnerEmail)
+      ? savedStore.sallaOwnerEmail
+      : this.getOwnerEmail(merchantInfo);
+    const ownerMobile = (isExistingStore && savedStore.sallaOwnerMobile)
+      ? savedStore.sallaOwnerMobile
+      : this.getOwnerMobile(merchantInfo);
+    const ownerName = (isExistingStore && savedStore.sallaOwnerName)
+      ? savedStore.sallaOwnerName
+      : this.getOwnerName(merchantInfo);
 
     setImmediate(async () => {
       try {
@@ -914,13 +928,16 @@ export class SallaOAuthService {
     store.sallaPlan = merchantInfo.plan || store.sallaPlan;
 
     // ✅ بيانات المالك الشخصية (من user/info)
-    if (merchantInfo.ownerEmail) {
+    // ⚠️ FIX: لا نستبدل بيانات المالك الأصلي عند إعادة التثبيت!
+    // إذا شخص ثاني (مو المالك) أعاد تثبيت التطبيق من سلة،
+    // سلة ترجع بيانات المُثبِّت مو المالك — لازم نحمي المالك الأصلي
+    if (merchantInfo.ownerEmail && !store.sallaOwnerEmail) {
       store.sallaOwnerEmail = merchantInfo.ownerEmail;
     }
-    if (merchantInfo.ownerMobile) {
+    if (merchantInfo.ownerMobile && !store.sallaOwnerMobile) {
       store.sallaOwnerMobile = merchantInfo.ownerMobile;
     }
-    if (merchantInfo.ownerName) {
+    if (merchantInfo.ownerName && !store.sallaOwnerName) {
       store.sallaOwnerName = merchantInfo.ownerName;
     }
   }
