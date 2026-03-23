@@ -39,6 +39,7 @@ import { SallaMiscHandler } from './processors/salla/salla-misc.handler';
 import { WebhookEvent } from '@database/entities/webhook-event.entity';
 import { WebhookLog } from './entities/webhook-log.entity';
 import { Order, Customer, ScheduledTemplateSend } from '@database/entities';
+import { Tenant } from '@database/entities/tenant.entity';
 import { Store } from '../stores/entities/store.entity';
 
 // Related Modules
@@ -57,6 +58,7 @@ import { SmsModule } from '../channels/sms/sms.module';
       Customer,
       ScheduledTemplateSend,
       Store,
+      Tenant,
     ]),
 
     BullModule.registerQueue({
