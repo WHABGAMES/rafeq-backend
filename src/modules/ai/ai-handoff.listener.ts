@@ -150,15 +150,12 @@ export class AIHandoffListener {
         month: 'short',
       });
 
-      const dashboardUrl = event.dashboardLink || `/dashboard/inbox/${event.conversationId}`;
-
       const notificationMessage =
         `🔔 *تحويل بشري جديد!*\n\n` +
         `👤 العميل: ${event.customerName || 'غير معروف'}\n` +
         `📱 الرقم: ${event.customerPhone || 'غير متوفر'}\n` +
         `📝 السبب: ${reasonText}\n` +
-        `⏰ الوقت: ${timeText}\n` +
-        `🔗 المحادثة: ${dashboardUrl}\n\n` +
+        `⏰ الوقت: ${timeText}\n\n` +
         `💬 يرجى فتح لوحة التحكم للرد على العميل.`;
 
       // ═══════════════════════════════════════════════════════════════════
@@ -228,7 +225,7 @@ export class AIHandoffListener {
                     </tr>
                   </table>
                   <br/>
-                  <a href="${dashboardUrl}" style="display: inline-block; background: #6366f1; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px;">فتح المحادثة</a>
+                  <a href="${process.env.FRONTEND_URL || 'https://app.rafeq.ai'}/dashboard/inbox/${event.conversationId}" style="display: inline-block; background: #6366f1; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px;">فتح المحادثة</a>
                 </div>
               `,
             });
