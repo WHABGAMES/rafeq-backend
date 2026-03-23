@@ -96,6 +96,14 @@ export enum SallaEventType {
   APP_TOKEN_CREATED = 'app.token.created',
   APP_STORE_AUTHORIZE = 'app.store.authorize',
 
+  // ✅ Subscription Events (باقات التاجر)
+  APP_TRIAL_STARTED = 'app.trial.started',
+  APP_TRIAL_EXPIRED = 'app.trial.expired',
+  APP_SUBSCRIPTION_STARTED = 'app.subscription.started',
+  APP_SUBSCRIPTION_RENEWED = 'app.subscription.renewed',
+  APP_SUBSCRIPTION_CANCELLED = 'app.subscription.cancelled',
+  APP_SUBSCRIPTION_EXPIRED = 'app.subscription.expired',
+
   // Invoice Events
   INVOICE_CREATED = 'invoice.created',
 
