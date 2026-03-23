@@ -109,14 +109,38 @@ export class AutoRegistrationService {
         // 🆕 مستخدم جديد — إنشاء حساب + إرسال بيانات الدخول
         // ════════════════════════════════════════════════════════════════
         return this.handleNewUser(merchantData, store);
-      } else {
-        // ════════════════════════════════════════════════════════════════
-        // 👤 مستخدم موجود — ربط المتجر الجديد فقط
-        // ❌ لا نغيّر tenantId (المتجر الجديد أصلاً مُربط بنفس tenant)
-        // ❌ لا نولّد باسورد (الباسورد مشفر bcrypt ولا يُسترجع)
-        // ════════════════════════════════════════════════════════════════
-        return this.handleExistingUser(user, merchantData, store);
       }
+
+      // ════════════════════════════════════════════════════════════════
+      // ✅ FIX CRITICAL: التحقق من تطابق الـ tenant
+      //
+      // المشكلة القديمة: إذا تاجرين مختلفين بنفس الإيميل،
+      //   النظام يربط المتجر الثاني على حساب التاجر الأول!
+      //
+      // الحل: إذا الـ tenantId مختلف → هذا تاجر مختلف بنفس الإيميل
+      //   → ننشئ له حساب جديد (بإيميل مميز)
+      // ════════════════════════════════════════════════════════════════
+      if (user.tenantId && store.tenantId && user.tenantId !== store.tenantId) {
+        this.logger.warn(
+          `⚠️ TENANT MISMATCH: User ${user.id} has tenant ${user.tenantId}, ` +
+          `but store wants tenant ${store.tenantId}. ` +
+          `This is a DIFFERENT merchant with same email! Creating separate user.`,
+        );
+        // ✅ FIX: الإيميل مسجل unique في DB
+        // نضيف merchantId كـ suffix عشان ما يتعارض
+        // مثال: test@gmail.com → test+m557768712@gmail.com
+        if (merchantData.email && merchantData.email.includes('@')) {
+          const [localPart, domain] = merchantData.email.split('@');
+          merchantData.email = `${localPart}+m${merchantData.merchantId}@${domain}`;
+        } else {
+          merchantData.email = `merchant_${merchantData.merchantId}@rafeq.ai`;
+        }
+        this.logger.log(`📧 Using modified email for separate tenant: ${merchantData.email}`);
+        return this.handleNewUser(merchantData, store);
+      }
+
+      // 👤 نفس التاجر — ربط المتجر الجديد فقط
+      return this.handleExistingUser(user, merchantData, store);
 
     } catch (error: any) {
       this.logger.error(`❌ Failed to handle app installation: ${error.message}`);
