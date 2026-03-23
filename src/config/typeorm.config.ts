@@ -40,6 +40,7 @@ import { WidgetSettings } from '../modules/widget/widget-settings.entity';
 import { ShortLink, LinkClick } from '../modules/short-links/short-link.entity';
 import { TrustedDevice } from '../modules/auth/trusted-device.entity';
 import { PlatformNotification } from '../modules/platform-notifications/platform-notification.entity';
+import { PlatformNotificationUserAction } from '../modules/platform-notifications/platform-notification-user-action.entity';
 
 const entities = [
   User, Tenant, Store, Channel, Message, Conversation, Campaign, Customer,
@@ -48,6 +49,7 @@ const entities = [
   EmployeeNotification, KnowledgeBase, CsatSurvey,
   WidgetSettings, ShortLink, LinkClick, TrustedDevice,
   PlatformNotification,
+  PlatformNotificationUserAction,
 ];
 
 /**
