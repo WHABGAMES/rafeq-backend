@@ -22,6 +22,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { JwtModule } from '@nestjs/jwt';
 
 import { PlatformNotification } from './platform-notification.entity';
+import { PlatformNotificationUserAction } from './platform-notification-user-action.entity';
 import { PlatformNotificationsService } from './platform-notifications.service';
 import { AdminPlatformNotificationsController } from './admin-platform-notifications.controller';
 import { PlatformNotificationsPublicController } from './platform-notifications-public.controller';
@@ -34,7 +35,7 @@ import { AdminJwtGuard, AdminPermissionGuard } from '@modules/admin/guards/admin
 @Module({
   imports: [
     // ✅ PlatformNotification + AdminUser (لـ AdminJwtGuard)
-    TypeOrmModule.forFeature([PlatformNotification, AdminUser]),
+    TypeOrmModule.forFeature([PlatformNotification, PlatformNotificationUserAction, AdminUser]),
 
     // ✅ JwtModule لـ AdminJwtGuard.jwtService
     JwtModule.registerAsync({
