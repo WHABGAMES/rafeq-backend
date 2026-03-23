@@ -95,6 +95,21 @@ export enum SallaEventType {
   APP_INSTALLED = 'app.installed',
   APP_UNINSTALLED = 'app.uninstalled',
   APP_TOKEN_CREATED = 'app.token.created',
+
+  // ✅ Subscription Events (باقات التاجر)
+  APP_TRIAL_STARTED = 'app.trial.started',
+  APP_TRIAL_EXPIRED = 'app.trial.expired',
+  APP_SUBSCRIPTION_STARTED = 'app.subscription.started',
+  APP_SUBSCRIPTION_RENEWED = 'app.subscription.renewed',
+  APP_SUBSCRIPTION_CANCELLED = 'app.subscription.cancelled',
+  APP_SUBSCRIPTION_EXPIRED = 'app.subscription.expired',
+  SUBSCRIPTION_ACTIVE = 'app.market.subscription.active',
+  SUBSCRIPTION_WARNING = 'app.market.subscription.warning',
+  SUBSCRIPTION_SUSPENDED = 'app.market.subscription.suspended',
+  SUBSCRIPTION_EXPIRED = 'app.market.subscription.expired',
+  SUBSCRIPTION_RENEW = 'app.market.subscription.renew',
+  SUBSCRIPTION_UPGRADE = 'app.market.subscription.upgrade',
+  SUBSCRIPTION_REFUNDED = 'app.market.subscription.refunded',
   APP_STORE_AUTHORIZE = 'app.store.authorize',
 
   // Invoice Events
