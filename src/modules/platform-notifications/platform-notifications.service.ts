@@ -13,6 +13,7 @@ import {
   PlatformNotificationDisplay,
   PlatformNotificationColor,
 } from './platform-notification.entity';
+import { PlatformNotificationUserAction } from './platform-notification-user-action.entity';
 
 export interface CreateNotificationDto {
   type?: PlatformNotificationType;
@@ -46,6 +47,9 @@ export class PlatformNotificationsService {
   constructor(
     @InjectRepository(PlatformNotification)
     private readonly repo: Repository<PlatformNotification>,
+
+    @InjectRepository(PlatformNotificationUserAction)
+    private readonly userActionRepo: Repository<PlatformNotificationUserAction>,
   ) {}
 
   // ─── Admin CRUD ───────────────────────────────────────────────────────────
@@ -157,8 +161,19 @@ export class PlatformNotificationsService {
   async getActiveForMerchant(params: {
     plan: string;
     page?: string;
+    userId?: string;
   }): Promise<PlatformNotification[]> {
     const now = new Date();
+
+    // ✅ FIX: جلب IDs الإشعارات اللي أغلقها هذا التاجر
+    let dismissedIds: Set<string> = new Set();
+    if (params.userId) {
+      const dismissed = await this.userActionRepo.find({
+        where: { userId: params.userId, action: 'dismissed' },
+        select: ['notificationId'],
+      });
+      dismissedIds = new Set(dismissed.map(d => d.notificationId));
+    }
 
     const all = await this.repo.find({
       where: { isActive: true },
@@ -166,6 +181,9 @@ export class PlatformNotificationsService {
     });
 
     return all.filter(n => {
+      // ✅ FIX: إذا التاجر أغلق هذا الإشعار → ما يظهر له ثاني
+      if (dismissedIds.has(n.id)) return false;
+
       // تحقق من التوقيت
       if (n.startsAt && n.startsAt > now) return false;
       if (n.endsAt   && n.endsAt   < now) return false;
@@ -197,11 +215,67 @@ export class PlatformNotificationsService {
     });
   }
 
-  async trackView(id: string): Promise<void> {
-    await this.repo.increment({ id }, 'viewsCount', 1);
+  /**
+   * ✅ FIX: تسجيل مشاهدة — لكل تاجر مرة واحدة فقط
+   * INSERT ON CONFLICT DO NOTHING RETURNING id
+   * إذا رجع id = مشاهدة جديدة → نحدّث العداد
+   * إذا ما رجع شي = شاف من قبل → ما نسوي شي (0 extra queries)
+   */
+  async trackView(id: string, userId?: string): Promise<void> {
+    if (!userId) {
+      await this.repo.increment({ id }, 'viewsCount', 1);
+      return;
+    }
+
+    try {
+      const inserted = await this.userActionRepo.query(
+        `INSERT INTO platform_notification_user_actions (id, notification_id, user_id, action, created_at)
+         VALUES (gen_random_uuid(), $1, $2, 'viewed', NOW())
+         ON CONFLICT (notification_id, user_id, action) DO NOTHING
+         RETURNING id`,
+        [id, userId],
+      );
+
+      // ✅ inserted.length > 0 = مشاهدة جديدة فعلاً → نحدّث العداد
+      // inserted.length === 0 = شاف من قبل → لا نسوي شي
+      if (inserted.length > 0) {
+        const uniqueViews = await this.userActionRepo.count({
+          where: { notificationId: id, action: 'viewed' as any },
+        });
+        await this.repo.update(id, { viewsCount: uniqueViews });
+      }
+    } catch {
+      await this.repo.increment({ id }, 'viewsCount', 1);
+    }
   }
 
-  async trackDismissal(id: string): Promise<void> {
-    await this.repo.increment({ id }, 'dismissalsCount', 1);
+  /**
+   * ✅ FIX: تسجيل إغلاق — يُحفظ على السيرفر لكل تاجر
+   * التاجر يغلق الإشعار → ما يظهر له ثاني حتى لو غيّر الجهاز/المتصفح
+   */
+  async trackDismissal(id: string, userId?: string): Promise<void> {
+    if (!userId) {
+      await this.repo.increment({ id }, 'dismissalsCount', 1);
+      return;
+    }
+
+    try {
+      const inserted = await this.userActionRepo.query(
+        `INSERT INTO platform_notification_user_actions (id, notification_id, user_id, action, created_at)
+         VALUES (gen_random_uuid(), $1, $2, 'dismissed', NOW())
+         ON CONFLICT (notification_id, user_id, action) DO NOTHING
+         RETURNING id`,
+        [id, userId],
+      );
+
+      if (inserted.length > 0) {
+        const uniqueDismissals = await this.userActionRepo.count({
+          where: { notificationId: id, action: 'dismissed' as any },
+        });
+        await this.repo.update(id, { dismissalsCount: uniqueDismissals });
+      }
+    } catch {
+      await this.repo.increment({ id }, 'dismissalsCount', 1);
+    }
   }
 }
