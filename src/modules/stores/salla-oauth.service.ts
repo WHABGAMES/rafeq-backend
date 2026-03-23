@@ -926,28 +926,35 @@ export class SallaOAuthService {
   }
 
   private async resolveOrCreateTenant(merchantInfo: SallaMerchantInfo): Promise<string> {
-    // ✅ استخدام الإيميل الشخصي للمالك (وليس إيميل المتجر)
     const ownerEmail = this.getOwnerEmail(merchantInfo);
     const ownerMobile = this.getOwnerMobile(merchantInfo);
 
-    // 🔍 البحث عن المستخدم بالإيميل الشخصي
-    if (ownerEmail) {
-      const existingUser = await this.autoRegistrationService.findUserByEmail(ownerEmail);
+    // ════════════════════════════════════════════════════════════════════
+    // ✅ FIX CRITICAL: البحث بـ merchantId أولاً (وليس بالإيميل!)
+    //
+    // المشكلة القديمة: البحث بالإيميل كان يربط متاجر تجار مختلفين
+    //   على نفس الـ tenant إذا صدفة يستخدمون نفس الإيميل!
+    //
+    // الحل: كل sallaMerchantId في سلة = tenant مستقل في رفيق
+    //   حتى لو نفس الشخص يملك عدة متاجر → كل واحد له tenant مستقل
+    // ════════════════════════════════════════════════════════════════════
 
-      if (existingUser?.tenantId) {
-        this.logger.log(
-          `👤 Existing user found by ownerEmail "${ownerEmail}" (${existingUser.id}) → reusing tenant ${existingUser.tenantId} for merchant ${merchantInfo.id}`,
-        );
-        return existingUser.tenantId;
-      }
+    // 🔍 الخطوة 1: هل هذا المتجر موجود مسبقاً في قاعدة بياناتنا؟
+    const existingStore = await this.findStoreBySallaMerchantId(merchantInfo.id);
+    if (existingStore?.tenantId) {
+      this.logger.log(
+        `🔗 Existing store found for merchant ${merchantInfo.id} → reusing tenant ${existingStore.tenantId}`,
+      );
+      return existingStore.tenantId;
     }
 
-    // 🆕 مستخدم جديد → إنشاء tenant جديد
+    // 🆕 الخطوة 2: متجر جديد تماماً → إنشاء tenant جديد دائماً
+    // ❌ لا نبحث بالإيميل! تاجرين مختلفين بنفس الإيميل = tenants منفصلة
     const tenant = await this.tenantsService.createTenantFromSalla({
       merchantId: merchantInfo.id,
       name: merchantInfo.name || merchantInfo.username || 'متجر سلة',
-      email: ownerEmail,       // ✅ إيميل المالك الشخصي
-      phone: ownerMobile,      // ✅ جوال المالك الشخصي
+      email: ownerEmail,
+      phone: ownerMobile,
       logo: merchantInfo.avatar,
       website: merchantInfo.domain,
     });
