@@ -40,21 +40,30 @@ export class PlatformNotificationsPublicController {
     @Query('page') page?: string,
   ) {
     const plan = user?.tenant?.subscriptionPlan || 'free';
-    const notifications = await this.service.getActiveForMerchant({ plan, page });
+    const userId = user?.id || user?.sub;
+    const notifications = await this.service.getActiveForMerchant({ plan, page, userId });
     return { notifications };
   }
 
   @Post(':id/view')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'تسجيل مشاهدة إشعار' })
-  async trackView(@Param('id', ParseUUIDPipe) id: string): Promise<void> {
-    await this.service.trackView(id).catch(() => {});
+  async trackView(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: any,
+  ): Promise<void> {
+    const userId = user?.id || user?.sub;
+    await this.service.trackView(id, userId).catch(() => {});
   }
 
   @Post(':id/dismiss')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'تسجيل رفض إشعار' })
-  async trackDismiss(@Param('id', ParseUUIDPipe) id: string): Promise<void> {
-    await this.service.trackDismissal(id).catch(() => {});
+  async trackDismiss(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: any,
+  ): Promise<void> {
+    const userId = user?.id || user?.sub;
+    await this.service.trackDismissal(id, userId).catch(() => {});
   }
 }
