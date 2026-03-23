@@ -1,427 +1,975 @@
 /**
- * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║              RAFIQ PLATFORM — Salla Store Service                              ║
- * ║                                                                                ║
- * ║  مسؤولية هذا الملف: كل ما يخص منصة سلة فقط                                  ║
- * ║  ─────────────────────────────────────────────────────────────                ║
- * ║  ✅ ربط متجر سلة                 connectSallaStore()                          ║
- * ║  ✅ البحث بـ merchantId           findByMerchantId()                          ║
- * ║  ✅ مزامنة بيانات سلة             syncSallaStore()                            ║
- * ║  ✅ إلغاء تثبيت سلة               handleAppUninstalled()                      ║
- * ║  ✅ استرجاع تلقائي للمتاجر        autoRecoverStoreForMerchant()               ║
- * ║                                                                                ║
- * ║  ⚠️  هذا الملف لا يحتوي على أي كود خاص بـ Zid                               ║
- * ║     التعديل هنا لا يؤثر على نظام Zid بأي شكل                                ║
- * ║                                                                                ║
- * ║  📁 src/modules/stores/salla-store.service.ts                                ║
- * ╚═══════════════════════════════════════════════════════════════════════════════╝
+ * ╔══════════════════════════════════════════════════════════════════════════════╗
+ * ║                RAFIQ PLATFORM - Salla OAuth Service                          ║
+ * ║                                                                              ║
+ * ║  ✅ OAuth 2.0 Flow مع سلة                                                       ║
+ * ║  ✅ يدعم Easy Mode و Standard OAuth و Custom Mode                             ║
+ * ║  ✅ Auto Registration - إنشاء حساب تلقائي للتاجر                               ║
+ * ║  ✅ Multi-Store — تاجر موجود يُربط متجره الجديد على نفس tenant                 ║
+ * ║  🔐 NEW: تشفير التوكنات بـ AES-256-GCM                                         ║
+ * ║                                                                              ║
+ * ║  📁 src/modules/stores/salla-oauth.service.ts                                ║
+ * ╚══════════════════════════════════════════════════════════════════════════════╝
  */
 
-import {
-  Injectable,
-  Logger,
-  ConflictException,
-} from '@nestjs/common';
+import { Injectable, Logger, BadRequestException, ConflictException } from '@nestjs/common';
+import { TenantsService } from '../tenants/tenants.service';
+import { ConfigService } from '@nestjs/config';
+import { HttpService } from '@nestjs/axios';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { EventEmitter2 } from '@nestjs/event-emitter';
+import { firstValueFrom } from 'rxjs';
 
-import { encrypt } from '@common/utils/encryption.util';
 import { Store, StoreStatus, StorePlatform } from './entities/store.entity';
-import { SallaMerchantInfo } from './salla-oauth.service';
-import { SallaApiService } from './salla-api.service';
+import { AutoRegistrationService } from '../auth/auto-registration.service';
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+// 🔐 Encryption
+import { encrypt } from '@common/utils/encryption.util';
+import * as crypto from 'crypto';
 
-export interface ConnectSallaStoreData {
-  tokens: {
-    accessToken: string;
-    refreshToken: string;
-    expiresAt: Date;
-  };
-  merchantInfo: SallaMerchantInfo;
+// ═══════════════════════════════════════════════════════════════════════════════
+// ✅ Exported Types
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export interface SallaTokenResponse {
+  access_token: string;
+  refresh_token: string;
+  expires_in: number;
+  token_type: string;
 }
 
-// ─── Service ─────────────────────────────────────────────────────────────────
+/**
+ * ✅ معلومات التاجر من سلة API (مدمجة من مصدرين)
+ *
+ * 📌 مصدران للبيانات:
+ *   1. GET /admin/v2/store/info    → بيانات المتجر (email, mobile = بيانات المتجر)
+ *   2. GET /oauth2/user/info       → بيانات المالك الشخصية (email, mobile = الشخصي)
+ *
+ * ⚠️ email & mobile هنا = بيانات المتجر (store/info) — للتخزين في Store record
+ * ✅ ownerEmail & ownerMobile = بيانات المالك الشخصية — لإنشاء الحساب وبيانات الدخول
+ */
+export interface SallaMerchantInfo {
+  /** معرّف المتجر في سلة */
+  id: number;
+  /** اسم المتجر */
+  name: string;
+  username?: string;
+  /** إيميل المتجر من store/info (قد يكون support@salla.dev) — لا يُستخدم لإنشاء الحساب */
+  email: string;
+  /** رقم هاتف المتجر من store/info — ليس الشخصي بالضرورة */
+  mobile?: string;
+  domain: string;
+  plan: string;
+  avatar?: string;
+
+  // ═══════════════════════════════════════════════════════════════
+  // 👤 بيانات المالك الشخصية (من oauth2/user/info)
+  // هذه هي البيانات الصحيحة لإنشاء الحساب وإرسال بيانات الدخول
+  // ═══════════════════════════════════════════════════════════════
+
+  /** ✅ الإيميل الشخصي للتاجر — يُستخدم لإنشاء الحساب */
+  ownerEmail?: string;
+  /** ✅ رقم الجوال الشخصي للتاجر — يُستخدم لإرسال واتساب */
+  ownerMobile?: string;
+  /** ✅ اسم التاجر الشخصي */
+  ownerName?: string;
+}
+
+export interface OAuthResult {
+  tokens: SallaTokenResponse;
+  tenantId: string;
+  merchantId: number;
+}
+
+/**
+ * ✅ بيانات app.store.authorize من webhook سلة
+ */
+export interface SallaAppAuthorizeData {
+  access_token: string;
+  refresh_token: string;
+  expires: number;
+  scope: string;
+}
 
 @Injectable()
-export class SallaStoreService {
-  private readonly logger = new Logger(SallaStoreService.name);
+export class SallaOAuthService {
+  private readonly logger = new Logger(SallaOAuthService.name);
+  
+  private readonly clientId: string;
+  private readonly clientSecret: string;
+  private readonly redirectUri: string;
+  private readonly sallaAuthUrl = 'https://accounts.salla.sa/oauth2/auth';
+  private readonly sallaTokenUrl = 'https://accounts.salla.sa/oauth2/token';
+  private readonly sallaApiUrl = 'https://api.salla.dev/admin/v2';
+
+  /**
+   * ✅ Endpoint لجلب بيانات المالك الشخصية
+   *
+   * ⚠️ ملاحظة مهمة:
+   *   - auth.service.ts يستخدم نفس الـ endpoint وهو يعمل بنجاح
+   *   - هذا الـ endpoint يرجع: { data: { id, email, name, mobile, avatar, ... } }
+   *   - الإيميل هنا هو الإيميل الشخصي للتاجر (وليس إيميل المتجر)
+   */
+  private readonly sallaUserInfoUrl = 'https://api.salla.dev/admin/v2/oauth2/user/info';
 
   constructor(
+    private readonly configService: ConfigService,
+    private readonly httpService: HttpService,
     @InjectRepository(Store)
     private readonly storeRepository: Repository<Store>,
+    private readonly tenantsService: TenantsService,
+    private readonly autoRegistrationService: AutoRegistrationService,
+  ) {
+    this.clientId = this.configService.getOrThrow<string>('SALLA_CLIENT_ID');
+    this.clientSecret = this.configService.getOrThrow<string>('SALLA_CLIENT_SECRET');
+    this.redirectUri = this.configService.getOrThrow<string>('SALLA_REDIRECT_URI');
+  }
 
-    private readonly sallaApiService: SallaApiService,
-    private readonly eventEmitter: EventEmitter2,
-  ) {}
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔗 OAuth URL Generation
+  // ═══════════════════════════════════════════════════════════════════════════════
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // 🔗 ربط المتجر
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  async connectSallaStore(
-    tenantId: string,
-    data: ConnectSallaStoreData,
-  ): Promise<Store> {
-    const { tokens, merchantInfo } = data;
-
-    const existingStore = await this.findByMerchantId(merchantInfo.id);
-
-    if (existingStore) {
-      if (existingStore.tenantId === tenantId) {
-        return this.updateSallaStoreConnection(existingStore, tokens, merchantInfo);
-      }
-      throw new ConflictException('This store is already connected to another account');
-    }
-
-    const store = this.storeRepository.create({
+  generateAuthorizationUrl(tenantId: string, customState?: string): string {
+    // 🔧 FIX H-01: HMAC-signed state parameter to prevent CSRF
+    const stateData = {
       tenantId,
-      name: merchantInfo.name || merchantInfo.username,
-      platform: StorePlatform.SALLA,
-      status: StoreStatus.ACTIVE,
-      sallaMerchantId: merchantInfo.id,
-      tokenExpiresAt: tokens.expiresAt,
-      // بيانات المتجر
-      sallaStoreName: merchantInfo.name,
-      sallaEmail: merchantInfo.email,
-      sallaMobile: merchantInfo.mobile,
-      sallaDomain: merchantInfo.domain,
-      sallaAvatar: merchantInfo.avatar,
-      sallaPlan: merchantInfo.plan,
-      // ✅ بيانات المالك الشخصية
-      sallaOwnerEmail: merchantInfo.ownerEmail,
-      sallaOwnerMobile: merchantInfo.ownerMobile,
-      sallaOwnerName: merchantInfo.ownerName,
-      // ✅ تهيئة الإحصائيات بـ 0 عند الربط — تُحدَّث عند أول sync
-      sallaOrdersCount: 0,
-      sallaProductsCount: 0,
-      sallaCustomersCount: 0,
-      settings: {
-        autoReply: true,
-        welcomeMessageEnabled: true,
-        orderNotificationsEnabled: true,
-      },
-      subscribedEvents: [
-        'order.created',
-        'customer.created',
-        'abandoned.cart',
-        'order.status.updated',
-        'shipment.created',
-      ],
-      lastSyncedAt: new Date(),
+      custom: customState || '',
+      ts: Date.now(),
+      nonce: crypto.randomBytes(16).toString('hex'),
+    };
+    const encoded = Buffer.from(JSON.stringify(stateData)).toString('base64url');
+    const secret = this.configService.get('JWT_SECRET', '');
+    const signature = crypto
+      .createHmac('sha256', secret)
+      .update(encoded)
+      .digest('hex');
+    const state = `${encoded}.${signature}`;
+
+    const params = new URLSearchParams({
+      client_id: this.clientId,
+      response_type: 'code',
+      redirect_uri: this.redirectUri,
+      scope: 'offline_access',
+      state,
     });
 
-    store.accessToken  = encrypt(tokens.accessToken)  ?? undefined;
-    store.refreshToken = encrypt(tokens.refreshToken) ?? undefined;
+    const url = `${this.sallaAuthUrl}?${params.toString()}`;
+    this.logger.log(`Generated OAuth URL for tenant ${tenantId}`);
+    return url;
+  }
+
+  decodeState(state: string): { tenantId: string; custom: string } {
+    try {
+      // 🔧 FIX H-01: Verify HMAC signature before decoding
+      const [encoded, signature] = state.split('.');
+      if (!encoded || !signature) {
+        throw new Error('Invalid state format');
+      }
+
+      const secret = this.configService.get('JWT_SECRET', '');
+      const expectedSignature = crypto
+        .createHmac('sha256', secret)
+        .update(encoded)
+        .digest('hex');
+
+      // Timing-safe comparison
+      if (signature.length !== expectedSignature.length ||
+          !crypto.timingSafeEqual(
+            Buffer.from(signature, 'hex'),
+            Buffer.from(expectedSignature, 'hex'),
+          )) {
+        throw new Error('Invalid state signature');
+      }
+
+      // Verify timestamp (10 minute window)
+      const decoded = JSON.parse(Buffer.from(encoded, 'base64url').toString());
+      const MAX_AGE = 10 * 60 * 1000;
+      if (Date.now() - decoded.ts > MAX_AGE) {
+        throw new Error('State parameter expired');
+      }
+
+      return { tenantId: decoded.tenantId, custom: decoded.custom || '' };
+    } catch (error) {
+      // ✅ FIX: DEBUG وليس ERROR — state من سلة (غير موقّع) هو سلوك متوقع
+      // يحدث عند تثبيت التطبيق من متجر سلة (وليس من الداشبورد)
+      this.logger.debug('State is not HMAC-signed — likely Salla-generated state');
+      throw new BadRequestException('Invalid or expired state parameter');
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔍 Store Lookup Helper
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * ✅ البحث عن متجر بـ sallaMerchantId
+   * يستخدم Raw SQL لتجاوز مشاكل TypeORM مع bigint
+   */
+  private async findStoreBySallaMerchantId(merchantId: number): Promise<Store | null> {
+    // Raw SQL → PostgreSQL handles bigint comparison directly
+    const rows: Array<{ id: string; deleted_at: Date | null }> =
+      await this.storeRepository.manager.query(
+        `SELECT id, deleted_at FROM stores WHERE salla_merchant_id = $1 LIMIT 1`,
+        [merchantId],
+      );
+
+    if (!rows || rows.length === 0) {
+      this.logger.warn(`❌ Merchant ${merchantId}: not found in stores (raw SQL)`);
+      return null;
+    }
+
+    // Restore if soft-deleted
+    if (rows[0].deleted_at) {
+      this.logger.warn(`🔄 RECOVERY: Restoring soft-deleted store ${rows[0].id} for merchant ${merchantId}`);
+      await this.storeRepository.manager.query(
+        `UPDATE stores SET deleted_at = NULL, status = 'active' WHERE id = $1`,
+        [rows[0].id],
+      );
+    }
+
+    // Load entity by UUID (zero type issues)
+    return this.storeRepository.findOne({ where: { id: rows[0].id } });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔑 Token Exchange
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async exchangeCodeForTokens(code: string, tenantId: string): Promise<OAuthResult> {
+    this.logger.log('Exchanging code for tokens');
+
+    try {
+      const response = await firstValueFrom(
+        this.httpService.post<SallaTokenResponse>(
+          this.sallaTokenUrl,
+          new URLSearchParams({
+            grant_type: 'authorization_code',
+            client_id: this.clientId,
+            client_secret: this.clientSecret,
+            redirect_uri: this.redirectUri,
+            code,
+          }).toString(),
+          {
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+          },
+        ),
+      );
+
+      const tokens = response.data;
+      const merchantInfo = await this.fetchMerchantInfo(tokens.access_token);
+      await this.assertTenantOwnerIdentityMatch(tenantId, merchantInfo);
+
+      let store = await this.findStoreBySallaMerchantId(merchantInfo.id);
+
+      if (store) {
+        if (store.tenantId && store.tenantId !== tenantId) {
+          throw new ConflictException(
+            'هذا المتجر مربوط مسبقاً بتاجر آخر، ولا يمكن ربطه على هذا الحساب.',
+          );
+        }
+        store.tenantId = tenantId;
+        // 🔐 تشفير التوكنات
+        store.accessToken = encrypt(tokens.access_token) ?? undefined;
+        store.refreshToken = encrypt(tokens.refresh_token) ?? undefined;
+        store.tokenExpiresAt = this.calculateTokenExpiry(tokens.expires_in);
+        store.lastTokenRefreshAt = new Date();
+        store.status = StoreStatus.ACTIVE;
+        store.consecutiveErrors = 0;
+        store.lastError = undefined;
+        
+        // بيانات المتجر
+        store.sallaStoreName = merchantInfo.name || store.sallaStoreName;
+        store.sallaEmail = merchantInfo.email || store.sallaEmail;
+        store.sallaMobile = merchantInfo.mobile || store.sallaMobile;
+        store.sallaDomain = merchantInfo.domain || store.sallaDomain;
+        store.sallaAvatar = merchantInfo.avatar || store.sallaAvatar;
+        store.sallaPlan = merchantInfo.plan || store.sallaPlan;
+
+        // ✅ بيانات المالك الشخصية
+        if (merchantInfo.ownerEmail) store.sallaOwnerEmail = merchantInfo.ownerEmail;
+        if (merchantInfo.ownerMobile) store.sallaOwnerMobile = merchantInfo.ownerMobile;
+        if (merchantInfo.ownerName) store.sallaOwnerName = merchantInfo.ownerName;
+        
+        this.logger.log(`Updated existing store: ${store.id}`);
+      } else {
+        store = this.storeRepository.create({
+          tenantId,
+          name: merchantInfo.name || merchantInfo.username || `متجر سلة ${merchantInfo.id}`,
+          platform: StorePlatform.SALLA,
+          status: StoreStatus.ACTIVE,
+          sallaMerchantId: merchantInfo.id,
+          // 🔐 تشفير التوكنات
+          accessToken: encrypt(tokens.access_token) ?? undefined,
+          refreshToken: encrypt(tokens.refresh_token) ?? undefined,
+          tokenExpiresAt: this.calculateTokenExpiry(tokens.expires_in),
+          // بيانات المتجر
+          sallaStoreName: merchantInfo.name,
+          sallaEmail: merchantInfo.email,
+          sallaMobile: merchantInfo.mobile,
+          sallaDomain: merchantInfo.domain,
+          sallaAvatar: merchantInfo.avatar,
+          sallaPlan: merchantInfo.plan,
+          // ✅ بيانات المالك الشخصية
+          sallaOwnerEmail: merchantInfo.ownerEmail,
+          sallaOwnerMobile: merchantInfo.ownerMobile,
+          sallaOwnerName: merchantInfo.ownerName,
+          lastSyncedAt: new Date(),
+          settings: {},
+          subscribedEvents: [],
+        });
+
+        this.logger.log(`Created new store for merchant ${merchantInfo.id}`);
+      }
+
+      await this.storeRepository.save(store);
+
+      this.logger.log(`OAuth completed for tenant ${tenantId}, merchant ${merchantInfo.id}`);
+
+      return {
+        tokens,
+        tenantId,
+        merchantId: merchantInfo.id,
+      };
+    } catch (error: any) {
+      this.logger.error('Failed to exchange code for tokens', { error: error.response?.data || error.message });
+      throw new BadRequestException('Failed to exchange authorization code');
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🆕 Custom Mode — تثبيت من متجر سلة (بدون tenantId)
+  // ✅ FIX: إذا التاجر موجود بالإيميل → نستخدم tenant-ه الحالي
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async exchangeCodeAndAutoRegister(code: string): Promise<{
+    merchantId: number;
+    isNewUser: boolean;
+    email: string;
+  }> {
+    this.logger.log('🆕 exchangeCodeAndAutoRegister — Salla store install');
+
+    try {
+      // 1. استبدال code بـ tokens
+      const response = await firstValueFrom(
+        this.httpService.post<SallaTokenResponse>(
+          this.sallaTokenUrl,
+          new URLSearchParams({
+            grant_type: 'authorization_code',
+            client_id: this.clientId,
+            client_secret: this.clientSecret,
+            redirect_uri: this.redirectUri,
+            code,
+          }).toString(),
+          {
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+          },
+        ),
+      );
+
+      const tokens = response.data;
+
+      // 2. جلب بيانات التاجر
+      const merchantInfo = await this.fetchMerchantInfo(tokens.access_token);
+      this.logger.log(`📊 Merchant: ${merchantInfo.id} — ${merchantInfo.name}`);
+
+      // 3. البحث عن متجر موجود أو إنشاء جديد
+      const sallaMerchantId = merchantInfo.id; // ✅ Use number type as expected
+      let store = await this.findStoreBySallaMerchantId(sallaMerchantId);
+
+      let isNewStore = false;
+
+      if (store) {
+        // ════════════════════════════════════════════════════════════════════
+        // 🔄 UPDATE existing store (re-installation scenario)
+        // ════════════════════════════════════════════════════════════════════
+        this.logger.log(`🔄 Updating existing Salla store: ${sallaMerchantId} (DB ID: ${store.id})`);
+
+        this.updateSallaStoreFields(store, tokens, merchantInfo);
+
+        // إذا ما عنده tenant → نحل المشكلة
+        if (!store.tenantId) {
+          const tenantId = await this.resolveOrCreateTenant(merchantInfo);
+          store.tenantId = tenantId;
+          this.logger.log(`🔗 Linking store to tenant ${tenantId}`);
+        }
+      } else {
+        // ════════════════════════════════════════════════════════════════════
+        // 🆕 CREATE new store (first-time installation)
+        // ════════════════════════════════════════════════════════════════════
+        isNewStore = true;
+        this.logger.log(`🆕 Creating new Salla store: ${sallaMerchantId}`);
+
+        const tenantId = await this.resolveOrCreateTenant(merchantInfo);
+
+        store = this.storeRepository.create({
+          tenantId,
+          name: merchantInfo.name || merchantInfo.username || `متجر سلة ${sallaMerchantId}`,
+          platform: StorePlatform.SALLA,
+          status: StoreStatus.ACTIVE,
+          sallaMerchantId,
+          accessToken: encrypt(tokens.access_token) ?? undefined,
+          refreshToken: encrypt(tokens.refresh_token) ?? undefined,
+          tokenExpiresAt: this.calculateTokenExpiry(tokens.expires_in),
+          // بيانات المتجر
+          sallaStoreName: merchantInfo.name,
+          sallaEmail: merchantInfo.email,
+          sallaMobile: merchantInfo.mobile,
+          sallaDomain: merchantInfo.domain,
+          sallaAvatar: merchantInfo.avatar,
+          sallaPlan: merchantInfo.plan,
+          // ✅ بيانات المالك الشخصية
+          sallaOwnerEmail: merchantInfo.ownerEmail,
+          sallaOwnerMobile: merchantInfo.ownerMobile,
+          sallaOwnerName: merchantInfo.ownerName,
+          lastSyncedAt: new Date(),
+          lastTokenRefreshAt: new Date(),
+          settings: {},
+          subscribedEvents: [],
+        });
+      }
+
+      // ═════════════════════════════════════════════════════════════════════
+      // 💾 Save store (with duplicate key handling)
+      // ═════════════════════════════════════════════════════════════════════
+      let savedStore: Store;
+      try {
+        savedStore = await this.storeRepository.save(store);
+        
+        if (isNewStore) {
+          this.logger.log(`✅ Salla store created: ${sallaMerchantId} → tenant ${store.tenantId}`);
+        } else {
+          this.logger.log(`✅ Salla store updated: ${sallaMerchantId} → tenant ${store.tenantId}`);
+        }
+      } catch (saveError: any) {
+        // Handle duplicate key constraint violation (race condition)
+        if (saveError.code === '23505' || saveError.message?.includes('duplicate key')) {
+          this.logger.warn(`⚠️ Duplicate key detected for ${sallaMerchantId}, re-querying and updating...`);
+          
+          // Re-query the existing store
+          const existingStore = await this.findStoreBySallaMerchantId(sallaMerchantId);
+          
+          if (!existingStore) {
+            // This shouldn't happen, but handle it anyway
+            throw saveError;
+          }
+          
+          // Update the existing store using shared logic
+          this.updateSallaStoreFields(existingStore, tokens, merchantInfo);
+          
+          if (!existingStore.tenantId && store.tenantId) {
+            existingStore.tenantId = store.tenantId;
+            this.logger.log(`🔗 Linking store to tenant ${store.tenantId}`);
+          }
+          
+          savedStore = await this.storeRepository.save(existingStore);
+          this.logger.log(`✅ Salla store updated after retry: ${sallaMerchantId} → tenant ${savedStore.tenantId}`);
+        } else {
+          throw saveError;
+        }
+      }
+
+      // 4. إنشاء/تحديث المستخدم + إرسال بيانات الدخول (إيميل + واتساب)
+      // ✅ FIX: عند إعادة التثبيت، نستخدم المالك المحفوظ في المتجر
+      //    وليس بيانات الشخص اللي أعاد التثبيت (قد يكون شخص ثاني!)
+      const ownerEmail = (!isNewStore && savedStore.sallaOwnerEmail)
+        ? savedStore.sallaOwnerEmail
+        : this.getOwnerEmail(merchantInfo);
+      const ownerMobile = (!isNewStore && savedStore.sallaOwnerMobile)
+        ? savedStore.sallaOwnerMobile
+        : this.getOwnerMobile(merchantInfo);
+      const ownerName = (!isNewStore && savedStore.sallaOwnerName)
+        ? savedStore.sallaOwnerName
+        : this.getOwnerName(merchantInfo);
+
+      let isNewUser = false;
+      try {
+        const regResult = await this.autoRegistrationService.handleAppInstallation(
+          {
+            merchantId: merchantInfo.id,
+            email: ownerEmail,           // ✅ إيميل المالك الشخصي
+            mobile: ownerMobile,         // ✅ جوال المالك الشخصي
+            name: ownerName,             // ✅ اسم المالك الشخصي
+            storeName: merchantInfo.name,
+            avatar: merchantInfo.avatar,
+            platform: 'salla',
+          },
+          savedStore,
+        );
+        isNewUser = regResult.isNewUser;
+
+        this.logger.log(`✅ Auto-registration: ${regResult.message}`, {
+          userId: regResult.userId,
+          isNewUser: regResult.isNewUser,
+          ownerEmail,
+        });
+      } catch (error: any) {
+        this.logger.error(`❌ Auto-registration failed: ${error.message}`, {
+          merchantId: merchantInfo.id,
+          ownerEmail,
+          storeEmail: merchantInfo.email,
+        });
+      }
+
+      return {
+        merchantId: merchantInfo.id,
+        isNewUser,
+        email: ownerEmail,  // ✅ إرجاع إيميل المالك الشخصي
+      };
+
+    } catch (error: any) {
+      this.logger.error('Failed exchangeCodeAndAutoRegister', {
+        error: error.response?.data || error.message,
+      });
+      throw new BadRequestException('Failed to complete Salla store installation');
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 👤 Merchant Info — يجمع بيانات المتجر + بيانات المالك الشخصية
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * ✅ جلب بيانات التاجر الكاملة من مصدرين:
+   *
+   * 1. GET /admin/v2/store/info (سلة Store API)
+   *    → id, name, email (إيميل المتجر), mobile (هاتف المتجر), domain, plan, avatar
+   *    ⚠️ email هنا = إيميل المتجر (مثل support@salla.dev) وليس إيميل التاجر
+   *
+   * 2. GET /oauth2/user/info (سلة OAuth API)
+   *    → email (الإيميل الشخصي), mobile (الجوال الشخصي), name (الاسم الشخصي)
+   *    ✅ هذه البيانات الصحيحة لإنشاء الحساب
+   *
+   * 🐛 BUG المُصلَح: النظام كان يستخدم store/info فقط
+   *    → إيميل المتجر (support@salla.dev) بدل إيميل التاجر الحقيقي
+   *    → كل الحسابات تُنشأ بإيميل خاطئ
+   */
+  async fetchMerchantInfo(accessToken: string): Promise<SallaMerchantInfo> {
+    // ─── 1. جلب بيانات المتجر (store/info) ───
+    let storeData: any;
+    try {
+      const storeResponse = await firstValueFrom(
+        this.httpService.get(`${this.sallaApiUrl}/store/info`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        }),
+      );
+      storeData = storeResponse.data.data;
+    } catch (error: any) {
+      this.logger.error('Failed to fetch store info from Salla', error.message);
+      throw new BadRequestException('Failed to fetch store information from Salla');
+    }
+
+    // ─── 2. جلب بيانات المالك الشخصية (user/info) ───
+    let userData: { email?: string; mobile?: string; name?: string } = {};
+    try {
+      const userResponse = await firstValueFrom(
+        this.httpService.get(this.sallaUserInfoUrl, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        }),
+      );
+
+      const userPayload = userResponse.data?.data || userResponse.data;
+
+      userData = {
+        email: userPayload?.email || undefined,
+        mobile: userPayload?.mobile || userPayload?.phone || undefined,
+        name: userPayload?.name
+          || [userPayload?.first_name, userPayload?.last_name].filter(Boolean).join(' ')
+          || undefined,
+      };
+
+      this.logger.log(`👤 Salla user/info fetched`, {
+        ownerEmail: userData.email || '(none)',
+        ownerMobile: userData.mobile ? '✓' : '(none)',
+        ownerName: userData.name || '(none)',
+      });
+    } catch (error: any) {
+      // ⚠️ user/info قد يفشل في بعض الحالات (scope محدود، متجر تجريبي)
+      // لا نوقف العملية — نسجل تحذير ونكمل ببيانات المتجر كـ fallback
+      this.logger.warn(
+        `⚠️ Failed to fetch user/info from Salla OAuth — will fallback to store email`,
+        {
+          status: error.response?.status,
+          error: error.response?.data?.error || error.message,
+          hint: 'This is expected for some test stores or limited OAuth scopes',
+        },
+      );
+    }
+
+    // ─── 3. تجميع البيانات ───
+    const result: SallaMerchantInfo = {
+      // بيانات المتجر (من store/info)
+      id: storeData.id,
+      name: storeData.name,
+      username: storeData.username,
+      email: storeData.email,       // إيميل المتجر
+      mobile: storeData.mobile,     // هاتف المتجر
+      domain: storeData.domain,
+      plan: storeData.plan,
+      avatar: storeData.avatar,
+
+      // بيانات المالك الشخصية (من user/info)
+      ownerEmail: userData.email || undefined,
+      ownerMobile: userData.mobile || undefined,
+      ownerName: userData.name || undefined,
+    };
+
+    // ─── 4. تسجيل مقارنة الإيميلات لأغراض الـ debugging ───
+    if (result.ownerEmail && result.email !== result.ownerEmail) {
+      this.logger.log(
+        `📧 Email mismatch detected (expected): store="${result.email}" vs owner="${result.ownerEmail}"`,
+      );
+    } else if (!result.ownerEmail) {
+      this.logger.warn(
+        `⚠️ No owner email available — will use store email "${result.email}" as fallback`,
+      );
+    }
+
+    return result;
+  }
+
+  /**
+   * ✅ Helper: يرجع الإيميل الصحيح لإنشاء الحساب
+   *
+   * الأولوية: ownerEmail (شخصي) > email (متجر)
+   *
+   * يُستخدم في: resolveOrCreateTenant, handleAppInstallation, وأي مكان
+   *              يحتاج الإيميل الحقيقي للتاجر
+   */
+  private getOwnerEmail(merchantInfo: SallaMerchantInfo): string {
+    return merchantInfo.ownerEmail || merchantInfo.email;
+  }
+
+  private normalizeEmail(email?: string | null): string {
+    return (email || '').trim().toLowerCase();
+  }
+
+  private async getTenantPrimaryOwnerEmail(tenantId: string): Promise<string | null> {
+    const rows = await this.storeRepository.manager.query(
+      `
+      SELECT email
+      FROM users
+      WHERE tenant_id = $1
+        AND deleted_at IS NULL
+      ORDER BY
+        CASE WHEN role = 'owner' THEN 0 ELSE 1 END,
+        created_at ASC
+      LIMIT 1
+      `,
+      [tenantId],
+    );
+
+    const email = this.normalizeEmail(rows?.[0]?.email);
+    return email || null;
+  }
+
+  private async assertTenantOwnerIdentityMatch(
+    tenantId: string,
+    merchantInfo: SallaMerchantInfo,
+  ): Promise<void> {
+    const tenantOwnerEmail = await this.getTenantPrimaryOwnerEmail(tenantId);
+    const incomingOwnerEmail = this.normalizeEmail(this.getOwnerEmail(merchantInfo));
+
+    if (!tenantOwnerEmail || !incomingOwnerEmail) return;
+    if (tenantOwnerEmail === incomingOwnerEmail) return;
+
+    this.logger.warn(
+      `⛔ Tenant owner mismatch on Salla connect: tenant=${tenantId}, tenantOwner=${tenantOwnerEmail}, incomingOwner=${incomingOwnerEmail}, merchant=${merchantInfo.id}`,
+    );
+    throw new ConflictException(
+      'هذا المتجر يتبع تاجرًا آخر (اختلاف إيميل المالك)، ولا يمكن ربطه بهذا الحساب.',
+    );
+  }
+
+  /**
+   * ✅ Helper: يرجع رقم الجوال الصحيح للتاجر
+   */
+  private getOwnerMobile(merchantInfo: SallaMerchantInfo): string | undefined {
+    return merchantInfo.ownerMobile || merchantInfo.mobile;
+  }
+
+  /**
+   * ✅ Helper: يرجع اسم التاجر الصحيح
+   */
+  private getOwnerName(merchantInfo: SallaMerchantInfo): string {
+    return merchantInfo.ownerName || merchantInfo.name || merchantInfo.username || 'تاجر';
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔄 Token Refresh
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async refreshAccessToken(refreshToken: string): Promise<SallaTokenResponse> {
+    try {
+      const response = await firstValueFrom(
+        this.httpService.post<SallaTokenResponse>(
+          this.sallaTokenUrl,
+          new URLSearchParams({
+            grant_type: 'refresh_token',
+            client_id: this.clientId,
+            client_secret: this.clientSecret,
+            refresh_token: refreshToken,
+          }).toString(),
+          {
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+          },
+        ),
+      );
+
+      this.logger.log('Access token refreshed successfully');
+      return response.data;
+    } catch (error: any) {
+      this.logger.error('Failed to refresh token', error.message);
+      throw new BadRequestException('Failed to refresh access token');
+    }
+  }
+
+  public calculateTokenExpiry(expiresIn: number): Date {
+    return new Date(Date.now() + expiresIn * 1000);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔌 Easy Mode - Webhook Handlers
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * ✅ معالجة app.store.authorize من webhook سلة
+   * ✅ FIX: إذا التاجر موجود → نستخدم tenant-ه الحالي بدل إنشاء جديد
+   */
+  async handleAppStoreAuthorize(
+    merchantId: number,
+    data: SallaAppAuthorizeData,
+    createdAt: string,
+  ): Promise<Store> {
+    this.logger.log(`🚀 App Store authorize for merchant ${merchantId}`, { createdAt });
+
+    const merchantInfo = await this.fetchMerchantInfo(data.access_token);
+    let store = await this.findStoreBySallaMerchantId(merchantId);
+    const expiresIn = data.expires || 3600;
+
+    if (store) {
+      // متجر موجود (نفس merchantId) — تحديث التوكنات
+      if (!store.tenantId) {
+        const tenantId = await this.resolveOrCreateTenant(merchantInfo);
+        store.tenantId = tenantId;
+      }
+      
+      // 🔐 تشفير التوكنات
+      store.accessToken = encrypt(data.access_token) ?? undefined;
+      store.refreshToken = encrypt(data.refresh_token) ?? undefined;
+      store.tokenExpiresAt = this.calculateTokenExpiry(expiresIn);
+      store.lastTokenRefreshAt = new Date();
+      store.status = StoreStatus.ACTIVE;
+      store.consecutiveErrors = 0;
+      store.lastError = undefined;
+
+      // بيانات المتجر
+      store.sallaStoreName = merchantInfo.name || store.sallaStoreName;
+      store.sallaEmail = merchantInfo.email || store.sallaEmail;
+      store.sallaMobile = merchantInfo.mobile || store.sallaMobile;
+      store.sallaDomain = merchantInfo.domain || store.sallaDomain;
+      store.sallaAvatar = merchantInfo.avatar || store.sallaAvatar;
+      store.sallaPlan = merchantInfo.plan || store.sallaPlan;
+
+      // ✅ بيانات المالك الشخصية
+      if (merchantInfo.ownerEmail) store.sallaOwnerEmail = merchantInfo.ownerEmail;
+      if (merchantInfo.ownerMobile) store.sallaOwnerMobile = merchantInfo.ownerMobile;
+      if (merchantInfo.ownerName) store.sallaOwnerName = merchantInfo.ownerName;
+      
+      this.logger.log(`📦 Updated store for merchant ${merchantId}`);
+    } else {
+      // ✅ FIX: متجر جديد — نتحقق هل التاجر موجود أولاً
+      const tenantId = await this.resolveOrCreateTenant(merchantInfo);
+
+      store = this.storeRepository.create({
+        tenantId,
+        name: merchantInfo.name || merchantInfo.username || `متجر سلة`,
+        platform: StorePlatform.SALLA,
+        status: StoreStatus.ACTIVE,
+        sallaMerchantId: merchantId,
+        // 🔐 تشفير التوكنات
+        accessToken: encrypt(data.access_token) ?? undefined,
+        refreshToken: encrypt(data.refresh_token) ?? undefined,
+        tokenExpiresAt: this.calculateTokenExpiry(expiresIn),
+        // بيانات المتجر
+        sallaStoreName: merchantInfo.name,
+        sallaEmail: merchantInfo.email,
+        sallaMobile: merchantInfo.mobile,
+        sallaDomain: merchantInfo.domain,
+        sallaAvatar: merchantInfo.avatar,
+        sallaPlan: merchantInfo.plan,
+        // ✅ بيانات المالك الشخصية
+        sallaOwnerEmail: merchantInfo.ownerEmail,
+        sallaOwnerMobile: merchantInfo.ownerMobile,
+        sallaOwnerName: merchantInfo.ownerName,
+        lastSyncedAt: new Date(),
+        settings: {},
+        subscribedEvents: [],
+      });
+
+      this.logger.log(`🆕 Created new store for merchant ${merchantId} → tenant ${tenantId}`);
+    }
 
     const savedStore = await this.storeRepository.save(store);
 
-    this.eventEmitter.emit('store.connected', {
-      storeId: savedStore.id,
-      tenantId,
-      platform: StorePlatform.SALLA,
-      merchantId: merchantInfo.id,
-    });
+    // 👤 إنشاء/تحديث المستخدم + إرسال بيانات الدخول
+    // ✅ FIX PERF: يُنفَّذ بشكل غير متزامن بعد الرد على سلة فوراً
+    // ✅ FIX EMAIL: يستخدم إيميل المالك الشخصي (وليس إيميل المتجر)
+    const ownerEmail = this.getOwnerEmail(merchantInfo);
+    const ownerMobile = this.getOwnerMobile(merchantInfo);
+    const ownerName = this.getOwnerName(merchantInfo);
 
-    this.logger.log(`✅ Salla store connected: ${savedStore.name}`, {
-      storeId: savedStore.id,
-      tenantId,
-      merchantId: merchantInfo.id,
+    setImmediate(async () => {
+      try {
+        const result = await this.autoRegistrationService.handleAppInstallation(
+          {
+            merchantId,
+            email: ownerEmail,           // ✅ إيميل المالك الشخصي
+            mobile: ownerMobile,         // ✅ جوال المالك الشخصي
+            name: ownerName,             // ✅ اسم المالك الشخصي
+            storeName: merchantInfo.name,
+            avatar: merchantInfo.avatar,
+            platform: 'salla',
+          },
+          savedStore,
+        );
+
+        this.logger.log(`✅ Auto-registration completed`, {
+          merchantId,
+          userId: result.userId,
+          isNewUser: result.isNewUser,
+          ownerEmail,
+        });
+      } catch (error: any) {
+        this.logger.error(`❌ Auto-registration failed: ${error.message}`, {
+          merchantId,
+          ownerEmail,
+          storeEmail: merchantInfo.email,
+        });
+      }
     });
 
     return savedStore;
   }
 
-  private async updateSallaStoreConnection(
-    store: Store,
-    tokens: ConnectSallaStoreData['tokens'],
-    merchantInfo: SallaMerchantInfo,
-  ): Promise<Store> {
-    store.accessToken     = encrypt(tokens.accessToken)  ?? undefined;
-    store.refreshToken    = encrypt(tokens.refreshToken) ?? undefined;
-    store.tokenExpiresAt  = tokens.expiresAt;
-    store.status          = StoreStatus.ACTIVE;
-    store.lastSyncedAt    = new Date();
-    store.consecutiveErrors = 0;
-    store.lastError       = undefined;
-    store.sallaStoreName  = merchantInfo.name;
-    store.sallaEmail      = merchantInfo.email;
-    store.sallaMobile     = merchantInfo.mobile;
-    store.sallaDomain     = merchantInfo.domain;
-    store.sallaAvatar     = merchantInfo.avatar;
-    store.sallaPlan       = merchantInfo.plan;
+  /**
+   * ✅ معالجة app.uninstalled
+   */
+  async handleAppUninstalled(merchantId: number): Promise<void> {
+    this.logger.log(`App uninstalled for merchant ${merchantId}`);
+    const store = await this.findStoreBySallaMerchantId(merchantId);
+    if (store) {
+      store.status = StoreStatus.UNINSTALLED;
+      store.accessToken = undefined;
+      store.refreshToken = undefined;
+      store.tokenExpiresAt = undefined;
+      await this.storeRepository.save(store);
+      this.logger.log(`Store uninstalled for merchant ${merchantId}`);
+    }
+  }
 
-    // ✅ بيانات المالك الشخصية
-    if (merchantInfo.ownerEmail) store.sallaOwnerEmail = merchantInfo.ownerEmail;
-    if (merchantInfo.ownerMobile) store.sallaOwnerMobile = merchantInfo.ownerMobile;
-    if (merchantInfo.ownerName) store.sallaOwnerName = merchantInfo.ownerName;
-
+  /**
+   * ✅ ربط متجر بـ tenant
+   */
+  async linkStoreToTenant(storeId: string, tenantId: string): Promise<Store> {
+    const store = await this.storeRepository.findOne({ where: { id: storeId } });
+    if (!store) {
+      throw new BadRequestException('Store not found');
+    }
+    store.tenantId = tenantId;
+    this.logger.log(`Linked store ${storeId} to tenant ${tenantId}`);
     return this.storeRepository.save(store);
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // 🔍 البحث
-  // ═══════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ✅ FIX: البحث عن tenant موجود أو إنشاء جديد
+  //
+  // المنطق:
+  // 1. البحث عن المستخدم بالإيميل
+  // 2. إذا موجود وعنده tenantId → نستخدمه (المتجر الجديد يُربط على نفس الحساب)
+  // 3. إذا جديد → ننشئ tenant جديد
+  // ═══════════════════════════════════════════════════════════════════════════════
 
   /**
-   * البحث عن متجر سلة بـ merchantId
-   * يستخدم Raw SQL لتجاوز مشاكل TypeORM مع bigint
+   * Helper method to update an existing Salla store with new tokens and info
+   * Used both in normal update path and duplicate key retry path
    */
-  async findByMerchantId(merchantId: number): Promise<Store | null> {
-    this.logger.log(`🔍 findByMerchantId(${merchantId})`);
+  private updateSallaStoreFields(
+    store: Store,
+    tokens: SallaTokenResponse,
+    merchantInfo: SallaMerchantInfo,
+  ): void {
+    store.accessToken = encrypt(tokens.access_token) ?? undefined;
+    store.refreshToken = encrypt(tokens.refresh_token) ?? undefined;
+    store.tokenExpiresAt = this.calculateTokenExpiry(tokens.expires_in);
+    store.lastTokenRefreshAt = new Date();
+    store.status = StoreStatus.ACTIVE;
+    store.consecutiveErrors = 0;
+    store.lastError = undefined;
 
-    const rows: Array<{ id: string; deleted_at: Date | null; tenant_id: string | null; status: string }> =
-      await this.storeRepository.manager.query(
-        `SELECT id, deleted_at, tenant_id, status FROM stores WHERE salla_merchant_id = $1 LIMIT 1`,
-        [merchantId],
-      );
+    // بيانات المتجر (من store/info)
+    store.sallaStoreName = merchantInfo.name || store.sallaStoreName;
+    store.sallaEmail = merchantInfo.email || store.sallaEmail;
+    store.sallaMobile = merchantInfo.mobile || store.sallaMobile;
+    store.sallaDomain = merchantInfo.domain || store.sallaDomain;
+    store.sallaAvatar = merchantInfo.avatar || store.sallaAvatar;
+    store.sallaPlan = merchantInfo.plan || store.sallaPlan;
 
-    if (!rows || rows.length === 0) {
-      this.logger.warn(`❌ Merchant ${merchantId}: NOT in stores table`);
-
-      try {
-        const recoveredStore = await this.autoRecoverStoreForMerchant(merchantId);
-        if (recoveredStore) return recoveredStore;
-      } catch (err) {
-        this.logger.error(`Auto-recovery failed for merchant ${merchantId}`, {
-          error: err instanceof Error ? err.message : 'Unknown',
-        });
-      }
-
-      return null;
+    // ✅ بيانات المالك الشخصية (من user/info)
+    // ⚠️ FIX: لا نستبدل بيانات المالك الأصلي عند إعادة التثبيت!
+    // إذا شخص ثاني (مو المالك) أعاد تثبيت التطبيق من سلة،
+    // سلة ترجع بيانات المُثبِّت مو المالك — لازم نحمي المالك الأصلي
+    if (merchantInfo.ownerEmail && !store.sallaOwnerEmail) {
+      store.sallaOwnerEmail = merchantInfo.ownerEmail;
     }
-
-    const row = rows[0];
-    this.logger.log(`🔎 Raw SQL found: id=${row.id}, status=${row.status}, tenant=${row.tenant_id || 'NULL'}, deleted=${row.deleted_at || 'NO'}`);
-
-    if (row.deleted_at) {
-      this.logger.warn(`🔄 RECOVERY: Store ${row.id} was soft-deleted — restoring for webhooks`);
-      await this.storeRepository.manager.query(
-        `UPDATE stores SET deleted_at = NULL, status = 'active' WHERE id = $1`,
-        [row.id],
-      );
+    if (merchantInfo.ownerMobile && !store.sallaOwnerMobile) {
+      store.sallaOwnerMobile = merchantInfo.ownerMobile;
     }
-
-    const store = await this.storeRepository.findOne({ where: { id: row.id } });
-
-    if (!store) {
-      this.logger.error(`🚨 CRITICAL: Raw SQL found store ${row.id} but TypeORM findOne returned null!`);
-    }
-
-    return store ?? null;
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // 🔄 مزامنة المتجر
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  async syncSallaStore(store: Store, accessToken: string): Promise<void> {
-    this.logger.debug(`Syncing Salla store: ${store.sallaMerchantId}`);
-
-    try {
-      // Step 1: جلب معلومات المتجر
-      const response = await this.sallaApiService.getStoreInfo(accessToken);
-      const merchantInfo = response.data;
-
-      store.sallaStoreName = merchantInfo.name;
-      store.sallaEmail     = merchantInfo.email;
-      store.sallaMobile    = merchantInfo.mobile;
-      store.sallaDomain    = merchantInfo.domain;
-      store.sallaAvatar    = merchantInfo.avatar;
-      store.sallaPlan      = merchantInfo.plan;
-      store.name           = merchantInfo.name || store.name;
-
-      // Step 2: جلب الإحصائيات وتخزينها في DB
-      // GET /stores يقرأ من DB — لا API calls عند تحميل الداشبورد
-      const [ordersRes, productsRes, customersRes] = await Promise.allSettled([
-        this.sallaApiService.getOrders(accessToken,    { page: 1, perPage: 1 }),
-        this.sallaApiService.getProducts(accessToken,  { page: 1, perPage: 1 }),
-        this.sallaApiService.getCustomers(accessToken, { page: 1, perPage: 1 }),
-      ]);
-
-      if (ordersRes.status === 'fulfilled') {
-        const total = ordersRes.value.pagination?.total;
-        if (typeof total === 'number') store.sallaOrdersCount = total;
-        else this.logger.warn(`⚠️ Salla orders missing pagination.total for store ${store.id}`);
-      } else {
-        this.logger.warn(`⚠️ Failed to fetch Salla orders count: ${ordersRes.reason?.message}`);
-      }
-
-      if (productsRes.status === 'fulfilled') {
-        const total = productsRes.value.pagination?.total;
-        if (typeof total === 'number') store.sallaProductsCount = total;
-        else this.logger.warn(`⚠️ Salla products missing pagination.total for store ${store.id}`);
-      } else {
-        this.logger.warn(`⚠️ Failed to fetch Salla products count: ${productsRes.reason?.message}`);
-      }
-
-      if (customersRes.status === 'fulfilled') {
-        const total = customersRes.value.pagination?.total;
-        if (typeof total === 'number') store.sallaCustomersCount = total;
-        else this.logger.warn(`⚠️ Salla customers missing pagination.total for store ${store.id}`);
-      } else {
-        this.logger.warn(`⚠️ Failed to fetch Salla customers count: ${customersRes.reason?.message}`);
-      }
-
-      store.sallaLastSyncAt = new Date();
-
-      this.logger.log(`✅ Salla store synced: ${merchantInfo.name}`, {
-        storeId:   store.id,
-        orders:    store.sallaOrdersCount,
-        products:  store.sallaProductsCount,
-        customers: store.sallaCustomersCount,
-      });
-
-    } catch (error: any) {
-      const status = error?.status || error?.response?.status;
-
-      if (status === 401 || status === 403) {
-        this.logger.error(`❌ Salla 401 — token invalid for store ${store.id}`, {
-          storeName:  store.name || store.sallaStoreName,
-          merchantId: store.sallaMerchantId,
-          hint: 'Store needs OAuth re-authorization from Salla dashboard',
-        });
-        throw Object.assign(
-          new Error('Salla token expired or revoked — re-authorization required'),
-          { status },
-        );
-      }
-
-      this.logger.error(`Failed to sync Salla store ${store.id}`, error);
-      throw error;
+    if (merchantInfo.ownerName && !store.sallaOwnerName) {
+      store.sallaOwnerName = merchantInfo.ownerName;
     }
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // ❌ إلغاء التثبيت
-  // ═══════════════════════════════════════════════════════════════════════════
+  private async resolveOrCreateTenant(merchantInfo: SallaMerchantInfo): Promise<string> {
+    const ownerEmail = this.getOwnerEmail(merchantInfo);
+    const ownerMobile = this.getOwnerMobile(merchantInfo);
 
-  async handleAppUninstalled(merchantId: number): Promise<void> {
-    const store = await this.findByMerchantId(merchantId);
+    // ════════════════════════════════════════════════════════════════════
+    // ✅ FIX CRITICAL: البحث بـ merchantId أولاً (وليس بالإيميل!)
+    //
+    // المشكلة القديمة: البحث بالإيميل كان يربط متاجر تجار مختلفين
+    //   على نفس الـ tenant إذا صدفة يستخدمون نفس الإيميل!
+    //
+    // الحل: كل sallaMerchantId في سلة = tenant مستقل في رفيق
+    //   حتى لو نفس الشخص يملك عدة متاجر → كل واحد له tenant مستقل
+    // ════════════════════════════════════════════════════════════════════
 
-    if (!store) {
-      this.logger.warn(`Store not found for Salla uninstall event: ${merchantId}`);
-      return;
+    // 🔍 الخطوة 1: هل هذا المتجر موجود مسبقاً في قاعدة بياناتنا؟
+    const existingStore = await this.findStoreBySallaMerchantId(merchantInfo.id);
+    if (existingStore?.tenantId) {
+      this.logger.log(
+        `🔗 Existing store found for merchant ${merchantInfo.id} → reusing tenant ${existingStore.tenantId}`,
+      );
+      return existingStore.tenantId;
     }
 
-    store.status       = StoreStatus.UNINSTALLED;
-    store.accessToken  = undefined;
-    store.refreshToken = undefined;
-    store.tokenExpiresAt = undefined;
-
-    await this.storeRepository.save(store);
-
-    this.eventEmitter.emit('store.uninstalled', {
-      storeId:    store.id,
-      tenantId:   store.tenantId,
-      merchantId,
+    // 🆕 الخطوة 2: متجر جديد تماماً → إنشاء tenant جديد دائماً
+    // ❌ لا نبحث بالإيميل! تاجرين مختلفين بنفس الإيميل = tenants منفصلة
+    const tenant = await this.tenantsService.createTenantFromSalla({
+      merchantId: merchantInfo.id,
+      name: merchantInfo.name || merchantInfo.username || 'متجر سلة',
+      email: ownerEmail,
+      phone: ownerMobile,
+      logo: merchantInfo.avatar,
+      website: merchantInfo.domain,
     });
 
-    this.logger.log(`✅ Salla store uninstalled: merchant ${merchantId}`);
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // 🔄 استرجاع تلقائي للمتاجر المحذوفة
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  /**
-   * عندما يكون المتجر محذوف hard-delete (قديم) وسلة ترسل webhooks:
-   * نبحث عن آخر tenantId من webhook_events ونُعيد ربط المتجر
-   */
-  private async autoRecoverStoreForMerchant(merchantId: number): Promise<Store | null> {
-    this.logger.warn(`🔄 AUTO-RECOVERY: Attempting to recover Salla store for merchant ${merchantId}`);
-
-    let pastEvents: Array<{ tenant_id: string }> = await this.storeRepository.manager.query(
-      `SELECT tenant_id FROM webhook_events
-       WHERE source = 'salla' AND tenant_id IS NOT NULL
-       AND payload->>'_merchant' = $1
-       GROUP BY tenant_id
-       ORDER BY MAX(created_at) DESC LIMIT 5`,
-      [String(merchantId)],
-    );
-
-    if (!pastEvents || pastEvents.length === 0) {
-      this.logger.warn(`🔄 AUTO-RECOVERY: No merchant-specific history. Trying general salla lookup...`);
-      pastEvents = await this.storeRepository.manager.query(
-        `SELECT tenant_id FROM webhook_events
-         WHERE source = 'salla' AND tenant_id IS NOT NULL
-         GROUP BY tenant_id
-         ORDER BY MAX(created_at) DESC LIMIT 5`,
-      );
-    }
-
-    if (!pastEvents || pastEvents.length === 0) {
-      this.logger.warn(`🔄 AUTO-RECOVERY: No past webhook_events — cannot recover merchant ${merchantId}`);
-      return null;
-    }
-
-    const uniqueTenants = [...new Set(pastEvents.map(e => e.tenant_id))];
-
-    if (uniqueTenants.length > 1) {
-      this.logger.warn(
-        `🔄 AUTO-RECOVERY: Multiple tenants (${uniqueTenants.length}) — cannot auto-determine owner for merchant ${merchantId}`,
-      );
-      return null;
-    }
-
-    const tenantId = uniqueTenants[0];
-
-    const tenantExists: Array<{ id: string }> = await this.storeRepository.manager.query(
-      `SELECT id FROM tenants WHERE id = $1 AND deleted_at IS NULL LIMIT 1`,
-      [tenantId],
-    );
-
-    if (!tenantExists || tenantExists.length === 0) {
-      this.logger.warn(`🔄 AUTO-RECOVERY: Tenant ${tenantId} not found or deleted`);
-      return null;
-    }
-
-    const existingSallaStore: Array<{ id: string }> = await this.storeRepository.manager.query(
-      `SELECT id FROM stores WHERE tenant_id = $1 AND platform = 'salla' AND deleted_at IS NULL LIMIT 1`,
-      [tenantId],
-    );
-
-    if (existingSallaStore && existingSallaStore.length > 0) {
-      const existingStoreId = existingSallaStore[0].id;
-      this.logger.warn(
-        `🔄 AUTO-RECOVERY: Linking merchant ${merchantId} → existing store ${existingStoreId}`,
-      );
-
-      await this.storeRepository.manager.query(
-        `UPDATE stores SET salla_merchant_id = $1 WHERE id = $2`,
-        [merchantId, existingStoreId],
-      );
-
-      const store = await this.storeRepository.findOne({ where: { id: existingStoreId } });
-      if (store) {
-        this.logger.warn(`✅ AUTO-RECOVERY SUCCESS: merchant ${merchantId} → store ${existingStoreId}`);
-        return store;
-      }
-      return null;
-    }
-
-    const newStore = this.storeRepository.create({
-      name: `متجر سلة #${merchantId} (مسترجع تلقائياً)`,
-      platform: StorePlatform.SALLA,
-      status: StoreStatus.PENDING,
-      sallaMerchantId: merchantId,
-      tenantId,
-    });
-
-    const saved = await this.storeRepository.save(newStore);
-
-    this.logger.warn(
-      `✅ AUTO-RECOVERY SUCCESS: Created placeholder store ${saved.id} for merchant ${merchantId} → tenant ${tenantId}`,
-    );
-
-    this.eventEmitter.emit('store.auto_recovered', {
-      storeId:    saved.id,
-      tenantId,
-      merchantId,
-      message: 'Salla store was hard-deleted and auto-recovered from webhook history',
-    });
-
-    return saved;
+    this.logger.log(`🆕 Created new tenant ${tenant.id} for merchant ${merchantInfo.id} (ownerEmail: ${ownerEmail})`);
+    return tenant.id;
   }
 }
