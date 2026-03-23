@@ -86,6 +86,27 @@ export class SallaWebhookProcessor extends WorkerHost {
       this.eventEmitter.emit(`salla.${eventType}`, { webhookEventId, tenantId, storeId, data, result });
       this.eventEmitter.emit('webhook.processed', { webhookEventId, eventType, tenantId, storeId, data });
 
+      // ✅ FIX: Communication webhooks → تنبيهات الموظفين
+      // سلة ترسل communication.whatsapp.send بنوع order.notification.create
+      // لكن تنبيهات الموظفين تبحث عن order.created
+      // هنا نربط بينهم — نأخذ الـ businessType من result ونحوله لحدث قياسي
+      if (eventType.startsWith('communication.') && result && typeof result === 'object') {
+        const businessType = (result as Record<string, unknown>).businessType as string | undefined;
+        if (businessType && tenantId) {
+          const mappedEvent = this.mapCommunicationToEvent(businessType);
+          if (mappedEvent) {
+            this.eventEmitter.emit('webhook.processed', {
+              webhookEventId,
+              eventType: mappedEvent,
+              tenantId,
+              storeId,
+              data,
+            });
+            this.logger.debug(`🔔 Also emitted employee notification event: ${mappedEvent} (from ${businessType})`);
+          }
+        }
+      }
+
       this.logger.log(`✅ Webhook processed: ${eventType} in ${dur}ms`, { jobId: job.id, webhookEventId });
 
     } catch (error) {
@@ -146,6 +167,22 @@ export class SallaWebhookProcessor extends WorkerHost {
       case SallaEventType.INVOICE_CREATED:       return this.miscHandler.handleInvoiceCreated(data, context);
       case SallaEventType.APP_INSTALLED:         return this.miscHandler.handleAppInstalled(data, context);
       case SallaEventType.APP_UNINSTALLED:       return this.miscHandler.handleAppUninstalled(data, context);
+
+      // ✅ Subscription events — ربط باقة التاجر تلقائياً
+      case SallaEventType.APP_TRIAL_STARTED:
+      case SallaEventType.APP_TRIAL_EXPIRED:
+      case SallaEventType.APP_SUBSCRIPTION_STARTED:
+      case SallaEventType.APP_SUBSCRIPTION_RENEWED:
+      case SallaEventType.APP_SUBSCRIPTION_CANCELLED:
+      case SallaEventType.APP_SUBSCRIPTION_EXPIRED:
+      case SallaEventType.SUBSCRIPTION_ACTIVE:
+      case SallaEventType.SUBSCRIPTION_WARNING:
+      case SallaEventType.SUBSCRIPTION_SUSPENDED:
+      case SallaEventType.SUBSCRIPTION_EXPIRED:
+      case SallaEventType.SUBSCRIPTION_RENEW:
+      case SallaEventType.SUBSCRIPTION_UPGRADE:
+      case SallaEventType.SUBSCRIPTION_REFUNDED:
+        return this.miscHandler.handleSubscriptionEvent(eventType, data, context);
 
       // Communication webhooks (Salla Communication App — relay only)
       case SallaEventType.COMMUNICATION_WHATSAPP_SEND:
@@ -266,6 +303,25 @@ export class SallaWebhookProcessor extends WorkerHost {
       entityType: entity?.type ?? null, entityId: entity?.id ?? null,
       customerId: customerId ?? null, isKnownType,
     };
+  }
+
+  // ─── Communication → Standard Event Mapping ───────────────────────────────
+  // يربط نوع الإشعار من سلة بالحدث القياسي لتنبيهات الموظفين
+
+  private mapCommunicationToEvent(businessType: string): string | null {
+    const map: Record<string, string> = {
+      'order.notification.create':   'order.created',
+      'order.status.confirmation':   'order.created',
+      'order.status.updated':        'order.status.updated',
+      'order.shipment.created':      'shipment.creating',
+      'order.invoice.issued':        'order.payment.updated',
+      'order.refund.processed':      'order.refunded',
+      'order.gift.placed':           'order.created',
+      'customer.cart.abandoned':     'abandoned.cart',
+      'customer.rating.request':     'review.added',
+      'product.availability.alert':  'product.updated',
+    };
+    return map[businessType] || null;
   }
 
   @OnWorkerEvent('failed')
