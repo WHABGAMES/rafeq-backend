@@ -663,17 +663,33 @@ export class ZidOAuthService {
   }
 
   private async resolveOrCreateTenant(storeInfo: ZidStoreInfo): Promise<string> {
-    if (storeInfo.email) {
-      const existingUser = await this.autoRegistrationService.findUserByEmail(storeInfo.email);
+    // ════════════════════════════════════════════════════════════════════
+    // ✅ FIX CRITICAL: البحث بـ zidStoreId أولاً (وليس بالإيميل!)
+    //
+    // المشكلة القديمة: البحث بالإيميل كان يربط متاجر زد لتجار مختلفين
+    //   على نفس الـ tenant إذا صدفة يستخدمون نفس الإيميل!
+    //
+    // الحل: كل zidStoreId = متجر فريد في زد = tenant فريد في رفيق
+    // ════════════════════════════════════════════════════════════════════
 
-      if (existingUser?.tenantId) {
+    // 🔍 الخطوة 1: هل هذا المتجر موجود مسبقاً في قاعدة بياناتنا؟
+    const zidStoreId = String(storeInfo.id).trim();
+    if (zidStoreId) {
+      const existingStore = await this.storeRepository.findOne({
+        where: { zidStoreId },
+        select: ['id', 'tenantId'],
+      });
+
+      if (existingStore?.tenantId) {
         this.logger.log(
-          `👤 Existing user found (${existingUser.id}) → reusing tenant ${existingUser.tenantId} for Zid store ${storeInfo.id}`,
+          `🔗 Existing store found for Zid store ${zidStoreId} → reusing tenant ${existingStore.tenantId}`,
         );
-        return existingUser.tenantId;
+        return existingStore.tenantId;
       }
     }
 
+    // 🆕 الخطوة 2: متجر جديد تماماً → إنشاء tenant جديد دائماً
+    // ❌ لا نبحث بالإيميل! تاجرين مختلفين بنفس الإيميل = tenants منفصلة
     const tenant = await this.tenantsService.createTenantFromSalla({
       merchantId: parseInt(storeInfo.id) || 0,
       name: storeInfo.name || 'متجر زد',
