@@ -12,7 +12,10 @@
 
 import { Injectable, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 import { SallaOrderHandler, SallaProcessorContext } from './salla-order.handler';
+import { Tenant, TenantStatus, SubscriptionPlan } from '@database/entities/tenant.entity';
 
 @Injectable()
 export class SallaMiscHandler {
@@ -21,6 +24,9 @@ export class SallaMiscHandler {
   constructor(
     private readonly eventEmitter: EventEmitter2,
     private readonly orderHandler: SallaOrderHandler,
+
+    @InjectRepository(Tenant)
+    private readonly tenantRepo: Repository<Tenant>,
   ) {}
 
   // ─── Customer Events ─────────────────────────────────────────────────────────
@@ -239,5 +245,108 @@ export class SallaMiscHandler {
       raw: data,
     });
     return { handled: true, action: 'app_uninstalled', merchant: data.merchant };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ✅ Subscription Events — ربط باقة التاجر تلقائياً
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  async handleSubscriptionEvent(
+    eventType: string,
+    data: Record<string, unknown>,
+    context: SallaProcessorContext,
+  ): Promise<Record<string, unknown>> {
+    const planName = (data.plan_name as string) || (data.plan_type as string) || '';
+    const startDate = data.start_date as string | undefined;
+    const endDate = data.end_date as string | undefined;
+
+    this.logger.log(`📦 Processing ${eventType}`, {
+      tenantId: context.tenantId,
+      planName,
+      startDate,
+      endDate,
+    });
+
+    if (!context.tenantId) {
+      this.logger.warn(`⚠️ ${eventType}: no tenantId — cannot update subscription`);
+      return { handled: false, reason: 'no_tenant_id', eventType };
+    }
+
+    try {
+      const plan = this.mapSallaPlanToSubscription(planName);
+      const endsAt = endDate ? new Date(endDate) : undefined;
+      const isTrial = eventType.includes('trial');
+      const isCancelled = eventType.includes('cancelled') || eventType.includes('expired');
+
+      if (isCancelled) {
+        // إلغاء أو انتهاء الاشتراك → نرجع لـ FREE
+        await this.tenantRepo.update(context.tenantId, {
+          subscriptionPlan: SubscriptionPlan.FREE,
+          status: TenantStatus.INACTIVE,
+        });
+        this.logger.log(`📦 Subscription cancelled/expired → FREE`, { tenantId: context.tenantId });
+      } else if (isTrial) {
+        // فترة تجريبية
+        await this.tenantRepo.update(context.tenantId, {
+          subscriptionPlan: plan,
+          status: TenantStatus.TRIAL,
+          trialEndsAt: endsAt || new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+        });
+        this.logger.log(`📦 Trial started → ${plan}`, { tenantId: context.tenantId, endsAt });
+      } else {
+        // اشتراك مدفوع
+        await this.tenantRepo.update(context.tenantId, {
+          subscriptionPlan: plan,
+          status: TenantStatus.ACTIVE,
+          subscriptionEndsAt: endsAt || undefined,
+        });
+        this.logger.log(`📦 Subscription active → ${plan}`, { tenantId: context.tenantId, endsAt });
+      }
+
+      this.eventEmitter.emit('subscription.updated', {
+        tenantId: context.tenantId,
+        storeId: context.storeId,
+        eventType,
+        plan,
+        planName,
+        isTrial,
+        isCancelled,
+        endsAt,
+      });
+
+      return { handled: true, action: `subscription_${eventType}`, plan, planName };
+    } catch (error: any) {
+      this.logger.error(`❌ Failed to update subscription: ${error.message}`, {
+        tenantId: context.tenantId,
+        eventType,
+      });
+      return { handled: false, error: error.message, eventType };
+    }
+  }
+
+  /**
+   * تحويل اسم الباقة من سلة لـ SubscriptionPlan
+   * سلة ترسل أسماء مثل: "أساسي", "Basic", "Pro", "Enterprise"
+   */
+  private mapSallaPlanToSubscription(planName: string): SubscriptionPlan {
+    const lower = (planName || '').toLowerCase().trim();
+
+    if (lower.includes('enterprise') || lower.includes('متقدم')) {
+      return SubscriptionPlan.ENTERPRISE;
+    }
+    if (lower.includes('pro') || lower.includes('احترافي') || lower.includes('محترف')) {
+      return SubscriptionPlan.PRO;
+    }
+    if (lower.includes('basic') || lower.includes('أساسي') || lower.includes('اساسي')) {
+      return SubscriptionPlan.BASIC;
+    }
+
+    // أي باقة غير معروفة → BASIC (أفضل من FREE للتاجر اللي دفع)
+    if (lower && lower !== 'free') {
+      this.logger.warn(`⚠️ Unknown plan name "${planName}" — defaulting to BASIC`);
+      return SubscriptionPlan.BASIC;
+    }
+
+    return SubscriptionPlan.FREE;
   }
 }
