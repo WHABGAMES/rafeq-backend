@@ -89,12 +89,30 @@ export class ContactsService {
       queryBuilder.andWhere('customer.channel = :channel', { channel: filters.channel });
     }
 
-    // Sorting
-    const sortColumn = `customer.${filters.sortBy || 'createdAt'}`;
+    // Sorting — map frontend field names to actual entity columns
+    const sortFieldMap: Record<string, string> = {
+      name: 'fullName',
+      fullName: 'fullName',
+      createdAt: 'createdAt',
+      totalOrders: 'totalOrders',
+      lastActivity: 'lastActivityAt',
+    };
+    const safeSortField = sortFieldMap[filters.sortBy || 'createdAt'] || 'createdAt';
+    const sortColumn = `customer.${safeSortField}`;
     queryBuilder.orderBy(sortColumn, filters.sortOrder?.toUpperCase() as 'ASC' | 'DESC' || 'DESC');
 
     // Get total count
     const total = await queryBuilder.getCount();
+
+    // ✅ Stats: count phones and emails (from ALL contacts, not just current page)
+    const stats = await this.customerRepository
+      .createQueryBuilder('c')
+      .select([
+        `COUNT(CASE WHEN c.phone IS NOT NULL AND c.phone != '' THEN 1 END) AS "phonesCount"`,
+        `COUNT(CASE WHEN c.email IS NOT NULL AND c.email != '' THEN 1 END) AS "emailsCount"`,
+      ])
+      .where('c.tenantId = :tenantId', { tenantId })
+      .getRawOne();
 
     // Get paginated results
     const contacts = await queryBuilder
@@ -109,6 +127,10 @@ export class ContactsService {
         limit,
         total,
         totalPages: Math.ceil(total / limit),
+      },
+      stats: {
+        phonesCount: parseInt(stats?.phonesCount || '0', 10),
+        emailsCount: parseInt(stats?.emailsCount || '0', 10),
       },
     };
   }
