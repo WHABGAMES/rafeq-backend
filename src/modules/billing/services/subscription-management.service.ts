@@ -411,7 +411,9 @@ export class SubscriptionManagementService {
         t.id,
         t.name,
         t.subscription_plan,
+        t.status AS tenant_status,
         t.subscription_ends_at,
+        t.trial_ends_at,
         COALESCE(s.created_at, t.created_at) AS subscribed_at,
         s.status AS sub_status,
         s.usage_stats,
@@ -488,14 +490,23 @@ export class SubscriptionManagementService {
     const items = rows.map((row: any) => {
       const usageStats = row.usage_stats || {};
       const resolvedPlan = this.mapTenantPlanToTier(row.subscription_plan || 'free');
+      const resolvedStatus = row.sub_status || row.tenant_status || (resolvedPlan !== PlanTier.NONE ? 'active' : 'none');
+
+      // ✅ FIX: تجريبي بدون باقة = أساسي على الأقل
+      const finalPlan = (resolvedStatus === 'trial' && resolvedPlan === PlanTier.NONE)
+        ? PlanTier.BASIC
+        : resolvedPlan;
       const endsAt = row.subscription_ends_at ? new Date(row.subscription_ends_at) : null;
+      const trialEndsAt = row.trial_ends_at ? new Date(row.trial_ends_at) : null;
+      // ✅ FIX: تجريبي يستخدم trial_ends_at إذا ما فيه subscription_ends_at
+      const effectiveEndsAt = endsAt || trialEndsAt;
       const messagesUsed = Number.isFinite(Number(usageStats.messagesUsed))
         ? Math.max(0, Number(usageStats.messagesUsed))
         : 0;
       const usageLimit = Number.isFinite(Number(usageStats.messagesLimit))
         ? Math.max(0, Number(usageStats.messagesLimit))
         : 0;
-      const messagesLimit = usageLimit > 0 ? usageLimit : PLAN_MESSAGE_LIMITS[resolvedPlan];
+      const messagesLimit = usageLimit > 0 ? usageLimit : PLAN_MESSAGE_LIMITS[finalPlan];
       const messagesRemaining = Math.max(0, messagesLimit - messagesUsed);
       const accountName = [row.first_name, row.last_name]
         .filter((v: unknown) => typeof v === 'string' && v.trim().length > 0)
@@ -506,8 +517,8 @@ export class SubscriptionManagementService {
         : {};
       const now = new Date();
       let daysRemaining: number | null = null;
-      if (endsAt) {
-        daysRemaining = Math.max(0, Math.ceil((endsAt.getTime() - now.getTime()) / 86400000));
+      if (effectiveEndsAt) {
+        daysRemaining = Math.max(0, Math.ceil((effectiveEndsAt.getTime() - now.getTime()) / 86400000));
       }
 
       return {
@@ -520,14 +531,15 @@ export class SubscriptionManagementService {
         accountStatus: row.user_status || '',
         accountsCount: Number.isFinite(Number(row.users_count)) ? Number(row.users_count) : 0,
         settingsCount: Object.keys(prefs).length,
-        plan: resolvedPlan,
-        status: row.sub_status || (resolvedPlan !== PlanTier.NONE ? 'active' : 'none'),
+        plan: finalPlan,
+        status: resolvedStatus,
         messagesUsed,
         messagesLimit,
         messagesRemaining,
         currentPeriodEnd: row.current_period_end || null,
         subscribedAt: row.subscribed_at || null,
         subscriptionEndsAt: row.subscription_ends_at || null,
+        trialEndsAt: row.trial_ends_at || null,
         daysRemaining,
       };
     });
