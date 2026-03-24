@@ -195,6 +195,11 @@ export class UpdateContactDto {
   @IsOptional()
   @IsString()
   notes?: string;
+
+  @ApiPropertyOptional({ description: 'مستوى العميل', enum: ['normal', 'silver', 'gold', 'platinum'] })
+  @IsOptional()
+  @IsString()
+  vipStatus?: string;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
