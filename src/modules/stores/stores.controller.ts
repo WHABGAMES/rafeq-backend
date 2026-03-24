@@ -57,7 +57,7 @@ interface StoreResponse {
   platformName?: string;  // 🆕 اسم المنصة (للمتاجر الأخرى)
   status: 'connected' | 'disconnected' | 'pending' | 'error';
   subscriptionPlan: 'free' | 'basic' | 'pro' | 'enterprise';
-  subscriptionStatus: 'none' | 'active' | 'expired';
+  subscriptionStatus: 'none' | 'active' | 'expired' | 'trial';
   subscriptionEndsAt: string | null;
   url: string | null;
   lastSync: string | null;
