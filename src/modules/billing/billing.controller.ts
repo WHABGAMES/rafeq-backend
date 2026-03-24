@@ -43,6 +43,11 @@ import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
 // Services
 import { BillingService } from './billing.service';
 
+// ✅ Tenant fallback for trial subscriptions
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { Tenant, SubscriptionPlan as TenantPlan } from '@database/entities/tenant.entity';
+
 // DTOs
 import {
   CreateSubscriptionDto,
@@ -72,7 +77,12 @@ interface AuthenticatedRequest {
 @UseGuards(JwtAuthGuard)
 @ApiBearerAuth()
 export class BillingController {
-  constructor(private readonly billingService: BillingService) {}
+  constructor(
+    private readonly billingService: BillingService,
+
+    @InjectRepository(Tenant)
+    private readonly tenantRepo: Repository<Tenant>,
+  ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════════
   // 📋 SUBSCRIPTION ENDPOINTS
@@ -100,6 +110,57 @@ export class BillingController {
     );
 
     if (!subscription) {
+      // ✅ FIX: Fallback — قراءة بيانات الباقة من tenant مباشرة
+      // سلة ترسل trial/subscription عبر webhooks → تُحفظ في tenants table
+      // لكن ما تنشئ سجل في subscriptions table
+      const tenant = await this.tenantRepo.findOne({
+        where: { id: req.user.tenantId },
+        select: ['id', 'subscriptionPlan', 'status', 'subscriptionEndsAt', 'trialEndsAt', 'monthlyMessageLimit'],
+      });
+
+      if (tenant && tenant.subscriptionPlan && tenant.subscriptionPlan !== TenantPlan.FREE) {
+        const isTrial = tenant.status === 'trial';
+        const endsAt = tenant.trialEndsAt || tenant.subscriptionEndsAt;
+        const planSlugMap: Record<string, string> = {
+          basic: 'basic',
+          pro: 'professional',
+          enterprise: 'enterprise',
+        };
+        let usage = await this.billingService.getUsageStats(req.user.tenantId);
+
+        // ✅ FIX: getUsageStats returns empty limits for trial (no subscription row)
+        // Build proper limits from tenant's plan
+        const planLimits: Record<string, Record<string, number>> = {
+          basic: { messagesUsed: 1000, storesCount: 1, usersCount: 5 },
+          pro: { messagesUsed: 10000, storesCount: 3, usersCount: 10 },
+          enterprise: { messagesUsed: 100000, storesCount: 10, usersCount: 50 },
+        };
+        const tenantLimits = planLimits[tenant.subscriptionPlan] || planLimits.basic;
+        if (!usage.limits || Object.keys(usage.limits).length === 0) {
+          usage = { ...usage, limits: tenantLimits };
+        }
+
+        return {
+          hasSubscription: true,
+          subscription: {
+            id: `tenant-${tenant.id}`,
+            status: isTrial ? 'trialing' : 'active',
+            planId: null,
+            planName: planSlugMap[tenant.subscriptionPlan] || tenant.subscriptionPlan,
+            billingInterval: 'month',
+            startedAt: null,
+            currentPeriodStart: null,
+            currentPeriodEnd: endsAt ? endsAt.toISOString() : null,
+            trialEndsAt: tenant.trialEndsAt ? tenant.trialEndsAt.toISOString() : null,
+            autoRenew: true,
+            amount: null,
+            currency: 'SAR',
+            isTrial,
+          },
+          usage,
+        };
+      }
+
       return {
         hasSubscription: false,
         message: 'لا يوجد اشتراك فعال. يرجى اختيار خطة للبدء.',
