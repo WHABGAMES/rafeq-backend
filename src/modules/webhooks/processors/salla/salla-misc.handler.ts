@@ -273,10 +273,17 @@ export class SallaMiscHandler {
     }
 
     try {
-      const plan = this.mapSallaPlanToSubscription(planName);
+      let plan = this.mapSallaPlanToSubscription(planName);
       const endsAt = endDate ? new Date(endDate) : undefined;
       const isTrial = eventType.includes('trial');
       const isCancelled = eventType.includes('cancelled') || eventType.includes('expired');
+
+      // ✅ FIX: تجريبي دائماً يحصل على أساسي كحد أدنى
+      // سلة أحياناً ما ترسل plan_name مع app.trial.started
+      if (isTrial && !isCancelled && plan === SubscriptionPlan.FREE) {
+        plan = SubscriptionPlan.BASIC;
+        this.logger.log(`📦 Trial with empty plan — defaulting to BASIC`);
+      }
 
       if (isCancelled) {
         // إلغاء أو انتهاء الاشتراك → نرجع لـ FREE
