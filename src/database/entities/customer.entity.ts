@@ -322,6 +322,16 @@ export class Customer extends BaseEntity {
   name?: string;
 
   @Column({
+    name: 'vip_status',
+    type: 'varchar',
+    length: 20,
+    nullable: true,
+    default: 'normal',
+    comment: 'مستوى العميل: normal, silver, gold, platinum',
+  })
+  vipStatus?: string;
+
+  @Column({
     type: 'jsonb',
     nullable: true,
     default: {},
