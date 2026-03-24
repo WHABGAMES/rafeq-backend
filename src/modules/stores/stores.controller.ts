@@ -71,21 +71,36 @@ interface StoreResponse {
 
 interface TenantSubscriptionSnapshot {
   plan: 'free' | 'basic' | 'pro' | 'enterprise';
-  status: 'none' | 'active' | 'expired';
+  status: 'none' | 'active' | 'expired' | 'trial';
   endsAt: string | null;
 }
 
 function resolveTenantSubscriptionSnapshot(tenant?: Tenant): TenantSubscriptionSnapshot {
-  const plan = (tenant?.subscriptionPlan || TenantSubscriptionPlan.FREE) as TenantSubscriptionSnapshot['plan'];
+  let plan = (tenant?.subscriptionPlan || TenantSubscriptionPlan.FREE) as TenantSubscriptionSnapshot['plan'];
   const endsAt = tenant?.subscriptionEndsAt ? new Date(tenant.subscriptionEndsAt) : null;
-  const status: TenantSubscriptionSnapshot['status'] = plan === TenantSubscriptionPlan.FREE
-    ? 'none'
-    : (endsAt && endsAt.getTime() < Date.now() ? 'expired' : 'active');
+  const trialEndsAt = tenant?.trialEndsAt ? new Date(tenant.trialEndsAt) : null;
+
+  // ✅ FIX: حالة "تجريبي" تُفحص أولاً — قبل فحص الباقة
+  // لأن التجريبي قد يكون subscription_plan=free (إذا سلة ما أرسلت plan_name)
+  let status: TenantSubscriptionSnapshot['status'];
+  if (tenant?.status === 'trial') {
+    status = (trialEndsAt && trialEndsAt.getTime() < Date.now()) ? 'expired' : 'trial';
+    // ✅ تجريبي بدون باقة = أساسي على الأقل
+    if (plan === TenantSubscriptionPlan.FREE) {
+      plan = TenantSubscriptionPlan.BASIC as TenantSubscriptionSnapshot['plan'];
+    }
+  } else if (plan === TenantSubscriptionPlan.FREE) {
+    status = 'none';
+  } else if (endsAt && endsAt.getTime() < Date.now()) {
+    status = 'expired';
+  } else {
+    status = 'active';
+  }
 
   return {
     plan,
     status,
-    endsAt: endsAt ? endsAt.toISOString() : null,
+    endsAt: endsAt ? endsAt.toISOString() : (trialEndsAt ? trialEndsAt.toISOString() : null),
   };
 }
 
