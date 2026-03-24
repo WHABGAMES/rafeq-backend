@@ -258,10 +258,11 @@ export class ChannelsService {
   ): Promise<QRSessionResult> {
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // ✅ خطوة 1: تنظيف القنوات الميتة لنفس المتجر
-    // حذف أي قناة WhatsApp QR بحالة pending/disconnected/error
+    // ✅ خطوة 1: البحث عن قناة موجودة يمكن إعادة استخدامها
+    // ⚠️ FIX CRITICAL: لا نحذف القنوات! الحذف يسبب CASCADE DELETE للمحادثات
+    // بدلاً من ذلك، نعيد استخدام القناة القديمة (نحافظ على المحادثات)
     // ═══════════════════════════════════════════════════════════════════════════
-    const deadChannels = await this.channelRepository.find({
+    const existingChannels = await this.channelRepository.find({
       where: {
         storeId,
         type: ChannelType.WHATSAPP_QR,
@@ -272,19 +273,70 @@ export class ChannelsService {
           ChannelStatus.EXPIRED,
         ]),
       },
+      order: { createdAt: 'DESC' },
     });
 
-    if (deadChannels.length > 0) {
-      this.logger.log(`🧹 Cleaning ${deadChannels.length} dead QR channel(s) for store ${storeId}`);
-      for (const dead of deadChannels) {
+    // إذا فيه قناة قديمة → نعيد استخدامها (بدون حذف!)
+    if (existingChannels.length > 0) {
+      const reuseChannel = existingChannels[0]; // أحدث قناة
+      this.logger.log(`♻️ Reusing existing channel ${reuseChannel.id} for store ${storeId} (preserving conversations)`);
+
+      // حذف الجلسات القديمة من الملفات فقط (مو من الداتابيس)
+      try {
+        await this.whatsappBaileysService.deleteSession(reuseChannel.id);
+      } catch { /* ignore */ }
+
+      // إعادة تعيين القناة
+      reuseChannel.status = ChannelStatus.PENDING;
+      reuseChannel.sessionData = null as any;
+      reuseChannel.lastError = null as any;
+      reuseChannel.lastErrorAt = null as any;
+      reuseChannel.disconnectedAt = null as any;
+      reuseChannel.errorCount = 0;
+      await this.channelRepository.save(reuseChannel);
+
+      // حذف القنوات الزائدة (إذا فيه أكثر من واحدة) — فقط اللي ما عليها محادثات
+      if (existingChannels.length > 1) {
         try {
-          await this.whatsappCleanupListener.cleanupChannelData(dead.id);
-          await this.whatsappBaileysService.deleteSession(dead.id);
-        } catch {
-          // تجاهل أخطاء حذف الجلسات الميتة
+          for (let i = 1; i < existingChannels.length; i++) {
+            const extra = existingChannels[i];
+            const convCount = await this.channelRepository.manager.query(
+              `SELECT COUNT(*) as cnt FROM conversations WHERE channel_id = $1`,
+              [extra.id],
+            );
+            if (parseInt(convCount?.[0]?.cnt || '0', 10) === 0) {
+              this.logger.log(`🧹 Removing empty duplicate channel ${extra.id}`);
+              try { await this.whatsappBaileysService.deleteSession(extra.id); } catch { /* ignore */ }
+              await this.channelRepository.remove(extra);
+            } else {
+              this.logger.log(`⏭️ Keeping channel ${extra.id} (has ${convCount[0].cnt} conversations)`);
+            }
+          }
+        } catch (cleanupErr) {
+          this.logger.warn(`⚠️ Extras cleanup failed (non-blocking): ${cleanupErr instanceof Error ? cleanupErr.message : 'Unknown'}`);
         }
       }
-      await this.channelRepository.remove(deadChannels);
+
+      // إنشاء جلسة QR على القناة المعاد استخدامها
+      try {
+        const session = await this.whatsappBaileysService.initSession(reuseChannel.id);
+
+        await this.channelRepository.update(reuseChannel.id, {
+          status: session.status === 'connected' ? ChannelStatus.CONNECTED : ChannelStatus.PENDING,
+          sessionId: session.sessionId,
+        });
+
+        return session;
+      } catch (error: any) {
+        // ⚠️ فشل إنشاء الجلسة — نرجّع القناة لـ DISCONNECTED (لا نحذفها!)
+        this.logger.error(`Failed to init session on reused channel ${reuseChannel.id}: ${error.message}`);
+        await this.channelRepository.update(reuseChannel.id, {
+          status: ChannelStatus.DISCONNECTED,
+          lastError: error.message || 'فشل إنشاء جلسة QR',
+          lastErrorAt: new Date(),
+        });
+        throw new BadRequestException(error.message || 'فشل إنشاء جلسة واتساب — حاول مرة أخرى');
+      }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -398,7 +450,17 @@ export class ChannelsService {
           // تجاهل
         }
       }
-      await this.channelRepository.remove(duplicates);
+      // ✅ FIX: حذف فقط القنوات بدون محادثات
+      for (const dup of duplicates) {
+        const cc = await this.channelRepository.manager.query(
+          `SELECT COUNT(*) as cnt FROM conversations WHERE channel_id = $1`, [dup.id],
+        );
+        if (parseInt(cc?.[0]?.cnt || '0', 10) === 0) {
+          await this.channelRepository.remove(dup);
+        } else {
+          this.logger.warn(`⏭️ Keeping duplicate channel ${dup.id} — has ${cc[0].cnt} conversations`);
+        }
+      }
     }
   }
 
@@ -602,7 +664,21 @@ export class ChannelsService {
           // تجاهل
         }
       }
-      await this.channelRepository.remove(toRemove);
+      // ✅ FIX: حذف فقط القنوات بدون محادثات
+      const safeToRemove: typeof toRemove = [];
+      for (const ch of toRemove) {
+        const cc = await this.channelRepository.manager.query(
+          `SELECT COUNT(*) as cnt FROM conversations WHERE channel_id = $1`, [ch.id],
+        );
+        if (parseInt(cc?.[0]?.cnt || '0', 10) === 0) {
+          safeToRemove.push(ch);
+        } else {
+          this.logger.warn(`⏭️ Keeping channel ${ch.id} — has ${cc[0].cnt} conversations`);
+        }
+      }
+      if (safeToRemove.length > 0) {
+        await this.channelRepository.remove(safeToRemove);
+      }
     }
 
     this.logger.log(
