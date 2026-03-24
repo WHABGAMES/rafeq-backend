@@ -342,17 +342,10 @@ export class SallaStoreService {
     );
 
     if (!pastEvents || pastEvents.length === 0) {
-      this.logger.warn(`🔄 AUTO-RECOVERY: No merchant-specific history. Trying general salla lookup...`);
-      pastEvents = await this.storeRepository.manager.query(
-        `SELECT tenant_id FROM webhook_events
-         WHERE source = 'salla' AND tenant_id IS NOT NULL
-         GROUP BY tenant_id
-         ORDER BY MAX(created_at) DESC LIMIT 5`,
-      );
-    }
-
-    if (!pastEvents || pastEvents.length === 0) {
-      this.logger.warn(`🔄 AUTO-RECOVERY: No past webhook_events — cannot recover merchant ${merchantId}`);
+      // ✅ FIX CRITICAL: لا نبحث بشكل عام!
+      // البحث العام كان يربط متاجر جديدة على tenants قديمة بالغلط
+      // المتجر الجديد سيُنشأ بشكل صحيح عبر app.store.authorize
+      this.logger.warn(`🔄 AUTO-RECOVERY: No merchant-specific history — skipping (new merchant will be handled by app.store.authorize)`);
       return null;
     }
 
@@ -383,13 +376,31 @@ export class SallaStoreService {
     );
 
     if (existingSallaStore && existingSallaStore.length > 0) {
+      // ✅ FIX CRITICAL: لا نستبدل merchantId لمتجر موجود!
+      // هذا كان يسرق متجر تاجر ويعطيه لتاجر ثاني
       const existingStoreId = existingSallaStore[0].id;
+
+      // نتحقق: هل هذا المتجر نفسه (نفس merchantId) أو متجر مختلف؟
+      const storeCheck: Array<{ salla_merchant_id: number }> = await this.storeRepository.manager.query(
+        `SELECT salla_merchant_id FROM stores WHERE id = $1`,
+        [existingStoreId],
+      );
+
+      if (storeCheck?.[0]?.salla_merchant_id && storeCheck[0].salla_merchant_id !== merchantId) {
+        // متجر مختلف تماماً! لا نربطه
+        this.logger.warn(
+          `🔄 AUTO-RECOVERY: BLOCKED — store ${existingStoreId} belongs to merchant ${storeCheck[0].salla_merchant_id}, not ${merchantId}. Skipping.`,
+        );
+        return null;
+      }
+
+      // نفس المتجر (merchantId متطابق أو فارغ) — آمن للاسترجاع
       this.logger.warn(
-        `🔄 AUTO-RECOVERY: Linking merchant ${merchantId} → existing store ${existingStoreId}`,
+        `🔄 AUTO-RECOVERY: Restoring merchant ${merchantId} → existing store ${existingStoreId}`,
       );
 
       await this.storeRepository.manager.query(
-        `UPDATE stores SET salla_merchant_id = $1 WHERE id = $2`,
+        `UPDATE stores SET salla_merchant_id = $1 WHERE id = $2 AND (salla_merchant_id IS NULL OR salla_merchant_id = $1)`,
         [merchantId, existingStoreId],
       );
 
