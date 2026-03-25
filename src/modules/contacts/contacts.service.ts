@@ -701,7 +701,11 @@ export class ContactsService {
             if (mobile) {
               const cleaned = mobile.replace(/\D/g, '').replace(/^0+/, '');
               const code = mobileCode.replace(/\D/g, '').replace(/^\+/, '');
-              phone = cleaned.startsWith(code) ? cleaned : `${code}${cleaned}`;
+              if (cleaned && cleaned.length >= 4) {
+                phone = cleaned.startsWith(code) ? cleaned : `${code}${cleaned}`;
+              }
+              // ✅ FIX: تجاهل الأرقام القصيرة (رمز دولة فقط بدون رقم فعلي)
+              if (phone && phone.replace(/\D/g, '').length < 7) phone = undefined;
             }
 
             if (customer) {
