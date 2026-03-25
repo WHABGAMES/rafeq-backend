@@ -140,8 +140,31 @@ export class ContactsService {
       .take(limit)
       .getMany();
 
+    // ✅ جلب أرقام الطلبات لعملاء الصفحة الحالية فقط (أداء)
+    let orderRefsMap: Record<string, string[]> = {};
+    if (contacts.length > 0) {
+      const customerIds = contacts.map(c => c.id);
+      const orderRefs = await this.orderRepository
+        .createQueryBuilder('o')
+        .select(['o.customer_id AS "customerId"', 'o.reference_id AS "referenceId"'])
+        .where('o.customer_id IN (:...customerIds)', { customerIds })
+        .orderBy('o.created_at', 'DESC')
+        .getRawMany();
+      for (const ref of orderRefs) {
+        if (!ref.customerId || !ref.referenceId) continue;
+        if (!orderRefsMap[ref.customerId]) orderRefsMap[ref.customerId] = [];
+        orderRefsMap[ref.customerId].push(ref.referenceId);
+      }
+    }
+
+    // ✅ دمج أرقام الطلبات مع بيانات العملاء
+    const contactsWithRefs = contacts.map(c => ({
+      ...c,
+      orderRefs: orderRefsMap[c.id] || [],
+    }));
+
     return {
-      data: contacts,
+      data: contactsWithRefs,
       pagination: {
         page,
         limit,
@@ -725,6 +748,7 @@ export class ContactsService {
     try {
       this.logger.log(`📦 Syncing orders from Salla...`);
       const customerStats: Record<string, { orders: number; spent: number; lastOrderAt: string }> = {};
+      const collectedOrders: { sallaOrderId: string; referenceId: string; sallaCustId: string; totalAmount: number; status: string; orderDate: string }[] = [];
       let orderPage = 1;
       let hasMoreOrders = true;
 
@@ -763,6 +787,21 @@ export class ContactsService {
             if (typeof orderDate === 'string' && orderDate && orderDate > customerStats[custId].lastOrderAt) {
               customerStats[custId].lastOrderAt = orderDate;
             }
+
+            // ✅ حفظ سجل الطلب في DB (للعرض لاحقاً)
+            const sallaOrderId = String(order?.id || '');
+            const refId = order?.reference_id || order?.referenceId || sallaOrderId;
+            const statusSlug = order?.status?.slug || order?.status?.name || 'created';
+            if (sallaOrderId) {
+              collectedOrders.push({
+                sallaOrderId,
+                referenceId: refId,
+                sallaCustId: custId,
+                totalAmount: spent,
+                status: statusSlug,
+                orderDate,
+              });
+            }
           }
 
           if (orders.length < 50) hasMoreOrders = false;
@@ -793,6 +832,46 @@ export class ContactsService {
         } catch {}
       }
       this.logger.log(`✅ Order stats updated for ${Object.keys(customerStats).length} customers`);
+
+      // ✅ حفظ سجلات الطلبات في DB (batch upsert)
+      if (collectedOrders.length > 0) {
+        try {
+          let savedCount = 0;
+          for (const o of collectedOrders) {
+            try {
+              // تحقق أن الطلب غير موجود مسبقاً
+              const exists = await this.orderRepository.manager.query(
+                `SELECT 1 FROM orders WHERE store_id = $1 AND salla_order_id = $2 LIMIT 1`,
+                [store.id, o.sallaOrderId]
+              );
+              if (exists.length > 0) continue; // موجود → تجاوز
+
+              // جلب customer_id الداخلي
+              const custRow = await this.orderRepository.manager.query(
+                `SELECT id FROM customers WHERE store_id = $1 AND salla_customer_id = $2 LIMIT 1`,
+                [store.id, o.sallaCustId]
+              );
+              if (!custRow.length) continue; // عميل غير موجود → تجاوز
+
+              const orderDateParsed = o.orderDate ? new Date(o.orderDate) : new Date();
+              const safeDate = !isNaN(orderDateParsed.getTime()) ? orderDateParsed : new Date();
+
+              const validStatuses = ['created', 'processing', 'under_review', 'pending_payment', 'paid', 'ready_to_ship', 'shipped', 'delivered', 'completed', 'cancelled', 'refunded', 'restoring', 'failed', 'on_hold'];
+              const safeStatus = validStatuses.includes(o.status) ? o.status : 'completed';
+
+              await this.orderRepository.manager.query(
+                `INSERT INTO orders (id, tenant_id, store_id, customer_id, salla_order_id, reference_id, status, total_amount, currency, created_at, updated_at)
+                 VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, 'SAR', $8, NOW())`,
+                [tenantId, store.id, custRow[0].id, o.sallaOrderId, o.referenceId, safeStatus, o.totalAmount, safeDate]
+              );
+              savedCount++;
+            } catch { /* skip individual order errors */ }
+          }
+          this.logger.log(`✅ Saved ${savedCount} new order records to DB (${collectedOrders.length} total from Salla)`);
+        } catch (err: any) {
+          this.logger.warn(`⚠️ Order records save failed (non-blocking): ${err?.message}`);
+        }
+      }
     } catch (err: any) {
       this.logger.error(`⚠️ Order sync failed: ${err?.message}`);
     }
@@ -846,11 +925,25 @@ export class ContactsService {
       order: { createdAt: 'DESC' },
     });
 
+    // ✅ جلب أرقام الطلبات لكل العملاء
+    const allOrderRefs = await this.orderRepository
+      .createQueryBuilder('o')
+      .select(['o.customer_id AS "customerId"', 'o.reference_id AS "referenceId"'])
+      .where('o.tenant_id = :tenantId', { tenantId })
+      .orderBy('o.created_at', 'DESC')
+      .getRawMany();
+    const orderRefsMap: Record<string, string[]> = {};
+    for (const ref of allOrderRefs) {
+      if (!ref.customerId || !ref.referenceId) continue;
+      if (!orderRefsMap[ref.customerId]) orderRefsMap[ref.customerId] = [];
+      orderRefsMap[ref.customerId].push(ref.referenceId);
+    }
+
     // UTF-8 BOM لدعم العربية في Excel
     const BOM = '\uFEFF';
 
     // Headers
-    const headers = ['الاسم', 'رقم الهاتف', 'الإيميل', 'القناة', 'الحالة', 'عدد الطلبات', 'إجمالي الإنفاق', 'التصنيفات', 'تاريخ التسجيل'];
+    const headers = ['الاسم', 'رقم الهاتف', 'الإيميل', 'القناة', 'الحالة', 'عدد الطلبات', 'أرقام الطلبات', 'إجمالي الإنفاق', 'التصنيفات', 'تاريخ التسجيل'];
 
     // Rows
     const rows = customers.map(c => {
@@ -860,10 +953,11 @@ export class ContactsService {
       const channel = c.channel || '—';
       const status = c.status || 'active';
       const orders = String(c.totalOrders ?? 0);
+      const refs = (orderRefsMap[c.id] || []).join(' | ');
       const spent = String(c.totalSpent ?? 0);
       const tags = (c.tags || []).join('، ');
       const date = c.createdAt ? new Date(c.createdAt).toLocaleDateString('ar-SA') : '—';
-      return [name, phone, email, channel, status, orders, spent, tags, date];
+      return [name, phone, email, channel, status, orders, refs, spent, tags, date];
     });
 
     // Build CSV
