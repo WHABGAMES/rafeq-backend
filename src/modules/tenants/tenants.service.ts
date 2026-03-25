@@ -102,8 +102,13 @@ export class TenantsService {
       phone: input.phone,
       logo: input.logo,
       website: input.website,
-      status: TenantStatus.ACTIVE,
-      subscriptionPlan: SubscriptionPlan.FREE,
+      // ✅ FIX: سلة ترسل app.trial.started قبل app.store.authorize
+      // → webhook ضاعت لأن المتجر ما كان موجود
+      // → نعطي trial كديفولت (سلة دايم تعطي trial عند التثبيت)
+      // → لو ما كان trial، الـ webhook التالي بيصحح الحالة
+      status: TenantStatus.TRIAL,
+      subscriptionPlan: SubscriptionPlan.PRO,
+      trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 أيام (مطابق لسلة)
     });
 
     return this.tenantRepository.save(tenant);
