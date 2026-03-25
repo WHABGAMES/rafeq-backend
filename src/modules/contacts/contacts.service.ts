@@ -89,6 +89,26 @@ export class ContactsService {
       queryBuilder.andWhere('customer.channel = :channel', { channel: filters.channel });
     }
 
+    // ✅ Status filter: recently_active = طلب خلال 30 يوم، recently_inactive = ما طلب
+    if (filters.status === 'recently_active') {
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      queryBuilder.andWhere('customer.lastOrderAt >= :thirtyDaysAgo', { thirtyDaysAgo });
+    } else if (filters.status === 'recently_inactive') {
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      queryBuilder.andWhere('(customer.lastOrderAt IS NULL OR customer.lastOrderAt < :thirtyDaysAgo)', { thirtyDaysAgo });
+    }
+
+    // ✅ VIP filter
+    if (filters.vipStatus && filters.vipStatus !== 'all') {
+      if (filters.vipStatus === 'normal') {
+        queryBuilder.andWhere('(customer.vipStatus IS NULL OR customer.vipStatus = :vipStatus)', { vipStatus: 'normal' });
+      } else {
+        queryBuilder.andWhere('customer.vipStatus = :vipStatus', { vipStatus: filters.vipStatus });
+      }
+    }
+
     // Sorting — map frontend field names to actual entity columns
     const sortFieldMap: Record<string, string> = {
       name: 'fullName',
@@ -716,9 +736,11 @@ export class ContactsService {
 
           if (orders.length === 0) { hasMoreOrders = false; break; }
 
-          // ✅ Log first order amounts for debugging
+          // ✅ Log first order FULL KEYS for debugging
           if (orderPage === 1 && orders[0]) {
+            this.logger.log(`📋 Sample order keys: ${Object.keys(orders[0]).join(', ')}`);
             this.logger.log(`📋 Sample order amounts: ${JSON.stringify(orders[0]?.amounts)}`);
+            this.logger.log(`📋 Sample order total: ${JSON.stringify(orders[0]?.total)}`);
             this.logger.log(`📋 Sample order date: ${JSON.stringify(orders[0]?.date)}`);
           }
 
@@ -727,11 +749,14 @@ export class ContactsService {
             if (!custId) continue;
             if (!customerStats[custId]) customerStats[custId] = { orders: 0, spent: 0, lastOrderAt: '' };
             customerStats[custId].orders++;
-            // ✅ سلة ترسل amounts بأشكال مختلفة
-            const totalAmount = order?.amounts?.total;
+            // ✅ سلة ترسل المبلغ بأشكال مختلفة حسب الـ endpoint
+            const totalAmount = order?.amounts?.total   // {amount: number, currency: string}
+              ?? order?.total                            // number or {amount, currency}
+              ?? order?.total_price                      // some Salla versions
+              ?? order?.grand_total;                     // fallback
             const spent = typeof totalAmount === 'number' ? totalAmount
               : typeof totalAmount?.amount === 'number' ? totalAmount.amount
-              : parseFloat(totalAmount?.amount || totalAmount || '0') || 0;
+              : parseFloat(String(totalAmount?.amount || totalAmount || '0')) || 0;
             customerStats[custId].spent += spent;
             // ✅ تتبع آخر تاريخ طلب (سلة ترسل date كـ object أو string)
             const orderDate = order?.date?.date || order?.created_at || '';
@@ -763,7 +788,7 @@ export class ContactsService {
             .createQueryBuilder()
             .update()
             .set(updateData)
-            .where('storeId = :storeId AND sallaCustomerId = :sallaId', { storeId: store.id, sallaId })
+            .where('"store_id" = :storeId AND "salla_customer_id" = :sallaId', { storeId: store.id, sallaId })
             .execute();
         } catch {}
       }
