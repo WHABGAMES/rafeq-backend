@@ -129,7 +129,7 @@ export class ContactsService {
     const stats = await this.customerRepository
       .createQueryBuilder('c')
       .select([
-        `COUNT(CASE WHEN c.phone IS NOT NULL AND c.phone != '' THEN 1 END) AS "phonesCount"`,
+        `COUNT(CASE WHEN c.phone IS NOT NULL AND c.phone != '' AND LENGTH(REGEXP_REPLACE(c.phone, '[^0-9]', '', 'g')) > 6 THEN 1 END) AS "phonesCount"`,
         `COUNT(CASE WHEN c.email IS NOT NULL AND c.email != '' THEN 1 END) AS "emailsCount"`,
       ])
       .where('c.tenantId = :tenantId', { tenantId })
