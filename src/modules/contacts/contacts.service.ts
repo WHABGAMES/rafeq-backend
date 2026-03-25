@@ -865,8 +865,8 @@ export class ContactsService {
               const orderId = randomUUID();
 
               await this.orderRepository.manager.query(
-                `INSERT INTO orders (id, tenant_id, store_id, customer_id, salla_order_id, reference_id, status, payment_status, total_amount, subtotal_amount, discount_amount, shipping_cost, tax_amount, items, currency, created_at, updated_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8, 0, 0, 0, 0, '[]'::jsonb, 'SAR', $9, NOW())`,
+                `INSERT INTO orders (id, tenant_id, store_id, customer_id, salla_order_id, reference_id, status, payment_status, total_amount, subtotal, discount_amount, shipping_cost, tax_amount, items, notifications_sent, currency, created_at, updated_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8, 0, 0, 0, 0, '[]'::jsonb, '[]'::jsonb, 'SAR', $9, NOW())`,
                 [orderId, tenantId, store.id, custRow[0].id, o.sallaOrderId, o.referenceId, safeStatus, o.totalAmount, safeDate]
               );
               savedCount++;
