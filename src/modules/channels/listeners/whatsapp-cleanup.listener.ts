@@ -36,22 +36,23 @@ export class WhatsAppCleanupListener {
   /** المستخدم سجّل خروج من واتساب على هاتفه */
   @OnEvent('whatsapp.logged_out', { async: true })
   async handleLoggedOut(payload: { channelId: string }): Promise<void> {
-    this.logger.warn(`🔴 WhatsApp logged_out: ${payload.channelId}`);
-    await this.cleanupChannelData(payload.channelId);
+    this.logger.warn(`🔴 WhatsApp logged_out: ${payload.channelId} — conversations preserved (business data)`);
+    // ✅ FIX: لا نحذف المحادثات! هذي بيانات تجارية
+    // المستخدم يقدر يعيد مسح QR والمحادثات ترجع
   }
 
   /** جهاز آخر أخذ الجلسة */
   @OnEvent('whatsapp.session_replaced', { async: true })
   async handleSessionReplaced(payload: { channelId: string }): Promise<void> {
-    this.logger.warn(`🔄 WhatsApp session_replaced: ${payload.channelId}`);
-    await this.cleanupChannelData(payload.channelId);
+    this.logger.warn(`🔄 WhatsApp session_replaced: ${payload.channelId} — conversations preserved`);
+    // ✅ FIX: لا نحذف المحادثات! مشكلة مؤقتة
   }
 
   /** فشلت كل محاولات إعادة الاتصال */
   @OnEvent('whatsapp.max_retries', { async: true })
   async handleMaxRetries(payload: { channelId: string }): Promise<void> {
-    this.logger.warn(`❌ WhatsApp max_retries: ${payload.channelId}`);
-    await this.cleanupChannelData(payload.channelId);
+    this.logger.warn(`❌ WhatsApp max_retries: ${payload.channelId} — conversations preserved`);
+    // ✅ FIX: لا نحذف المحادثات! مشكلة اتصال مؤقتة (مثل deploy)
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
