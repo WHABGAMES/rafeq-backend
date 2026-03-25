@@ -465,21 +465,31 @@ export class SallaOrderHandler {
     const mobileCode = customerData.mobile_code as string | undefined;
     const phone      = customerData.phone       as string | undefined;
 
+    let result: string | undefined;
+
     if (mobileCode && mobile) {
       const code = String(mobileCode).replace(/[^0-9]/g, '');
       const num  = String(mobile).replace(/[^0-9]/g, '').replace(/^0+/, '');
-      if (code && num) return code + num;
+      if (code && num) result = code + num;
     }
 
-    if (phone) return String(phone).replace(/[\s\-\(\)]/g, '').replace(/^\+/, '');
+    if (!result && phone) {
+      result = String(phone).replace(/[\s\-\(\)]/g, '').replace(/^\+/, '');
+    }
 
-    if (mobile) {
+    if (!result && mobile) {
       let n = String(mobile).replace(/[\s\-\(\)]/g, '').replace(/^\+/, '');
       if (n.startsWith('05') && n.length === 10) n = '966' + n.slice(1);
       else if (n.startsWith('5') && n.length === 9) n = '966' + n;
-      return n;
+      result = n;
     }
 
-    return undefined;
+    // ✅ FIX: تجاهل الأرقام القصيرة جداً (رمز دولة فقط بدون رقم فعلي)
+    if (result) {
+      const digits = result.replace(/[^0-9]/g, '');
+      if (digits.length < 7) return undefined;
+    }
+
+    return result;
   }
 }
