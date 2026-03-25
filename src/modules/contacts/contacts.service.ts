@@ -8,6 +8,7 @@ import { Injectable, NotFoundException, BadRequestException, Logger } from '@nes
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { OnEvent } from '@nestjs/event-emitter';
+import { randomUUID } from 'crypto';
 import { Customer, Conversation, Order, CustomerStatus, Store } from '@database/entities';
 import { SallaApiService } from '../stores/salla-api.service';
 import { decrypt } from '@common/utils/encryption.util';
@@ -837,6 +838,7 @@ export class ContactsService {
       if (collectedOrders.length > 0) {
         try {
           let savedCount = 0;
+          let firstError = '';
           for (const o of collectedOrders) {
             try {
               // تحقق أن الطلب غير موجود مسبقاً
@@ -859,15 +861,20 @@ export class ContactsService {
               const validStatuses = ['created', 'processing', 'under_review', 'pending_payment', 'paid', 'ready_to_ship', 'shipped', 'delivered', 'completed', 'cancelled', 'refunded', 'restoring', 'failed', 'on_hold'];
               const safeStatus = validStatuses.includes(o.status) ? o.status : 'completed';
 
+              // ✅ Generate UUID in JS (avoids pgcrypto dependency)
+              const orderId = randomUUID();
+
               await this.orderRepository.manager.query(
                 `INSERT INTO orders (id, tenant_id, store_id, customer_id, salla_order_id, reference_id, status, total_amount, currency, created_at, updated_at)
-                 VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, 'SAR', $8, NOW())`,
-                [tenantId, store.id, custRow[0].id, o.sallaOrderId, o.referenceId, safeStatus, o.totalAmount, safeDate]
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'SAR', $9, NOW())`,
+                [orderId, tenantId, store.id, custRow[0].id, o.sallaOrderId, o.referenceId, safeStatus, o.totalAmount, safeDate]
               );
               savedCount++;
-            } catch { /* skip individual order errors */ }
+            } catch (orderErr: any) {
+              if (!firstError) firstError = orderErr?.message || String(orderErr);
+            }
           }
-          this.logger.log(`✅ Saved ${savedCount} new order records to DB (${collectedOrders.length} total from Salla)`);
+          this.logger.log(`✅ Saved ${savedCount} new order records to DB (${collectedOrders.length} total from Salla)${firstError ? ` | First error: ${firstError}` : ''}`);
         } catch (err: any) {
           this.logger.warn(`⚠️ Order records save failed (non-blocking): ${err?.message}`);
         }
