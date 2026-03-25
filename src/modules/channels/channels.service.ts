@@ -103,13 +103,6 @@ export class ChannelsService {
   async disconnect(id: string, storeId: string): Promise<void> {
     const channel = await this.findById(id, storeId);
 
-    // ① تنظيف المحادثات والرسائل المرتبطة بالقناة
-    try {
-      await this.whatsappCleanupListener.cleanupChannelData(id);
-    } catch (error) {
-      this.logger.warn(`⚠️ Cleanup conversations failed for ${id}: ${error instanceof Error ? error.message : 'Unknown'}`);
-    }
-
     // ② حذف الجلسة من Baileys (إذا كانت WhatsApp QR)
     if (channel.type === ChannelType.WHATSAPP_QR) {
       try {
@@ -119,10 +112,27 @@ export class ChannelsService {
       }
     }
 
-    // ③ حذف نهائي من قاعدة البيانات
-    await this.channelRepository.remove(channel);
+    // ✅ FIX: تحقق من وجود محادثات — لو فيه محادثات → soft disconnect بدل حذف
+    // حذف القناة ممكن يسبب CASCADE DELETE للمحادثات (FK constraint)
+    const convCount = await this.channelRepository.manager.query(
+      `SELECT COUNT(*) as cnt FROM conversations WHERE channel_id = $1`, [id],
+    );
+    const hasConversations = parseInt(convCount?.[0]?.cnt || '0', 10) > 0;
 
-    this.logger.log(`✅ Channel ${id} disconnected and removed for store ${storeId}`);
+    if (hasConversations) {
+      // محادثات موجودة → soft disconnect (يحتفظ بالبيانات)
+      await this.channelRepository.update(id, {
+        status: ChannelStatus.DISCONNECTED,
+        disconnectedAt: new Date(),
+        whatsappAccessToken: null as any,
+        sessionData: null as any,
+      });
+      this.logger.log(`✅ Channel ${id} soft-disconnected for store ${storeId} (${convCount[0].cnt} conversations preserved)`);
+    } else {
+      // بدون محادثات → حذف آمن
+      await this.channelRepository.remove(channel);
+      this.logger.log(`✅ Channel ${id} removed for store ${storeId} (no conversations)`);
+    }
   }
 
   /**
@@ -133,12 +143,7 @@ export class ChannelsService {
   async softDisconnect(id: string, storeId: string): Promise<void> {
     const channel = await this.findById(id, storeId);
 
-    // ① تنظيف المحادثات والرسائل
-    try {
-      await this.whatsappCleanupListener.cleanupChannelData(id);
-    } catch (error) {
-      this.logger.warn(`⚠️ Cleanup failed during soft-disconnect for ${id}: ${error instanceof Error ? error.message : 'Unknown'}`);
-    }
+    // ✅ FIX: لا نحذف المحادثات — بيانات تجارية يجب الاحتفاظ بها
 
     // ② حذف جلسة Baileys
     if (channel.type === ChannelType.WHATSAPP_QR) {
@@ -574,9 +579,21 @@ export class ChannelsService {
     const isShared = !!settings.sharedFromChannelId;
 
     if (isShared) {
-      // هذه قناة مرآة → حذف مباشر بدون حذف الجلسة
-      await this.channelRepository.remove(channel);
-      this.logger.log(`✅ Removed shared channel ${channelId} from store ${storeId}`);
+      // هذه قناة مرآة → تحقق من المحادثات أولاً
+      const cc = await this.channelRepository.manager.query(
+        `SELECT COUNT(*) as cnt FROM conversations WHERE channel_id = $1`, [channelId],
+      );
+      if (parseInt(cc?.[0]?.cnt || '0', 10) === 0) {
+        await this.channelRepository.remove(channel);
+        this.logger.log(`✅ Removed shared channel ${channelId} from store ${storeId}`);
+      } else {
+        // ✅ FIX: محادثات موجودة → soft disconnect بدل حذف
+        await this.channelRepository.update(channelId, {
+          status: ChannelStatus.DISCONNECTED,
+          disconnectedAt: new Date(),
+        });
+        this.logger.log(`✅ Soft-disconnected shared channel ${channelId} (${cc[0].cnt} conversations preserved)`);
+      }
     } else {
       // هذه القناة الأصلية → فصل عادي
       await this.disconnect(channelId, storeId);
@@ -658,7 +675,7 @@ export class ChannelsService {
     if (toRemove.length > 0) {
       for (const ch of toRemove) {
         try {
-          await this.whatsappCleanupListener.cleanupChannelData(ch.id);
+          // ✅ FIX: فقط نحذف الجلسة — المحادثات لا تنحذف
           await this.whatsappBaileysService.deleteSession(ch.id);
         } catch {
           // تجاهل
