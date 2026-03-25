@@ -1,841 +1,978 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║                    RAFIQ PLATFORM - Channels Service                           ║
- * ║                                                                                ║
- * ║  ✅ WhatsApp Official + QR + Phone Code + Instagram + Discord                 ║
- * ║  ✅ Fix: منع تكرار الأرقام                                                     ║
- * ║  ✅ Fix: تنظيف القنوات المنقطعة عند إعادة الربط                                 ║
- * ║  ✅ New: ربط القناة بمتجر واحد أو عدة متاجر                                    ║
- * ║                                                                                ║
- * ║  📌 Audit: v2 - Fixed 5 bugs from initial review                              ║
+ * ║              RAFIQ PLATFORM - Contacts Service (CRM)                           ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
-import { Injectable, Logger, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, In } from 'typeorm';
-import { HttpService } from '@nestjs/axios';
-import { firstValueFrom } from 'rxjs';
-import * as crypto from 'crypto';
+import { Repository } from 'typeorm';
+import { OnEvent } from '@nestjs/event-emitter';
+import { Customer, Conversation, Order, CustomerStatus, Store } from '@database/entities';
+import { SallaApiService } from '../stores/salla-api.service';
+import { decrypt } from '@common/utils/encryption.util';
+import {
+  CreateContactDto,
+  UpdateContactDto,
+  ContactFiltersDto,
+  ImportContactsDto,
+  CreateSegmentDto,
+} from './dto';
 
-import { Channel, ChannelType, ChannelStatus } from './entities/channel.entity';
-import { WhatsAppBaileysService, QRSessionResult } from './whatsapp/whatsapp-baileys.service';
-
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// DTOs
-// ═══════════════════════════════════════════════════════════════════════════════
-
-export interface ConnectWhatsAppOfficialDto {
-  phoneNumberId: string;
-  businessAccountId: string;
-  accessToken: string;
-  verifyToken?: string;
-}
-
-export interface ConnectDiscordDto {
-  botToken: string;
-  guildId?: string;
+interface PaginationOptions {
+  page: number;
+  limit: number;
 }
 
 @Injectable()
-export class ChannelsService {
-  private readonly logger = new Logger(ChannelsService.name);
+export class ContactsService {
+  private readonly logger = new Logger(ContactsService.name);
 
   constructor(
-    @InjectRepository(Channel)
-    private readonly channelRepository: Repository<Channel>,
-    
-    private readonly httpService: HttpService,
-    
-    private readonly whatsappBaileysService: WhatsAppBaileysService,
+    @InjectRepository(Customer)
+    private readonly customerRepository: Repository<Customer>,
+    @InjectRepository(Conversation)
+    private readonly conversationRepository: Repository<Conversation>,
+    @InjectRepository(Order)
+    private readonly orderRepository: Repository<Order>,
+    @InjectRepository(Store)
+    private readonly storeRepository: Repository<Store>,
+    private readonly sallaApiService: SallaApiService,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 🛠️ Phone Normalization Helper
+  // ✅ مزامنة تلقائية عند ربط متجر جديد
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /**
-   * تحويل رقم الهاتف لشكل موحّد (أرقام فقط)
-   * مثال: "+971 524 395 552" → "971524395552"
-   */
-  private normalizePhone(phone: string | undefined | null): string {
-    return (phone || '').replace(/[^0-9]/g, '');
-  }
-
-  /**
-   * مقارنة رقمين بعد التوحيد
-   * يدعم المقارنة الجزئية (الرقم القصير يطابق نهاية الرقم الطويل)
-   */
-  private phonesMatch(phone1: string, phone2: string): boolean {
-    const n1 = this.normalizePhone(phone1);
-    const n2 = this.normalizePhone(phone2);
-    if (!n1 || !n2) return false;
-    // مقارنة من نهاية الرقم (بدون كود الدولة أحياناً)
-    return n1.endsWith(n2) || n2.endsWith(n1);
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 📋 CRUD
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  async findAll(storeId: string): Promise<Channel[]> {
-    return this.channelRepository.find({
-      where: { storeId, isAdminChannel: false },
-      order: { createdAt: 'DESC' },
-    });
-  }
-
-  async findById(id: string, storeId: string): Promise<Channel> {
-    const channel = await this.channelRepository.findOne({ where: { id, storeId, isAdminChannel: false } });
-    if (!channel) throw new NotFoundException('Channel not found');
-    return channel;
-  }
-
-  /**
-   * ✅ Fix: الفصل الآن ينظف القناة بشكل كامل
-   * - يحذف الجلسة من Baileys
-   * - يحذف السجل من قاعدة البيانات (hard delete)
-   * - يمنع بقاء قنوات "شبحية" في القائمة
-   */
-  async disconnect(id: string, storeId: string): Promise<void> {
-    const channel = await this.findById(id, storeId);
-
-    // ② حذف الجلسة من Baileys (إذا كانت WhatsApp QR)
-    if (channel.type === ChannelType.WHATSAPP_QR) {
-      try {
-        await this.whatsappBaileysService.deleteSession(id);
-      } catch (error) {
-        this.logger.warn(`Failed to delete Baileys session for ${id}: ${error instanceof Error ? error.message : 'Unknown'}`);
-      }
-    }
-
-    // ✅ FIX: تحقق من وجود محادثات — لو فيه محادثات → soft disconnect بدل حذف
-    // حذف القناة ممكن يسبب CASCADE DELETE للمحادثات (FK constraint)
-    const convCount = await this.channelRepository.manager.query(
-      `SELECT COUNT(*) as cnt FROM conversations WHERE channel_id = $1`, [id],
-    );
-    const hasConversations = parseInt(convCount?.[0]?.cnt || '0', 10) > 0;
-
-    if (hasConversations) {
-      // محادثات موجودة → soft disconnect (يحتفظ بالبيانات)
-      await this.channelRepository.update(id, {
-        status: ChannelStatus.DISCONNECTED,
-        disconnectedAt: new Date(),
-        whatsappAccessToken: null as any,
-        sessionData: null as any,
-      });
-      this.logger.log(`✅ Channel ${id} soft-disconnected for store ${storeId} (${convCount[0].cnt} conversations preserved)`);
-    } else {
-      // بدون محادثات → حذف آمن
-      await this.channelRepository.remove(channel);
-      this.logger.log(`✅ Channel ${id} removed for store ${storeId} (no conversations)`);
-    }
-  }
-
-  /**
-   * ✅ إضافة: فصل بدون حذف (للحالات اللي يبي التاجر يحتفظ بالسجل)
-   *
-   * 🔧 Fix BUG#1+#4: استخدام null بدل undefined لمسح القيم في TypeORM
-   */
-  async softDisconnect(id: string, storeId: string): Promise<void> {
-    const channel = await this.findById(id, storeId);
-
-    // ✅ FIX: لا نحذف المحادثات — بيانات تجارية يجب الاحتفاظ بها
-
-    // ② حذف جلسة Baileys
-    if (channel.type === ChannelType.WHATSAPP_QR) {
-      try {
-        await this.whatsappBaileysService.deleteSession(id);
-      } catch (error) {
-        this.logger.warn(`Failed to delete Baileys session: ${error instanceof Error ? error.message : 'Unknown'}`);
-      }
-    }
-
-    // ③ تحديث حالة القناة (بدون حذف السجل)
-    // ✅ Fix: null يمسح القيمة في DB. undefined يتخطاها (لا تُحدَّث).
-    await this.channelRepository.update(id, {
-      status: ChannelStatus.DISCONNECTED,
-      disconnectedAt: new Date(),
-      whatsappAccessToken: null as any,
-      sessionData: null as any,
-      discordBotToken: null as any,
-      instagramAccessToken: null as any,
-    });
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 💬 WhatsApp Official (Meta Business API)
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  async connectWhatsAppOfficial(storeId: string, dto: ConnectWhatsAppOfficialDto): Promise<Channel> {
-    this.logger.log(`Connecting WhatsApp Official for store ${storeId}`);
-    const phoneInfo = await this.verifyWhatsAppCredentials(dto);
-
-    // ✅ Fix: تحقق من التكرار عبر كل المتاجر (مو بس المتجر الحالي)
-    const existingGlobal = await this.channelRepository.findOne({
-      where: { type: ChannelType.WHATSAPP_OFFICIAL, whatsappPhoneNumberId: dto.phoneNumberId },
-    });
-
-    if (existingGlobal) {
-      if (existingGlobal.storeId === storeId && existingGlobal.status === ChannelStatus.CONNECTED) {
-        throw new BadRequestException('هذا الرقم مربوط بالفعل بهذا المتجر');
-      }
-      if (existingGlobal.storeId !== storeId && existingGlobal.status === ChannelStatus.CONNECTED) {
-        throw new BadRequestException('هذا الرقم مربوط بالفعل بمتجر آخر');
-      }
-
-      // ✅ إذا كان موجود لكن غير متصل → أعد استخدامه
-      existingGlobal.storeId = storeId;
-      existingGlobal.status = ChannelStatus.CONNECTED;
-      existingGlobal.whatsappAccessToken = dto.accessToken;
-      existingGlobal.whatsappBusinessAccountId = dto.businessAccountId;
-      existingGlobal.whatsappPhoneNumber = phoneInfo.display_phone_number;
-      existingGlobal.whatsappDisplayName = phoneInfo.verified_name;
-      existingGlobal.connectedAt = new Date();
-      // ✅ Fix BUG#1: null يمسح القيمة في DB, undefined لا يفعل شيء
-      existingGlobal.disconnectedAt = null as any;
-      existingGlobal.lastError = null as any;
-      existingGlobal.errorCount = 0;
-
-      this.logger.log(`♻️ Reusing existing channel ${existingGlobal.id} for WhatsApp Official`);
-      return this.channelRepository.save(existingGlobal);
-    }
-
-    const channel = this.channelRepository.create({
-      storeId,
-      type: ChannelType.WHATSAPP_OFFICIAL,
-      name: phoneInfo.display_phone_number || 'WhatsApp Business',
-      status: ChannelStatus.CONNECTED,
-      isOfficial: true,
-      whatsappPhoneNumberId: dto.phoneNumberId,
-      whatsappBusinessAccountId: dto.businessAccountId,
-      whatsappAccessToken: dto.accessToken,
-      whatsappPhoneNumber: phoneInfo.display_phone_number,
-      whatsappDisplayName: phoneInfo.verified_name,
-      connectedAt: new Date(),
-      settings: { verifyToken: dto.verifyToken || this.generateVerifyToken() },
-    });
-
-    return this.channelRepository.save(channel);
-  }
-
-  private async verifyWhatsAppCredentials(dto: ConnectWhatsAppOfficialDto): Promise<any> {
+  @OnEvent('store.connected')
+  async handleStoreConnected(payload: { storeId: string; tenantId: string; platform: string }) {
+    if (payload.platform !== 'salla') return;
+    this.logger.log(`🔄 Auto-syncing customers for new store: ${payload.storeId}`);
     try {
-      const response = await firstValueFrom(
-        this.httpService.get(`https://graph.facebook.com/v21.0/${dto.phoneNumberId}`, {
-          headers: { Authorization: `Bearer ${dto.accessToken}` },
-        }),
-      );
-      return response.data;
+      const result = await this.syncFromSalla(payload.tenantId);
+      this.logger.log(`✅ Auto-sync complete: ${result.synced} customers synced for store ${payload.storeId}`);
     } catch (error: any) {
-      throw new BadRequestException('Invalid WhatsApp credentials');
+      this.logger.error(`❌ Auto-sync failed for store ${payload.storeId}: ${error?.message}`);
     }
   }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 📱 WhatsApp QR (Baileys)
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  async initWhatsAppSession(storeId: string): Promise<QRSessionResult> {
-    this.logger.log(`[QR] Init for store ${storeId}`);
-    return this.createWhatsAppQRChannel(storeId);
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 📱 WhatsApp Phone Code (Baileys)
-  // ═══════════════════════════════════════════════════════════════════════════════
-
 
   /**
-   * ✅ Fix: إنشاء قناة WhatsApp QR/Phone مع منع التكرار
-   * 
-   * المنطق الجديد:
-   * 1. ننظف أي قنوات PENDING/DISCONNECTED/ERROR قديمة لنفس المتجر
-   * 2. نتحقق من وجود قناة متصلة بنفس الرقم
-   * 3. إذا وُجدت قناة متصلة بنفس الرقم → خطأ
-   * 4. إذا لم توجد → ننشئ واحدة جديدة
+   * جلب جميع العملاء مع الفلترة
    */
-  private async createWhatsAppQRChannel(
-    storeId: string,
-  ): Promise<QRSessionResult> {
+  async findAll(
+    tenantId: string,
+    filters: ContactFiltersDto,
+    pagination: PaginationOptions,
+  ) {
+    const { page, limit } = pagination;
+    const skip = (page - 1) * limit;
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // ✅ خطوة 1: البحث عن قناة موجودة يمكن إعادة استخدامها
-    // ⚠️ FIX CRITICAL: لا نحذف القنوات! الحذف يسبب CASCADE DELETE للمحادثات
-    // بدلاً من ذلك، نعيد استخدام القناة القديمة (نحافظ على المحادثات)
-    // ═══════════════════════════════════════════════════════════════════════════
-    const existingChannels = await this.channelRepository.find({
-      where: {
-        storeId,
-        type: ChannelType.WHATSAPP_QR,
-        status: In([
-          ChannelStatus.PENDING,
-          ChannelStatus.DISCONNECTED,
-          ChannelStatus.ERROR,
-          ChannelStatus.EXPIRED,
-        ]),
-      },
-      order: { createdAt: 'DESC' },
-    });
+    const queryBuilder = this.customerRepository
+      .createQueryBuilder('customer')
+      .where('customer.tenantId = :tenantId', { tenantId });
 
-    // إذا فيه قناة قديمة → نعيد استخدامها (بدون حذف!)
-    if (existingChannels.length > 0) {
-      const reuseChannel = existingChannels[0]; // أحدث قناة
-      this.logger.log(`♻️ Reusing existing channel ${reuseChannel.id} for store ${storeId} (preserving conversations)`);
-
-      // حذف الجلسات القديمة من الملفات فقط (مو من الداتابيس)
-      try {
-        await this.whatsappBaileysService.deleteSession(reuseChannel.id);
-      } catch { /* ignore */ }
-
-      // إعادة تعيين القناة
-      reuseChannel.status = ChannelStatus.PENDING;
-      reuseChannel.sessionData = null as any;
-      reuseChannel.lastError = null as any;
-      reuseChannel.lastErrorAt = null as any;
-      reuseChannel.disconnectedAt = null as any;
-      reuseChannel.errorCount = 0;
-      await this.channelRepository.save(reuseChannel);
-
-      // حذف القنوات الزائدة (إذا فيه أكثر من واحدة) — فقط اللي ما عليها محادثات
-      if (existingChannels.length > 1) {
-        try {
-          for (let i = 1; i < existingChannels.length; i++) {
-            const extra = existingChannels[i];
-            const convCount = await this.channelRepository.manager.query(
-              `SELECT COUNT(*) as cnt FROM conversations WHERE channel_id = $1`,
-              [extra.id],
-            );
-            if (parseInt(convCount?.[0]?.cnt || '0', 10) === 0) {
-              this.logger.log(`🧹 Removing empty duplicate channel ${extra.id}`);
-              try { await this.whatsappBaileysService.deleteSession(extra.id); } catch { /* ignore */ }
-              await this.channelRepository.remove(extra);
-            } else {
-              this.logger.log(`⏭️ Keeping channel ${extra.id} (has ${convCount[0].cnt} conversations)`);
-            }
-          }
-        } catch (cleanupErr) {
-          this.logger.warn(`⚠️ Extras cleanup failed (non-blocking): ${cleanupErr instanceof Error ? cleanupErr.message : 'Unknown'}`);
-        }
-      }
-
-      // إنشاء جلسة QR على القناة المعاد استخدامها
-      try {
-        const session = await this.whatsappBaileysService.initSession(reuseChannel.id);
-
-        await this.channelRepository.update(reuseChannel.id, {
-          status: session.status === 'connected' ? ChannelStatus.CONNECTED : ChannelStatus.PENDING,
-          sessionId: session.sessionId,
-        });
-
-        return session;
-      } catch (error: any) {
-        // ⚠️ فشل إنشاء الجلسة — نرجّع القناة لـ DISCONNECTED (لا نحذفها!)
-        this.logger.error(`Failed to init session on reused channel ${reuseChannel.id}: ${error.message}`);
-        await this.channelRepository.update(reuseChannel.id, {
-          status: ChannelStatus.DISCONNECTED,
-          lastError: error.message || 'فشل إنشاء جلسة QR',
-          lastErrorAt: new Date(),
-        });
-        throw new BadRequestException(error.message || 'فشل إنشاء جلسة واتساب — حاول مرة أخرى');
-      }
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // ✅ خطوة 2: تحقق من وجود قناة QR متصلة بالفعل لهذا المتجر
-    // ═══════════════════════════════════════════════════════════════════════════
-    const existingConnected = await this.channelRepository.findOne({
-      where: {
-        storeId,
-        type: ChannelType.WHATSAPP_QR,
-        status: ChannelStatus.CONNECTED,
-      },
-    });
-
-    if (existingConnected) {
-      throw new BadRequestException(
-        `يوجد رقم واتساب متصل بالفعل (${existingConnected.whatsappPhoneNumber || existingConnected.name}). ` +
-        'افصله أولاً قبل ربط رقم جديد.',
+    // Search filter
+    if (filters.search) {
+      queryBuilder.andWhere(
+        '(customer.fullName ILIKE :search OR customer.firstName ILIKE :search OR customer.phone ILIKE :search OR customer.email ILIKE :search)',
+        { search: `%${filters.search}%` },
       );
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // ✅ خطوة 4: إنشاء قناة جديدة نظيفة
-    // ═══════════════════════════════════════════════════════════════════════════
-    const channel = this.channelRepository.create({
-      storeId,
-      type: ChannelType.WHATSAPP_QR,
-      name: 'WhatsApp (QR)',
-      status: ChannelStatus.PENDING,
-      isOfficial: false,
-    });
-
-    const savedChannel = await this.channelRepository.save(channel);
-
-    try {
-      let session: QRSessionResult;
-
-      session = await this.whatsappBaileysService.initSession(savedChannel.id);
-
-      await this.channelRepository.update(savedChannel.id, {
-        status: session.status === 'connected' ? ChannelStatus.CONNECTED : ChannelStatus.PENDING,
-        sessionId: session.sessionId,
-      });
-
-      return session;
-    } catch (error: any) {
-      // ✅ Fix: حذف كامل عند الفشل (بدل ترك سجل يتيم)
-      await this.channelRepository.remove(savedChannel);
-      this.logger.error('Failed to init WhatsApp session', error.message);
-      throw new BadRequestException(error.message || 'Failed to initialize WhatsApp session');
-    }
-  }
-
-  async getWhatsAppSessionStatus(sessionId: string): Promise<QRSessionResult> {
-    const status = await this.whatsappBaileysService.getSessionStatus(sessionId);
-    if (!status) throw new NotFoundException('Session not found');
-
-    if (status.status === 'connected') {
-      // ✅ Fix: تحقق من التكرار عند الاتصال الناجح
-      // إذا وصل الرقم ووجدنا قناة قديمة بنفس الرقم → ننظفها
-      if (status.phoneNumber) {
-        await this.cleanupDuplicatesByPhone(sessionId, status.phoneNumber);
-      }
-
-      await this.channelRepository.update(sessionId, {
-        status: ChannelStatus.CONNECTED,
-        connectedAt: new Date(),
-        whatsappPhoneNumber: status.phoneNumber,
-      });
+    // Tags filter
+    if (filters.tags?.length) {
+      queryBuilder.andWhere('customer.tags && :tags', { tags: filters.tags });
     }
 
-    return status;
-  }
-
-  /**
-   * ✅ جديد: تنظيف القنوات المكررة بنفس الرقم
-   * يبقي فقط القناة الحالية ويحذف الباقي
-   *
-   * 🔧 Fix BUG#3: فلترة على مستوى التطبيق بدل REPLACE في SQL
-   */
-  private async cleanupDuplicatesByPhone(
-    keepChannelId: string,
-    phoneNumber: string,
-  ): Promise<void> {
-    const normalizedPhone = this.normalizePhone(phoneNumber);
-    if (!normalizedPhone) return;
-
-    // ✅ جلب كل قنوات QR ومقارنة الأرقام في التطبيق
-    const allQRChannels = await this.channelRepository.find({
-      where: {
-        type: ChannelType.WHATSAPP_QR,
-      },
-    });
-
-    const duplicates = allQRChannels.filter(ch => {
-      if (ch.id === keepChannelId) return false;
-      if (ch.isAdminChannel) return false; // حماية قنوات الأدمن
-      if (!ch.whatsappPhoneNumber) return false;
-      return this.phonesMatch(ch.whatsappPhoneNumber, normalizedPhone);
-    });
-
-    if (duplicates.length > 0) {
-      this.logger.warn(
-        `🧹 Found ${duplicates.length} duplicate channel(s) for phone ${phoneNumber}. Cleaning up...`,
-      );
-      for (const dup of duplicates) {
-        try {
-          await this.whatsappBaileysService.deleteSession(dup.id);
-        } catch {
-          // تجاهل
-        }
-      }
-      // ✅ FIX: حذف فقط القنوات بدون محادثات
-      for (const dup of duplicates) {
-        const cc = await this.channelRepository.manager.query(
-          `SELECT COUNT(*) as cnt FROM conversations WHERE channel_id = $1`, [dup.id],
-        );
-        if (parseInt(cc?.[0]?.cnt || '0', 10) === 0) {
-          await this.channelRepository.remove(dup);
-        } else {
-          this.logger.warn(`⏭️ Keeping duplicate channel ${dup.id} — has ${cc[0].cnt} conversations`);
-        }
-      }
-    }
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🏪 ربط القناة بمتجر / عدة متاجر
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  /**
-   * ✅ جديد: تغيير المتجر المرتبط بالقناة
-   */
-  async assignToStore(channelId: string, currentStoreId: string, newStoreId: string): Promise<Channel> {
-    const channel = await this.findById(channelId, currentStoreId);
-
-    // التحقق من أن المتجر الجديد لا يملك قناة بنفس النوع متصلة
-    const conflicting = await this.channelRepository.findOne({
-      where: {
-        storeId: newStoreId,
-        type: channel.type,
-        status: ChannelStatus.CONNECTED,
-      },
-    });
-
-    if (conflicting) {
-      throw new BadRequestException(
-        'المتجر المستهدف لديه قناة واتساب متصلة بالفعل. افصلها أولاً.',
-      );
+    // Channel filter
+    if (filters.channel) {
+      queryBuilder.andWhere('customer.channel = :channel', { channel: filters.channel });
     }
 
-    channel.storeId = newStoreId;
-    const updated = await this.channelRepository.save(channel);
-
-    this.logger.log(`✅ Channel ${channelId} assigned to store ${newStoreId}`);
-    return updated;
-  }
-
-  /**
-   * ✅ جديد: نسخ/مشاركة القناة مع عدة متاجر
-   * ينشئ سجل "مرآة" مرتبط بنفس الجلسة
-   * 
-   * هذا يسمح لنفس الرقم بخدمة عدة متاجر
-   */
-  async shareWithStores(channelId: string, currentStoreId: string, targetStoreIds: string[]): Promise<Channel[]> {
-    const sourceChannel = await this.findById(channelId, currentStoreId);
-
-    if (sourceChannel.status !== ChannelStatus.CONNECTED) {
-      throw new BadRequestException('يجب أن تكون القناة متصلة قبل مشاركتها');
+    // ✅ Status filter: recently_active = طلب خلال 30 يوم، recently_inactive = ما طلب
+    if (filters.status === 'recently_active') {
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      queryBuilder.andWhere('customer.lastOrderAt >= :thirtyDaysAgo', { thirtyDaysAgo });
+    } else if (filters.status === 'recently_inactive') {
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      queryBuilder.andWhere('(customer.lastOrderAt IS NULL OR customer.lastOrderAt < :thirtyDaysAgo)', { thirtyDaysAgo });
     }
 
-    const createdChannels: Channel[] = [];
-
-    for (const targetStoreId of targetStoreIds) {
-      // تجنب التكرار: لا تنشئ إذا كان المتجر نفسه
-      if (targetStoreId === currentStoreId) continue;
-
-      const existing = await this.channelRepository.findOne({
-        where: {
-          storeId: targetStoreId,
-          type: sourceChannel.type,
-          whatsappPhoneNumber: sourceChannel.whatsappPhoneNumber,
-        },
-      });
-
-      if (existing) {
-        // حدّث القناة الموجودة بدل إنشاء جديدة
-        existing.status = ChannelStatus.CONNECTED;
-        existing.sessionId = sourceChannel.sessionId;
-        existing.connectedAt = new Date();
-        existing.lastError = null as any;
-        existing.errorCount = 0;
-        await this.channelRepository.save(existing);
-        createdChannels.push(existing);
-        continue;
-      }
-
-      const mirrorChannel = this.channelRepository.create({
-        storeId: targetStoreId,
-        type: sourceChannel.type,
-        name: sourceChannel.name,
-        status: ChannelStatus.CONNECTED,
-        isOfficial: sourceChannel.isOfficial,
-        whatsappPhoneNumberId: sourceChannel.whatsappPhoneNumberId,
-        whatsappBusinessAccountId: sourceChannel.whatsappBusinessAccountId,
-        whatsappAccessToken: sourceChannel.whatsappAccessToken,
-        whatsappPhoneNumber: sourceChannel.whatsappPhoneNumber,
-        whatsappDisplayName: sourceChannel.whatsappDisplayName,
-        sessionId: sourceChannel.sessionId,
-        connectedAt: new Date(),
-        settings: {
-          ...((sourceChannel.settings as Record<string, unknown>) || {}),
-          sharedFromChannelId: channelId,
-          sharedFromStoreId: currentStoreId,
-        },
-      });
-
-      const saved = await this.channelRepository.save(mirrorChannel);
-      createdChannels.push(saved);
-      this.logger.log(`✅ Channel shared: ${channelId} → store ${targetStoreId} (mirror: ${saved.id})`);
-    }
-
-    return createdChannels;
-  }
-
-  /**
-   * ✅ جديد: إزالة مشاركة القناة من متجر
-   */
-  async unshareFromStore(channelId: string, storeId: string): Promise<void> {
-    const channel = await this.findById(channelId, storeId);
-
-    // لا تحذف الجلسة لأنها مشتركة - فقط احذف السجل
-    const settings = (channel.settings || {}) as Record<string, unknown>;
-    const isShared = !!settings.sharedFromChannelId;
-
-    if (isShared) {
-      // هذه قناة مرآة → تحقق من المحادثات أولاً
-      const cc = await this.channelRepository.manager.query(
-        `SELECT COUNT(*) as cnt FROM conversations WHERE channel_id = $1`, [channelId],
-      );
-      if (parseInt(cc?.[0]?.cnt || '0', 10) === 0) {
-        await this.channelRepository.remove(channel);
-        this.logger.log(`✅ Removed shared channel ${channelId} from store ${storeId}`);
+    // ✅ VIP filter
+    if (filters.vipStatus && filters.vipStatus !== 'all') {
+      if (filters.vipStatus === 'normal') {
+        queryBuilder.andWhere('(customer.vipStatus IS NULL OR customer.vipStatus = :vipStatus)', { vipStatus: 'normal' });
       } else {
-        // ✅ FIX: محادثات موجودة → soft disconnect بدل حذف
-        await this.channelRepository.update(channelId, {
-          status: ChannelStatus.DISCONNECTED,
-          disconnectedAt: new Date(),
-        });
-        this.logger.log(`✅ Soft-disconnected shared channel ${channelId} (${cc[0].cnt} conversations preserved)`);
-      }
-    } else {
-      // هذه القناة الأصلية → فصل عادي
-      await this.disconnect(channelId, storeId);
-    }
-  }
-
-  /**
-   * ✅ جديد: جلب المتاجر المرتبطة بقناة (بنفس الرقم)
-   */
-  async getLinkedStores(phoneNumber: string): Promise<{ storeId: string; channelId: string; status: ChannelStatus }[]> {
-    if (!phoneNumber) return [];
-
-    const normalizedInput = this.normalizePhone(phoneNumber);
-    if (!normalizedInput) return [];
-
-    // ✅ Fix: فلترة على مستوى التطبيق بدل SQL
-    const allChannels = await this.channelRepository.find({
-      select: ['id', 'storeId', 'status', 'whatsappPhoneNumber'],
-    });
-
-    return allChannels
-      .filter(ch => ch.whatsappPhoneNumber && this.phonesMatch(ch.whatsappPhoneNumber, normalizedInput))
-      .map(ch => ({
-        storeId: ch.storeId,
-        channelId: ch.id,
-        status: ch.status,
-      }));
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🧹 تنظيف البيانات
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  /**
-   * ✅ جديد: تنظيف جميع القنوات المكررة/الميتة لمتجر معين
-   * يستخدم لإصلاح البيانات الموجودة حالياً
-   */
-  async cleanupDeadChannels(storeId: string): Promise<{ removed: number; kept: number }> {
-    const allChannels = await this.channelRepository.find({
-      where: { storeId, type: ChannelType.WHATSAPP_QR },
-      order: { createdAt: 'DESC' },
-    });
-
-    // تجميع حسب الرقم
-    const byPhone = new Map<string, Channel[]>();
-    const noPhone: Channel[] = [];
-
-    for (const ch of allChannels) {
-      const phone = this.normalizePhone(ch.whatsappPhoneNumber);
-      if (!phone) {
-        noPhone.push(ch);
-        continue;
-      }
-      if (!byPhone.has(phone)) byPhone.set(phone, []);
-      byPhone.get(phone)!.push(ch);
-    }
-
-    const toRemove: Channel[] = [];
-
-    // لكل رقم: ابقِ أحدث قناة متصلة، احذف الباقي
-    for (const [, channels] of byPhone) {
-      const connected = channels.find(c => c.status === ChannelStatus.CONNECTED);
-      const keep = connected || channels[0]; // أحدث واحدة (مرتبة بـ createdAt DESC)
-
-      for (const ch of channels) {
-        if (ch.id !== keep.id) {
-          toRemove.push(ch);
-        }
+        queryBuilder.andWhere('customer.vipStatus = :vipStatus', { vipStatus: filters.vipStatus });
       }
     }
 
-    // القنوات بدون رقم واللي حالتها غير متصلة → حذف
-    for (const ch of noPhone) {
-      if (ch.status !== ChannelStatus.CONNECTED) {
-        toRemove.push(ch);
+    // Sorting — map frontend field names to actual entity columns
+    const sortFieldMap: Record<string, string> = {
+      name: 'fullName',
+      fullName: 'fullName',
+      createdAt: 'createdAt',
+      totalOrders: 'totalOrders',
+      lastActivity: 'lastActivityAt',
+    };
+    const safeSortField = sortFieldMap[filters.sortBy || 'createdAt'] || 'createdAt';
+    const sortColumn = `customer.${safeSortField}`;
+    queryBuilder.orderBy(sortColumn, filters.sortOrder?.toUpperCase() as 'ASC' | 'DESC' || 'DESC');
+
+    // Get total count
+    const total = await queryBuilder.getCount();
+
+    // ✅ Stats: count phones and emails (from ALL contacts, not just current page)
+    const stats = await this.customerRepository
+      .createQueryBuilder('c')
+      .select([
+        `COUNT(CASE WHEN c.phone IS NOT NULL AND c.phone != '' THEN 1 END) AS "phonesCount"`,
+        `COUNT(CASE WHEN c.email IS NOT NULL AND c.email != '' THEN 1 END) AS "emailsCount"`,
+      ])
+      .where('c.tenantId = :tenantId', { tenantId })
+      .getRawOne();
+
+    // Get paginated results
+    const contacts = await queryBuilder
+      .skip(skip)
+      .take(limit)
+      .getMany();
+
+    // ✅ جلب أرقام الطلبات لعملاء الصفحة الحالية فقط (أداء)
+    let orderRefsMap: Record<string, string[]> = {};
+    if (contacts.length > 0) {
+      const customerIds = contacts.map(c => c.id);
+      const orderRefs = await this.orderRepository
+        .createQueryBuilder('o')
+        .select(['o.customer_id AS "customerId"', 'o.reference_id AS "referenceId"'])
+        .where('o.customer_id IN (:...customerIds)', { customerIds })
+        .orderBy('o.created_at', 'DESC')
+        .getRawMany();
+      for (const ref of orderRefs) {
+        if (!ref.customerId || !ref.referenceId) continue;
+        if (!orderRefsMap[ref.customerId]) orderRefsMap[ref.customerId] = [];
+        orderRefsMap[ref.customerId].push(ref.referenceId);
       }
     }
 
-    if (toRemove.length > 0) {
-      for (const ch of toRemove) {
-        try {
-          // ✅ FIX: فقط نحذف الجلسة — المحادثات لا تنحذف
-          await this.whatsappBaileysService.deleteSession(ch.id);
-        } catch {
-          // تجاهل
-        }
-      }
-      // ✅ FIX: حذف فقط القنوات بدون محادثات
-      const safeToRemove: typeof toRemove = [];
-      for (const ch of toRemove) {
-        const cc = await this.channelRepository.manager.query(
-          `SELECT COUNT(*) as cnt FROM conversations WHERE channel_id = $1`, [ch.id],
-        );
-        if (parseInt(cc?.[0]?.cnt || '0', 10) === 0) {
-          safeToRemove.push(ch);
-        } else {
-          this.logger.warn(`⏭️ Keeping channel ${ch.id} — has ${cc[0].cnt} conversations`);
-        }
-      }
-      if (safeToRemove.length > 0) {
-        await this.channelRepository.remove(safeToRemove);
-      }
-    }
-
-    this.logger.log(
-      `🧹 Cleanup for store ${storeId}: removed ${toRemove.length}, kept ${allChannels.length - toRemove.length}`,
-    );
+    // ✅ دمج أرقام الطلبات مع بيانات العملاء
+    const contactsWithRefs = contacts.map(c => ({
+      ...c,
+      orderRefs: orderRefsMap[c.id] || [],
+    }));
 
     return {
-      removed: toRemove.length,
-      kept: allChannels.length - toRemove.length,
+      data: contactsWithRefs,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+      stats: {
+        phonesCount: parseInt(stats?.phonesCount || '0', 10),
+        emailsCount: parseInt(stats?.emailsCount || '0', 10),
+      },
     };
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 💬 Send Message
-  // ═══════════════════════════════════════════════════════════════════════════════
+  /**
+   * إحصائيات العملاء
+   */
+  async getStats(tenantId: string) {
+    const total = await this.customerRepository.count({ where: { tenantId } });
+    
+    // Get counts by different criteria
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    const newToday = await this.customerRepository
+      .createQueryBuilder('customer')
+      .where('customer.tenantId = :tenantId', { tenantId })
+      .andWhere('customer.createdAt >= :today', { today })
+      .getCount();
 
-  async sendWhatsAppMessage(channelId: string, to: string, message: string, storeId?: string): Promise<{ messageId: string }> {
-    // 🔧 FIX M-04: Include storeId in query when available to prevent IDOR
-    const whereClause: Record<string, unknown> = { id: channelId };
-    if (storeId) {
-      whereClause.storeId = storeId;
-    }
-    const channel = await this.channelRepository.findOne({ where: whereClause });
-    if (!channel) throw new NotFoundException('Channel not found');
+    const thisMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+    const newThisMonth = await this.customerRepository
+      .createQueryBuilder('customer')
+      .where('customer.tenantId = :tenantId', { tenantId })
+      .andWhere('customer.createdAt >= :thisMonth', { thisMonth })
+      .getCount();
 
-    if (channel.type === ChannelType.WHATSAPP_QR) {
-      return this.whatsappBaileysService.sendTextMessage(channelId, to, message);
-    } else if (channel.type === ChannelType.WHATSAPP_OFFICIAL) {
-      return this.sendWhatsAppOfficialMessage(channel, to, message);
-    }
+    // Count blocked customers
+    const blocked = await this.customerRepository.count({
+      where: { tenantId, status: CustomerStatus.BLOCKED },
+    });
 
-    throw new BadRequestException('Invalid channel type');
+    // ✅ Active customers = طلبوا خلال آخر 30 يوم
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const active = await this.customerRepository
+      .createQueryBuilder('c')
+      .where('c.tenantId = :tenantId', { tenantId })
+      .andWhere('c.lastOrderAt >= :thirtyDaysAgo', { thirtyDaysAgo })
+      .getCount();
+
+    // ✅ VIP customers (not 'normal')
+    const vip = await this.customerRepository
+      .createQueryBuilder('c')
+      .where('c.tenantId = :tenantId', { tenantId })
+      .andWhere('c.vipStatus IS NOT NULL AND c.vipStatus != :normal', { normal: 'normal' })
+      .getCount();
+
+    // ✅ Average spending + customers with orders
+    const spendingStats = await this.customerRepository
+      .createQueryBuilder('c')
+      .select([
+        `COALESCE(AVG(c.total_spent), 0) AS "avgSpent"`,
+        `COUNT(CASE WHEN c.total_orders > 0 THEN 1 END) AS "withOrders"`,
+      ])
+      .where('c.tenantId = :tenantId', { tenantId })
+      .getRawOne();
+
+    return {
+      total,
+      active,
+      vip,
+      avgSpent: Math.round(parseFloat(spendingStats?.avgSpent || '0') * 100) / 100,
+      withOrders: parseInt(spendingStats?.withOrders || '0', 10),
+      newToday,
+      newThisMonth,
+      blocked,
+      byChannel: {
+        whatsapp: 0,
+        instagram: 0,
+        telegram: 0,
+        email: 0,
+        sms: 0,
+      },
+    };
   }
 
-  private async sendWhatsAppOfficialMessage(channel: Channel, to: string, message: string): Promise<{ messageId: string }> {
-    try {
-      const response = await firstValueFrom(
-        this.httpService.post(
-          `https://graph.facebook.com/v21.0/${channel.whatsappPhoneNumberId}/messages`,
-          { messaging_product: 'whatsapp', to, type: 'text', text: { body: message } },
-          { headers: { Authorization: `Bearer ${channel.whatsappAccessToken}`, 'Content-Type': 'application/json' } },
-        ),
-      );
-      return { messageId: response.data.messages?.[0]?.id || '' };
-    } catch (error: any) {
-      throw new BadRequestException('Failed to send message');
-    }
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 📸 Instagram
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  async connectInstagram(storeId: string, accessToken: string, userId: string, pageId: string): Promise<Channel> {
-    const userInfo = await this.getInstagramUserInfo(accessToken, userId);
-    const existing = await this.channelRepository.findOne({
-      where: { storeId, type: ChannelType.INSTAGRAM, instagramUserId: userId },
+  /**
+   * إنشاء عميل جديد
+   */
+  async create(tenantId: string, dto: CreateContactDto) {
+    // Check for duplicate phone/email
+    const existing = await this.customerRepository.findOne({
+      where: [
+        { tenantId, phone: dto.phone },
+        dto.email ? { tenantId, email: dto.email } : undefined,
+      ].filter(Boolean) as any,
     });
 
     if (existing) {
-      existing.instagramAccessToken = accessToken;
-      existing.status = ChannelStatus.CONNECTED;
-      return this.channelRepository.save(existing);
+      throw new BadRequestException('العميل موجود مسبقاً');
     }
 
-    const channel = this.channelRepository.create({
-      storeId, type: ChannelType.INSTAGRAM,
-      name: userInfo.username || 'Instagram',
-      status: ChannelStatus.CONNECTED, isOfficial: true,
-      instagramUserId: userId, instagramUsername: userInfo.username,
-      instagramAccessToken: accessToken, instagramPageId: pageId,
-      connectedAt: new Date(),
-    });
-    return this.channelRepository.save(channel);
+    // Extract address string and other fields separately
+    const { address: addressString, ...restDto } = dto;
+
+    const contact = this.customerRepository.create({
+      ...restDto,
+      tenantId,
+      // Convert string address to CustomerAddress if provided
+      address: addressString ? { street: addressString } : undefined,
+    } as any);
+
+    const saved = await this.customerRepository.save(contact);
+
+    // Handle both single and array results from save()
+    const savedContact = Array.isArray(saved) ? saved[0] : saved;
+
+    this.logger.log(`Contact created: ${savedContact.id}`, { tenantId, phone: dto.phone });
+
+    return savedContact;
   }
 
-  private async getInstagramUserInfo(accessToken: string, userId: string): Promise<any> {
+  /**
+   * جلب عميل بالـ ID
+   */
+  async findById(id: string, tenantId: string) {
+    const contact = await this.customerRepository.findOne({
+      where: { id, tenantId },
+    });
+
+    if (!contact) {
+      throw new NotFoundException('العميل غير موجود');
+    }
+
+    // Get additional stats
+    const conversationCount = await this.conversationRepository.count({
+      where: { customerId: id, tenantId },
+    });
+
+    const orderCount = await this.orderRepository.count({
+      where: { customerId: id, tenantId },
+    });
+
+    return {
+      ...contact,
+      stats: {
+        conversationCount,
+        orderCount,
+        totalSpent: 0,
+        lastOrderDate: null,
+        averageOrderValue: 0,
+      },
+    };
+  }
+
+  /**
+   * تحديث عميل
+   */
+  async update(id: string, tenantId: string, dto: UpdateContactDto) {
+    const contact = await this.customerRepository.findOne({
+      where: { id, tenantId },
+    });
+
+    if (!contact) {
+      throw new NotFoundException('العميل غير موجود');
+    }
+
+    Object.assign(contact, dto);
+
+    return this.customerRepository.save(contact);
+  }
+
+  /**
+   * حذف عميل
+   */
+  async delete(id: string, tenantId: string) {
+    const contact = await this.customerRepository.findOne({
+      where: { id, tenantId },
+    });
+
+    if (!contact) {
+      throw new NotFoundException('العميل غير موجود');
+    }
+
+    await this.customerRepository.remove(contact);
+    this.logger.log(`Contact deleted: ${id}`, { tenantId });
+  }
+
+  /**
+   * جلب محادثات العميل
+   */
+  async getConversations(
+    contactId: string,
+    tenantId: string,
+    pagination: PaginationOptions,
+  ) {
+    const { page, limit } = pagination;
+    const skip = (page - 1) * limit;
+
+    const [conversations, total] = await this.conversationRepository.findAndCount({
+      where: { customerId: contactId, tenantId },
+      order: { updatedAt: 'DESC' },
+      skip,
+      take: limit,
+    });
+
+    return {
+      data: conversations,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  /**
+   * جلب طلبات العميل
+   */
+  async getOrders(
+    contactId: string,
+    tenantId: string,
+    pagination: PaginationOptions,
+  ) {
+    const { page, limit } = pagination;
+    const skip = (page - 1) * limit;
+
+    const [orders, total] = await this.orderRepository.findAndCount({
+      where: { customerId: contactId, tenantId },
+      order: { createdAt: 'DESC' },
+      skip,
+      take: limit,
+    });
+
+    return {
+      data: orders,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  /**
+   * سجل النشاطات
+   */
+  async getTimeline(
+    _contactId: string,
+    _tenantId: string,
+    pagination: PaginationOptions,
+  ) {
+    return {
+      data: [],
+      pagination: {
+        ...pagination,
+        total: 0,
+        totalPages: 0,
+      },
+    };
+  }
+
+  /**
+   * إضافة تصنيفات
+   */
+  async addTags(contactId: string, tenantId: string, tags: string[]) {
+    const contact = await this.customerRepository.findOne({
+      where: { id: contactId, tenantId },
+    });
+
+    if (!contact) {
+      throw new NotFoundException('العميل غير موجود');
+    }
+    
+    const existingTags = contact.tags || [];
+    const newTags = [...new Set([...existingTags, ...tags])];
+    
+    contact.tags = newTags;
+    
+    return this.customerRepository.save(contact);
+  }
+
+  /**
+   * إزالة تصنيف
+   */
+  async removeTag(contactId: string, tenantId: string, tag: string) {
+    const contact = await this.customerRepository.findOne({
+      where: { id: contactId, tenantId },
+    });
+
+    if (!contact) {
+      throw new NotFoundException('العميل غير موجود');
+    }
+    
+    contact.tags = (contact.tags || []).filter((t) => t !== tag);
+    
+    await this.customerRepository.save(contact);
+  }
+
+  /**
+   * جلب الملاحظات
+   */
+  async getNotes(_contactId: string, _tenantId: string) {
+    return { notes: [] };
+  }
+
+  /**
+   * إضافة ملاحظة
+   */
+  async addNote(contactId: string, _tenantId: string, userId: string, content: string) {
+    return {
+      id: 'note-id',
+      contactId,
+      userId,
+      content,
+      createdAt: new Date(),
+    };
+  }
+
+  /**
+   * حذف ملاحظة
+   */
+  async deleteNote(_contactId: string, _tenantId: string, _noteId: string) {
+    // TODO: Implement notes deletion
+  }
+
+  /**
+   * دمج عملاء
+   */
+  async mergeContacts(primaryId: string, secondaryId: string, tenantId: string) {
+    const primary = await this.customerRepository.findOne({
+      where: { id: primaryId, tenantId },
+    });
+
+    if (!primary) {
+      throw new NotFoundException('العميل الأساسي غير موجود');
+    }
+
+    const secondary = await this.customerRepository.findOne({
+      where: { id: secondaryId, tenantId },
+    });
+
+    if (!secondary) {
+      throw new NotFoundException('العميل الثانوي غير موجود');
+    }
+
+    // Merge tags
+    primary.tags = [...new Set([...(primary.tags || []), ...(secondary.tags || [])])];
+
+    // Update conversations to point to primary
+    await this.conversationRepository.update(
+      { customerId: secondaryId, tenantId },
+      { customerId: primaryId },
+    );
+
+    // Update orders to point to primary
+    await this.orderRepository.update(
+      { customerId: secondaryId, tenantId },
+      { customerId: primaryId },
+    );
+
+    // Delete secondary contact
+    await this.customerRepository.remove(secondary);
+
+    // Save primary with merged data
+    return this.customerRepository.save(primary);
+  }
+
+  /**
+   * حظر عميل
+   */
+  async blockContact(contactId: string, tenantId: string, _reason?: string) {
+    const contact = await this.customerRepository.findOne({
+      where: { id: contactId, tenantId },
+    });
+
+    if (!contact) {
+      throw new NotFoundException('العميل غير موجود');
+    }
+    
+    contact.status = CustomerStatus.BLOCKED;
+    
+    return this.customerRepository.save(contact);
+  }
+
+  /**
+   * إلغاء حظر عميل
+   */
+  async unblockContact(contactId: string, tenantId: string) {
+    const contact = await this.customerRepository.findOne({
+      where: { id: contactId, tenantId },
+    });
+
+    if (!contact) {
+      throw new NotFoundException('العميل غير موجود');
+    }
+    
+    contact.status = CustomerStatus.ACTIVE;
+    
+    return this.customerRepository.save(contact);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // Segments
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async getSegments(_tenantId: string) {
+    return {
+      segments: [
+        {
+          id: 'all-customers',
+          name: 'جميع العملاء',
+          count: 0,
+          isSystem: true,
+        },
+        {
+          id: 'new-customers',
+          name: 'عملاء جدد (آخر 30 يوم)',
+          count: 0,
+          isSystem: true,
+        },
+        {
+          id: 'vip-customers',
+          name: 'عملاء VIP',
+          count: 0,
+          isSystem: true,
+        },
+        {
+          id: 'inactive-customers',
+          name: 'عملاء غير نشطين',
+          count: 0,
+          isSystem: true,
+        },
+      ],
+    };
+  }
+
+  async createSegment(tenantId: string, dto: CreateSegmentDto) {
+    return {
+      id: 'new-segment-id',
+      ...dto,
+      tenantId,
+      count: 0,
+      createdAt: new Date(),
+    };
+  }
+
+  async getSegmentById(id: string, tenantId: string) {
+    return { id, tenantId };
+  }
+
+  async updateSegment(_id: string, _tenantId: string, dto: CreateSegmentDto) {
+    return { id: _id, ...dto };
+  }
+
+  async deleteSegment(_id: string, _tenantId: string) {
+    // TODO: Implement
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ✅ مزامنة العملاء من سلة
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async syncFromSalla(tenantId: string): Promise<{ synced: number; total: number; errors: number }> {
+    this.logger.log(`🔄 Starting Salla customer sync`, { tenantId });
+
+    // 1. جلب المتجر مع access token (select: false في الـ entity)
+    const store = await this.storeRepository
+      .createQueryBuilder('store')
+      .addSelect('store.accessToken')
+      .where('store.tenantId = :tenantId', { tenantId })
+      .andWhere('store.platform = :platform', { platform: 'salla' })
+      .andWhere('store.deletedAt IS NULL')
+      .getOne();
+
+    if (!store || !store.accessToken) {
+      throw new BadRequestException('لا يوجد متجر سلة مربوط أو التوكن منتهي');
+    }
+
+    this.logger.log(`📦 Found store: ${store.id}, platform: ${store.platform}`);
+
+    // ✅ فك تشفير التوكن (محفوظ مشفّر بـ AES-256-GCM)
+    const accessToken = decrypt(store.accessToken);
+    if (!accessToken) {
+      throw new BadRequestException('فشل في فك تشفير التوكن — أعد ربط المتجر');
+    }
+
+    let synced = 0;
+    let errors = 0;
+    let page = 1;
+    let hasMore = true;
+
+    // 2. جلب العملاء من سلة (كل الصفحات)
+    while (hasMore) {
+      try {
+        const response = await this.sallaApiService.getCustomers(accessToken, {
+          page,
+          perPage: 50,
+        });
+
+        // ✅ Salla API: { status, success, data: [...], pagination }
+        const rawData: any = response?.data;
+        const customers = Array.isArray(rawData) ? rawData : (Array.isArray(rawData?.data) ? rawData.data : []);
+        this.logger.log(`📦 Salla page ${page}: ${customers.length} customers received`);
+        
+        if (customers.length === 0) {
+          hasMore = false;
+          break;
+        }
+
+        // 3. حفظ/تحديث كل عميل
+        for (const sallaCustomer of customers) {
+          try {
+            const sallaCustomerId = String(sallaCustomer.id);
+            let customer = await this.customerRepository.findOne({
+              where: { storeId: store.id, sallaCustomerId },
+            });
+
+            const firstName = sallaCustomer.first_name || undefined;
+            const lastName = sallaCustomer.last_name || undefined;
+            const fullName = firstName && lastName ? `${firstName} ${lastName}` : firstName || undefined;
+            const email = sallaCustomer.email || undefined;
+
+            // بناء رقم الهاتف الدولي
+            const mobile = sallaCustomer.mobile != null ? String(sallaCustomer.mobile) : '';
+            const mobileCode = sallaCustomer.mobile_code != null ? String(sallaCustomer.mobile_code) : '966';
+            let phone: string | undefined;
+            if (mobile) {
+              const cleaned = mobile.replace(/\D/g, '').replace(/^0+/, '');
+              const code = mobileCode.replace(/\D/g, '').replace(/^\+/, '');
+              phone = cleaned.startsWith(code) ? cleaned : `${code}${cleaned}`;
+            }
+
+            if (customer) {
+              // تحديث
+              if (firstName) customer.firstName = firstName;
+              if (lastName) customer.lastName = lastName;
+              if (fullName) customer.fullName = fullName;
+              if (phone) customer.phone = phone;
+              if (email) customer.email = email;
+              await this.customerRepository.save(customer);
+            } else {
+              // إنشاء
+              customer = this.customerRepository.create({
+                tenantId,
+                storeId: store.id,
+                sallaCustomerId,
+                firstName,
+                lastName,
+                fullName,
+                phone,
+                email,
+                status: CustomerStatus.ACTIVE,
+              });
+              await this.customerRepository.save(customer);
+            }
+            synced++;
+          } catch (err: any) {
+            this.logger.error(`❌ Customer sync failed for Salla ID ${sallaCustomer?.id}: ${err?.message || err}`);
+            errors++;
+          }
+        }
+
+        // التحقق من وجود صفحات أخرى
+        if (customers.length < 50) {
+          hasMore = false;
+        } else {
+          page++;
+        }
+      } catch (error: any) {
+        this.logger.error(`❌ Salla sync page ${page} failed: ${error?.message}`);
+        hasMore = false;
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // 4. مزامنة الطلبات — تحديث totalOrders و totalSpent لكل عميل
+    // ═══════════════════════════════════════════════════════════════════════
     try {
-      const response = await firstValueFrom(
-        this.httpService.get(`https://graph.facebook.com/v21.0/${userId}`, {
-          params: { fields: 'username,name,profile_picture_url', access_token: accessToken },
-        }),
-      );
-      return response.data;
-    } catch {
-      throw new BadRequestException('Failed to get Instagram account info');
+      this.logger.log(`📦 Syncing orders from Salla...`);
+      const customerStats: Record<string, { orders: number; spent: number; lastOrderAt: string }> = {};
+      const collectedOrders: { sallaOrderId: string; referenceId: string; sallaCustId: string; totalAmount: number; status: string; orderDate: string }[] = [];
+      let orderPage = 1;
+      let hasMoreOrders = true;
+
+      while (hasMoreOrders) {
+        try {
+          const orderRes = await this.sallaApiService.getOrders(accessToken, { page: orderPage, perPage: 50 });
+          const rawOrders: any = orderRes?.data;
+          const orders = Array.isArray(rawOrders) ? rawOrders : (Array.isArray(rawOrders?.data) ? rawOrders.data : []);
+
+          if (orders.length === 0) { hasMoreOrders = false; break; }
+
+          // ✅ Log first order FULL KEYS for debugging
+          if (orderPage === 1 && orders[0]) {
+            this.logger.log(`📋 Sample order keys: ${Object.keys(orders[0]).join(', ')}`);
+            this.logger.log(`📋 Sample order amounts: ${JSON.stringify(orders[0]?.amounts)}`);
+            this.logger.log(`📋 Sample order total: ${JSON.stringify(orders[0]?.total)}`);
+            this.logger.log(`📋 Sample order date: ${JSON.stringify(orders[0]?.date)}`);
+          }
+
+          for (const order of orders) {
+            const custId = String(order?.customer?.id || '');
+            if (!custId) continue;
+            if (!customerStats[custId]) customerStats[custId] = { orders: 0, spent: 0, lastOrderAt: '' };
+            customerStats[custId].orders++;
+            // ✅ سلة ترسل المبلغ بأشكال مختلفة حسب الـ endpoint
+            const totalAmount = order?.amounts?.total   // {amount: number, currency: string}
+              ?? order?.total                            // number or {amount, currency}
+              ?? order?.total_price                      // some Salla versions
+              ?? order?.grand_total;                     // fallback
+            const spent = typeof totalAmount === 'number' ? totalAmount
+              : typeof totalAmount?.amount === 'number' ? totalAmount.amount
+              : parseFloat(String(totalAmount?.amount || totalAmount || '0')) || 0;
+            customerStats[custId].spent += spent;
+            // ✅ تتبع آخر تاريخ طلب (سلة ترسل date كـ object أو string)
+            const orderDate = order?.date?.date || order?.created_at || '';
+            if (typeof orderDate === 'string' && orderDate && orderDate > customerStats[custId].lastOrderAt) {
+              customerStats[custId].lastOrderAt = orderDate;
+            }
+
+            // ✅ حفظ سجل الطلب في DB (للعرض لاحقاً)
+            const sallaOrderId = String(order?.id || '');
+            const refId = order?.reference_id || order?.referenceId || sallaOrderId;
+            const statusSlug = order?.status?.slug || order?.status?.name || 'created';
+            if (sallaOrderId) {
+              collectedOrders.push({
+                sallaOrderId,
+                referenceId: refId,
+                sallaCustId: custId,
+                totalAmount: spent,
+                status: statusSlug,
+                orderDate,
+              });
+            }
+          }
+
+          if (orders.length < 50) hasMoreOrders = false;
+          else orderPage++;
+        } catch { hasMoreOrders = false; }
+      }
+
+      // تحديث العملاء بالإحصائيات
+      for (const [sallaId, stats] of Object.entries(customerStats)) {
+        try {
+          const updateData: any = {
+            totalOrders: stats.orders,
+            totalSpent: Math.round(stats.spent * 100) / 100,
+          };
+          // ✅ حفظ آخر تاريخ طلب (لحساب العملاء النشطين)
+          if (stats.lastOrderAt) {
+            const parsed = new Date(stats.lastOrderAt);
+            if (!isNaN(parsed.getTime())) {
+              updateData.lastOrderAt = parsed;
+            }
+          }
+          await this.customerRepository
+            .createQueryBuilder()
+            .update()
+            .set(updateData)
+            .where('"store_id" = :storeId AND "salla_customer_id" = :sallaId', { storeId: store.id, sallaId })
+            .execute();
+        } catch {}
+      }
+      this.logger.log(`✅ Order stats updated for ${Object.keys(customerStats).length} customers`);
+
+      // ✅ حفظ سجلات الطلبات في DB (batch upsert)
+      if (collectedOrders.length > 0) {
+        try {
+          let savedCount = 0;
+          for (const o of collectedOrders) {
+            try {
+              // تحقق أن الطلب غير موجود مسبقاً
+              const exists = await this.orderRepository.manager.query(
+                `SELECT 1 FROM orders WHERE store_id = $1 AND salla_order_id = $2 LIMIT 1`,
+                [store.id, o.sallaOrderId]
+              );
+              if (exists.length > 0) continue; // موجود → تجاوز
+
+              // جلب customer_id الداخلي
+              const custRow = await this.orderRepository.manager.query(
+                `SELECT id FROM customers WHERE store_id = $1 AND salla_customer_id = $2 LIMIT 1`,
+                [store.id, o.sallaCustId]
+              );
+              if (!custRow.length) continue; // عميل غير موجود → تجاوز
+
+              const orderDateParsed = o.orderDate ? new Date(o.orderDate) : new Date();
+              const safeDate = !isNaN(orderDateParsed.getTime()) ? orderDateParsed : new Date();
+
+              const validStatuses = ['created', 'processing', 'under_review', 'pending_payment', 'paid', 'ready_to_ship', 'shipped', 'delivered', 'completed', 'cancelled', 'refunded', 'restoring', 'failed', 'on_hold'];
+              const safeStatus = validStatuses.includes(o.status) ? o.status : 'completed';
+
+              await this.orderRepository.manager.query(
+                `INSERT INTO orders (id, tenant_id, store_id, customer_id, salla_order_id, reference_id, status, total_amount, currency, created_at, updated_at)
+                 VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, 'SAR', $8, NOW())`,
+                [tenantId, store.id, custRow[0].id, o.sallaOrderId, o.referenceId, safeStatus, o.totalAmount, safeDate]
+              );
+              savedCount++;
+            } catch { /* skip individual order errors */ }
+          }
+          this.logger.log(`✅ Saved ${savedCount} new order records to DB (${collectedOrders.length} total from Salla)`);
+        } catch (err: any) {
+          this.logger.warn(`⚠️ Order records save failed (non-blocking): ${err?.message}`);
+        }
+      }
+    } catch (err: any) {
+      this.logger.error(`⚠️ Order sync failed: ${err?.message}`);
     }
-  }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🎮 Discord
-  // ═══════════════════════════════════════════════════════════════════════════════
+    const total = await this.customerRepository.count({ where: { tenantId } });
 
-  async connectDiscord(storeId: string, dto: ConnectDiscordDto): Promise<Channel> {
-    const botInfo = await this.verifyDiscordBot(dto.botToken);
-    const existing = await this.channelRepository.findOne({
-      where: { storeId, type: ChannelType.DISCORD, discordBotId: botInfo.id },
-    });
-    if (existing) throw new BadRequestException('This Discord bot is already connected');
-
-    const channel = this.channelRepository.create({
-      storeId, type: ChannelType.DISCORD,
-      name: botInfo.username || 'Discord Bot',
-      status: ChannelStatus.CONNECTED, isOfficial: true,
-      discordBotToken: dto.botToken, discordGuildId: dto.guildId,
-      discordBotId: botInfo.id, discordBotUsername: botInfo.username,
-      connectedAt: new Date(),
-    });
-    return this.channelRepository.save(channel);
-  }
-
-  private async verifyDiscordBot(botToken: string): Promise<any> {
+    // ✅ تحديث عدد العملاء في المتجر ليتطابق مع قاعدة البيانات
     try {
-      const response = await firstValueFrom(
-        this.httpService.get('https://discord.com/api/v10/users/@me', {
-          headers: { Authorization: `Bot ${botToken}` },
-        }),
+      await this.storeRepository.update(
+        { id: store.id },
+        { sallaCustomersCount: total } as any,
       );
-      return response.data;
-    } catch {
-      throw new BadRequestException('Invalid Discord bot token');
+    } catch {}
+
+    this.logger.log(`✅ Salla sync complete: ${synced} synced, ${errors} errors, ${total} total`, { tenantId });
+
+    return { synced, total, errors };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // Import/Export
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async importContacts(
+    tenantId: string,
+    file: { originalname?: string },
+    _dto: ImportContactsDto,
+  ) {
+    this.logger.log(`Importing contacts`, { tenantId, filename: file?.originalname });
+
+    return {
+      success: true,
+      message: 'جاري استيراد العملاء',
+      jobId: 'import-job-id',
+    };
+  }
+
+  /**
+   * ✅ تصدير العملاء كملف CSV حقيقي
+   *
+   * يجلب جميع العملاء للمتجر ويُنشئ CSV مع:
+   * - BOM لدعم العربية في Excel
+   * - أعمدة: الاسم، الهاتف، الإيميل، القناة، الطلبات، الإنفاق، التصنيفات
+   */
+  async exportContacts(tenantId: string, _format: string, _segment?: string): Promise<string> {
+    this.logger.log(`Exporting contacts`, { tenantId, _format });
+
+    // جلب جميع العملاء (بدون pagination)
+    const customers = await this.customerRepository.find({
+      where: { tenantId },
+      order: { createdAt: 'DESC' },
+    });
+
+    // ✅ جلب أرقام الطلبات لكل العملاء
+    const allOrderRefs = await this.orderRepository
+      .createQueryBuilder('o')
+      .select(['o.customer_id AS "customerId"', 'o.reference_id AS "referenceId"'])
+      .where('o.tenant_id = :tenantId', { tenantId })
+      .orderBy('o.created_at', 'DESC')
+      .getRawMany();
+    const orderRefsMap: Record<string, string[]> = {};
+    for (const ref of allOrderRefs) {
+      if (!ref.customerId || !ref.referenceId) continue;
+      if (!orderRefsMap[ref.customerId]) orderRefsMap[ref.customerId] = [];
+      orderRefsMap[ref.customerId].push(ref.referenceId);
     }
-  }
 
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // 🛠️ Helpers
-  // ═══════════════════════════════════════════════════════════════════════════════
+    // UTF-8 BOM لدعم العربية في Excel
+    const BOM = '\uFEFF';
 
-  private generateVerifyToken(): string {
-    return crypto.randomBytes(32).toString('hex');
-  }
+    // Headers
+    const headers = ['الاسم', 'رقم الهاتف', 'الإيميل', 'القناة', 'الحالة', 'عدد الطلبات', 'أرقام الطلبات', 'إجمالي الإنفاق', 'التصنيفات', 'تاريخ التسجيل'];
 
-  async updateStatus(id: string, status: ChannelStatus, error?: string): Promise<void> {
-    const updateData: any = { status };
-    if (error) { updateData.lastError = error; updateData.lastErrorAt = new Date(); }
-    if (status === ChannelStatus.CONNECTED) { updateData.connectedAt = new Date(); updateData.errorCount = 0; }
-    await this.channelRepository.update(id, updateData);
-  }
+    // Rows
+    const rows = customers.map(c => {
+      const name = c.fullName || [c.firstName, c.lastName].filter(Boolean).join(' ') || '—';
+      const phone = c.phone || '—';
+      const email = c.email || '—';
+      const channel = c.channel || '—';
+      const status = c.status || 'active';
+      const orders = String(c.totalOrders ?? 0);
+      const refs = (orderRefsMap[c.id] || []).join(' | ');
+      const spent = String(c.totalSpent ?? 0);
+      const tags = (c.tags || []).join('، ');
+      const date = c.createdAt ? new Date(c.createdAt).toLocaleDateString('ar-SA') : '—';
+      return [name, phone, email, channel, status, orders, refs, spent, tags, date];
+    });
 
-  async incrementMessageCount(id: string, type: 'sent' | 'received'): Promise<void> {
-    const field = type === 'sent' ? 'messagesSent' : 'messagesReceived';
-    await this.channelRepository.increment({ id }, field, 1);
-    await this.channelRepository.update(id, { lastActivityAt: new Date() });
+    // Build CSV
+    const escapeCsv = (val: string) => {
+      if (val.includes(',') || val.includes('"') || val.includes('\n')) {
+        return `"${val.replace(/"/g, '""')}"`;
+      }
+      return val;
+    };
+
+    const csvLines = [
+      headers.map(escapeCsv).join(','),
+      ...rows.map(row => row.map(escapeCsv).join(',')),
+    ];
+
+    return BOM + csvLines.join('\n');
   }
 }
