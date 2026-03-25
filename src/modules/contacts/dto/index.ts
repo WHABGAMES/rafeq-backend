@@ -232,6 +232,16 @@ export class ContactFiltersDto {
   @IsBoolean()
   hasOrders?: boolean;
 
+  @ApiPropertyOptional({ description: 'فلتر النشاط: recently_active = طلب خلال 30 يوم، recently_inactive = ما طلب' })
+  @IsOptional()
+  @IsString()
+  status?: string;
+
+  @ApiPropertyOptional({ description: 'فلتر VIP: normal, silver, gold, platinum' })
+  @IsOptional()
+  @IsString()
+  vipStatus?: string;
+
   @ApiPropertyOptional({ enum: ['createdAt', 'lastActivity', 'totalOrders', 'name'] })
   @IsOptional()
   @IsString()
