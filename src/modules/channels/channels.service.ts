@@ -20,7 +20,7 @@ import * as crypto from 'crypto';
 
 import { Channel, ChannelType, ChannelStatus } from './entities/channel.entity';
 import { WhatsAppBaileysService, QRSessionResult } from './whatsapp/whatsapp-baileys.service';
-import { WhatsAppCleanupListener } from './listeners/whatsapp-cleanup.listener';
+
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DTOs
@@ -49,8 +49,6 @@ export class ChannelsService {
     private readonly httpService: HttpService,
     
     private readonly whatsappBaileysService: WhatsAppBaileysService,
-
-    private readonly whatsappCleanupListener: WhatsAppCleanupListener,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════════
