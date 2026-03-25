@@ -163,11 +163,40 @@ export class ContactsService {
       where: { tenantId, status: CustomerStatus.BLOCKED },
     });
 
+    // ✅ Active customers = طلبوا خلال آخر 30 يوم
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const active = await this.customerRepository
+      .createQueryBuilder('c')
+      .where('c.tenantId = :tenantId', { tenantId })
+      .andWhere('c.lastOrderAt >= :thirtyDaysAgo', { thirtyDaysAgo })
+      .getCount();
+
+    // ✅ VIP customers (not 'normal')
+    const vip = await this.customerRepository
+      .createQueryBuilder('c')
+      .where('c.tenantId = :tenantId', { tenantId })
+      .andWhere('c.vipStatus IS NOT NULL AND c.vipStatus != :normal', { normal: 'normal' })
+      .getCount();
+
+    // ✅ Average spending + customers with orders
+    const spendingStats = await this.customerRepository
+      .createQueryBuilder('c')
+      .select([
+        `COALESCE(AVG(c.total_spent), 0) AS "avgSpent"`,
+        `COUNT(CASE WHEN c.total_orders > 0 THEN 1 END) AS "withOrders"`,
+      ])
+      .where('c.tenantId = :tenantId', { tenantId })
+      .getRawOne();
+
     return {
       total,
+      active,
+      vip,
+      avgSpent: Math.round(parseFloat(spendingStats?.avgSpent || '0') * 100) / 100,
+      withOrders: parseInt(spendingStats?.withOrders || '0', 10),
       newToday,
       newThisMonth,
-      withOrders: 0,
       blocked,
       byChannel: {
         whatsapp: 0,
@@ -675,7 +704,7 @@ export class ContactsService {
     // ═══════════════════════════════════════════════════════════════════════
     try {
       this.logger.log(`📦 Syncing orders from Salla...`);
-      const customerStats: Record<string, { orders: number; spent: number }> = {};
+      const customerStats: Record<string, { orders: number; spent: number; lastOrderAt: string }> = {};
       let orderPage = 1;
       let hasMoreOrders = true;
 
@@ -683,19 +712,20 @@ export class ContactsService {
         try {
           const orderRes = await this.sallaApiService.getOrders(accessToken, { page: orderPage, perPage: 50 });
           const rawOrders: any = orderRes?.data;
-          const orders = Array.isArray(rawOrders) ? rawOrders : [];
+          const orders = Array.isArray(rawOrders) ? rawOrders : (Array.isArray(rawOrders?.data) ? rawOrders.data : []);
 
           if (orders.length === 0) { hasMoreOrders = false; break; }
 
           // ✅ Log first order amounts for debugging
           if (orderPage === 1 && orders[0]) {
             this.logger.log(`📋 Sample order amounts: ${JSON.stringify(orders[0]?.amounts)}`);
+            this.logger.log(`📋 Sample order date: ${JSON.stringify(orders[0]?.date)}`);
           }
 
           for (const order of orders) {
             const custId = String(order?.customer?.id || '');
             if (!custId) continue;
-            if (!customerStats[custId]) customerStats[custId] = { orders: 0, spent: 0 };
+            if (!customerStats[custId]) customerStats[custId] = { orders: 0, spent: 0, lastOrderAt: '' };
             customerStats[custId].orders++;
             // ✅ سلة ترسل amounts بأشكال مختلفة
             const totalAmount = order?.amounts?.total;
@@ -703,6 +733,11 @@ export class ContactsService {
               : typeof totalAmount?.amount === 'number' ? totalAmount.amount
               : parseFloat(totalAmount?.amount || totalAmount || '0') || 0;
             customerStats[custId].spent += spent;
+            // ✅ تتبع آخر تاريخ طلب (سلة ترسل date كـ object أو string)
+            const orderDate = order?.date?.date || order?.created_at || '';
+            if (typeof orderDate === 'string' && orderDate && orderDate > customerStats[custId].lastOrderAt) {
+              customerStats[custId].lastOrderAt = orderDate;
+            }
           }
 
           if (orders.length < 50) hasMoreOrders = false;
@@ -713,10 +748,21 @@ export class ContactsService {
       // تحديث العملاء بالإحصائيات
       for (const [sallaId, stats] of Object.entries(customerStats)) {
         try {
+          const updateData: any = {
+            totalOrders: stats.orders,
+            totalSpent: Math.round(stats.spent * 100) / 100,
+          };
+          // ✅ حفظ آخر تاريخ طلب (لحساب العملاء النشطين)
+          if (stats.lastOrderAt) {
+            const parsed = new Date(stats.lastOrderAt);
+            if (!isNaN(parsed.getTime())) {
+              updateData.lastOrderAt = parsed;
+            }
+          }
           await this.customerRepository
             .createQueryBuilder()
             .update()
-            .set({ totalOrders: stats.orders, totalSpent: Math.round(stats.spent * 100) / 100 })
+            .set(updateData)
             .where('storeId = :storeId AND sallaCustomerId = :sallaId', { storeId: store.id, sallaId })
             .execute();
         } catch {}
