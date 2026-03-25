@@ -145,12 +145,13 @@ export class ContactsService {
     let orderRefsMap: Record<string, string[]> = {};
     if (contacts.length > 0) {
       const customerIds = contacts.map(c => c.id);
-      const orderRefs = await this.orderRepository
-        .createQueryBuilder('o')
-        .select(['o.customer_id AS "customerId"', 'o.reference_id AS "referenceId"'])
-        .where('o.customer_id IN (:...customerIds)', { customerIds })
-        .orderBy('o.created_at', 'DESC')
-        .getRawMany();
+      const orderRefs: { customerId: string; referenceId: string }[] = await this.orderRepository.manager.query(
+        `SELECT customer_id AS "customerId", reference_id AS "referenceId"
+         FROM orders
+         WHERE customer_id = ANY($1) AND reference_id IS NOT NULL AND reference_id != ''
+         ORDER BY created_at DESC`,
+        [customerIds],
+      );
       for (const ref of orderRefs) {
         if (!ref.customerId || !ref.referenceId) continue;
         if (!orderRefsMap[ref.customerId]) orderRefsMap[ref.customerId] = [];
@@ -659,6 +660,7 @@ export class ContactsService {
     let errors = 0;
     let page = 1;
     let hasMore = true;
+    let consecutiveFailures = 0;
 
     // 2. جلب العملاء من سلة (كل الصفحات)
     while (hasMore) {
@@ -672,6 +674,7 @@ export class ContactsService {
         const rawData: any = response?.data;
         const customers = Array.isArray(rawData) ? rawData : (Array.isArray(rawData?.data) ? rawData.data : []);
         this.logger.log(`📦 Salla page ${page}: ${customers.length} customers received`);
+        consecutiveFailures = 0; // ✅ نجحت الصفحة — reset العداد
         
         if (customers.length === 0) {
           hasMore = false;
@@ -738,8 +741,10 @@ export class ContactsService {
           page++;
         }
       } catch (error: any) {
-        this.logger.error(`❌ Salla sync page ${page} failed: ${error?.message}`);
-        hasMore = false;
+        consecutiveFailures++;
+        this.logger.error(`❌ Salla sync page ${page} failed (${consecutiveFailures}/3): ${error?.message}`);
+        // ✅ 3 صفحات متتالية فشلت = وقف | غير كذا = تخطي وكمل
+        if (consecutiveFailures >= 3 || page >= 250) { hasMore = false; } else { page++; errors++; }
       }
     }
 
@@ -752,6 +757,7 @@ export class ContactsService {
       const collectedOrders: { sallaOrderId: string; referenceId: string; sallaCustId: string; totalAmount: number; status: string; orderDate: string }[] = [];
       let orderPage = 1;
       let hasMoreOrders = true;
+      let orderConsecFails = 0;
 
       while (hasMoreOrders) {
         try {
@@ -760,6 +766,7 @@ export class ContactsService {
           const orders = Array.isArray(rawOrders) ? rawOrders : (Array.isArray(rawOrders?.data) ? rawOrders.data : []);
 
           if (orders.length === 0) { hasMoreOrders = false; break; }
+          orderConsecFails = 0; // ✅ نجحت
 
           // ✅ Log first order FULL KEYS for debugging
           if (orderPage === 1 && orders[0]) {
@@ -807,7 +814,11 @@ export class ContactsService {
 
           if (orders.length < 50) hasMoreOrders = false;
           else orderPage++;
-        } catch { hasMoreOrders = false; }
+        } catch (orderPageErr: any) {
+          orderConsecFails++;
+          this.logger.error(`❌ Salla orders page ${orderPage} failed (${orderConsecFails}/3): ${orderPageErr?.message || orderPageErr}`);
+          if (orderConsecFails >= 3 || orderPage >= 250) { hasMoreOrders = false; } else { orderPage++; }
+        }
       }
 
       // تحديث العملاء بالإحصائيات
@@ -932,13 +943,15 @@ export class ContactsService {
       order: { createdAt: 'DESC' },
     });
 
-    // ✅ جلب أرقام الطلبات لكل العملاء
-    const allOrderRefs = await this.orderRepository
-      .createQueryBuilder('o')
-      .select(['o.customer_id AS "customerId"', 'o.reference_id AS "referenceId"'])
-      .where('o.tenant_id = :tenantId', { tenantId })
-      .orderBy('o.created_at', 'DESC')
-      .getRawMany();
+    // ✅ جلب أرقام الطلبات لكل العملاء (raw SQL — يتجنب مشاكل TypeORM mapping)
+    const allOrderRefs: { customerId: string; referenceId: string }[] = await this.orderRepository.manager.query(
+      `SELECT customer_id AS "customerId", reference_id AS "referenceId"
+       FROM orders
+       WHERE tenant_id = $1 AND reference_id IS NOT NULL AND reference_id != ''
+       ORDER BY created_at DESC`,
+      [tenantId],
+    );
+    this.logger.log(`📋 CSV export: found ${allOrderRefs.length} order refs for ${customers.length} customers`);
     const orderRefsMap: Record<string, string[]> = {};
     for (const ref of allOrderRefs) {
       if (!ref.customerId || !ref.referenceId) continue;
