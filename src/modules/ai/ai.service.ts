@@ -3415,13 +3415,22 @@ Types:
     // ✅ وضع المالك — كشف أرقام التاجر المعتمدة
     // FIX: دعم @lid — نفس الرقم أحياناً يوصل كـ @lid بدل @s.whatsapp.net
     let ownerCheckPhone = context.customerPhone;
+    const currentExternalId = conv?.customerExternalId || '';
+    const isLidConversation = currentExternalId.includes('@lid');
 
-    // إذا ما عندنا رقم هاتف و المرسل @lid → نحاول نكتشف الرقم الحقيقي
-    if (!ownerCheckPhone && conv?.customerExternalId?.includes('@lid') && conv?.channelId && settings.ownerModeEnabled) {
+    // ═══ LAYER 1: @lid → phone resolution (3 طرق) ═══
+    if (!ownerCheckPhone && isLidConversation && conv?.channelId && settings.ownerModeEnabled) {
       try {
-        // البحث عن محادثة ثانية في نفس القناة بنفس الاسم وفيها رقم هاتف حقيقي
-        // (نفس الشخص أرسل من @s.whatsapp.net قبل كذا)
-        if (conv.customerName) {
+        // طريقة 1: ownerLids — LIDs محفوظة مسبقاً (أسرع)
+        const knownLids = (settings as any).ownerLids as string[] | undefined;
+        if (knownLids?.includes(currentExternalId)) {
+          // هذا LID معروف → نجيب أول رقم مالك
+          ownerCheckPhone = settings.ownerPhones?.[0];
+          this.logger.log(`🔑 @lid matched from ownerLids: ${currentExternalId.slice(0, 8)}...`);
+        }
+
+        // طريقة 2: مطابقة بالاسم مع محادثة سابقة
+        if (!ownerCheckPhone && conv.customerName) {
           const matchConv = await this.conversationRepo
             .createQueryBuilder('c')
             .select(['c.id', 'c.customerPhone'])
@@ -3435,17 +3444,46 @@ Types:
 
           if (matchConv?.customerPhone) {
             ownerCheckPhone = matchConv.customerPhone;
-            this.logger.log(`🔑 @lid phone resolved via name match: ${conv.customerName} → ****${ownerCheckPhone.slice(-4)}`);
-
-            // حدّث المحادثة الحالية عشان المرات الجاية ما نحتاج نبحث
+            this.logger.log(`🔑 @lid resolved via name match: ${conv.customerName} → ****${ownerCheckPhone.slice(-4)}`);
             await this.conversationRepo.update({ id: conv.id }, { customerPhone: ownerCheckPhone });
           }
         }
+
+        // طريقة 3: البحث في الطلبات — هل اسم المحادثة يطابق اسم عميل مرتبط برقم مالك؟
+        if (!ownerCheckPhone && conv.customerName && context.storeId) {
+          const validOwnerPhones = (settings.ownerPhones || [])
+            .map(p => p.replace(/[^0-9]/g, ''))
+            .filter(p => p.length >= 9);
+
+          if (validOwnerPhones.length > 0) {
+            const orders = await this.orderRepo.find({
+              where: { storeId: context.storeId },
+              relations: ['customer'],
+              take: 100,
+              order: { createdAt: 'DESC' },
+            });
+
+            const ownerOrder = orders.find(o => {
+              const custPhone = (o.customer?.phone || '').replace(/[^0-9]/g, '');
+              return custPhone.length >= 9 && validOwnerPhones.some(op => {
+                const lastNine = (n: string) => n.slice(-9);
+                return lastNine(custPhone) === lastNine(op);
+              });
+            });
+
+            if (ownerOrder?.customer?.phone) {
+              ownerCheckPhone = ownerOrder.customer.phone;
+              this.logger.log(`🔑 @lid resolved via order customer: → ****${ownerCheckPhone.slice(-4)}`);
+              await this.conversationRepo.update({ id: conv.id }, { customerPhone: ownerCheckPhone });
+            }
+          }
+        }
       } catch (e) {
-        this.logger.warn(`🔑 @lid phone resolution failed: ${(e as Error).message}`);
+        this.logger.warn(`🔑 @lid resolution failed: ${(e as Error).message}`);
       }
     }
 
+    // ═══ LAYER 2: Owner phone matching ═══
     if (settings.ownerModeEnabled && settings.ownerPhones?.length && ownerCheckPhone) {
       const normalizedPhone = ownerCheckPhone.replace(/[^0-9]/g, '');
       const validOwnerPhones = settings.ownerPhones
@@ -3460,7 +3498,22 @@ Types:
       if (isOwner) {
         context.isOwnerMode = true;
         context.customerPhone = ownerCheckPhone;
-        this.logger.log(`🔑 Owner mode activated for phone: ****${normalizedPhone.slice(-4)}${conv?.customerExternalId?.includes('@lid') ? ' (resolved from @lid)' : ''}`);
+        this.logger.log(`🔑 Owner mode activated for: ****${normalizedPhone.slice(-4)}${isLidConversation ? ' (from @lid)' : ''}`);
+
+        // ═══ LAYER 3: Auto-discover — حفظ LID للمستقبل ═══
+        if (isLidConversation && currentExternalId) {
+          try {
+            const existingLids = ((settings as any).ownerLids || []) as string[];
+            if (!existingLids.includes(currentExternalId)) {
+              (settings as any).ownerLids = [...existingLids, currentExternalId].slice(-10);
+              // حفظ الإعدادات المحدّثة
+              await this.updateSettings(params.tenantId, storeId, { ownerLids: (settings as any).ownerLids } as any);
+              this.logger.log(`🔑 Auto-discovered owner LID: ${currentExternalId.slice(0, 12)}... → saved`);
+            }
+          } catch (e) {
+            this.logger.warn(`🔑 Failed to save owner LID: ${(e as Error).message}`);
+          }
+        }
       }
     }
 
