@@ -3631,16 +3631,25 @@ You must generate the following fields in Arabic:
 5. cancellation_policy - سياسة الإلغاء والتعديل
 6. working_hours - أوقات العمل (if applicable, otherwise empty)
 
-Rules:
-- Detect the store business type automatically.
+CRITICAL LANGUAGE RULES:
+- You MUST write in Modern Standard Arabic (الفصحى) — formal, professional tone.
+- NEVER use colloquial/dialectal Arabic (العامية) — no Gulf dialect, no Egyptian, no Levantine.
+- Even if the merchant writes in colloquial Arabic, you MUST respond in formal Arabic (فصحى).
+- Use "نحن" not "احنا", "نقدّم" not "نقدم لكم", "يُرجى" not "لا تنسى".
+- The text must sound like official corporate communication, not casual conversation.
+- Use proper Arabic grammar: إعراب صحيح، تشكيل خفيف إذا لزم، صياغة رسمية.
+
+Business type detection rules:
 - If the store sells FOOD → returns should be restricted, cancellation before preparation only.
 - If the store sells DIGITAL PRODUCTS → mention instant delivery, limited refunds, no cancellation after delivery.
 - If the store sells SERVICES → mention consultation timeline, cancellation with advance notice.
 - If the store sells PHYSICAL PRODUCTS → include shipping window, return window, cancellation before shipping.
-- Write in professional Arabic suitable for customers.
-- Content must sound natural and trustworthy.
+
+Additional rules:
+- Content must sound natural, trustworthy, and professional.
 - Do NOT invent unrealistic claims.
 - Do NOT make the text too long.
+- Keep sentences concise and clear.
 
 Output ONLY valid JSON with these exact keys: store_intro, store_description, shipping_info, return_policy, cancellation_policy, working_hours. No markdown, no backticks.`;
 
