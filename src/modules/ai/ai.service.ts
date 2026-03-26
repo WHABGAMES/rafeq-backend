@@ -125,6 +125,16 @@ export interface AISettings {
   productSearchTimeout?: number; // Default: 10000 ms (10 seconds)
   maxRetries?: number; // Default: 2
   retryDelay?: number; // Default: 1000 ms
+
+  // ✅ وضع المالك — Owner/Merchant Mode
+  ownerModeEnabled?: boolean; // Default: false
+  ownerPhones?: string[]; // أرقام هواتف المالك والموظفين (حتى 5)
+  ownerWelcomeMessage?: string; // رسالة ترحيب خاصة بالتاجر
+  ownerCapabilities?: {
+    orderLookup: boolean; // استعلام عن الطلبات وبيانات العملاء
+    createCoupons: boolean; // إنشاء أكواد خصم
+    modifyOrders: boolean; // تعديل حالة طلبات (إلغاء/استرجاع)
+  };
 }
 
 export interface ConversationContext {
@@ -139,6 +149,7 @@ export interface ConversationContext {
   failedAttempts: number;
   isHandedOff: boolean;
   handoffAt?: string;
+  isOwnerMode?: boolean; // ✅ وضع المالك — الرقم من أرقام التاجر المعتمدة
   previousMessages: Array<{ role: 'user' | 'assistant'; content: string }>;
 }
 
@@ -498,6 +509,14 @@ export class AIService {
       : { ...AI_DEFAULTS };
 
     const merged = { ...current, ...updates };
+
+    // ✅ SECURITY: تنظيف وتحقق من ownerPhones
+    if (merged.ownerPhones) {
+      merged.ownerPhones = merged.ownerPhones
+        .map((p: string) => String(p || '').replace(/[^0-9]/g, '')) // أرقام فقط
+        .filter((p: string) => p.length >= 9) // حد أدنى 9 أرقام
+        .slice(0, 5); // حد أقصى 5 أرقام
+    }
 
     if (row) {
       row.settingsValue = merged as unknown as Record<string, unknown>;
@@ -3368,8 +3387,30 @@ Types:
       failedAttempts: (aiContext.failedAttempts as number) || 0,
       isHandedOff: conv?.handler === ConversationHandler.HUMAN,
       handoffAt: aiContext.handoffAt as string | undefined,
+      isOwnerMode: false,
       previousMessages: [],
     };
+
+    // ✅ وضع المالك — كشف أرقام التاجر المعتمدة
+    if (settings.ownerModeEnabled && settings.ownerPhones?.length && context.customerPhone) {
+      const normalizedPhone = context.customerPhone.replace(/[^0-9]/g, '');
+      // ✅ SECURITY: تصفية الأرقام الفارغة والقصيرة (أقل من 9 أرقام)
+      const validOwnerPhones = settings.ownerPhones
+        .map(p => p.replace(/[^0-9]/g, ''))
+        .filter(p => p.length >= 9);
+      
+      const isOwner = validOwnerPhones.some(ownerPhone => {
+        // مطابقة دقيقة أو مع/بدون رمز الدولة
+        if (normalizedPhone === ownerPhone) return true;
+        // 966501234567 vs 0501234567 → مقارنة آخر 9 أرقام
+        const lastNine = (n: string) => n.slice(-9);
+        return lastNine(normalizedPhone) === lastNine(ownerPhone);
+      });
+      if (isOwner) {
+        context.isOwnerMode = true;
+        this.logger.log(`🔑 Owner mode activated for phone: ****${normalizedPhone.slice(-4)}`);
+      }
+    }
 
     // جلب آخر 10 رسائل
     if (conv) {
@@ -3394,7 +3435,173 @@ Types:
       await new Promise(resolve => setTimeout(resolve, delaySeconds * 1000));
     }
 
+    // ✅ وضع المالك — معالجة خاصة بصلاحيات موسعة
+    if (context.isOwnerMode) {
+      return this.processOwnerMessage(params.message, context, settings);
+    }
+
     return this.processMessage(params.message, context, settings);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ✅ وضع المالك — Owner Mode Processing
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  private async processOwnerMessage(
+    message: string,
+    context: ConversationContext,
+    settings: AISettings,
+  ): Promise<AIResponse> {
+    this.logger.log('🔑 Processing OWNER MODE message', {
+      conversationId: context.conversationId,
+      phone: context.customerPhone?.slice(-4),
+    });
+
+    if (!this.isApiKeyConfigured) {
+      return {
+        reply: 'عذراً، خدمة الذكاء الاصطناعي غير مكوّنة حالياً.',
+        confidence: 0,
+        shouldHandoff: false,
+      };
+    }
+
+    const caps = settings.ownerCapabilities || { orderLookup: true, createCoupons: false, modifyOrders: false };
+
+    // ✅ جلب بيانات المتجر للسياق
+    let storeData = '';
+    if (context.storeId) {
+      try {
+        const store = await this.storeRepo.findOne({ where: { id: context.storeId } });
+        if (store) {
+          storeData = `اسم المتجر: ${store.name || 'غير محدد'}\nالمنصة: ${store.platform || 'غير محدد'}`;
+        }
+      } catch {} // silent fail
+    }
+
+    // ✅ جلب آخر طلبات المتجر كسياق (مع بيانات العملاء)
+    let recentOrdersContext = '';
+    if (caps.orderLookup && context.storeId) {
+      try {
+        const orders = await this.orderRepo.find({
+          where: { storeId: context.storeId },
+          relations: ['customer'],
+          order: { createdAt: 'DESC' },
+          take: 20,
+        });
+        if (orders.length > 0) {
+          recentOrdersContext = '\n\nآخر الطلبات في المتجر:\n' + orders.map(o =>
+            `- طلب #${o.referenceId || o.sallaOrderId || o.id?.slice(0, 8)} | العميل: ${o.customer?.fullName || o.customer?.firstName || 'غير معروف'} | الهاتف: ${o.customer?.phone || '—'} | المبلغ: ${o.totalAmount || 0} ر.س | الحالة: ${o.status} | التاريخ: ${o.createdAt ? new Date(o.createdAt).toLocaleDateString('ar-SA') : '—'}`
+          ).join('\n');
+        }
+      } catch {} // silent fail
+    }
+
+    // ✅ إذا السؤال يتضمن رقم طلب محدد — جلب تفاصيله الكاملة
+    let specificOrderContext = '';
+    const orderNumberMatch = message.match(/(?:طلب|order|#)\s*#?(\d{4,})/i);
+    if (orderNumberMatch && caps.orderLookup && context.storeId) {
+      const orderNum = orderNumberMatch[1];
+      try {
+        const order = await this.orderRepo.findOne({
+          where: [
+            { storeId: context.storeId, referenceId: orderNum },
+            { storeId: context.storeId, sallaOrderId: orderNum },
+          ],
+          relations: ['customer'],
+        });
+        if (order) {
+          specificOrderContext = `\n\n📋 تفاصيل الطلب #${orderNum}:
+- رقم الطلب: ${order.referenceId || order.sallaOrderId}
+- اسم العميل: ${order.customer?.fullName || order.customer?.firstName || 'غير معروف'}
+- رقم هاتف العميل: ${order.customer?.phone || 'غير متوفر'}
+- البريد الإلكتروني: ${order.customer?.email || 'غير متوفر'}
+- المبلغ الإجمالي: ${order.totalAmount || 0} ${order.currency || 'ر.س'}
+- الحالة: ${order.status}
+- حالة الدفع: ${order.paymentStatus || 'غير محدد'}
+- طريقة الدفع: ${order.paymentMethod || 'غير محدد'}
+- تاريخ الإنشاء: ${order.createdAt ? new Date(order.createdAt).toLocaleDateString('ar-SA') : '—'}
+- المنتجات: ${JSON.stringify(order.items?.map((i: any) => `${i.name} (${i.quantity}x) - ${i.totalPrice} ر.س`) || [])}`;
+        } else {
+          specificOrderContext = `\n\n⚠️ لم يتم العثور على طلب برقم #${orderNum} في المتجر.`;
+        }
+      } catch {} // silent fail
+    }
+
+    // ✅ بناء System Prompt خاص بوضع المالك
+    const capsList: string[] = [];
+    if (caps.orderLookup) capsList.push('- استعلام كامل عن الطلبات وبيانات العملاء (أرقام، إيميلات، عناوين، تفاصيل الطلبات)');
+    if (caps.createCoupons) capsList.push('- إنشاء أكواد خصم وإرسالها للعملاء (اقترح الخطوات بوضوح)');
+    if (caps.modifyOrders) capsList.push('- تعديل حالة الطلبات: إلغاء، استرجاع، تحديث (اقترح الإجراء المناسب)');
+
+    const ownerSystemPrompt = `أنت مساعد ذكي خاص بمالك/مدير المتجر "${settings.storeName || ''}".
+
+⚠️ هام: المتحدث الآن هو مالك المتجر أو أحد موظفيه المعتمدين — وليس عميل.
+
+🎯 دورك:
+- أنت مساعد شخصي للتاجر — تجيب على أسئلته وتساعده في إدارة متجره.
+- تتحدث بأسلوب مهني ودود — كأنك زميل عمل موثوق.
+- ترحب به بـ "مرحباً عزيزي التاجر" في أول رسالة فقط.
+
+📊 صلاحياتك:
+${capsList.join('\n')}
+
+📌 قواعد صارمة:
+- قدّم كل البيانات المتوفرة بدون حجب — هذا المالك وليس عميل.
+- إذا سأل عن طلب محدد، أعطه كل التفاصيل: اسم العميل، الرقم، الإيميل، المنتجات، المبلغ.
+- إذا طلب إجراء (مثل إنشاء كوبون أو إلغاء طلب)، اشرح الخطوات بوضوح واقترح التنفيذ.
+- لا تخترع بيانات — إذا المعلومة غير موجودة، قل ذلك بصراحة.
+- رد بالعربية الفصحى بأسلوب مهني ومختصر.
+
+${storeData ? '🏪 معلومات المتجر:\n' + storeData : ''}
+${recentOrdersContext}
+${specificOrderContext}`;
+
+    // ✅ رسالة ترحيب خاصة في أول محادثة
+    const isFirstMessage = context.messageCount <= 1;
+    const welcomePrefix = isFirstMessage
+      ? (settings.ownerWelcomeMessage || 'مرحباً عزيزي التاجر 👋\nأنا مساعدك الذكي — كيف أقدر أخدمك اليوم؟\n\n') + 'الخدمات المتاحة:\n' + capsList.map(c => c.replace('- ', '✅ ')).join('\n') + '\n\nكيف أساعدك؟'
+      : null;
+
+    if (isFirstMessage && welcomePrefix) {
+      return {
+        reply: welcomePrefix,
+        confidence: 1,
+        shouldHandoff: false,
+        intent: 'owner_welcome',
+        toolsUsed: ['owner_mode'],
+      };
+    }
+
+    // ✅ إرسال للـ AI مع الصلاحيات الموسعة
+    try {
+      const completion = await this.openai.chat.completions.create({
+        model: settings.model || 'gpt-4o-mini',
+        temperature: 0.3, // أقل عشوائية — ردود دقيقة للتاجر
+        max_tokens: settings.maxTokens || 800,
+        messages: [
+          { role: 'system', content: ownerSystemPrompt },
+          ...context.previousMessages.slice(-10),
+          { role: 'user', content: message },
+        ],
+      });
+
+      const reply = completion.choices[0]?.message?.content?.trim() || 'لم أتمكن من معالجة طلبك. حاول مرة أخرى.';
+
+      return {
+        reply,
+        confidence: 0.95,
+        shouldHandoff: false,
+        intent: 'owner_request',
+        toolsUsed: ['owner_mode', ...(specificOrderContext ? ['order_lookup'] : [])],
+      };
+    } catch (error) {
+      this.logger.error(`Owner mode AI error: ${(error as Error).message}`);
+      return {
+        reply: 'عذراً، حدث خطأ في معالجة طلبك. حاول مرة أخرى.',
+        confidence: 0,
+        shouldHandoff: false,
+      };
+    }
   }
 
   async analyzeMessage(
