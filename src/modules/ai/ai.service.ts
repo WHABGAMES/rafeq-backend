@@ -3619,6 +3619,8 @@ ${capsList.join('\n')}
 - إذا سأل عن إحصائيات (كم طلب، إجمالي المبيعات) → استخدم get_store_stats.
 - إذا بس سلّم ولا طلب شي محدد → رد بشكل طبيعي بدون استدعاء أي أداة.
 - رتّب النتائج بشكل واضح ومختصر.
+- ❌ لا تقل أبداً "آخر 50 طلب" أو "آخر 1000 طلب" — أنت تبحث في كل الطلبات بدون حد.
+- إذا ما لقيت نتائج → قل "ما لقيت هالطلب في النظام. تأكد من الرقم وأرسله مرة ثانية".
 
 ${storeData ? '🏪 ' + storeData : ''}`;
 
@@ -3811,14 +3813,21 @@ ${storeData ? '🏪 ' + storeData : ''}`;
           .where('o.storeId = :storeId', { storeId });
 
         if (args.order_id) {
-          qb.andWhere('(o.referenceId LIKE :oid OR o.sallaOrderId LIKE :oid)', { oid: `%${args.order_id}%` });
+          const oid = args.order_id.replace(/[^0-9]/g, ''); // strip non-digits
+          qb.andWhere(
+            '(CAST(o.referenceId AS TEXT) LIKE :oid OR CAST(o.sallaOrderId AS TEXT) LIKE :oid OR CAST(o.zidOrderId AS TEXT) LIKE :oid OR CAST(o.id AS TEXT) LIKE :oid)',
+            { oid: `%${oid}%` },
+          );
         }
         if (args.phone) {
           const phone9 = args.phone.replace(/[^0-9]/g, '').slice(-9);
-          qb.andWhere('c.phone LIKE :phone', { phone: `%${phone9}%` });
+          qb.andWhere('CAST(c.phone AS TEXT) LIKE :phone', { phone: `%${phone9}%` });
         }
         if (args.customer_name) {
-          qb.andWhere('(c.fullName ILIKE :name OR c.firstName ILIKE :name OR c.lastName ILIKE :name)', { name: `%${args.customer_name}%` });
+          qb.andWhere(
+            '(c.fullName ILIKE :name OR c.firstName ILIKE :name OR c.lastName ILIKE :name)',
+            { name: `%${args.customer_name}%` },
+          );
         }
         if (args.email) {
           qb.andWhere('c.email ILIKE :email', { email: `%${args.email}%` });
@@ -3827,14 +3836,25 @@ ${storeData ? '🏪 ' + storeData : ''}`;
           qb.andWhere('o.status = :status', { status: args.status });
         }
 
+        // إذا ما فيه أي فلتر → جلب آخر الطلبات
+        if (!args.order_id && !args.phone && !args.customer_name && !args.email && !args.status) {
+          // no filter = recent orders
+        }
+
         const orders = await qb.orderBy('o.createdAt', 'DESC').take(limit).getMany();
 
-        if (orders.length === 0) return JSON.stringify({ count: 0, message: 'لا توجد نتائج' });
+        this.logger.log(`🔧 search_orders: found ${orders.length} results (args: ${JSON.stringify(args).slice(0, 80)})`);
+
+        if (orders.length === 0) {
+          return JSON.stringify({ count: 0, message: 'لا توجد نتائج مطابقة. ممكن الطلب قديم أو غير مسجل في النظام.' });
+        }
 
         return JSON.stringify({
           count: orders.length,
           orders: orders.map(o => ({
-            id: o.referenceId || o.sallaOrderId || o.id?.slice(0, 8),
+            order_number: o.referenceId || o.sallaOrderId || o.id?.slice(0, 8),
+            salla_id: o.sallaOrderId || '—',
+            reference_id: o.referenceId || '—',
             customer: o.customer?.fullName || o.customer?.firstName || (o as any).customerName || 'غير معروف',
             phone: o.customer?.phone || (o as any).customerPhone || '—',
             email: o.customer?.email || '—',
@@ -3847,17 +3867,23 @@ ${storeData ? '🏪 ' + storeData : ''}`;
       }
 
       case 'get_order_details': {
+        const oid = (args.order_id || '').replace(/[^0-9]/g, '');
         const order = await this.orderRepo
           .createQueryBuilder('o')
           .leftJoinAndSelect('o.customer', 'c')
           .where('o.storeId = :storeId', { storeId })
-          .andWhere('(o.referenceId = :oid OR o.sallaOrderId = :oid)', { oid: args.order_id })
+          .andWhere(
+            '(CAST(o.referenceId AS TEXT) LIKE :oid OR CAST(o.sallaOrderId AS TEXT) LIKE :oid OR CAST(o.zidOrderId AS TEXT) LIKE :oid)',
+            { oid: `%${oid}%` },
+          )
           .getOne();
 
         if (!order) return JSON.stringify({ error: 'الطلب غير موجود' });
 
         return JSON.stringify({
-          id: order.referenceId || order.sallaOrderId,
+          order_number: order.referenceId || order.sallaOrderId,
+          salla_id: order.sallaOrderId || '—',
+          reference_id: order.referenceId || '—',
           customer: {
             name: order.customer?.fullName || order.customer?.firstName || 'غير معروف',
             phone: order.customer?.phone || '—',
