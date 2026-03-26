@@ -240,6 +240,9 @@ class UpdateAISettingsDto {
     createCoupons: boolean;
     modifyOrders: boolean;
   };
+
+  @IsOptional() @IsArray()
+  ownerLids?: string[];
 }
 
 class AddKnowledgeDto {
