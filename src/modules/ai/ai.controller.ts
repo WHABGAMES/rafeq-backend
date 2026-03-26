@@ -223,6 +223,23 @@ class UpdateAISettingsDto {
 
   @IsOptional() @IsString()
   websiteScrapedAt?: string;
+
+  // ✅ Owner Mode Settings
+  @IsOptional() @IsBoolean()
+  ownerModeEnabled?: boolean;
+
+  @IsOptional() @IsArray()
+  ownerPhones?: string[];
+
+  @IsOptional() @IsString()
+  ownerWelcomeMessage?: string;
+
+  @IsOptional()
+  ownerCapabilities?: {
+    orderLookup: boolean;
+    createCoupons: boolean;
+    modifyOrders: boolean;
+  };
 }
 
 class AddKnowledgeDto {
