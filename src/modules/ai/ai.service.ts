@@ -19,6 +19,7 @@ import { Repository, Between } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import OpenAI from 'openai';
+import axios from 'axios';
 import type {
   ChatCompletionMessageParam,
   ChatCompletionTool,
@@ -2041,8 +2042,28 @@ export class AIService {
         return emptyResult;
       }
 
+      // ✅ FIX: فلترة المنتجات حسب الكمية (productActiveOnly)
+      let filteredProducts = response.data;
+      const activeOnly = settings?.productActiveOnly ?? true;
+      if (activeOnly) {
+        filteredProducts = response.data.filter((p: SallaProduct) => p.quantity > 0);
+        if (filteredProducts.length < response.data.length) {
+          this.logger.log(`🛒 Filtered: ${response.data.length} → ${filteredProducts.length} products (removed out-of-stock)`);
+        }
+      }
+
+      if (filteredProducts.length === 0) {
+        this.logger.log(`🛒 No in-stock products found for keyword "${keyword}"`);
+        const emptyResult = { chunks: [], topScore: 0, gateAPassed: false };
+        if (enableCache) {
+          const cacheKey = `${storeId}:${keyword.toLowerCase()}`;
+          this.productCache.set(cacheKey, { result: emptyResult, timestamp: Date.now() });
+        }
+        return emptyResult;
+      }
+
       // تحويل المنتجات إلى chunks
-      const chunks = response.data.map((product: SallaProduct) => {
+      const chunks = filteredProducts.map((product: SallaProduct) => {
         const price = product.sale_price?.amount || product.price?.amount || 0;
         const currency = product.price?.currency || 'SAR';
         const inStock = product.quantity > 0 ? 'متوفر' : 'غير متوفر';
@@ -3886,6 +3907,137 @@ Output ONLY valid JSON with these exact keys: store_intro, store_description, sh
         cancellation_policy: '',
         working_hours: '',
       };
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🌐 SCRAPE PRODUCTS — قراءة المنتجات من رابط موقع خارجي
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  async scrapeProducts(url: string): Promise<{
+    success: boolean;
+    products: Array<{ name: string; price: string; available: boolean; url: string; description?: string }>;
+    count: number;
+    error?: string;
+  }> {
+    if (!this.isApiKeyConfigured) {
+      return { success: false, products: [], count: 0, error: 'مفتاح OpenAI API غير مكوّن' };
+    }
+
+    try {
+      this.logger.log(`🌐 Scraping products from: ${url}`);
+
+      // ✅ SECURITY: SSRF Protection — منع الوصول لعناوين داخلية
+      const parsedUrl = new URL(url);
+      const hostname = parsedUrl.hostname.toLowerCase();
+      const blockedPatterns = ['localhost', '127.0.0.1', '0.0.0.0', '::1', '169.254.', '10.', '192.168.', 'internal', '.local'];
+      if (blockedPatterns.some(p => hostname.includes(p)) || hostname.startsWith('172.') || !parsedUrl.protocol.startsWith('http')) {
+        return { success: false, products: [], count: 0, error: 'الرابط غير مسموح — يجب أن يكون رابط موقع خارجي' };
+      }
+
+      // 1. جلب HTML الصفحة
+      const response = await axios.get(url, {
+        timeout: 15000,
+        maxRedirects: 3,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; RafeqBot/1.0)',
+          'Accept': 'text/html',
+          'Accept-Language': 'ar,en',
+        },
+        maxContentLength: 2 * 1024 * 1024, // 2MB max
+      });
+
+      const html = String(response.data || '');
+      if (!html || html.length < 100) {
+        return { success: false, products: [], count: 0, error: 'الصفحة فارغة أو غير قابلة للقراءة' };
+      }
+
+      // 2. تنظيف HTML — إزالة scripts/styles/nav/footer واستخراج النص المفيد
+      const cleaned = html
+        .replace(/<script[\s\S]*?<\/script>/gi, '')
+        .replace(/<style[\s\S]*?<\/style>/gi, '')
+        .replace(/<nav[\s\S]*?<\/nav>/gi, '')
+        .replace(/<footer[\s\S]*?<\/footer>/gi, '')
+        .replace(/<header[\s\S]*?<\/header>/gi, '')
+        .replace(/<!\-\-[\s\S]*?\-\->/g, '')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 12000); // حد أقصى لحجم النص المرسل لـ GPT
+
+      if (cleaned.length < 50) {
+        return { success: false, products: [], count: 0, error: 'لم يتم العثور على محتوى منتجات في الصفحة' };
+      }
+
+      // 3. إرسال لـ GPT لاستخراج المنتجات
+      const completion = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        temperature: 0.1,
+        max_tokens: 2000,
+        messages: [
+          {
+            role: 'system',
+            content: `You are a product data extractor. Extract ALL products from the given webpage text.
+
+For each product, extract:
+- name: اسم المنتج
+- price: السعر (مع العملة)
+- available: هل متوفر (true/false) — if quantity is 0 or "نفذت الكمية" then false
+- url: رابط المنتج (if found, otherwise empty)
+- description: وصف قصير (if found, otherwise empty)
+
+Rules:
+- Extract ONLY actual products — not categories, not banners, not ads.
+- If the page is a product listing, extract all visible products.
+- If price is not found, use "غير محدد".
+- Return ONLY valid JSON array. No markdown, no explanation.
+- Maximum 50 products.
+
+Example output:
+[{"name":"عباية سوداء","price":"299 ر.س","available":true,"url":"","description":"عباية قطن"}]`,
+          },
+          {
+            role: 'user',
+            content: `Extract products from this page:\n\nURL: ${url}\n\nPage content:\n${cleaned}`,
+          },
+        ],
+      });
+
+      const raw = (completion.choices[0]?.message?.content || '').trim();
+      const jsonCleaned = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+
+      try {
+        const products = JSON.parse(jsonCleaned);
+        if (!Array.isArray(products)) {
+          return { success: false, products: [], count: 0, error: 'لم يتم استخراج منتجات — تأكد أن الصفحة تحتوي على منتجات' };
+        }
+
+        // تنظيف وتوحيد البيانات
+        const cleanProducts = products.slice(0, 50).map((p: any) => ({
+          name: String(p.name || '').trim().slice(0, 200),
+          price: String(p.price || 'غير محدد').trim(),
+          available: Boolean(p.available),
+          url: String(p.url || '').trim(),
+          description: String(p.description || '').trim().slice(0, 300),
+        })).filter((p: any) => p.name.length > 0);
+
+        this.logger.log(`🌐 Scraped ${cleanProducts.length} products from ${url}`);
+        return { success: true, products: cleanProducts, count: cleanProducts.length };
+
+      } catch {
+        this.logger.warn(`🌐 Failed to parse scraped products JSON: ${jsonCleaned.substring(0, 200)}`);
+        return { success: false, products: [], count: 0, error: 'فشل تحليل بيانات المنتجات — حاول مرة أخرى' };
+      }
+
+    } catch (error: any) {
+      const msg = error?.code === 'ECONNREFUSED' ? 'لا يمكن الوصول للموقع'
+        : error?.code === 'ENOTFOUND' ? 'الموقع غير موجود'
+        : error?.response?.status === 403 ? 'الموقع يرفض الوصول'
+        : error?.response?.status === 404 ? 'الصفحة غير موجودة'
+        : `خطأ: ${error?.message || 'غير معروف'}`;
+
+      this.logger.warn(`🌐 Scrape failed for ${url}: ${msg}`);
+      return { success: false, products: [], count: 0, error: msg };
     }
   }
 
