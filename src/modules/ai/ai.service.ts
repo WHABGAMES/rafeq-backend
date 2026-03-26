@@ -3594,35 +3594,54 @@ Types:
         // ✅ كشف: هل التاجر يسأل عن رقم/اسم/هاتف محدد؟
         const phoneMatch = message.match(/(\d{7,15})/);  // رقم هاتف
         const orderMatch = message.match(/(\d{4,12})/);  // رقم طلب
-        const hasSpecificQuery = phoneMatch || orderMatch;
+        // كشف أسماء — كلمة عربية 3+ حروف بعد كلمات بحث
+        const nameMatch = message.match(/(?:طلبات|عميل|ابحث عن|دور على|بيانات)\s+([^\d\n]{3,30})/);
+        const hasSpecificQuery = phoneMatch || orderMatch || nameMatch;
 
-        // ✅ إذا سؤال محدد → بحث مستهدف في كل الطلبات
+        // ✅ بحث مستهدف في كل الطلبات (بدون حد — SQL سريع مع INDEX)
         let targetOrders: any[] = [];
         if (hasSpecificQuery) {
-          const searchNum = (phoneMatch || orderMatch)![1];
-          targetOrders = await this.orderRepo
+          const qb = this.orderRepo
             .createQueryBuilder('o')
             .leftJoinAndSelect('o.customer', 'c')
-            .where('o.storeId = :storeId', { storeId: context.storeId })
-            .andWhere(
-              '(o.referenceId LIKE :num OR o.sallaOrderId LIKE :num OR c.phone LIKE :phone)',
-              { num: `%${searchNum}%`, phone: `%${searchNum.slice(-9)}%` },
-            )
+            .where('o.storeId = :storeId', { storeId: context.storeId });
+
+          if (phoneMatch) {
+            const searchNum = phoneMatch[1];
+            qb.andWhere(
+              '(o.referenceId LIKE :num OR o.sallaOrderId LIKE :num OR c.phone LIKE :phone OR c.email LIKE :num2)',
+              { num: `%${searchNum}%`, phone: `%${searchNum.slice(-9)}%`, num2: `%${searchNum}%` },
+            );
+          } else if (orderMatch) {
+            const searchNum = orderMatch[1];
+            qb.andWhere(
+              '(o.referenceId LIKE :num OR o.sallaOrderId LIKE :num)',
+              { num: `%${searchNum}%` },
+            );
+          } else if (nameMatch) {
+            const searchName = nameMatch[1].trim();
+            qb.andWhere(
+              "(c.fullName ILIKE :name OR c.firstName ILIKE :name OR c.lastName ILIKE :name)",
+              { name: `%${searchName}%` },
+            );
+          }
+
+          targetOrders = await qb
             .orderBy('o.createdAt', 'DESC')
-            .take(20)
+            .take(50) // أقصى 50 نتيجة مستهدفة
             .getMany();
 
           if (targetOrders.length > 0) {
-            this.logger.log(`🔑 Owner mode: targeted search found ${targetOrders.length} orders for "${searchNum}"`);
+            this.logger.log(`🔑 Owner mode: targeted search found ${targetOrders.length} orders`);
           }
         }
 
-        // ✅ جلب آخر 200 طلب عام (أو أقل إذا البحث المستهدف كفى)
+        // ✅ جلب آخر 1000 طلب (GPT-4o-mini يقبل 128K token — 1000 طلب ≈ 15K token)
         const generalOrders = await this.orderRepo.find({
           where: { storeId: context.storeId },
           relations: ['customer'],
           order: { createdAt: 'DESC' },
-          take: 200,
+          take: 1000,
         });
 
         // ✅ دمج: النتائج المستهدفة أولاً + باقي الطلبات
@@ -3692,9 +3711,10 @@ Types:
 ${capsList.join('\n')}
 
 📌 قواعد البيانات:
-- كل بيانات الطلبات والعملاء مرفقة أدناه — ابحث فيها.
+- عندك بيانات آخر 1000 طلب مرفقة أدناه — ابحث فيها.
+- إذا التاجر ذكر رقم هاتف أو رقم طلب أو اسم عميل → النتائج المستهدفة موجودة أول الليستة.
 - إذا سأل عن عميل أو طلب → دوّر في البيانات وأعطه النتيجة.
-- إذا ما لقيت → قل "ما لقيت هالمعلومة في الطلبات المتوفرة".
+- إذا ما لقيت → قل "ما لقيت هالمعلومة في آخر 1000 طلب. إذا الطلب أقدم من كذا، جرب ترسل لي رقم الطلب أو رقم الجوال بالضبط وأدوّر لك".
 
 ${storeData ? '🏪 ' + storeData : ''}
 ${ordersDataForGPT}`;
@@ -3712,12 +3732,12 @@ ${ordersDataForGPT}`;
           content: m.content.slice(0, 500), // حد أقصى 500 حرف لكل رسالة
         }));
 
-      // ✅ تقليم حجم الـ prompt إذا كبير جداً (GPT-4o-mini يقبل 128K token)
+      // ✅ تقليم إذا تجاوز 100K حرف (≈ 25K token — GPT-4o-mini يقبل 128K)
       let finalPrompt = ownerSystemPrompt;
-      if (finalPrompt.length > 50000) {
-        this.logger.warn(`🔑 Owner mode: prompt too large (${finalPrompt.length} chars), trimming orders`);
-        const trimmedOrders = ordersDataForGPT.split('\n').slice(0, 102).join('\n');
-        finalPrompt = ownerSystemPrompt.replace(ordersDataForGPT, trimmedOrders + '\n(تم اختصار القائمة لأول 100 طلب)');
+      if (finalPrompt.length > 100000) {
+        this.logger.warn(`🔑 Owner mode: prompt too large (${finalPrompt.length} chars), trimming`);
+        const trimmedOrders = ordersDataForGPT.split('\n').slice(0, 502).join('\n');
+        finalPrompt = ownerSystemPrompt.replace(ordersDataForGPT, trimmedOrders + '\n(تم اختصار القائمة لأول 500 طلب)');
       }
 
       // ✅ التحقق من الموديل — fallback إذا كان غير صالح
