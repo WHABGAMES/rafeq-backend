@@ -26,6 +26,7 @@ import { MergeHistory } from './entities/merge-history.entity';
 import { WhatsappSettings } from './entities/whatsapp-settings.entity';
 import { MessageTemplate } from './entities/message-template.entity';
 import { MessageLog } from './entities/message-log.entity';
+import { MaintenancePage } from './entities/maintenance-page.entity';
 import { Conversation, Message, Channel } from '@database/entities';
 
 // Services
@@ -33,6 +34,7 @@ import { AuditService } from './services/audit.service';
 import { AdminUsersService } from './services/admin-users.service';
 import { WhatsappSettingsService } from './services/whatsapp-settings.service';
 import { NotificationService } from './services/notification.service';
+import { MaintenanceService } from './services/maintenance.service';
 
 // Controllers
 import { AdminAuthController } from './controllers/admin-auth.controller';
@@ -63,6 +65,9 @@ import { InboxModule } from '../inbox/inbox.module';
 
 // ✅ NEW: Admin Inbox Controller
 import { AdminInboxController } from './controllers/admin-inbox.controller';
+
+// ✅ NEW: Maintenance Controllers
+import { MaintenancePublicController, MaintenanceAdminController } from './controllers/maintenance.controller';
 
 // ─── [C-2] Startup Validation ─────────────────────────────────────────────────
 // يُنفَّذ قبل أي شيء عند تحميل الـ module
@@ -100,6 +105,7 @@ if (!jwtSecret) {
       Conversation,  // ✅ مطلوب لـ AdminInboxController
       Message,       // ✅ مطلوب لـ AdminInboxController
       Channel,       // ✅ مطلوب لـ AdminInboxController — فلترة بالرقم الإداري
+      MaintenancePage, // ✅ مطلوب لنظام الصيانة الجزئي
     ]),
 
     // ✅ JwtModule يستخدم نفس الـ secret المُتحقَّق منه أعلاه
@@ -156,6 +162,9 @@ if (!jwtSecret) {
     AdminSubscriptionsController,
     // ✅ NEW: صندوق رسائل الأدمن
     AdminInboxController,
+    // ✅ NEW: نظام الصيانة الجزئي
+    MaintenancePublicController,
+    MaintenanceAdminController,
   ],
 
   providers: [
@@ -164,6 +173,7 @@ if (!jwtSecret) {
     AdminUsersService,
     WhatsappSettingsService,
     NotificationService,
+    MaintenanceService,
 
     // Guards
     AdminJwtGuard,
