@@ -3591,31 +3591,63 @@ Types:
     let ordersDataForGPT = '';
     if (caps.orderLookup && context.storeId) {
       try {
-        // جلب آخر 50 طلب مع بيانات العميل
-        const orders = await this.orderRepo.find({
+        // ✅ كشف: هل التاجر يسأل عن رقم/اسم/هاتف محدد؟
+        const phoneMatch = message.match(/(\d{7,15})/);  // رقم هاتف
+        const orderMatch = message.match(/(\d{4,12})/);  // رقم طلب
+        const hasSpecificQuery = phoneMatch || orderMatch;
+
+        // ✅ إذا سؤال محدد → بحث مستهدف في كل الطلبات
+        let targetOrders: any[] = [];
+        if (hasSpecificQuery) {
+          const searchNum = (phoneMatch || orderMatch)![1];
+          targetOrders = await this.orderRepo
+            .createQueryBuilder('o')
+            .leftJoinAndSelect('o.customer', 'c')
+            .where('o.storeId = :storeId', { storeId: context.storeId })
+            .andWhere(
+              '(o.referenceId LIKE :num OR o.sallaOrderId LIKE :num OR c.phone LIKE :phone)',
+              { num: `%${searchNum}%`, phone: `%${searchNum.slice(-9)}%` },
+            )
+            .orderBy('o.createdAt', 'DESC')
+            .take(20)
+            .getMany();
+
+          if (targetOrders.length > 0) {
+            this.logger.log(`🔑 Owner mode: targeted search found ${targetOrders.length} orders for "${searchNum}"`);
+          }
+        }
+
+        // ✅ جلب آخر 200 طلب عام (أو أقل إذا البحث المستهدف كفى)
+        const generalOrders = await this.orderRepo.find({
           where: { storeId: context.storeId },
           relations: ['customer'],
           order: { createdAt: 'DESC' },
-          take: 50,
+          take: 200,
         });
 
-        this.logger.log(`🔑 Owner mode: loaded ${orders.length} orders for context`);
+        // ✅ دمج: النتائج المستهدفة أولاً + باقي الطلبات
+        const targetIds = new Set(targetOrders.map(o => o.id));
+        const allOrders = [
+          ...targetOrders,
+          ...generalOrders.filter(o => !targetIds.has(o.id)),
+        ];
 
-        if (orders.length > 0) {
-          // بناء جدول بيانات شامل لـ GPT
-          ordersDataForGPT = '\n\n📊 بيانات الطلبات والعملاء (آخر 50 طلب):\n';
-          ordersDataForGPT += orders.map((o, i) => {
+        this.logger.log(`🔑 Owner mode: loaded ${allOrders.length} orders (${targetOrders.length} targeted + ${generalOrders.length} general)`);
+
+        if (allOrders.length > 0) {
+          ordersDataForGPT = `\n\n📊 بيانات الطلبات والعملاء (${allOrders.length} طلب):\n`;
+          ordersDataForGPT += allOrders.map((o, i) => {
             const custName = o.customer?.fullName || o.customer?.firstName || (o as any).customerName || 'غير معروف';
             const custPhone = o.customer?.phone || (o as any).customerPhone || '—';
             const custEmail = o.customer?.email || (o as any).customerEmail || '—';
             return `${i + 1}. طلب #${o.referenceId || o.sallaOrderId || o.id?.slice(0, 8)} | ${custName} | هاتف: ${custPhone} | إيميل: ${custEmail} | ${o.totalAmount || 0} ${o.currency || 'ر.س'} | ${o.status} | ${o.paymentStatus || '—'} | ${o.createdAt ? new Date(o.createdAt).toLocaleDateString('ar-SA') : '—'}`;
           }).join('\n');
 
-          // ✅ إذا فيه رقم محدد في الرسالة، جلب تفاصيل المنتجات
+          // ✅ إذا فيه رقم طلب محدد → تفاصيل المنتجات
           const anyNumber = message.match(/(\d{4,})/);
           if (anyNumber) {
             const num = anyNumber[1];
-            const specificOrder = orders.find(o =>
+            const specificOrder = allOrders.find(o =>
               o.referenceId === num || o.sallaOrderId === num ||
               o.referenceId?.includes(num) || o.sallaOrderId?.includes(num)
             );
@@ -3662,7 +3694,7 @@ ${capsList.join('\n')}
 📌 قواعد البيانات:
 - كل بيانات الطلبات والعملاء مرفقة أدناه — ابحث فيها.
 - إذا سأل عن عميل أو طلب → دوّر في البيانات وأعطه النتيجة.
-- إذا ما لقيت → قل "ما لقيت هالمعلومة في آخر 50 طلب".
+- إذا ما لقيت → قل "ما لقيت هالمعلومة في الطلبات المتوفرة".
 
 ${storeData ? '🏪 ' + storeData : ''}
 ${ordersDataForGPT}`;
@@ -3680,13 +3712,12 @@ ${ordersDataForGPT}`;
           content: m.content.slice(0, 500), // حد أقصى 500 حرف لكل رسالة
         }));
 
-      // ✅ تقليم حجم الـ prompt إذا كبير جداً
+      // ✅ تقليم حجم الـ prompt إذا كبير جداً (GPT-4o-mini يقبل 128K token)
       let finalPrompt = ownerSystemPrompt;
-      if (finalPrompt.length > 15000) {
+      if (finalPrompt.length > 50000) {
         this.logger.warn(`🔑 Owner mode: prompt too large (${finalPrompt.length} chars), trimming orders`);
-        // إعادة بناء مع 20 طلب بدل 50
-        const trimmedOrders = ordersDataForGPT.split('\n').slice(0, 22).join('\n');
-        finalPrompt = ownerSystemPrompt.replace(ordersDataForGPT, trimmedOrders + '\n(تم اختصار القائمة لأول 20 طلب)');
+        const trimmedOrders = ordersDataForGPT.split('\n').slice(0, 102).join('\n');
+        finalPrompt = ownerSystemPrompt.replace(ordersDataForGPT, trimmedOrders + '\n(تم اختصار القائمة لأول 100 طلب)');
       }
 
       // ✅ التحقق من الموديل — fallback إذا كان غير صالح
