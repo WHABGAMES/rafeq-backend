@@ -3586,115 +3586,16 @@ Types:
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // ✅ ALWAYS load orders + customers — let GPT search, not regex
+    // ✅ OWNER MODE v2 — Function Calling Architecture
+    // GPT يستدعي أدوات بحث → SQL مباشر → لا حد على الطلبات
     // ═══════════════════════════════════════════════════════════════════
-    let ordersDataForGPT = '';
-    if (caps.orderLookup && context.storeId) {
-      try {
-        // ✅ كشف: هل التاجر يسأل عن رقم/اسم/هاتف محدد؟
-        const phoneMatch = message.match(/(\d{7,15})/);  // رقم هاتف
-        const orderMatch = message.match(/(\d{4,12})/);  // رقم طلب
-        // كشف أسماء — كلمة عربية 3+ حروف بعد كلمات بحث
-        const nameMatch = message.match(/(?:طلبات|عميل|ابحث عن|دور على|بيانات)\s+([^\d\n]{3,30})/);
-        const hasSpecificQuery = phoneMatch || orderMatch || nameMatch;
 
-        // ✅ بحث مستهدف في كل الطلبات (بدون حد — SQL سريع مع INDEX)
-        let targetOrders: any[] = [];
-        if (hasSpecificQuery) {
-          const qb = this.orderRepo
-            .createQueryBuilder('o')
-            .leftJoinAndSelect('o.customer', 'c')
-            .where('o.storeId = :storeId', { storeId: context.storeId });
-
-          if (phoneMatch) {
-            const searchNum = phoneMatch[1];
-            qb.andWhere(
-              '(o.referenceId LIKE :num OR o.sallaOrderId LIKE :num OR c.phone LIKE :phone OR c.email LIKE :num2)',
-              { num: `%${searchNum}%`, phone: `%${searchNum.slice(-9)}%`, num2: `%${searchNum}%` },
-            );
-          } else if (orderMatch) {
-            const searchNum = orderMatch[1];
-            qb.andWhere(
-              '(o.referenceId LIKE :num OR o.sallaOrderId LIKE :num)',
-              { num: `%${searchNum}%` },
-            );
-          } else if (nameMatch) {
-            const searchName = nameMatch[1].trim();
-            qb.andWhere(
-              "(c.fullName ILIKE :name OR c.firstName ILIKE :name OR c.lastName ILIKE :name)",
-              { name: `%${searchName}%` },
-            );
-          }
-
-          targetOrders = await qb
-            .orderBy('o.createdAt', 'DESC')
-            .take(50) // أقصى 50 نتيجة مستهدفة
-            .getMany();
-
-          if (targetOrders.length > 0) {
-            this.logger.log(`🔑 Owner mode: targeted search found ${targetOrders.length} orders`);
-          }
-        }
-
-        // ✅ جلب آخر 1000 طلب (GPT-4o-mini يقبل 128K token — 1000 طلب ≈ 15K token)
-        const generalOrders = await this.orderRepo.find({
-          where: { storeId: context.storeId },
-          relations: ['customer'],
-          order: { createdAt: 'DESC' },
-          take: 1000,
-        });
-
-        // ✅ دمج: النتائج المستهدفة أولاً + باقي الطلبات
-        const targetIds = new Set(targetOrders.map(o => o.id));
-        const allOrders = [
-          ...targetOrders,
-          ...generalOrders.filter(o => !targetIds.has(o.id)),
-        ];
-
-        this.logger.log(`🔑 Owner mode: loaded ${allOrders.length} orders (${targetOrders.length} targeted + ${generalOrders.length} general)`);
-
-        if (allOrders.length > 0) {
-          ordersDataForGPT = `\n\n📊 بيانات الطلبات والعملاء (${allOrders.length} طلب):\n`;
-          ordersDataForGPT += allOrders.map((o, i) => {
-            const custName = o.customer?.fullName || o.customer?.firstName || (o as any).customerName || 'غير معروف';
-            const custPhone = o.customer?.phone || (o as any).customerPhone || '—';
-            const custEmail = o.customer?.email || (o as any).customerEmail || '—';
-            return `${i + 1}. طلب #${o.referenceId || o.sallaOrderId || o.id?.slice(0, 8)} | ${custName} | هاتف: ${custPhone} | إيميل: ${custEmail} | ${o.totalAmount || 0} ${o.currency || 'ر.س'} | ${o.status} | ${o.paymentStatus || '—'} | ${o.createdAt ? new Date(o.createdAt).toLocaleDateString('ar-SA') : '—'}`;
-          }).join('\n');
-
-          // ✅ إذا فيه رقم طلب محدد → تفاصيل المنتجات
-          const anyNumber = message.match(/(\d{4,})/);
-          if (anyNumber) {
-            const num = anyNumber[1];
-            const specificOrder = allOrders.find(o =>
-              o.referenceId === num || o.sallaOrderId === num ||
-              o.referenceId?.includes(num) || o.sallaOrderId?.includes(num)
-            );
-            if (specificOrder) {
-              ordersDataForGPT += `\n\n📋 تفاصيل الطلب #${num}:`;
-              ordersDataForGPT += `\n- المنتجات: ${JSON.stringify(specificOrder.items?.map((it: any) => `${it.name || it.product_name} × ${it.quantity} = ${it.totalPrice || it.total} ر.س`) || ['لا توجد تفاصيل'])}`;
-              ordersDataForGPT += `\n- طريقة الدفع: ${specificOrder.paymentMethod || 'غير محدد'}`;
-              ordersDataForGPT += `\n- الشحن: ${(specificOrder as any).shippingInfo?.carrierName || 'غير محدد'}`;
-              ordersDataForGPT += `\n- رقم التتبع: ${(specificOrder as any).shippingInfo?.trackingNumber || 'غير متوفر'}`;
-            }
-          }
-        } else {
-          ordersDataForGPT = '\n\n⚠️ لا توجد طلبات في المتجر حالياً.';
-        }
-      } catch (e) {
-        this.logger.warn(`Owner mode: orders fetch failed: ${(e as Error).message}`);
-        ordersDataForGPT = '\n\n⚠️ تعذر جلب بيانات الطلبات.';
-      }
-    }
-
-    // ═══════════════════════════════════════════════════════════════════
-    // ✅ System Prompt — يحتوي كل البيانات، GPT يبحث فيها
-    // ═══════════════════════════════════════════════════════════════════
     const capsList: string[] = [];
     if (caps.orderLookup) capsList.push('- استعلام كامل عن الطلبات وبيانات العملاء');
     if (caps.createCoupons) capsList.push('- إنشاء أكواد خصم');
     if (caps.modifyOrders) capsList.push('- تعديل حالة الطلبات (إلغاء/استرجاع)');
 
+    // ═══ System Prompt — خفيف بدون بيانات ═══
     const ownerSystemPrompt = `أنت مساعد ذكي خاص بصاحب المتجر "${settings.storeName || ''}".
 
 ⚠️ هام: اللي يكلمك هو صاحب المتجر نفسه — مو عميل.
@@ -3705,124 +3606,357 @@ Types:
 - إذا سلّم عليك (هلا، السلام، مرحبا) → رد عليه بشكل طبيعي: "أهلين تاجرنا! أمر، وش تبي أساعدك فيه؟"
 - لا تعرض خدماتك من نفسك — بس إذا سأل "وش تقدر تسوي؟" أو "عرض خدماتك" → اعرضها.
 - ❌ ممنوع أسلوب البوتات: لا تقل "مرحباً عزيزي التاجر" أو "كيف أساعدك" أو "تفضل".
-- ❌ ممنوع تقول "لا يمكنني الوصول إلى بيانات" — البيانات مرفقة تحت، ابحث فيها.
 
 📊 خدماتك (اعرضها بس إذا طلب):
 ${capsList.join('\n')}
 
-📌 قواعد البيانات:
-- عندك بيانات آخر 1000 طلب مرفقة أدناه — ابحث فيها.
-- إذا التاجر ذكر رقم هاتف أو رقم طلب أو اسم عميل → النتائج المستهدفة موجودة أول الليستة.
-- إذا سأل عن عميل أو طلب → دوّر في البيانات وأعطه النتيجة.
-- إذا ما لقيت → قل "ما لقيت هالمعلومة في آخر 1000 طلب. إذا الطلب أقدم من كذا، جرب ترسل لي رقم الطلب أو رقم الجوال بالضبط وأدوّر لك".
+📌 قواعد مهمة:
+- عندك أدوات بحث تقدر تستخدمها للوصول لأي طلب أو عميل في المتجر — بدون حد.
+- استخدم الأداة المناسبة حسب طلب التاجر.
+- إذا التاجر ذكر رقم هاتف → استخدم search_orders مع phone.
+- إذا ذكر رقم طلب → استخدم search_orders مع order_id.
+- إذا ذكر اسم عميل → استخدم search_orders مع customer_name.
+- إذا سأل عن إحصائيات (كم طلب، إجمالي المبيعات) → استخدم get_store_stats.
+- إذا بس سلّم ولا طلب شي محدد → رد بشكل طبيعي بدون استدعاء أي أداة.
+- رتّب النتائج بشكل واضح ومختصر.
 
-${storeData ? '🏪 ' + storeData : ''}
-${ordersDataForGPT}`;
+${storeData ? '🏪 ' + storeData : ''}`;
 
-    // ✅ إرسال لـ GPT — حتى أول رسالة تمر عبر GPT (بدون ترحيب ثابت)
+    // ═══ Function Definitions ═══
+    const ownerTools: any[] = [];
+    if (caps.orderLookup) {
+      ownerTools.push(
+        {
+          type: 'function',
+          function: {
+            name: 'search_orders',
+            description: 'البحث في طلبات المتجر — رقم طلب، رقم هاتف، اسم عميل، حالة، أو آخر الطلبات. يبحث في كل الطلبات بدون حد.',
+            parameters: {
+              type: 'object',
+              properties: {
+                order_id: { type: 'string', description: 'رقم الطلب — مثال: 250088344' },
+                phone: { type: 'string', description: 'رقم هاتف العميل — مثال: 971526387731' },
+                customer_name: { type: 'string', description: 'اسم العميل — مثال: علي الظنداني' },
+                email: { type: 'string', description: 'إيميل العميل' },
+                status: { type: 'string', description: 'حالة الطلب: completed, pending, under_review, cancelled, refunded' },
+                limit: { type: 'number', description: 'عدد النتائج (الافتراضي 20، أقصى 50)' },
+              },
+              required: [],
+            },
+          },
+        },
+        {
+          type: 'function',
+          function: {
+            name: 'get_order_details',
+            description: 'جلب تفاصيل طلب محدد — المنتجات، الشحن، الدفع، العنوان',
+            parameters: {
+              type: 'object',
+              properties: {
+                order_id: { type: 'string', description: 'رقم الطلب (referenceId)' },
+              },
+              required: ['order_id'],
+            },
+          },
+        },
+        {
+          type: 'function',
+          function: {
+            name: 'get_store_stats',
+            description: 'إحصائيات المتجر — عدد الطلبات، إجمالي المبيعات، أكثر العملاء شراءً',
+            parameters: {
+              type: 'object',
+              properties: {
+                metric: {
+                  type: 'string',
+                  enum: ['summary', 'top_customers', 'recent_orders', 'orders_by_status'],
+                  description: 'summary=ملخص عام، top_customers=أكثر العملاء، recent_orders=آخر الطلبات، orders_by_status=حسب الحالة',
+                },
+                days: { type: 'number', description: 'الفترة بالأيام (الافتراضي 30)' },
+              },
+              required: ['metric'],
+            },
+          },
+        },
+      );
+    }
+
+    // ═══ GPT + Function Calling Loop ═══
     try {
-      this.logger.log(`🔑 Owner mode: sending to GPT with ${ordersDataForGPT.length} chars of order data`);
+      this.logger.log(`🔑 Owner v2: Function Calling mode`);
 
-      // ✅ تنظيف الرسائل السابقة — حذف الفارغة وتقليم المحتوى
       const cleanPreviousMessages = context.previousMessages
-        .slice(-8) // آخر 8 رسائل فقط
+        .slice(-8)
         .filter(m => m.content && m.content.trim().length > 0)
         .map(m => ({
           role: m.role as 'user' | 'assistant',
-          content: m.content.slice(0, 500), // حد أقصى 500 حرف لكل رسالة
+          content: m.content.slice(0, 500),
         }));
 
-      // ✅ تقليم إذا تجاوز 100K حرف (≈ 25K token — GPT-4o-mini يقبل 128K)
-      let finalPrompt = ownerSystemPrompt;
-      if (finalPrompt.length > 100000) {
-        this.logger.warn(`🔑 Owner mode: prompt too large (${finalPrompt.length} chars), trimming`);
-        const trimmedOrders = ordersDataForGPT.split('\n').slice(0, 502).join('\n');
-        finalPrompt = ownerSystemPrompt.replace(ordersDataForGPT, trimmedOrders + '\n(تم اختصار القائمة لأول 500 طلب)');
-      }
-
-      // ✅ التحقق من الموديل — fallback إذا كان غير صالح
       const VALID_MODELS = ['gpt-4o', 'gpt-4o-mini', 'gpt-4', 'gpt-4-turbo', 'gpt-3.5-turbo'];
       const requestedModel = settings.model || 'gpt-4o-mini';
       const safeModel = VALID_MODELS.includes(requestedModel) ? requestedModel : 'gpt-4o-mini';
 
-      const ownerGptMessages = [
-        { role: 'system' as const, content: finalPrompt },
+      const gptMessages: any[] = [
+        { role: 'system', content: ownerSystemPrompt },
         ...cleanPreviousMessages,
-        { role: 'user' as const, content: message },
+        { role: 'user', content: message },
       ];
+
+      const callGpt = async (model: string, msgs: any[], tools?: any[]) => {
+        const params: any = {
+          model,
+          temperature: 0.2,
+          max_tokens: settings.maxTokens || 1500,
+          messages: msgs,
+        };
+        if (tools && tools.length > 0) params.tools = tools;
+        return this.withTimeout(
+          this.openai.chat.completions.create(params),
+          30000,
+          'Owner GPT',
+        );
+      };
 
       let completion: any;
       try {
-        completion = await this.withTimeout(
-          this.openai.chat.completions.create({
-            model: safeModel,
-            temperature: 0.2,
-            max_tokens: settings.maxTokens || 1000,
-            messages: ownerGptMessages,
-          }),
-          30000,
-          'Owner mode GPT',
-        );
+        completion = await callGpt(safeModel, gptMessages, ownerTools);
       } catch (firstError: any) {
-        // إذا فشل الموديل → نجرب gpt-4o-mini كـ fallback
         if (firstError?.status === 404 || firstError?.code === 'model_not_found') {
-          this.logger.warn(`🔑 Model "${safeModel}" failed (404), retrying with gpt-4o-mini`);
-          completion = await this.withTimeout(
-            this.openai.chat.completions.create({
-              model: 'gpt-4o-mini',
-              temperature: 0.2,
-              max_tokens: settings.maxTokens || 1000,
-              messages: ownerGptMessages,
-            }),
-            30000,
-            'Owner mode GPT fallback',
-          );
+          this.logger.warn(`🔑 Model "${safeModel}" failed, fallback to gpt-4o-mini`);
+          completion = await callGpt('gpt-4o-mini', gptMessages, ownerTools);
         } else {
-          throw firstError; // خطأ ثاني → نرميه للـ catch الخارجي
+          throw firstError;
         }
       }
 
-      const reply = completion.choices[0]?.message?.content?.trim() || 'لم أتمكن من معالجة طلبك. حاول مرة أخرى.';
+      // ═══ Tool Call Loop — أقصى 3 دورات ═══
+      let maxLoops = 3;
+      let finalReply = '';
 
-      this.logger.log(`🔑 Owner mode: GPT replied (${reply.length} chars)`);
+      while (maxLoops > 0) {
+        const choice = completion.choices[0];
+
+        if (choice.finish_reason === 'stop' || !choice.message.tool_calls?.length) {
+          finalReply = choice.message.content?.trim() || '';
+          break;
+        }
+
+        gptMessages.push(choice.message);
+
+        for (const toolCall of choice.message.tool_calls) {
+          const fnName = toolCall.function.name;
+          const fnArgs = JSON.parse(toolCall.function.arguments || '{}');
+          this.logger.log(`🔧 Tool: ${fnName}(${JSON.stringify(fnArgs).slice(0, 100)})`);
+
+          let result = '';
+          try {
+            result = await this.executeOwnerTool(fnName, fnArgs, context.storeId!);
+          } catch (e) {
+            result = JSON.stringify({ error: (e as Error).message });
+            this.logger.error(`🔧 Tool error: ${fnName}`, e);
+          }
+
+          gptMessages.push({
+            role: 'tool',
+            tool_call_id: toolCall.id,
+            content: result,
+          });
+        }
+
+        completion = await callGpt(safeModel, gptMessages, ownerTools);
+        maxLoops--;
+      }
+
+      if (!finalReply) {
+        finalReply = completion.choices[0]?.message?.content?.trim() || 'لم أتمكن من معالجة طلبك.';
+      }
+
+      this.logger.log(`🔑 Owner v2: replied (${finalReply.length} chars)`);
 
       return {
-        reply,
+        reply: finalReply,
         confidence: 0.95,
         shouldHandoff: false,
         intent: 'owner_request',
-        toolsUsed: ['owner_mode', 'order_data'],
+        toolsUsed: ['owner_mode', 'function_calling'],
       };
     } catch (error: any) {
-      // ✅ تسجيل الخطأ بالتفصيل
       this.logger.error('🔑 Owner mode GPT FAILED', {
         error: error?.message || 'Unknown',
-        status: error?.status || error?.response?.status,
+        status: error?.status,
         code: error?.code,
-        type: error?.type,
-        promptLength: ownerSystemPrompt?.length,
-        ordersLength: ordersDataForGPT?.length,
-        previousMessagesCount: context.previousMessages?.length,
       });
 
-      // ✅ FALLBACK: إذا فشل GPT، على الأقل أعطِ التاجر البيانات الخام
-      if (ordersDataForGPT && ordersDataForGPT.length > 50) {
-        return {
-          reply: `⚠️ تعذر تحليل طلبك بالذكاء الاصطناعي، لكن هذه آخر البيانات المتوفرة:\n${ordersDataForGPT.slice(0, 2000)}`,
-          confidence: 0.5,
-          shouldHandoff: false,
-          intent: 'owner_fallback',
-          toolsUsed: ['owner_mode', 'fallback'],
-        };
-      }
-
       return {
-        reply: 'عذراً، حدث خطأ في معالجة طلبك. حاول مرة أخرى.',
-        confidence: 0,
-        shouldHandoff: false,
+        reply: 'عذراً، حدث خطأ. حاول مرة أخرى.',
+        confidence: 0.3,
+        shouldHandoff: true,
+        intent: 'owner_error',
+        toolsUsed: ['owner_mode', 'error'],
       };
     }
   }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // ✅ Owner Mode v2 — Tool Execution Engine
+  // ═══════════════════════════════════════════════════════════════════
+  private async executeOwnerTool(fnName: string, args: any, storeId: string): Promise<string> {
+    switch (fnName) {
+      case 'search_orders': {
+        const limit = Math.min(args.limit || 20, 50);
+        const qb = this.orderRepo
+          .createQueryBuilder('o')
+          .leftJoinAndSelect('o.customer', 'c')
+          .where('o.storeId = :storeId', { storeId });
+
+        if (args.order_id) {
+          qb.andWhere('(o.referenceId LIKE :oid OR o.sallaOrderId LIKE :oid)', { oid: `%${args.order_id}%` });
+        }
+        if (args.phone) {
+          const phone9 = args.phone.replace(/[^0-9]/g, '').slice(-9);
+          qb.andWhere('c.phone LIKE :phone', { phone: `%${phone9}%` });
+        }
+        if (args.customer_name) {
+          qb.andWhere('(c.fullName ILIKE :name OR c.firstName ILIKE :name OR c.lastName ILIKE :name)', { name: `%${args.customer_name}%` });
+        }
+        if (args.email) {
+          qb.andWhere('c.email ILIKE :email', { email: `%${args.email}%` });
+        }
+        if (args.status) {
+          qb.andWhere('o.status = :status', { status: args.status });
+        }
+
+        const orders = await qb.orderBy('o.createdAt', 'DESC').take(limit).getMany();
+
+        if (orders.length === 0) return JSON.stringify({ count: 0, message: 'لا توجد نتائج' });
+
+        return JSON.stringify({
+          count: orders.length,
+          orders: orders.map(o => ({
+            id: o.referenceId || o.sallaOrderId || o.id?.slice(0, 8),
+            customer: o.customer?.fullName || o.customer?.firstName || (o as any).customerName || 'غير معروف',
+            phone: o.customer?.phone || (o as any).customerPhone || '—',
+            email: o.customer?.email || '—',
+            amount: `${o.totalAmount || 0} ${o.currency || 'SAR'}`,
+            status: o.status,
+            payment: o.paymentStatus || '—',
+            date: o.createdAt ? new Date(o.createdAt).toLocaleDateString('ar-SA') : '—',
+          })),
+        });
+      }
+
+      case 'get_order_details': {
+        const order = await this.orderRepo
+          .createQueryBuilder('o')
+          .leftJoinAndSelect('o.customer', 'c')
+          .where('o.storeId = :storeId', { storeId })
+          .andWhere('(o.referenceId = :oid OR o.sallaOrderId = :oid)', { oid: args.order_id })
+          .getOne();
+
+        if (!order) return JSON.stringify({ error: 'الطلب غير موجود' });
+
+        return JSON.stringify({
+          id: order.referenceId || order.sallaOrderId,
+          customer: {
+            name: order.customer?.fullName || order.customer?.firstName || 'غير معروف',
+            phone: order.customer?.phone || '—',
+            email: order.customer?.email || '—',
+          },
+          amount: `${order.totalAmount || 0} ${order.currency || 'SAR'}`,
+          status: order.status,
+          payment_status: order.paymentStatus || '—',
+          payment_method: order.paymentMethod || 'غير محدد',
+          items: order.items?.map((it: any) => ({
+            name: it.name || it.product_name,
+            quantity: it.quantity,
+            price: it.totalPrice || it.total || it.price,
+          })) || [],
+          shipping: {
+            carrier: (order as any).shippingInfo?.carrierName || 'غير محدد',
+            tracking: (order as any).shippingInfo?.trackingNumber || 'غير متوفر',
+          },
+          date: order.createdAt ? new Date(order.createdAt).toLocaleDateString('ar-SA') : '—',
+        });
+      }
+
+      case 'get_store_stats': {
+        const days = args.days || 30;
+        const since = new Date();
+        since.setDate(since.getDate() - days);
+
+        switch (args.metric) {
+          case 'summary': {
+            const [totalOrders, totalRevenue, uniqueCustomers] = await Promise.all([
+              this.orderRepo.count({ where: { storeId, createdAt: { $gte: since } as any } }),
+              this.orderRepo
+                .createQueryBuilder('o')
+                .select('SUM(o.totalAmount)', 'sum')
+                .where('o.storeId = :storeId AND o.createdAt >= :since', { storeId, since })
+                .getRawOne(),
+              this.orderRepo
+                .createQueryBuilder('o')
+                .select('COUNT(DISTINCT o.customerId)', 'count')
+                .where('o.storeId = :storeId AND o.createdAt >= :since', { storeId, since })
+                .getRawOne(),
+            ]);
+            const allTimeOrders = await this.orderRepo.count({ where: { storeId } });
+            return JSON.stringify({
+              period: `آخر ${days} يوم`,
+              total_orders: totalOrders,
+              total_revenue: `${parseFloat(totalRevenue?.sum || '0').toFixed(2)} SAR`,
+              unique_customers: parseInt(uniqueCustomers?.count || '0'),
+              all_time_orders: allTimeOrders,
+            });
+          }
+          case 'top_customers': {
+            const top = await this.orderRepo
+              .createQueryBuilder('o')
+              .leftJoin('o.customer', 'c')
+              .select(['c.fullName AS name', 'c.phone AS phone', 'COUNT(o.id) AS order_count', 'SUM(o.totalAmount) AS total_spent'])
+              .where('o.storeId = :storeId AND o.createdAt >= :since', { storeId, since })
+              .groupBy('c.id, c.fullName, c.phone')
+              .orderBy('order_count', 'DESC')
+              .limit(10)
+              .getRawMany();
+            return JSON.stringify({ period: `آخر ${days} يوم`, top_customers: top });
+          }
+          case 'recent_orders': {
+            const recent = await this.orderRepo.find({
+              where: { storeId },
+              relations: ['customer'],
+              order: { createdAt: 'DESC' },
+              take: 10,
+            });
+            return JSON.stringify({
+              orders: recent.map(o => ({
+                id: o.referenceId || o.sallaOrderId,
+                customer: o.customer?.fullName || 'غير معروف',
+                amount: `${o.totalAmount || 0} ${o.currency || 'SAR'}`,
+                status: o.status,
+                date: o.createdAt ? new Date(o.createdAt).toLocaleDateString('ar-SA') : '—',
+              })),
+            });
+          }
+          case 'orders_by_status': {
+            const byStatus = await this.orderRepo
+              .createQueryBuilder('o')
+              .select(['o.status AS status', 'COUNT(o.id) AS count'])
+              .where('o.storeId = :storeId AND o.createdAt >= :since', { storeId, since })
+              .groupBy('o.status')
+              .getRawMany();
+            return JSON.stringify({ period: `آخر ${days} يوم`, by_status: byStatus });
+          }
+          default:
+            return JSON.stringify({ error: 'metric غير معروف' });
+        }
+      }
+
+      default:
+        return JSON.stringify({ error: `الأداة ${fnName} غير موجودة` });
+    }
+  }
+
 
   async analyzeMessage(
     message: string,
