@@ -501,6 +501,29 @@ export class AiController {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
+  // SCRAPE PRODUCTS — قراءة المنتجات من رابط الموقع
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  @Post('scrape-products')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'قراءة المنتجات من رابط موقع خارجي' })
+  async scrapeProducts(
+    @Req() req: any,
+    @Body() dto: { url: string },
+  ) {
+    if (!dto.url?.trim()) {
+      throw new BadRequestException('يرجى إدخال رابط الموقع');
+    }
+    // Validate URL format
+    try {
+      new URL(dto.url.trim());
+    } catch {
+      throw new BadRequestException('الرابط غير صالح — يجب أن يبدأ بـ https://');
+    }
+    return this.aiService.scrapeProducts(dto.url.trim());
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
   // INTENTS LIST
   // ═══════════════════════════════════════════════════════════════════════════════
 
