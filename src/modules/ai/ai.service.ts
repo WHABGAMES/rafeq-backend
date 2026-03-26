@@ -3560,54 +3560,65 @@ Types:
     if (caps.createCoupons) capsList.push('- إنشاء أكواد خصم');
     if (caps.modifyOrders) capsList.push('- تعديل حالة الطلبات (إلغاء/استرجاع)');
 
-    const ownerSystemPrompt = `أنت مساعد ذكي خاص بمالك المتجر "${settings.storeName || ''}".
+    const ownerSystemPrompt = `أنت مساعد ذكي خاص بصاحب المتجر "${settings.storeName || ''}".
 
-⚠️ المتحدث هو مالك المتجر — وليس عميل.
+⚠️ هام: اللي يكلمك هو صاحب المتجر نفسه — مو عميل.
 
-🎯 دورك: مساعد شخصي للتاجر. تجيب على أسئلته وتساعده في إدارة متجره.
+🎯 أسلوبك:
+- تكلم بالعامية السعودية/الخليجية — مثل زميل عمل يفهم شغله.
+- ردودك مختصرة وعملية — لا تطوّل ولا تكرر.
+- إذا سلّم عليك (هلا، السلام، مرحبا) → رد عليه بشكل طبيعي: "أهلين تاجرنا! أمر، وش تبي أساعدك فيه؟"
+- لا تعرض خدماتك من نفسك — بس إذا سأل "وش تقدر تسوي؟" أو "عرض خدماتك" → اعرضها.
+- ❌ ممنوع أسلوب البوتات: لا تقل "مرحباً عزيزي التاجر" أو "كيف أساعدك" أو "تفضل".
+- ❌ ممنوع تقول "لا يمكنني الوصول إلى بيانات" — البيانات مرفقة تحت، ابحث فيها.
 
-📊 صلاحياتك:
+📊 خدماتك (اعرضها بس إذا طلب):
 ${capsList.join('\n')}
 
-📌 قواعد:
-- أنت لديك وصول كامل لبيانات الطلبات والعملاء المرفقة أدناه.
-- ابحث في البيانات المرفقة عن أي رقم هاتف أو اسم أو رقم طلب يذكره التاجر.
-- قدّم كل البيانات المتوفرة بدون حجب.
-- لا تقل أبداً "لا يمكنني الوصول إلى بيانات" — البيانات مرفقة أدناه، ابحث فيها.
-- إذا لم تجد المعلومة في البيانات المرفقة، قل "لم أجد هذه المعلومة في آخر 50 طلب".
-- رد بالعربية بأسلوب مختصر ومفيد.
+📌 قواعد البيانات:
+- كل بيانات الطلبات والعملاء مرفقة أدناه — ابحث فيها.
+- إذا سأل عن عميل أو طلب → دوّر في البيانات وأعطه النتيجة.
+- إذا ما لقيت → قل "ما لقيت هالمعلومة في آخر 50 طلب".
 
 ${storeData ? '🏪 ' + storeData : ''}
 ${ordersDataForGPT}`;
 
-    // ✅ ترحيب أول رسالة
-    const isFirstMessage = context.messageCount <= 1;
-    if (isFirstMessage) {
-      const welcome = (settings.ownerWelcomeMessage || 'مرحباً عزيزي التاجر 👋\nأنا مساعدك الذكي — كيف أقدر أخدمك اليوم؟\n\n') +
-        'الخدمات المتاحة:\n' + capsList.map(c => c.replace('- ', '✅ ')).join('\n') + '\n\nكيف أساعدك؟';
-      return {
-        reply: welcome,
-        confidence: 1,
-        shouldHandoff: false,
-        intent: 'owner_welcome',
-        toolsUsed: ['owner_mode'],
-      };
-    }
-
-    // ✅ إرسال لـ GPT
+    // ✅ إرسال لـ GPT — حتى أول رسالة تمر عبر GPT (بدون ترحيب ثابت)
     try {
       this.logger.log(`🔑 Owner mode: sending to GPT with ${ordersDataForGPT.length} chars of order data`);
 
-      const completion = await this.openai.chat.completions.create({
-        model: settings.model || 'gpt-4o-mini',
-        temperature: 0.2,
-        max_tokens: settings.maxTokens || 1000,
-        messages: [
-          { role: 'system', content: ownerSystemPrompt },
-          ...context.previousMessages.slice(-10),
-          { role: 'user', content: message },
-        ],
-      });
+      // ✅ تنظيف الرسائل السابقة — حذف الفارغة وتقليم المحتوى
+      const cleanPreviousMessages = context.previousMessages
+        .slice(-8) // آخر 8 رسائل فقط
+        .filter(m => m.content && m.content.trim().length > 0)
+        .map(m => ({
+          role: m.role as 'user' | 'assistant',
+          content: m.content.slice(0, 500), // حد أقصى 500 حرف لكل رسالة
+        }));
+
+      // ✅ تقليم حجم الـ prompt إذا كبير جداً
+      let finalPrompt = ownerSystemPrompt;
+      if (finalPrompt.length > 15000) {
+        this.logger.warn(`🔑 Owner mode: prompt too large (${finalPrompt.length} chars), trimming orders`);
+        // إعادة بناء مع 20 طلب بدل 50
+        const trimmedOrders = ordersDataForGPT.split('\n').slice(0, 22).join('\n');
+        finalPrompt = ownerSystemPrompt.replace(ordersDataForGPT, trimmedOrders + '\n(تم اختصار القائمة لأول 20 طلب)');
+      }
+
+      const completion = await this.withTimeout(
+        this.openai.chat.completions.create({
+          model: settings.model || 'gpt-4o-mini',
+          temperature: 0.2,
+          max_tokens: settings.maxTokens || 1000,
+          messages: [
+            { role: 'system', content: finalPrompt },
+            ...cleanPreviousMessages,
+            { role: 'user', content: message },
+          ],
+        }),
+        30000, // 30 seconds timeout
+        'Owner mode GPT',
+      );
 
       const reply = completion.choices[0]?.message?.content?.trim() || 'لم أتمكن من معالجة طلبك. حاول مرة أخرى.';
 
@@ -3620,8 +3631,29 @@ ${ordersDataForGPT}`;
         intent: 'owner_request',
         toolsUsed: ['owner_mode', 'order_data'],
       };
-    } catch (error) {
-      this.logger.error(`Owner mode AI error: ${(error as Error).message}`);
+    } catch (error: any) {
+      // ✅ تسجيل الخطأ بالتفصيل
+      this.logger.error('🔑 Owner mode GPT FAILED', {
+        error: error?.message || 'Unknown',
+        status: error?.status || error?.response?.status,
+        code: error?.code,
+        type: error?.type,
+        promptLength: ownerSystemPrompt?.length,
+        ordersLength: ordersDataForGPT?.length,
+        previousMessagesCount: context.previousMessages?.length,
+      });
+
+      // ✅ FALLBACK: إذا فشل GPT، على الأقل أعطِ التاجر البيانات الخام
+      if (ordersDataForGPT && ordersDataForGPT.length > 50) {
+        return {
+          reply: `⚠️ تعذر تحليل طلبك بالذكاء الاصطناعي، لكن هذه آخر البيانات المتوفرة:\n${ordersDataForGPT.slice(0, 2000)}`,
+          confidence: 0.5,
+          shouldHandoff: false,
+          intent: 'owner_fallback',
+          toolsUsed: ['owner_mode', 'fallback'],
+        };
+      }
+
       return {
         reply: 'عذراً، حدث خطأ في معالجة طلبك. حاول مرة أخرى.',
         confidence: 0,
