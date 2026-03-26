@@ -3413,23 +3413,54 @@ Types:
     };
 
     // ✅ وضع المالك — كشف أرقام التاجر المعتمدة
-    if (settings.ownerModeEnabled && settings.ownerPhones?.length && context.customerPhone) {
-      const normalizedPhone = context.customerPhone.replace(/[^0-9]/g, '');
-      // ✅ SECURITY: تصفية الأرقام الفارغة والقصيرة (أقل من 9 أرقام)
+    // FIX: دعم @lid — نفس الرقم أحياناً يوصل كـ @lid بدل @s.whatsapp.net
+    let ownerCheckPhone = context.customerPhone;
+
+    // إذا ما عندنا رقم هاتف و المرسل @lid → نحاول نكتشف الرقم الحقيقي
+    if (!ownerCheckPhone && conv?.customerExternalId?.includes('@lid') && conv?.channelId && settings.ownerModeEnabled) {
+      try {
+        // البحث عن محادثة ثانية في نفس القناة بنفس الاسم وفيها رقم هاتف حقيقي
+        // (نفس الشخص أرسل من @s.whatsapp.net قبل كذا)
+        if (conv.customerName) {
+          const matchConv = await this.conversationRepo
+            .createQueryBuilder('c')
+            .select(['c.id', 'c.customerPhone'])
+            .where('c.channelId = :channelId', { channelId: conv.channelId })
+            .andWhere('c.customerName = :name', { name: conv.customerName })
+            .andWhere('c.customerPhone IS NOT NULL')
+            .andWhere("LENGTH(c.customerPhone) >= 9")
+            .andWhere('c.id != :currentId', { currentId: conv.id })
+            .orderBy('c.updatedAt', 'DESC')
+            .getOne();
+
+          if (matchConv?.customerPhone) {
+            ownerCheckPhone = matchConv.customerPhone;
+            this.logger.log(`🔑 @lid phone resolved via name match: ${conv.customerName} → ****${ownerCheckPhone.slice(-4)}`);
+
+            // حدّث المحادثة الحالية عشان المرات الجاية ما نحتاج نبحث
+            await this.conversationRepo.update({ id: conv.id }, { customerPhone: ownerCheckPhone });
+          }
+        }
+      } catch (e) {
+        this.logger.warn(`🔑 @lid phone resolution failed: ${(e as Error).message}`);
+      }
+    }
+
+    if (settings.ownerModeEnabled && settings.ownerPhones?.length && ownerCheckPhone) {
+      const normalizedPhone = ownerCheckPhone.replace(/[^0-9]/g, '');
       const validOwnerPhones = settings.ownerPhones
         .map(p => p.replace(/[^0-9]/g, ''))
         .filter(p => p.length >= 9);
       
       const isOwner = validOwnerPhones.some(ownerPhone => {
-        // مطابقة دقيقة أو مع/بدون رمز الدولة
         if (normalizedPhone === ownerPhone) return true;
-        // 966501234567 vs 0501234567 → مقارنة آخر 9 أرقام
         const lastNine = (n: string) => n.slice(-9);
         return lastNine(normalizedPhone) === lastNine(ownerPhone);
       });
       if (isOwner) {
         context.isOwnerMode = true;
-        this.logger.log(`🔑 Owner mode activated for phone: ****${normalizedPhone.slice(-4)}`);
+        context.customerPhone = ownerCheckPhone;
+        this.logger.log(`🔑 Owner mode activated for phone: ****${normalizedPhone.slice(-4)}${conv?.customerExternalId?.includes('@lid') ? ' (resolved from @lid)' : ''}`);
       }
     }
 
