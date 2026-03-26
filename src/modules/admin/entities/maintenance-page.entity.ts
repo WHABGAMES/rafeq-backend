@@ -38,10 +38,10 @@ export class MaintenancePage {
   isActive: boolean;
 
   @Column({
-    type: 'enum',
-    enum: MaintenanceStyle,
-    default: MaintenanceStyle.OVERLAY,
-    comment: 'نوع عرض الصيانة',
+    type: 'varchar',
+    length: 20,
+    default: 'overlay',
+    comment: 'نوع عرض الصيانة: overlay | blur | full_lock',
   })
   style: MaintenanceStyle;
 
