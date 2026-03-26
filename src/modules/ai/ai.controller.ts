@@ -508,7 +508,6 @@ export class AiController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'قراءة المنتجات من رابط موقع خارجي' })
   async scrapeProducts(
-    @Req() req: any,
     @Body() dto: { url: string },
   ) {
     if (!dto.url?.trim()) {
