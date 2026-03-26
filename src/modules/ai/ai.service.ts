@@ -3488,7 +3488,7 @@ Types:
 
     const caps = settings.ownerCapabilities || { orderLookup: true, createCoupons: false, modifyOrders: false };
 
-    // ✅ جلب بيانات المتجر للسياق
+    // ✅ جلب بيانات المتجر
     let storeData = '';
     if (context.storeId) {
       try {
@@ -3496,96 +3496,97 @@ Types:
         if (store) {
           storeData = `اسم المتجر: ${store.name || 'غير محدد'}\nالمنصة: ${store.platform || 'غير محدد'}`;
         }
-      } catch {} // silent fail
+      } catch (e) {
+        this.logger.warn(`Owner mode: store fetch failed: ${(e as Error).message}`);
+      }
     }
 
-    // ✅ جلب آخر طلبات المتجر كسياق (مع بيانات العملاء)
-    let recentOrdersContext = '';
+    // ═══════════════════════════════════════════════════════════════════
+    // ✅ ALWAYS load orders + customers — let GPT search, not regex
+    // ═══════════════════════════════════════════════════════════════════
+    let ordersDataForGPT = '';
     if (caps.orderLookup && context.storeId) {
       try {
+        // جلب آخر 50 طلب مع بيانات العميل
         const orders = await this.orderRepo.find({
           where: { storeId: context.storeId },
           relations: ['customer'],
           order: { createdAt: 'DESC' },
-          take: 20,
+          take: 50,
         });
+
+        this.logger.log(`🔑 Owner mode: loaded ${orders.length} orders for context`);
+
         if (orders.length > 0) {
-          recentOrdersContext = '\n\nآخر الطلبات في المتجر:\n' + orders.map(o =>
-            `- طلب #${o.referenceId || o.sallaOrderId || o.id?.slice(0, 8)} | العميل: ${o.customer?.fullName || o.customer?.firstName || 'غير معروف'} | الهاتف: ${o.customer?.phone || '—'} | المبلغ: ${o.totalAmount || 0} ر.س | الحالة: ${o.status} | التاريخ: ${o.createdAt ? new Date(o.createdAt).toLocaleDateString('ar-SA') : '—'}`
-          ).join('\n');
-        }
-      } catch {} // silent fail
-    }
+          // بناء جدول بيانات شامل لـ GPT
+          ordersDataForGPT = '\n\n📊 بيانات الطلبات والعملاء (آخر 50 طلب):\n';
+          ordersDataForGPT += orders.map((o, i) => {
+            const custName = o.customer?.fullName || o.customer?.firstName || (o as any).customerName || 'غير معروف';
+            const custPhone = o.customer?.phone || (o as any).customerPhone || '—';
+            const custEmail = o.customer?.email || (o as any).customerEmail || '—';
+            return `${i + 1}. طلب #${o.referenceId || o.sallaOrderId || o.id?.slice(0, 8)} | ${custName} | هاتف: ${custPhone} | إيميل: ${custEmail} | ${o.totalAmount || 0} ${o.currency || 'ر.س'} | ${o.status} | ${o.paymentStatus || '—'} | ${o.createdAt ? new Date(o.createdAt).toLocaleDateString('ar-SA') : '—'}`;
+          }).join('\n');
 
-    // ✅ إذا السؤال يتضمن رقم طلب محدد — جلب تفاصيله الكاملة
-    let specificOrderContext = '';
-    const orderNumberMatch = message.match(/(?:طلب|order|#)\s*#?(\d{4,})/i);
-    if (orderNumberMatch && caps.orderLookup && context.storeId) {
-      const orderNum = orderNumberMatch[1];
-      try {
-        const order = await this.orderRepo.findOne({
-          where: [
-            { storeId: context.storeId, referenceId: orderNum },
-            { storeId: context.storeId, sallaOrderId: orderNum },
-          ],
-          relations: ['customer'],
-        });
-        if (order) {
-          specificOrderContext = `\n\n📋 تفاصيل الطلب #${orderNum}:
-- رقم الطلب: ${order.referenceId || order.sallaOrderId}
-- اسم العميل: ${order.customer?.fullName || order.customer?.firstName || 'غير معروف'}
-- رقم هاتف العميل: ${order.customer?.phone || 'غير متوفر'}
-- البريد الإلكتروني: ${order.customer?.email || 'غير متوفر'}
-- المبلغ الإجمالي: ${order.totalAmount || 0} ${order.currency || 'ر.س'}
-- الحالة: ${order.status}
-- حالة الدفع: ${order.paymentStatus || 'غير محدد'}
-- طريقة الدفع: ${order.paymentMethod || 'غير محدد'}
-- تاريخ الإنشاء: ${order.createdAt ? new Date(order.createdAt).toLocaleDateString('ar-SA') : '—'}
-- المنتجات: ${JSON.stringify(order.items?.map((i: any) => `${i.name} (${i.quantity}x) - ${i.totalPrice} ر.س`) || [])}`;
+          // ✅ إذا فيه رقم محدد في الرسالة، جلب تفاصيل المنتجات
+          const anyNumber = message.match(/(\d{4,})/);
+          if (anyNumber) {
+            const num = anyNumber[1];
+            const specificOrder = orders.find(o =>
+              o.referenceId === num || o.sallaOrderId === num ||
+              o.referenceId?.includes(num) || o.sallaOrderId?.includes(num)
+            );
+            if (specificOrder) {
+              ordersDataForGPT += `\n\n📋 تفاصيل الطلب #${num}:`;
+              ordersDataForGPT += `\n- المنتجات: ${JSON.stringify(specificOrder.items?.map((it: any) => `${it.name || it.product_name} × ${it.quantity} = ${it.totalPrice || it.total} ر.س`) || ['لا توجد تفاصيل'])}`;
+              ordersDataForGPT += `\n- طريقة الدفع: ${specificOrder.paymentMethod || 'غير محدد'}`;
+              ordersDataForGPT += `\n- الشحن: ${(specificOrder as any).shippingInfo?.carrierName || 'غير محدد'}`;
+              ordersDataForGPT += `\n- رقم التتبع: ${(specificOrder as any).shippingInfo?.trackingNumber || 'غير متوفر'}`;
+            }
+          }
         } else {
-          specificOrderContext = `\n\n⚠️ لم يتم العثور على طلب برقم #${orderNum} في المتجر.`;
+          ordersDataForGPT = '\n\n⚠️ لا توجد طلبات في المتجر حالياً.';
         }
-      } catch {} // silent fail
+      } catch (e) {
+        this.logger.warn(`Owner mode: orders fetch failed: ${(e as Error).message}`);
+        ordersDataForGPT = '\n\n⚠️ تعذر جلب بيانات الطلبات.';
+      }
     }
 
-    // ✅ بناء System Prompt خاص بوضع المالك
+    // ═══════════════════════════════════════════════════════════════════
+    // ✅ System Prompt — يحتوي كل البيانات، GPT يبحث فيها
+    // ═══════════════════════════════════════════════════════════════════
     const capsList: string[] = [];
-    if (caps.orderLookup) capsList.push('- استعلام كامل عن الطلبات وبيانات العملاء (أرقام، إيميلات، عناوين، تفاصيل الطلبات)');
-    if (caps.createCoupons) capsList.push('- إنشاء أكواد خصم وإرسالها للعملاء (اقترح الخطوات بوضوح)');
-    if (caps.modifyOrders) capsList.push('- تعديل حالة الطلبات: إلغاء، استرجاع، تحديث (اقترح الإجراء المناسب)');
+    if (caps.orderLookup) capsList.push('- استعلام كامل عن الطلبات وبيانات العملاء');
+    if (caps.createCoupons) capsList.push('- إنشاء أكواد خصم');
+    if (caps.modifyOrders) capsList.push('- تعديل حالة الطلبات (إلغاء/استرجاع)');
 
-    const ownerSystemPrompt = `أنت مساعد ذكي خاص بمالك/مدير المتجر "${settings.storeName || ''}".
+    const ownerSystemPrompt = `أنت مساعد ذكي خاص بمالك المتجر "${settings.storeName || ''}".
 
-⚠️ هام: المتحدث الآن هو مالك المتجر أو أحد موظفيه المعتمدين — وليس عميل.
+⚠️ المتحدث هو مالك المتجر — وليس عميل.
 
-🎯 دورك:
-- أنت مساعد شخصي للتاجر — تجيب على أسئلته وتساعده في إدارة متجره.
-- تتحدث بأسلوب مهني ودود — كأنك زميل عمل موثوق.
-- ترحب به بـ "مرحباً عزيزي التاجر" في أول رسالة فقط.
+🎯 دورك: مساعد شخصي للتاجر. تجيب على أسئلته وتساعده في إدارة متجره.
 
 📊 صلاحياتك:
 ${capsList.join('\n')}
 
-📌 قواعد صارمة:
-- قدّم كل البيانات المتوفرة بدون حجب — هذا المالك وليس عميل.
-- إذا سأل عن طلب محدد، أعطه كل التفاصيل: اسم العميل، الرقم، الإيميل، المنتجات، المبلغ.
-- إذا طلب إجراء (مثل إنشاء كوبون أو إلغاء طلب)، اشرح الخطوات بوضوح واقترح التنفيذ.
-- لا تخترع بيانات — إذا المعلومة غير موجودة، قل ذلك بصراحة.
-- رد بالعربية الفصحى بأسلوب مهني ومختصر.
+📌 قواعد:
+- أنت لديك وصول كامل لبيانات الطلبات والعملاء المرفقة أدناه.
+- ابحث في البيانات المرفقة عن أي رقم هاتف أو اسم أو رقم طلب يذكره التاجر.
+- قدّم كل البيانات المتوفرة بدون حجب.
+- لا تقل أبداً "لا يمكنني الوصول إلى بيانات" — البيانات مرفقة أدناه، ابحث فيها.
+- إذا لم تجد المعلومة في البيانات المرفقة، قل "لم أجد هذه المعلومة في آخر 50 طلب".
+- رد بالعربية بأسلوب مختصر ومفيد.
 
-${storeData ? '🏪 معلومات المتجر:\n' + storeData : ''}
-${recentOrdersContext}
-${specificOrderContext}`;
+${storeData ? '🏪 ' + storeData : ''}
+${ordersDataForGPT}`;
 
-    // ✅ رسالة ترحيب خاصة في أول محادثة
+    // ✅ ترحيب أول رسالة
     const isFirstMessage = context.messageCount <= 1;
-    const welcomePrefix = isFirstMessage
-      ? (settings.ownerWelcomeMessage || 'مرحباً عزيزي التاجر 👋\nأنا مساعدك الذكي — كيف أقدر أخدمك اليوم؟\n\n') + 'الخدمات المتاحة:\n' + capsList.map(c => c.replace('- ', '✅ ')).join('\n') + '\n\nكيف أساعدك؟'
-      : null;
-
-    if (isFirstMessage && welcomePrefix) {
+    if (isFirstMessage) {
+      const welcome = (settings.ownerWelcomeMessage || 'مرحباً عزيزي التاجر 👋\nأنا مساعدك الذكي — كيف أقدر أخدمك اليوم؟\n\n') +
+        'الخدمات المتاحة:\n' + capsList.map(c => c.replace('- ', '✅ ')).join('\n') + '\n\nكيف أساعدك؟';
       return {
-        reply: welcomePrefix,
+        reply: welcome,
         confidence: 1,
         shouldHandoff: false,
         intent: 'owner_welcome',
@@ -3593,12 +3594,14 @@ ${specificOrderContext}`;
       };
     }
 
-    // ✅ إرسال للـ AI مع الصلاحيات الموسعة
+    // ✅ إرسال لـ GPT
     try {
+      this.logger.log(`🔑 Owner mode: sending to GPT with ${ordersDataForGPT.length} chars of order data`);
+
       const completion = await this.openai.chat.completions.create({
         model: settings.model || 'gpt-4o-mini',
-        temperature: 0.3, // أقل عشوائية — ردود دقيقة للتاجر
-        max_tokens: settings.maxTokens || 800,
+        temperature: 0.2,
+        max_tokens: settings.maxTokens || 1000,
         messages: [
           { role: 'system', content: ownerSystemPrompt },
           ...context.previousMessages.slice(-10),
@@ -3608,12 +3611,14 @@ ${specificOrderContext}`;
 
       const reply = completion.choices[0]?.message?.content?.trim() || 'لم أتمكن من معالجة طلبك. حاول مرة أخرى.';
 
+      this.logger.log(`🔑 Owner mode: GPT replied (${reply.length} chars)`);
+
       return {
         reply,
         confidence: 0.95,
         shouldHandoff: false,
         intent: 'owner_request',
-        toolsUsed: ['owner_mode', ...(specificOrderContext ? ['order_lookup'] : [])],
+        toolsUsed: ['owner_mode', 'order_data'],
       };
     } catch (error) {
       this.logger.error(`Owner mode AI error: ${(error as Error).message}`);
