@@ -3689,20 +3689,47 @@ ${ordersDataForGPT}`;
         finalPrompt = ownerSystemPrompt.replace(ordersDataForGPT, trimmedOrders + '\n(تم اختصار القائمة لأول 20 طلب)');
       }
 
-      const completion = await this.withTimeout(
-        this.openai.chat.completions.create({
-          model: settings.model || 'gpt-4o-mini',
-          temperature: 0.2,
-          max_tokens: settings.maxTokens || 1000,
-          messages: [
-            { role: 'system', content: finalPrompt },
-            ...cleanPreviousMessages,
-            { role: 'user', content: message },
-          ],
-        }),
-        30000, // 30 seconds timeout
-        'Owner mode GPT',
-      );
+      // ✅ التحقق من الموديل — fallback إذا كان غير صالح
+      const VALID_MODELS = ['gpt-4o', 'gpt-4o-mini', 'gpt-4', 'gpt-4-turbo', 'gpt-3.5-turbo'];
+      const requestedModel = settings.model || 'gpt-4o-mini';
+      const safeModel = VALID_MODELS.includes(requestedModel) ? requestedModel : 'gpt-4o-mini';
+
+      const ownerGptMessages = [
+        { role: 'system' as const, content: finalPrompt },
+        ...cleanPreviousMessages,
+        { role: 'user' as const, content: message },
+      ];
+
+      let completion: any;
+      try {
+        completion = await this.withTimeout(
+          this.openai.chat.completions.create({
+            model: safeModel,
+            temperature: 0.2,
+            max_tokens: settings.maxTokens || 1000,
+            messages: ownerGptMessages,
+          }),
+          30000,
+          'Owner mode GPT',
+        );
+      } catch (firstError: any) {
+        // إذا فشل الموديل → نجرب gpt-4o-mini كـ fallback
+        if (firstError?.status === 404 || firstError?.code === 'model_not_found') {
+          this.logger.warn(`🔑 Model "${safeModel}" failed (404), retrying with gpt-4o-mini`);
+          completion = await this.withTimeout(
+            this.openai.chat.completions.create({
+              model: 'gpt-4o-mini',
+              temperature: 0.2,
+              max_tokens: settings.maxTokens || 1000,
+              messages: ownerGptMessages,
+            }),
+            30000,
+            'Owner mode GPT fallback',
+          );
+        } else {
+          throw firstError; // خطأ ثاني → نرميه للـ catch الخارجي
+        }
+      }
 
       const reply = completion.choices[0]?.message?.content?.trim() || 'لم أتمكن من معالجة طلبك. حاول مرة أخرى.';
 
