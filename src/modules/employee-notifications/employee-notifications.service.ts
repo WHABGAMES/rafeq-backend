@@ -1391,72 +1391,105 @@ export class EmployeeNotificationsService {
   }
 
   /**
-   * ✅ جلب بيانات الطلب من DB وتحويلها لنفس التنسيق اللي extractVariables يتوقعه
+   * ✅ جلب بيانات الطلب — Layer 1: من DB، Layer 2: من بيانات communication webhook
    * يُستخدم عند communication webhooks اللي ما تضمّن بيانات الطلب
    */
   private async enrichOrderFromDB(
     data: Record<string, unknown>,
     context: EventContext,
   ): Promise<Record<string, unknown> | null> {
+    const entity = data.entity as { id?: number | string; type?: string } | undefined;
+    const meta = data.meta as Record<string, unknown> | undefined;
+    const entityId = entity?.id || meta?.order_id || data.orderId;
+
+    // ═══ LAYER 1: DB Lookup ═══
+    if (entityId) {
+      try {
+        const sallaId = String(entityId);
+        const order = await this.orderRepository.findOne({
+          where: context.storeId
+            ? { sallaOrderId: sallaId, storeId: context.storeId }
+            : { sallaOrderId: sallaId, tenantId: context.tenantId },
+          relations: ['customer'],
+        });
+
+        if (order) {
+          this.logger.log(`🔧 enrichOrder: found order ${order.referenceId || order.sallaOrderId} from DB`);
+          return {
+            ...data,
+            id: order.sallaOrderId || order.id,
+            reference_id: order.referenceId,
+            order_number: order.referenceId,
+            total: order.totalAmount,
+            currency: order.currency || 'SAR',
+            status: { name: order.status },
+            payment_method: order.paymentMethod || 'غير محدد',
+            payment_status: order.paymentStatus || 'غير محدد',
+            payment: {
+              method: { name: order.paymentMethod || 'غير محدد' },
+              status: order.paymentStatus || 'غير محدد',
+            },
+            customer: {
+              first_name: order.customer?.firstName || order.customer?.fullName || '',
+              last_name: order.customer?.lastName || '',
+              name: order.customer?.fullName || '',
+              mobile: order.customer?.phone || '',
+              phone: order.customer?.phone || '',
+              email: order.customer?.email || '',
+            },
+            items: order.items || [],
+            shipping: {
+              company: { name: (order as any).shippingInfo?.carrierName || 'غير محدد' },
+              tracking_number: (order as any).shippingInfo?.trackingNumber || 'لا يوجد تتبع',
+            },
+            created_at: order.createdAt ? new Date(order.createdAt).toLocaleDateString('ar-SA') : '',
+          };
+        }
+
+        this.logger.debug(`🔧 enrichOrder: order ${sallaId} not in DB — trying communication data`);
+      } catch (e) {
+        this.logger.warn(`🔧 enrichOrder DB lookup failed: ${(e as Error).message}`);
+      }
+    }
+
+    // ═══ LAYER 2: Extract from Communication Webhook Data ═══
+    // سلة ترسل communication.whatsapp.send قبل order.created → الطلب مو بالـ DB بعد
+    // نستخرج اللي نقدر من بيانات الاتصال نفسها
     try {
-      // محاولة إيجاد الطلب — من entity.id أو meta أو أي مرجع متاح
-      const entity = data.entity as { id?: number | string; type?: string } | undefined;
-      const meta = data.meta as Record<string, unknown> | undefined;
-      const entityId = entity?.id || meta?.order_id || data.orderId;
+      const content = (data.content || '') as string;
+      const notifiable = Array.isArray(data.notifiable) ? data.notifiable : [];
 
-      if (!entityId) {
-        this.logger.debug('🔧 enrichOrderFromDB: no entityId found in data');
-        return null;
+      // استخراج رقم الطلب من نص الرسالة: "طلبك رقم 250617526"
+      const orderNumMatch = content.match(/(?:طلبك|الطلب|order)\s*(?:رقم|#|number)?\s*(\d{6,})/i);
+      const orderNumber = orderNumMatch?.[1] || (entityId ? String(entityId) : '');
+
+      // استخراج اسم العميل من نص الرسالة: "أهلاً محمد علي،" أو "أهلاً TEST TEST،"
+      const nameMatch = content.match(/أهلاً\s+([^،,]+)[،,]/);
+      const customerName = nameMatch?.[1]?.trim() || '';
+
+      // رقم الهاتف من notifiable
+      const customerPhone = notifiable[0] ? String(notifiable[0]).replace(/[^0-9]/g, '') : '';
+
+      if (orderNumber || customerName || customerPhone) {
+        this.logger.log(`🔧 enrichOrder: extracted from communication data → order=${orderNumber}, customer=${customerName}, phone=****${customerPhone.slice(-4)}`);
+        return {
+          ...data,
+          id: entityId ? String(entityId) : orderNumber,
+          reference_id: orderNumber,
+          order_number: orderNumber,
+          customer: {
+            first_name: customerName,
+            name: customerName,
+            mobile: customerPhone,
+            phone: customerPhone,
+          },
+        };
       }
 
-      // البحث في DB
-      const sallaId = String(entityId);
-      const order = await this.orderRepository.findOne({
-        where: context.storeId
-          ? { sallaOrderId: sallaId, storeId: context.storeId }
-          : { sallaOrderId: sallaId, tenantId: context.tenantId },
-        relations: ['customer'],
-      });
-
-      if (!order) {
-        this.logger.debug(`🔧 enrichOrderFromDB: order ${sallaId} not found in DB`);
-        return null;
-      }
-
-      this.logger.log(`🔧 enrichOrderFromDB: found order ${order.referenceId || order.sallaOrderId} from DB`);
-
-      // تحويل لنفس التنسيق اللي extractVariables يتوقعه
-      return {
-        ...data, // نحافظ على البيانات الأصلية
-        id: order.sallaOrderId || order.id,
-        reference_id: order.referenceId,
-        order_number: order.referenceId,
-        total: order.totalAmount,
-        currency: order.currency || 'SAR',
-        status: { name: order.status },
-        payment_method: order.paymentMethod || 'غير محدد',
-        payment_status: order.paymentStatus || 'غير محدد',
-        payment: {
-          method: { name: order.paymentMethod || 'غير محدد' },
-          status: order.paymentStatus || 'غير محدد',
-        },
-        customer: {
-          first_name: order.customer?.firstName || order.customer?.fullName || '',
-          last_name: order.customer?.lastName || '',
-          name: order.customer?.fullName || '',
-          mobile: order.customer?.phone || '',
-          phone: order.customer?.phone || '',
-          email: order.customer?.email || '',
-        },
-        items: order.items || [],
-        shipping: {
-          company: { name: (order as any).shippingInfo?.carrierName || 'غير محدد' },
-          tracking_number: (order as any).shippingInfo?.trackingNumber || 'لا يوجد تتبع',
-        },
-        created_at: order.createdAt ? new Date(order.createdAt).toLocaleDateString('ar-SA') : '',
-      };
+      this.logger.debug('🔧 enrichOrder: no useful data in communication webhook');
+      return null;
     } catch (e) {
-      this.logger.warn(`🔧 enrichOrderFromDB failed: ${(e as Error).message}`);
+      this.logger.warn(`🔧 enrichOrder communication extraction failed: ${(e as Error).message}`);
       return null;
     }
   }
