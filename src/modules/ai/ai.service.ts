@@ -3623,6 +3623,7 @@ ${capsList.join('\n')}
 - إذا ما لقيت نتائج → قل "ما لقيت هالطلب في النظام. تأكد من الرقم وأرسله مرة ثانية".
 - ⚠️ دائماً اعرض محتوى الطلب (المنتجات) — اسم المنتج + الكمية + السعر. لا تخفي المنتجات أبداً.
 - إذا طلب معلومات طلب → استخدم get_order_details للتفاصيل الكاملة (منتجات + شحن + دفع).
+- إذا search_orders رجع items_count = 0 → استخدم get_order_details تلقائياً عشان تجلب المنتجات من المنصة.
 
 ${storeData ? '🏪 ' + storeData : ''}`;
 
@@ -3866,7 +3867,9 @@ ${storeData ? '🏪 ' + storeData : ''}`;
             payment: o.paymentStatus || '—',
             date: o.createdAt ? new Date(o.createdAt).toLocaleDateString('ar-SA') : '—',
             items_count: o.items?.length || 0,
-            items: o.items?.map((it: any) => `${it.name || 'منتج'} ×${it.quantity || 1} = ${it.totalPrice || it.price || 0} SAR`).join(' | ') || 'لا منتجات',
+            items: o.items?.length
+              ? o.items.map((it: any) => `${it.name || 'منتج'} ×${it.quantity || 1} = ${it.totalPrice || it.price || 0} SAR`).join(' | ')
+              : '⚠️ منتجات غير محملة — استخدم get_order_details لجلبها من سلة',
           })),
         });
       }
@@ -3885,6 +3888,23 @@ ${storeData ? '🏪 ' + storeData : ''}`;
 
         if (!order) return JSON.stringify({ error: 'الطلب غير موجود' });
 
+        // ✅ Auto-enrich: إذا المنتجات فاضية → جلبها من API المنصة مباشرة
+        let items = order.items || [];
+        if (!items.length || (Array.isArray(items) && items.length === 0)) {
+          this.logger.log(`🔧 Order ${order.sallaOrderId || order.referenceId} has 0 items — attempting API enrichment`);
+          try {
+            const enriched = await this.enrichOrderItemsFromPlatform(order, storeId);
+            if (enriched.length > 0) {
+              items = enriched;
+              this.logger.log(`🔧 Enriched with ${enriched.length} items from platform API`);
+            } else {
+              this.logger.warn(`🔧 API enrichment returned 0 items`);
+            }
+          } catch (e) {
+            this.logger.warn(`🔧 Items enrichment failed: ${(e as Error).message}`);
+          }
+        }
+
         return JSON.stringify({
           order_number: order.referenceId || order.sallaOrderId,
           salla_id: order.sallaOrderId || '—',
@@ -3898,16 +3918,16 @@ ${storeData ? '🏪 ' + storeData : ''}`;
           status: order.status,
           payment_status: order.paymentStatus || '—',
           payment_method: order.paymentMethod || 'غير محدد',
-          items: order.items?.length ? order.items.map((it: any, idx: number) => ({
+          items: items.length ? items.map((it: any, idx: number) => ({
             '#': idx + 1,
             product: it.name || it.product_name || 'منتج غير معروف',
             sku: it.sku || '—',
             quantity: it.quantity || 1,
-            unit_price: `${it.unitPrice || it.price || 0} SAR`,
+            unit_price: `${it.unitPrice || it.price?.amount || it.price || 0} SAR`,
             total: `${it.totalPrice || it.total || 0} SAR`,
             options: it.options?.map((o: any) => `${o.name}: ${o.value}`).join(', ') || '',
-          })) : [{ note: 'لا توجد منتجات مسجلة لهذا الطلب' }],
-          items_count: order.items?.length || 0,
+          })) : [{ note: 'لا توجد منتجات مسجلة — ممكن الطلب ما تضمّن تفاصيل المنتجات' }],
+          items_count: items.length,
           shipping: {
             carrier: (order as any).shippingInfo?.carrierName || 'غير محدد',
             tracking: (order as any).shippingInfo?.trackingNumber || 'غير متوفر',
@@ -3994,6 +4014,110 @@ ${storeData ? '🏪 ' + storeData : ''}`;
       default:
         return JSON.stringify({ error: `الأداة ${fnName} غير موجودة` });
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // ✅ Auto-enrich: جلب منتجات الطلب من API المنصة إذا فاضية بالـ DB
+  // ═══════════════════════════════════════════════════════════════════
+  private async enrichOrderItemsFromPlatform(order: any, storeId: string): Promise<any[]> {
+    // ✅ accessToken is select:false — must use addSelect
+    const store = await this.storeRepo
+      .createQueryBuilder('store')
+      .addSelect('store.accessToken')
+      .where('store.id = :storeId', { storeId })
+      .andWhere('store.deletedAt IS NULL')
+      .getOne();
+
+    if (!store?.accessToken) {
+      this.logger.warn(`🔧 Enrich: No access token for store ${storeId}`);
+      return [];
+    }
+
+    const accessToken = decrypt(store.accessToken);
+    if (!accessToken) {
+      this.logger.warn(`🔧 Enrich: Failed to decrypt token for store ${storeId}`);
+      return [];
+    }
+
+    let items: any[] = [];
+
+    // ═══ Salla ═══
+    if (store.platform === 'salla') {
+      try {
+        let sallaOrder: any = null;
+
+        // طريقة 1: جلب بالـ sallaOrderId مباشرة
+        if (order.sallaOrderId) {
+          this.logger.log(`🔧 Fetching order from Salla API: id=${order.sallaOrderId}`);
+          try {
+            const resp = await this.sallaApiService.getOrder(accessToken, Number(order.sallaOrderId));
+            sallaOrder = resp?.data;
+          } catch (e: any) {
+            this.logger.warn(`🔧 Salla getOrder(${order.sallaOrderId}) failed: ${e?.message}`);
+          }
+        }
+
+        // طريقة 2: بحث بالرقم المرجعي إذا الأولى فشلت
+        if (!sallaOrder?.items?.length && order.referenceId) {
+          this.logger.log(`🔧 Searching Salla by reference: ${order.referenceId}`);
+          try {
+            sallaOrder = await this.sallaApiService.searchOrderByReference(accessToken, order.referenceId);
+          } catch (e: any) {
+            this.logger.warn(`🔧 Salla searchByRef(${order.referenceId}) failed: ${e?.message}`);
+          }
+        }
+
+        // استخراج المنتجات
+        if (sallaOrder?.items?.length) {
+          items = sallaOrder.items.map((it: any) => ({
+            productId: String(it.product_id || it.id || ''),
+            name: String(it.name || ''),
+            sku: it.sku || undefined,
+            quantity: Number(it.quantity || 1),
+            unitPrice: it.price?.amount || it.price || 0,
+            totalPrice: (it.price?.amount || it.price || 0) * (it.quantity || 1),
+            imageUrl: it.thumbnail || it.image?.url || undefined,
+          }));
+
+          // حفظ في DB — المرة الجاية ما نحتاج API
+          const updateData: any = { items: items as any };
+
+          // إثراء بيانات الدفع
+          if (sallaOrder.payment?.method?.name && !order.paymentMethod) {
+            updateData.paymentMethod = sallaOrder.payment.method.name;
+          }
+          if (sallaOrder.payment?.status && (!order.paymentStatus || order.paymentStatus === 'pending')) {
+            const pStatus = String(sallaOrder.payment.status).toLowerCase();
+            if (pStatus.includes('paid') || pStatus.includes('تم')) updateData.paymentStatus = 'paid';
+          }
+
+          // إثراء الرقم المرجعي
+          if (!order.referenceId && sallaOrder.reference_id) {
+            updateData.referenceId = String(sallaOrder.reference_id);
+          }
+          if (!order.sallaOrderId && sallaOrder.id) {
+            updateData.sallaOrderId = String(sallaOrder.id);
+          }
+
+          await this.orderRepo.update({ id: order.id }, updateData);
+          this.logger.log(`🔧 ✅ Enriched order ${order.sallaOrderId || order.referenceId} with ${items.length} items + payment/shipping`);
+        } else {
+          this.logger.warn(`🔧 Salla API returned 0 items for order ${order.sallaOrderId || order.referenceId}`);
+        }
+      } catch (e: any) {
+        const status = e?.response?.status;
+        if (status === 401) {
+          this.logger.warn(`🔧 Salla token expired for store ${storeId}`);
+        } else {
+          this.logger.warn(`🔧 Salla enrichment error: ${e?.message || 'unknown'}`);
+        }
+      }
+    }
+
+    // ═══ Zid (مستقبلاً) ═══
+    // if (store.platform === 'zid') { ... }
+
+    return items;
   }
 
 
