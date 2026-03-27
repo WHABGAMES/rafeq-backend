@@ -3697,7 +3697,7 @@ ${storeData ? '🏪 ' + storeData : ''}`;
 
       const VALID_MODELS = ['gpt-4o', 'gpt-4o-mini', 'gpt-4', 'gpt-4-turbo', 'gpt-3.5-turbo'];
       const requestedModel = settings.model || 'gpt-4o-mini';
-      const safeModel = VALID_MODELS.includes(requestedModel) ? requestedModel : 'gpt-4o-mini';
+      let safeModel = VALID_MODELS.includes(requestedModel) ? requestedModel : 'gpt-4o-mini';
 
       const gptMessages: any[] = [
         { role: 'system', content: ownerSystemPrompt },
@@ -3726,6 +3726,7 @@ ${storeData ? '🏪 ' + storeData : ''}`;
       } catch (firstError: any) {
         if (firstError?.status === 404 || firstError?.code === 'model_not_found') {
           this.logger.warn(`🔑 Model "${safeModel}" failed, fallback to gpt-4o-mini`);
+          safeModel = 'gpt-4o-mini'; // ✅ حدّث الموديل عشان الـ loop يستخدم الصح
           completion = await callGpt('gpt-4o-mini', gptMessages, ownerTools);
         } else {
           throw firstError;
@@ -3748,15 +3749,15 @@ ${storeData ? '🏪 ' + storeData : ''}`;
 
         for (const toolCall of choice.message.tool_calls) {
           const fnName = toolCall.function.name;
-          const fnArgs = JSON.parse(toolCall.function.arguments || '{}');
-          this.logger.log(`🔧 Tool: ${fnName}(${JSON.stringify(fnArgs).slice(0, 100)})`);
-
           let result = '';
           try {
-            result = await this.executeOwnerTool(fnName, fnArgs, context.storeId!);
+            const fnArgs = JSON.parse(toolCall.function.arguments || '{}');
+            this.logger.log(`🔧 Tool: ${fnName}(${JSON.stringify(fnArgs).slice(0, 100)})`);
+            if (!context.storeId) throw new Error('storeId missing');
+            result = await this.executeOwnerTool(fnName, fnArgs, context.storeId);
           } catch (e) {
             result = JSON.stringify({ error: (e as Error).message });
-            this.logger.error(`🔧 Tool error: ${fnName}`, e);
+            this.logger.error(`🔧 Tool error: ${fnName}`, { error: (e as Error).message });
           }
 
           gptMessages.push({
@@ -3813,15 +3814,15 @@ ${storeData ? '🏪 ' + storeData : ''}`;
           .where('o.storeId = :storeId', { storeId });
 
         if (args.order_id) {
-          const oid = args.order_id.replace(/[^0-9]/g, ''); // strip non-digits
+          const oid = args.order_id.replace(/[^0-9]/g, '');
           qb.andWhere(
-            '(CAST(o.referenceId AS TEXT) LIKE :oid OR CAST(o.sallaOrderId AS TEXT) LIKE :oid OR CAST(o.zidOrderId AS TEXT) LIKE :oid OR CAST(o.id AS TEXT) LIKE :oid)',
+            '(o.referenceId LIKE :oid OR o.sallaOrderId LIKE :oid OR o.zidOrderId LIKE :oid)',
             { oid: `%${oid}%` },
           );
         }
         if (args.phone) {
           const phone9 = args.phone.replace(/[^0-9]/g, '').slice(-9);
-          qb.andWhere('CAST(c.phone AS TEXT) LIKE :phone', { phone: `%${phone9}%` });
+          qb.andWhere('c.phone LIKE :phone', { phone: `%${phone9}%` });
         }
         if (args.customer_name) {
           qb.andWhere(
@@ -3873,7 +3874,7 @@ ${storeData ? '🏪 ' + storeData : ''}`;
           .leftJoinAndSelect('o.customer', 'c')
           .where('o.storeId = :storeId', { storeId })
           .andWhere(
-            '(CAST(o.referenceId AS TEXT) LIKE :oid OR CAST(o.sallaOrderId AS TEXT) LIKE :oid OR CAST(o.zidOrderId AS TEXT) LIKE :oid)',
+            '(o.referenceId LIKE :oid OR o.sallaOrderId LIKE :oid OR o.zidOrderId LIKE :oid)',
             { oid: `%${oid}%` },
           )
           .getOne();
@@ -3914,7 +3915,10 @@ ${storeData ? '🏪 ' + storeData : ''}`;
         switch (args.metric) {
           case 'summary': {
             const [totalOrders, totalRevenue, uniqueCustomers] = await Promise.all([
-              this.orderRepo.count({ where: { storeId, createdAt: { $gte: since } as any } }),
+              this.orderRepo
+                .createQueryBuilder('o')
+                .where('o.storeId = :storeId AND o.createdAt >= :since', { storeId, since })
+                .getCount(),
               this.orderRepo
                 .createQueryBuilder('o')
                 .select('SUM(o.totalAmount)', 'sum')
