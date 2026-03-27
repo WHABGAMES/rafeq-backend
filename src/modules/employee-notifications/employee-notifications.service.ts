@@ -1367,13 +1367,59 @@ export class EmployeeNotificationsService {
     const urls = (data.urls || {}) as Record<string, unknown>;
     const orderAdminUrl = urls.admin || urls.customer || null;
 
+    // ✅ بناء قائمة المنتجات من items
+    const items = Array.isArray(data.items) ? data.items : [];
+    let itemsText = '';
+    if (items.length > 0) {
+      itemsText = items.map((it: any, idx: number) => {
+        const name = it.name || it.product_name || 'منتج';
+        const qty = it.quantity || 1;
+        const price = it.price?.amount || it.price || it.unitPrice || it.total || 0;
+        return `${idx + 1}. *${name}*\n   - *الكمية:* ${qty}\n   - *السعر:* ${price} ر.س`;
+      }).join('\n');
+    }
+
+    // ✅ بيانات الدفع
+    const paymentMethod = this.safeGet(data, 'payment.method.name')
+      || this.safeGet(data, 'payment_method')
+      || 'غير محدد';
+    const paymentStatus = this.safeGet(data, 'payment.status')
+      || this.safeGet(data, 'payment_status')
+      || 'غير محدد';
+
+    // ✅ بيانات الشحن
+    const shippingCompany = this.safeGet(data, 'shipping.company.name')
+      || this.safeGet(data, 'shipping_company')
+      || 'غير محدد';
+    const trackingNumber = this.safeGet(data, 'shipping.tracking_number')
+      || this.safeGet(data, 'tracking_number')
+      || 'لا يوجد تتبع';
+
+    // ✅ تاريخ الطلب
+    const orderDate = this.safeGet(data, 'date.date')
+      || this.safeGet(data, 'created_at')
+      || now.toLocaleDateString('ar-SA');
+
+    // ✅ بريد العميل
+    const customerEmail = this.safeGet(data, 'customer.email') || 'غير متوفر';
+
     return {
       // بيانات الطلب
       '{رقم_الطلب}': this.safeGet(data, 'reference_id') || this.safeGet(data, 'order_number') || this.safeGet(data, 'id') || this.safeGet(data, 'order_id'),
       '{مبلغ_الطلب}': this.formatAmountValue(data.total || this.safeGet(data, 'amounts.total.amount')),
       '{حالة_الطلب}': this.safeGet(data, 'status.name') || this.safeGet(data, 'status'),
-      '{طريقة_الدفع}': this.safeGet(data, 'payment_method'),
+      '{طريقة_الدفع}': paymentMethod,
+      '{حالة_الدفع}': paymentStatus,
+      '{تاريخ_الطلب}': orderDate,
       '{رابط_الطلب}': orderAdminUrl ? String(orderAdminUrl) : `${baseUrl}/dashboard/orders/${this.safeGet(data, 'id') || ''}`,
+
+      // بيانات الشحن
+      '{شركة_الشحن}': shippingCompany,
+      '{رقم_التتبع}': trackingNumber,
+
+      // بيانات المنتجات
+      '{المنتجات}': itemsText || 'لا توجد منتجات',
+      '{عدد_المنتجات}': String(items.length),
 
       // بيانات العميل
       '{اسم_العميل}':
@@ -1381,8 +1427,9 @@ export class EmployeeNotificationsService {
           .filter(Boolean)
           .join(' ') || this.safeGet(data, 'customer.name') || '',
       '{هاتف_العميل}': this.safeGet(data, 'customer.mobile') || this.safeGet(data, 'customer.phone'),
+      '{بريد_العميل}': customerEmail,
 
-      // بيانات المنتج
+      // بيانات المنتج (للأحداث الفردية)
       '{اسم_المنتج}': this.safeGet(data, 'name') || this.safeGet(data, 'product.name'),
       '{كمية_المنتج}': this.safeGet(data, 'quantity') || this.safeGet(data, 'stock_quantity'),
 
@@ -1708,7 +1755,7 @@ export class EmployeeNotificationsService {
   private getDefaultTemplate(event: NotificationTriggerEvent): string {
     const templates: Record<string, string> = {
       [NotificationTriggerEvent.ORDER_CREATED]:
-        'مرحباً فريق {اسم_المتجر}، تم استلام طلب جديد رقم {رقم_الطلب} من العميل {اسم_العميل} بمبلغ {مبلغ_الطلب} ر.س',
+        '📋 تفاصيل الطلب رقم *{رقم_الطلب}*:\n\n*اسم العميل:* {اسم_العميل}\n*رقم الهاتف:* {هاتف_العميل}\n*البريد الإلكتروني:* {بريد_العميل}\n*المبلغ:* {مبلغ_الطلب} ر.س\n*حالة الطلب:* {حالة_الطلب}\n*حالة الدفع:* {حالة_الدفع}\n*طريقة الدفع:* {طريقة_الدفع}\n*تاريخ الطلب:* {تاريخ_الطلب}\n*الشحن:* {شركة_الشحن}، {رقم_التتبع}\n\n🛒 *المنتجات:*\n{المنتجات}',
       [NotificationTriggerEvent.ORDER_ASSIGNED]:
         'مرحباً {اسم_الموظف}، تم إسناد الطلب رقم {رقم_الطلب} لك، الرجاء المتابعة.',
       [NotificationTriggerEvent.ORDER_CANCELLED]:
