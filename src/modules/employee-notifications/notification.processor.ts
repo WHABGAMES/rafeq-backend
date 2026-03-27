@@ -200,11 +200,6 @@ export class NotificationProcessor extends WorkerHost {
 
     whatsappMessage += mainText;
 
-    // الرابط بعد نص الرسالة
-    if (data.actionUrl) {
-      whatsappMessage += `\n\n👇 اضغط هنا لرؤية الطلب:\n${data.actionUrl}`;
-    }
-
     // فريق رفيق يقولك آخر شي
     whatsappMessage += `\n${motivationalPart}`;
 
