@@ -39,6 +39,9 @@ import { UsersService } from '../users/users.service';
 // 🏪 لجلب اسم المتجر
 import { StoresService } from '../stores/stores.service';
 
+// 📦 لجلب بيانات الطلب من DB عند الحاجة
+import { Order } from '@database/entities';
+
 // ═══════════════════════════════════════════════════════════
 // Types
 // ═══════════════════════════════════════════════════════════
@@ -77,6 +80,9 @@ export class EmployeeNotificationsService {
 
     @InjectRepository(EmployeeNotification)
     private readonly notificationRepository: Repository<EmployeeNotification>,
+
+    @InjectRepository(Order)
+    private readonly orderRepository: Repository<Order>,
 
     @InjectQueue('employee-notifications')
     private readonly notificationQueue: Queue,
@@ -256,7 +262,13 @@ export class EmployeeNotificationsService {
         }
 
         // تحضير المتغيرات
-        const variables = this.extractVariables(data, context);
+        // ✅ إذا البيانات فاضية (من communication webhook) → جلب من DB
+        let enrichedData = data;
+        if (this.isOrderEvent(context.eventType) && !this.hasOrderData(data)) {
+          const dbData = await this.enrichOrderFromDB(data, context);
+          if (dbData) enrichedData = dbData;
+        }
+        const variables = this.extractVariables(enrichedData, context);
         // ✅ تعيين اسم المتجر من الـ DB (بدلاً من الاعتماد على بيانات الـ webhook)
         if (storeName) variables['{اسم_المتجر}'] = storeName;
 
@@ -1355,6 +1367,100 @@ export class EmployeeNotificationsService {
   /**
    * استخراج المتغيرات من بيانات الحدث
    */
+  // ═══════════════════════════════════════════════════════════
+  // ✅ DB Enrichment — جلب بيانات الطلب من DB عند الحاجة
+  // ═══════════════════════════════════════════════════════════
+
+  /**
+   * هل الحدث مرتبط بطلبات؟
+   */
+  private isOrderEvent(eventType: string): boolean {
+    return eventType.startsWith('order.');
+  }
+
+  /**
+   * هل البيانات تحتوي على معلومات الطلب الأساسية؟
+   * إذا لا → نحتاج enrichment من DB
+   */
+  private hasOrderData(data: Record<string, unknown>): boolean {
+    return !!(
+      data.reference_id ||
+      data.order_number ||
+      (data.customer && typeof data.customer === 'object' && (data.customer as any).first_name)
+    );
+  }
+
+  /**
+   * ✅ جلب بيانات الطلب من DB وتحويلها لنفس التنسيق اللي extractVariables يتوقعه
+   * يُستخدم عند communication webhooks اللي ما تضمّن بيانات الطلب
+   */
+  private async enrichOrderFromDB(
+    data: Record<string, unknown>,
+    context: EventContext,
+  ): Promise<Record<string, unknown> | null> {
+    try {
+      // محاولة إيجاد الطلب — من entity.id أو meta أو أي مرجع متاح
+      const entity = data.entity as { id?: number | string; type?: string } | undefined;
+      const meta = data.meta as Record<string, unknown> | undefined;
+      const entityId = entity?.id || meta?.order_id || data.orderId;
+
+      if (!entityId) {
+        this.logger.debug('🔧 enrichOrderFromDB: no entityId found in data');
+        return null;
+      }
+
+      // البحث في DB
+      const sallaId = String(entityId);
+      const order = await this.orderRepository.findOne({
+        where: context.storeId
+          ? { sallaOrderId: sallaId, storeId: context.storeId }
+          : { sallaOrderId: sallaId, tenantId: context.tenantId },
+        relations: ['customer'],
+      });
+
+      if (!order) {
+        this.logger.debug(`🔧 enrichOrderFromDB: order ${sallaId} not found in DB`);
+        return null;
+      }
+
+      this.logger.log(`🔧 enrichOrderFromDB: found order ${order.referenceId || order.sallaOrderId} from DB`);
+
+      // تحويل لنفس التنسيق اللي extractVariables يتوقعه
+      return {
+        ...data, // نحافظ على البيانات الأصلية
+        id: order.sallaOrderId || order.id,
+        reference_id: order.referenceId,
+        order_number: order.referenceId,
+        total: order.totalAmount,
+        currency: order.currency || 'SAR',
+        status: { name: order.status },
+        payment_method: order.paymentMethod || 'غير محدد',
+        payment_status: order.paymentStatus || 'غير محدد',
+        payment: {
+          method: { name: order.paymentMethod || 'غير محدد' },
+          status: order.paymentStatus || 'غير محدد',
+        },
+        customer: {
+          first_name: order.customer?.firstName || order.customer?.fullName || '',
+          last_name: order.customer?.lastName || '',
+          name: order.customer?.fullName || '',
+          mobile: order.customer?.phone || '',
+          phone: order.customer?.phone || '',
+          email: order.customer?.email || '',
+        },
+        items: order.items || [],
+        shipping: {
+          company: { name: (order as any).shippingInfo?.carrierName || 'غير محدد' },
+          tracking_number: (order as any).shippingInfo?.trackingNumber || 'لا يوجد تتبع',
+        },
+        created_at: order.createdAt ? new Date(order.createdAt).toLocaleDateString('ar-SA') : '',
+      };
+    } catch (e) {
+      this.logger.warn(`🔧 enrichOrderFromDB failed: ${(e as Error).message}`);
+      return null;
+    }
+  }
+
   private extractVariables(
     data: Record<string, unknown>,
     _context: EventContext,
