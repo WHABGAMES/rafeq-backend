@@ -3621,6 +3621,8 @@ ${capsList.join('\n')}
 - رتّب النتائج بشكل واضح ومختصر.
 - ❌ لا تقل أبداً "آخر 50 طلب" أو "آخر 1000 طلب" — أنت تبحث في كل الطلبات بدون حد.
 - إذا ما لقيت نتائج → قل "ما لقيت هالطلب في النظام. تأكد من الرقم وأرسله مرة ثانية".
+- ⚠️ دائماً اعرض محتوى الطلب (المنتجات) — اسم المنتج + الكمية + السعر. لا تخفي المنتجات أبداً.
+- إذا طلب معلومات طلب → استخدم get_order_details للتفاصيل الكاملة (منتجات + شحن + دفع).
 
 ${storeData ? '🏪 ' + storeData : ''}`;
 
@@ -3651,7 +3653,7 @@ ${storeData ? '🏪 ' + storeData : ''}`;
           type: 'function',
           function: {
             name: 'get_order_details',
-            description: 'جلب تفاصيل طلب محدد — المنتجات، الشحن، الدفع، العنوان',
+            description: 'جلب تفاصيل طلب محدد مع المنتجات — يعرض: المنتجات (اسم + كمية + سعر)، الشحن، الدفع، العنوان. استخدمها دائماً لما التاجر يبي تفاصيل طلب معين.',
             parameters: {
               type: 'object',
               properties: {
@@ -3863,6 +3865,8 @@ ${storeData ? '🏪 ' + storeData : ''}`;
             status: o.status,
             payment: o.paymentStatus || '—',
             date: o.createdAt ? new Date(o.createdAt).toLocaleDateString('ar-SA') : '—',
+            items_count: o.items?.length || 0,
+            items: o.items?.map((it: any) => `${it.name || 'منتج'} ×${it.quantity || 1} = ${it.totalPrice || it.price || 0} SAR`).join(' | ') || 'لا منتجات',
           })),
         });
       }
@@ -3894,11 +3898,16 @@ ${storeData ? '🏪 ' + storeData : ''}`;
           status: order.status,
           payment_status: order.paymentStatus || '—',
           payment_method: order.paymentMethod || 'غير محدد',
-          items: order.items?.map((it: any) => ({
-            name: it.name || it.product_name,
-            quantity: it.quantity,
-            price: it.totalPrice || it.total || it.price,
-          })) || [],
+          items: order.items?.length ? order.items.map((it: any, idx: number) => ({
+            '#': idx + 1,
+            product: it.name || it.product_name || 'منتج غير معروف',
+            sku: it.sku || '—',
+            quantity: it.quantity || 1,
+            unit_price: `${it.unitPrice || it.price || 0} SAR`,
+            total: `${it.totalPrice || it.total || 0} SAR`,
+            options: it.options?.map((o: any) => `${o.name}: ${o.value}`).join(', ') || '',
+          })) : [{ note: 'لا توجد منتجات مسجلة لهذا الطلب' }],
+          items_count: order.items?.length || 0,
           shipping: {
             carrier: (order as any).shippingInfo?.carrierName || 'غير محدد',
             tracking: (order as any).shippingInfo?.trackingNumber || 'غير متوفر',
