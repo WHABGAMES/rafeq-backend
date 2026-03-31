@@ -211,6 +211,24 @@ export class SallaApiService {
   }
 
   /**
+   * ✅ جلب منتجات الطلب — Salla GET /orders/{id} لا يرجّع items
+   * لازم نجلبها بشكل منفصل من /orders/{id}/items
+   */
+  async getOrderItems(accessToken: string, orderId: number): Promise<SallaOrderItem[]> {
+    try {
+      const response = await this.makeRequest<SallaOrderItem[]>(
+        accessToken,
+        'GET',
+        `/orders/${orderId}/items`,
+      );
+      return response?.data || [];
+    } catch (e: any) {
+      this.logger.warn(`Salla API: failed to fetch items for order ${orderId}: ${e?.message}`);
+      return [];
+    }
+  }
+
+  /**
    * ✅ بحث عن طلب بالرقم المرجعي (المرئي للعميل)
    */
   async searchOrderByReference(accessToken: string, reference: string): Promise<SallaOrder | null> {
