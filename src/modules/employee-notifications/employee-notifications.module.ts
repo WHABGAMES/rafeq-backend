@@ -13,7 +13,7 @@ import { BullModule } from '@nestjs/bullmq';
 // Entities
 import { NotificationRule } from './entities/notification-rule.entity';
 import { EmployeeNotification } from './entities/employee-notification.entity';
-import { Order } from '@database/entities';
+import { Order, Store } from '@database/entities';
 
 // Service & Controller
 import { EmployeeNotificationsService } from './employee-notifications.service';
@@ -35,7 +35,7 @@ import { StoresModule } from '../stores/stores.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([NotificationRule, EmployeeNotification, Order]),
+    TypeOrmModule.forFeature([NotificationRule, EmployeeNotification, Order, Store]),
 
     BullModule.registerQueue({
       name: 'employee-notifications',
