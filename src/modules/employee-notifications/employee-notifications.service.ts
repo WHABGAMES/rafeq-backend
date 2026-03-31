@@ -1542,20 +1542,37 @@ export class EmployeeNotificationsService {
 
             // ── تحويل النتيجة ──
             if (sallaOrder) {
-              const items = Array.isArray(sallaOrder.items) ? sallaOrder.items : [];
-              this.logger.log(`🔧 enrichOrder v3: ✅ FULL DATA → customer=${sallaOrder.customer?.first_name}, items=${items.length}, total=${sallaOrder.amounts?.total?.amount}`);
+              // ✅ Salla GET /orders/{id} لا يرجّع items — نجلبها بشكل منفصل
+              let items: any[] = Array.isArray(sallaOrder.items) ? sallaOrder.items : [];
+              if (items.length === 0) {
+                this.logger.log(`🔧 enrichOrder v3: items not in order response — fetching /orders/${sallaOrder.id}/items`);
+                items = await this.sallaApiService.getOrderItems(accessToken, sallaOrder.id);
+                this.logger.log(`🔧 enrichOrder v3: fetched ${items.length} items from separate endpoint`);
+              }
+
+              // ✅ Salla returns payment_method (string) not payment.method.name
+              const paymentMethod = sallaOrder.payment?.method?.name
+                || (typeof sallaOrder.payment_method === 'string' ? sallaOrder.payment_method : '')
+                || (typeof sallaOrder.payment_method === 'object' ? (sallaOrder.payment_method as any)?.name : '')
+                || 'غير محدد';
+
+              const paymentStatus = sallaOrder.payment?.status || sallaOrder.payment_status || 'غير محدد';
+              const totalAmount = sallaOrder.amounts?.total?.amount ?? sallaOrder.total ?? 0;
+              const currency = sallaOrder.amounts?.total?.currency || sallaOrder.currency || 'SAR';
+
+              this.logger.log(`🔧 enrichOrder v3: ✅ FULL DATA → customer=${sallaOrder.customer?.first_name}, items=${items.length}, total=${totalAmount}, payment=${paymentMethod}`);
 
               return {
                 ...data,
                 id: sallaOrder.id,
                 reference_id: sallaOrder.reference_id,
                 order_number: sallaOrder.reference_id,
-                total: sallaOrder.amounts?.total?.amount || 0,
-                currency: sallaOrder.amounts?.total?.currency || 'SAR',
+                total: totalAmount,
+                currency,
                 status: sallaOrder.status,
-                payment: sallaOrder.payment,
-                payment_method: sallaOrder.payment?.method?.name || 'غير محدد',
-                payment_status: sallaOrder.payment?.status || 'غير محدد',
+                payment: sallaOrder.payment || { method: { name: paymentMethod }, status: paymentStatus },
+                payment_method: paymentMethod,
+                payment_status: paymentStatus,
                 customer: sallaOrder.customer ? {
                   first_name: sallaOrder.customer.first_name || '',
                   last_name: sallaOrder.customer.last_name || '',
@@ -1565,9 +1582,9 @@ export class EmployeeNotificationsService {
                   email: sallaOrder.customer.email || '',
                 } : undefined,
                 items: items.map((it: any) => ({
-                  name: it.name || 'منتج',
+                  name: it.name || it.product_name || 'منتج',
                   quantity: it.quantity || 1,
-                  price: { amount: it.price?.amount || 0 },
+                  price: { amount: it.price?.amount || it.price || 0 },
                   sku: it.sku || '',
                 })),
                 date: sallaOrder.date,
