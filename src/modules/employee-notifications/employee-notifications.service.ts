@@ -1520,6 +1520,7 @@ export class EmployeeNotificationsService {
                 sallaOrder = resp?.data;
                 if (sallaOrder) {
                   this.logger.log(`🔧 enrichOrder v3: ✅ L2-A SUCCESS → ref=${sallaOrder.reference_id}`);
+                  this.logger.log(`🔧 enrichOrder v3: RAW → items=${JSON.stringify(sallaOrder.items?.slice?.(0,2) || sallaOrder.items)}, total=${sallaOrder.amounts?.total?.amount}, keys=${Object.keys(sallaOrder).join(',')}`);
                 }
               } catch (e: any) {
                 this.logger.warn(`🔧 enrichOrder v3: L2-A failed (status=${e?.status || 'unknown'}, ${e?.message || e}) → trying L2-B`);
