@@ -42,6 +42,11 @@ import { StoresService } from '../stores/stores.service';
 // 📦 لجلب بيانات الطلب من DB عند الحاجة
 import { Order } from '@database/entities';
 
+// 🔗 لجلب بيانات الطلب من Salla API
+import { SallaApiService } from '../stores/salla-api.service';
+import { Store } from '../stores/entities/store.entity';
+import { decrypt } from '@common/utils/encryption.util';
+
 // ═══════════════════════════════════════════════════════════
 // Types
 // ═══════════════════════════════════════════════════════════
@@ -84,6 +89,9 @@ export class EmployeeNotificationsService {
     @InjectRepository(Order)
     private readonly orderRepository: Repository<Order>,
 
+    @InjectRepository(Store)
+    private readonly storeRepository: Repository<Store>,
+
     @InjectQueue('employee-notifications')
     private readonly notificationQueue: Queue,
 
@@ -92,6 +100,9 @@ export class EmployeeNotificationsService {
 
     // 🏪 لجلب اسم المتجر
     private readonly storesService: StoresService,
+
+    // 🔗 لجلب بيانات الطلب من Salla API
+    private readonly sallaApiService: SallaApiService,
 
     // ⚙️ للإعدادات (مثل رابط الواجهة)
     private readonly configService: ConfigService,
@@ -707,6 +718,32 @@ export class EmployeeNotificationsService {
       title = title.replace(new RegExp(this.escapeRegex(key), 'g'), safeValue);
       message = message.replace(new RegExp(this.escapeRegex(key), 'g'), safeValue);
     }
+
+    // ✅ تنظيف: إخفاء الأسطر اللي قيمتها فاضية أو افتراضية بعد الاستبدال
+    const lines = message.split('\n').filter(line => {
+      const trimmed = line.trim();
+      // إخفاء أسطر فيها label بدون قيمة: "*حالة الطلب:*" أو "*حالة الطلب:* "
+      if (trimmed.match(/^\*[^*]+:\*\s*$/)) return false;
+      // إخفاء أسطر فيها "0 ر.س" أو "0" كقيمة وحيدة (مبلغ صفر)
+      if (trimmed.match(/^\*[^*]+:\*\s*0(\s*ر\.س)?$/)) return false;
+      // إخفاء أسطر فيها فقط "غير محدد" أو "غير متوفر"
+      if (trimmed.match(/^\*[^*]+:\*\s*(غير محدد|غير متوفر)$/)) return false;
+      // إخفاء سطر الشحن الافتراضي
+      if (trimmed.match(/^\*[^*]+:\*\s*غير محدد،\s*لا يوجد تتبع$/)) return false;
+      // إخفاء "لا توجد منتجات"
+      if (trimmed === 'لا توجد منتجات') return false;
+      return true;
+    });
+    // إخفاء عنوان قسم بدون محتوى بعده (مثل "🛒 *المنتجات:*" لو ما فيه منتجات)
+    message = lines.filter((line, idx) => {
+      const trimmed = line.trim();
+      if (trimmed.includes('المنتجات') && trimmed.includes('*') && !trimmed.includes('.')) {
+        // section header — check if next non-empty line exists
+        const nextNonEmpty = lines.slice(idx + 1).find(l => l.trim().length > 0);
+        if (!nextNonEmpty || nextNonEmpty.trim().startsWith('فريق رفيق')) return false;
+      }
+      return true;
+    }).join('\n').replace(/\n{3,}/g, '\n\n').trim();
 
     // ✅ الترتيب: الرسالة → فريق رفيق يقولك + عبارة تناسب الحدث
     const motivational = this.getMotivationalText(rule.motivationalMessage, rule.triggerEvent);
@@ -1402,6 +1439,8 @@ export class EmployeeNotificationsService {
     const meta = data.meta as Record<string, unknown> | undefined;
     const entityId = entity?.id || meta?.order_id || data.orderId;
 
+    this.logger.log(`🔧 enrichOrder v3: START | entityId=${entityId || 'NONE'} | storeId=${context.storeId || 'NONE'} | dataKeys=${Object.keys(data).join(',')}`);
+
     // ═══ LAYER 1: DB Lookup ═══
     if (entityId) {
       try {
@@ -1446,52 +1485,127 @@ export class EmployeeNotificationsService {
           };
         }
 
-        this.logger.debug(`🔧 enrichOrder: order ${sallaId} not in DB — trying communication data`);
+        this.logger.log(`🔧 enrichOrder: order ${sallaId} not in DB — trying Salla API`);
       } catch (e) {
         this.logger.warn(`🔧 enrichOrder DB lookup failed: ${(e as Error).message}`);
       }
     }
 
-    // ═══ LAYER 2: Extract from Communication Webhook Data ═══
-    // سلة ترسل communication.whatsapp.send قبل order.created → الطلب مو بالـ DB بعد
-    // نستخرج اللي نقدر من بيانات الاتصال نفسها
-    try {
-      const content = (data.content || '') as string;
-      const notifiable = Array.isArray(data.notifiable) ? data.notifiable : [];
+    // ═══ استخراج رقم الطلب من نص الرسالة (متاح لكل الطبقات) ═══
+    const content = (data.content || '') as string;
+    const notifiable = Array.isArray(data.notifiable) ? data.notifiable : [];
+    const orderNumMatch = content.match(/(?:طلبك|الطلب|order)\s*(?:رقم|#|number)?\s*(\d{6,})/i);
+    const refFromText = orderNumMatch?.[1] || '';
 
-      // استخراج رقم الطلب من نص الرسالة: "طلبك رقم 250617526"
-      const orderNumMatch = content.match(/(?:طلبك|الطلب|order)\s*(?:رقم|#|number)?\s*(\d{6,})/i);
-      const orderNumber = orderNumMatch?.[1] || (entityId ? String(entityId) : '');
+    // ═══ LAYER 2: Salla API — جلب البيانات الكاملة مباشرة من سلة ═══
+    if (context.storeId) {
+      try {
+        const store = await this.storeRepository
+          .createQueryBuilder('store')
+          .addSelect('store.accessToken')
+          .where('store.id = :storeId', { storeId: context.storeId })
+          .andWhere('store.deletedAt IS NULL')
+          .getOne();
 
-      // استخراج اسم العميل من نص الرسالة: "أهلاً محمد علي،" أو "أهلاً TEST TEST،"
-      const nameMatch = content.match(/أهلاً\s+([^،,]+)[،,]/);
-      const customerName = nameMatch?.[1]?.trim() || '';
+        if (store?.accessToken && store.platform === 'salla') {
+          const accessToken = decrypt(store.accessToken);
+          if (accessToken) {
+            let sallaOrder: any = null;
 
-      // رقم الهاتف من notifiable
-      const customerPhone = notifiable[0] ? String(notifiable[0]).replace(/[^0-9]/g, '') : '';
+            // ── طريقة 1: getOrder بالـ entity.id (Internal Salla ID) ──
+            if (entityId) {
+              try {
+                this.logger.log(`🔧 enrichOrder v3: L2-A → getOrder(${entityId})`);
+                const resp = await this.sallaApiService.getOrder(accessToken, Number(entityId));
+                sallaOrder = resp?.data;
+                if (sallaOrder) {
+                  this.logger.log(`🔧 enrichOrder v3: ✅ L2-A SUCCESS → ref=${sallaOrder.reference_id}`);
+                }
+              } catch (e: any) {
+                this.logger.warn(`🔧 enrichOrder v3: L2-A failed (status=${e?.status || 'unknown'}, ${e?.message || e}) → trying L2-B`);
+              }
+            }
 
-      if (orderNumber || customerName || customerPhone) {
-        this.logger.log(`🔧 enrichOrder: extracted from communication data → order=${orderNumber}, customer=${customerName}, phone=****${customerPhone.slice(-4)}`);
-        return {
-          ...data,
-          id: entityId ? String(entityId) : orderNumber,
-          reference_id: orderNumber,
-          order_number: orderNumber,
-          customer: {
-            first_name: customerName,
-            name: customerName,
-            mobile: customerPhone,
-            phone: customerPhone,
-          },
-        };
+            // ── طريقة 2: searchOrderByReference بالرقم المرجعي من النص ──
+            if (!sallaOrder && refFromText) {
+              try {
+                this.logger.log(`🔧 enrichOrder v3: L2-B → searchByReference("${refFromText}")`);
+                sallaOrder = await this.sallaApiService.searchOrderByReference(accessToken, refFromText);
+                if (sallaOrder) {
+                  this.logger.log(`🔧 enrichOrder v3: ✅ L2-B SUCCESS → ref=${sallaOrder.reference_id}`);
+                }
+              } catch (e: any) {
+                this.logger.warn(`🔧 enrichOrder v3: L2-B failed: ${e?.message}`);
+              }
+            }
+
+            // ── تحويل النتيجة ──
+            if (sallaOrder) {
+              const items = Array.isArray(sallaOrder.items) ? sallaOrder.items : [];
+              this.logger.log(`🔧 enrichOrder v3: ✅ FULL DATA → customer=${sallaOrder.customer?.first_name}, items=${items.length}, total=${sallaOrder.amounts?.total?.amount}`);
+
+              return {
+                ...data,
+                id: sallaOrder.id,
+                reference_id: sallaOrder.reference_id,
+                order_number: sallaOrder.reference_id,
+                total: sallaOrder.amounts?.total?.amount || 0,
+                currency: sallaOrder.amounts?.total?.currency || 'SAR',
+                status: sallaOrder.status,
+                payment: sallaOrder.payment,
+                payment_method: sallaOrder.payment?.method?.name || 'غير محدد',
+                payment_status: sallaOrder.payment?.status || 'غير محدد',
+                customer: sallaOrder.customer ? {
+                  first_name: sallaOrder.customer.first_name || '',
+                  last_name: sallaOrder.customer.last_name || '',
+                  name: `${sallaOrder.customer.first_name || ''} ${sallaOrder.customer.last_name || ''}`.trim(),
+                  mobile: sallaOrder.customer.mobile || '',
+                  phone: sallaOrder.customer.mobile || '',
+                  email: sallaOrder.customer.email || '',
+                } : undefined,
+                items: items.map((it: any) => ({
+                  name: it.name || 'منتج',
+                  quantity: it.quantity || 1,
+                  price: { amount: it.price?.amount || 0 },
+                  sku: it.sku || '',
+                })),
+                date: sallaOrder.date,
+                created_at: sallaOrder.date?.date || '',
+              };
+            }
+
+            this.logger.log('🔧 enrichOrder v3: LAYER 2 both methods returned nothing');
+          } else {
+            this.logger.warn(`🔧 enrichOrder v3: LAYER 2 SKIP — decrypt failed`);
+          }
+        } else {
+          this.logger.warn(`🔧 enrichOrder v3: LAYER 2 SKIP — store=${store ? 'found' : 'null'}, hasToken=${!!store?.accessToken}, platform=${store?.platform || 'unknown'}`);
+        }
+      } catch (e) {
+        this.logger.warn(`🔧 enrichOrder v3: LAYER 2 ERROR: ${(e as Error).message}`);
       }
-
-      this.logger.debug('🔧 enrichOrder: no useful data in communication webhook');
-      return null;
-    } catch (e) {
-      this.logger.warn(`🔧 enrichOrder communication extraction failed: ${(e as Error).message}`);
-      return null;
+    } else {
+      this.logger.warn(`🔧 enrichOrder v3: LAYER 2 SKIP — no storeId`);
     }
+
+    // ═══ LAYER 3: Fallback — بيانات من نص الرسالة فقط ═══
+    const nameMatch = content.match(/أهلاً\s+([^،,]+)[،,]/);
+    const customerName = nameMatch?.[1]?.trim() || '';
+    const customerPhone = notifiable[0] ? String(notifiable[0]).replace(/[^0-9]/g, '') : '';
+
+    if (refFromText || customerName || customerPhone) {
+      this.logger.log(`🔧 enrichOrder v3: LAYER 3 (regex fallback) → order=${refFromText}, name=${customerName}`);
+      return {
+        ...data,
+        id: entityId ? String(entityId) : refFromText,
+        reference_id: refFromText,
+        order_number: refFromText,
+        customer: { first_name: customerName, name: customerName, mobile: customerPhone, phone: customerPhone },
+      };
+    }
+
+    this.logger.log('🔧 enrichOrder v3: ALL LAYERS FAILED — no data available');
+    return null;
   }
 
   private extractVariables(
