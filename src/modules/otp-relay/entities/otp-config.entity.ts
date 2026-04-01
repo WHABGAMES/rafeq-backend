@@ -1,0 +1,88 @@
+import { Entity, Column, Index, CreateDateColumn, PrimaryGeneratedColumn } from 'typeorm';
+import { BaseEntity } from '../../../../database/entities/base.entity';
+
+export enum OtpPlatform {
+  STEAM = 'steam', NETFLIX = 'netflix', GMAIL = 'gmail', HOTMAIL = 'hotmail',
+  OUTLOOK = 'outlook', YAHOO = 'yahoo', EPIC_GAMES = 'epic_games',
+  PLAYSTATION = 'playstation', XBOX = 'xbox', DISCORD = 'discord',
+  TWITTER = 'twitter', INSTAGRAM = 'instagram', TIKTOK = 'tiktok', CUSTOM = 'custom',
+}
+
+export const PLATFORM_PRESETS: Record<string, {
+  label: string; icon: string; senderEmail: string; subjectContains: string;
+  otpRegex: string; otpLength: number; needsUsername: boolean; usernameLabel: string;
+}> = {
+  steam: { label: 'Steam', icon: '🎮', senderEmail: 'noreply@steampowered.com', subjectContains: 'Steam Guard', otpRegex: '([A-Z0-9]{5})', otpLength: 5, needsUsername: true, usernameLabel: 'اسم المستخدم (Steam)' },
+  netflix: { label: 'Netflix', icon: '🎬', senderEmail: 'info@account.netflix.com', subjectContains: 'verification', otpRegex: '(\\d{4,6})', otpLength: 4, needsUsername: false, usernameLabel: '' },
+  gmail: { label: 'Gmail', icon: '📧', senderEmail: 'accounts.google.com', subjectContains: 'verification', otpRegex: '(\\d{6})', otpLength: 6, needsUsername: false, usernameLabel: '' },
+  hotmail: { label: 'Hotmail', icon: '📨', senderEmail: 'accountprotection.microsoft.com', subjectContains: 'security code', otpRegex: '(\\d{6,8})', otpLength: 6, needsUsername: false, usernameLabel: '' },
+  outlook: { label: 'Outlook', icon: '📬', senderEmail: 'accountprotection.microsoft.com', subjectContains: 'security code', otpRegex: '(\\d{6,8})', otpLength: 6, needsUsername: false, usernameLabel: '' },
+  epic_games: { label: 'Epic Games', icon: '🎯', senderEmail: 'help@epicgames.com', subjectContains: 'verification', otpRegex: '(\\d{6})', otpLength: 6, needsUsername: false, usernameLabel: '' },
+  playstation: { label: 'PlayStation', icon: '🕹️', senderEmail: 'sony.com', subjectContains: 'verification', otpRegex: '(\\d{6})', otpLength: 6, needsUsername: false, usernameLabel: '' },
+  discord: { label: 'Discord', icon: '💬', senderEmail: 'noreply@discord.com', subjectContains: 'verify', otpRegex: '(\\d{6})', otpLength: 6, needsUsername: false, usernameLabel: '' },
+  custom: { label: 'مخصص', icon: '⚙️', senderEmail: '', subjectContains: '', otpRegex: '([A-Z0-9]{4,8})', otpLength: 6, needsUsername: false, usernameLabel: '' },
+};
+
+@Entity('otp_configs')
+@Index(['tenantId', 'storeId'])
+@Index(['slug'], { unique: true })
+export class OtpConfig extends BaseEntity {
+  @Column({ name: 'tenant_id', type: 'uuid' }) tenantId: string;
+  @Column({ name: 'store_id', type: 'uuid' }) storeId: string;
+  @Column({ type: 'varchar', length: 100, unique: true }) slug: string;
+  @Column({ type: 'enum', enum: OtpPlatform, default: OtpPlatform.STEAM }) platform: OtpPlatform;
+
+  // Page Design
+  @Column({ name: 'page_title', default: 'الحصول على رمز التحقق' }) pageTitle: string;
+  @Column({ name: 'page_subtitle', type: 'text', nullable: true }) pageSubtitle?: string;
+  @Column({ name: 'logo_url', type: 'varchar', length: 500, nullable: true }) logoUrl?: string;
+  @Column({ name: 'bg_color', type: 'varchar', length: 7, default: '#0a0e1a' }) bgColor: string;
+  @Column({ name: 'primary_color', type: 'varchar', length: 7, default: '#06b6d4' }) primaryColor: string;
+  @Column({ name: 'success_msg', default: 'تم استخراج الرمز بنجاح ✅' }) successMsg: string;
+  @Column({ name: 'no_code_msg', default: 'لم يتم العثور على رمز جديد. أعد إرسال الرمز من المنصة وحاول بعد دقيقة.' }) noCodeMsg: string;
+  @Column({ name: 'needs_username', type: 'boolean', default: false }) needsUsername: boolean;
+  @Column({ name: 'username_label', default: 'اسم المستخدم' }) usernameLabel: string;
+  @Column({ name: 'button_text', default: 'الحصول على الرمز' }) buttonText: string;
+
+  // Email IMAP
+  @Column({ name: 'email_host' }) emailHost: string;
+  @Column({ name: 'email_port', type: 'integer', default: 993 }) emailPort: number;
+  @Column({ name: 'email_user' }) emailUser: string;
+  @Column({ name: 'email_password', type: 'text', select: false }) emailPassword: string;
+  @Column({ name: 'email_tls', type: 'boolean', default: true }) emailTls: boolean;
+
+  // OTP Extraction
+  @Column({ name: 'sender_filter', nullable: true }) senderFilter?: string;
+  @Column({ name: 'subject_filter', nullable: true }) subjectFilter?: string;
+  @Column({ name: 'otp_regex', type: 'varchar', length: 500, nullable: true }) otpRegex?: string;
+  @Column({ name: 'otp_length', type: 'integer', default: 5 }) otpLength: number;
+  @Column({ name: 'freshness_minutes', type: 'integer', default: 3 }) freshnessMinutes: number;
+
+  // Security
+  @Column({ name: 'verify_order', type: 'boolean', default: true }) verifyOrder: boolean;
+  @Column({ name: 'rate_limit', type: 'integer', default: 3 }) rateLimit: number;
+  @Column({ name: 'is_active', type: 'boolean', default: true }) isActive: boolean;
+
+  // Analytics
+  @Column({ name: 'total_views', type: 'integer', default: 0 }) totalViews: number;
+  @Column({ name: 'total_requests', type: 'integer', default: 0 }) totalRequests: number;
+  @Column({ name: 'success_count', type: 'integer', default: 0 }) successCount: number;
+  @Column({ name: 'fail_count', type: 'integer', default: 0 }) failCount: number;
+}
+
+@Entity('otp_request_logs')
+@Index(['configId'])
+@Index(['tenantId', 'createdAt'])
+export class OtpRequestLog {
+  @PrimaryGeneratedColumn('uuid') id: string;
+  @Column({ name: 'config_id', type: 'uuid' }) configId: string;
+  @Column({ name: 'tenant_id', type: 'uuid' }) tenantId: string;
+  @Column({ name: 'store_id', type: 'uuid' }) storeId: string;
+  @Column({ name: 'order_number', nullable: true }) orderNumber?: string;
+  @Column({ nullable: true }) username?: string;
+  @Column({ name: 'client_ip', type: 'varchar', length: 50 }) clientIp: string;
+  @Column({ type: 'boolean', default: false }) success: boolean;
+  @Column({ name: 'error_msg', type: 'text', nullable: true }) errorMsg?: string;
+  @Column({ name: 'response_ms', type: 'integer', nullable: true }) responseMs?: number;
+  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' }) createdAt: Date;
+}
