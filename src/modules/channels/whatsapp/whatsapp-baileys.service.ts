@@ -612,6 +612,25 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
       this.eventEmitter.emit('whatsapp.connected', { channelId, phoneNumber: session.phoneNumber });
 
       try {
+        // ✅ FIX: كشف تغيير الرقم — لو الرقم تغيّر نحذف المحادثات القديمة
+        const oldChannel = await this.channelRepository.findOne({ where: { id: channelId } });
+        const oldPhone = oldChannel?.whatsappPhoneNumber;
+        const newPhone = session.phoneNumber;
+
+        if (oldPhone && newPhone && oldPhone !== newPhone) {
+          this.logger.log(`📱 Phone number changed: ${oldPhone} → ${newPhone} — clearing old conversations`);
+
+          // حذف المحادثات — الرسائل تُحذف تلقائياً (FK CASCADE)
+          const convResult = await this.channelRepository.manager.query(
+            `DELETE FROM conversations WHERE channel_id = $1`,
+            [channelId],
+          );
+
+          this.logger.log(`🧹 Cleared ${convResult?.[1] || 0} old conversations for channel ${channelId} (new phone: ${newPhone})`);
+        } else if (!oldPhone && newPhone) {
+          this.logger.log(`📱 First connection for channel ${channelId} with phone ${newPhone}`);
+        }
+
         // FIX-4: مسح كامل للأخطاء عند إعادة الاتصال
         await this.channelRepository.update(channelId, {
           status: ChannelStatus.CONNECTED,
