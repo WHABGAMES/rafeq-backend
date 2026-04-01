@@ -1,13 +1,21 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
+/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-var-requires */
 import { Injectable, Logger, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, MoreThan } from 'typeorm';
-import * as Imap from 'imap';
-import { simpleParser, ParsedMail } from 'mailparser';
 import { OtpConfig, OtpRequestLog, PLATFORM_PRESETS } from './entities/otp-config.entity';
 import { encrypt, decrypt } from '@common/utils/encryption.util';
 import { SallaApiService } from '../stores/salla-api.service';
 import { Store } from '../stores/entities/store.entity';
+
+// ✅ Dynamic require — لا يكسر البلد لو الحزم مو مثبتة بعد
+let Imap: any;
+let simpleParser: any;
+try {
+  Imap = require('imap');
+  simpleParser = require('mailparser').simpleParser;
+} catch {
+  // Will throw at runtime when actually used, not at build time
+}
 
 const IMAP_HOSTS: Record<string, string> = {
   'gmail.com': 'imap.gmail.com', 'hotmail.com': 'imap-mail.outlook.com',
@@ -57,7 +65,9 @@ export class OtpRelayService {
       if (domain && IMAP_HOSTS[domain]) data.emailHost = IMAP_HOSTS[domain];
     }
     if (data.emailPassword) data.emailPassword = encrypt(data.emailPassword) || '';
-    return this.configRepo.save(this.configRepo.create({ ...data, tenantId, storeId }));
+    const entity = this.configRepo.create();
+    Object.assign(entity, data, { tenantId, storeId });
+    return this.configRepo.save(entity);
   }
 
   async updateConfig(id: string, tenantId: string, data: any): Promise<OtpConfig> {
@@ -219,6 +229,7 @@ export class OtpRelayService {
   // ═══ IMAP ═══════════════════════════════════════════════
 
   private openImap(host: string, port: number, user: string, pw: string, tls: boolean): Promise<any> {
+    if (!Imap) throw new BadRequestException('حزمة imap غير مثبتة — شغّل: npm install imap mailparser');
     return new Promise((resolve, reject) => {
       const imap = new Imap({
         user, password: pw, host, port, tls,
