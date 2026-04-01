@@ -7,11 +7,15 @@ import { OtpRelayService } from './otp-relay.service';
 export class OtpRelayController {
   constructor(private readonly svc: OtpRelayService) {}
 
+  private getStoreId(req: any): string {
+    return req.headers['x-store-id'] || req.user?.storeId || '';
+  }
+
   @Get('platforms') getPlatforms() { return this.svc.getPlatforms(); }
 
-  @Get('configs') getConfigs(@Req() r: any) { return this.svc.getConfigs(r.user.tenantId, r.user.storeId); }
+  @Get('configs') getConfigs(@Req() r: any) { return this.svc.getConfigs(r.user.tenantId, this.getStoreId(r)); }
   @Get('configs/:id') getConfig(@Param('id') id: string, @Req() r: any) { return this.svc.getConfig(id, r.user.tenantId); }
-  @Post('configs') create(@Body() b: any, @Req() r: any) { return this.svc.createConfig(r.user.tenantId, r.user.storeId, b); }
+  @Post('configs') create(@Body() b: any, @Req() r: any) { return this.svc.createConfig(r.user.tenantId, this.getStoreId(r), b); }
   @Put('configs/:id') update(@Param('id') id: string, @Body() b: any, @Req() r: any) { return this.svc.updateConfig(id, r.user.tenantId, b); }
   @Delete('configs/:id') delete(@Param('id') id: string, @Req() r: any) { return this.svc.deleteConfig(id, r.user.tenantId); }
   @Post('configs/:id/test') test(@Param('id') id: string, @Req() r: any) { return this.svc.testConnection(id, r.user.tenantId); }
