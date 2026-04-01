@@ -273,12 +273,12 @@ export class OtpRelayService {
 
       // أحدث رسالة
       const latestUid = uids[uids.length - 1];
-      const email: ParsedMail | null = await new Promise((resolve, reject) => {
+      const email: any | null = await new Promise((resolve, reject) => {
         const f = imap.fetch([latestUid], { bodies: '' });
         let done = false;
         f.on('message', (msg: any) => {
           msg.on('body', (stream: any) => {
-            simpleParser(stream, (err: Error | null, parsed: ParsedMail) => {
+            simpleParser(stream, (err: Error | null, parsed: any) => {
               if (err) reject(err);
               else { done = true; resolve(parsed); }
             });
