@@ -1,5 +1,5 @@
 import { Entity, Column, Index, CreateDateColumn, PrimaryGeneratedColumn } from 'typeorm';
-import { BaseEntity } from '../../../../database/entities/base.entity';
+import { BaseEntity } from '../../../database/entities/base.entity';
 
 export enum OtpPlatform {
   STEAM = 'steam', NETFLIX = 'netflix', GMAIL = 'gmail', HOTMAIL = 'hotmail',
@@ -38,11 +38,18 @@ export class OtpConfig extends BaseEntity {
   @Column({ name: 'logo_url', type: 'varchar', length: 500, nullable: true }) logoUrl?: string;
   @Column({ name: 'bg_color', type: 'varchar', length: 7, default: '#0a0e1a' }) bgColor: string;
   @Column({ name: 'primary_color', type: 'varchar', length: 7, default: '#06b6d4' }) primaryColor: string;
+  @Column({ name: 'card_color', type: 'varchar', length: 9, default: '#111827' }) cardColor: string;
+  @Column({ name: 'text_color', type: 'varchar', length: 7, default: '#ffffff' }) textColor: string;
+  @Column({ name: 'secondary_text_color', type: 'varchar', length: 7, default: '#94a3b8' }) secondaryTextColor: string;
+  @Column({ name: 'bg_image_url', type: 'varchar', length: 500, nullable: true }) bgImageUrl?: string;
   @Column({ name: 'success_msg', default: 'تم استخراج الرمز بنجاح ✅' }) successMsg: string;
   @Column({ name: 'no_code_msg', default: 'لم يتم العثور على رمز جديد. أعد إرسال الرمز من المنصة وحاول بعد دقيقة.' }) noCodeMsg: string;
   @Column({ name: 'needs_username', type: 'boolean', default: false }) needsUsername: boolean;
   @Column({ name: 'username_label', default: 'اسم المستخدم' }) usernameLabel: string;
+  @Column({ name: 'order_label', default: 'رقم الطلب' }) orderLabel: string;
   @Column({ name: 'button_text', default: 'الحصول على الرمز' }) buttonText: string;
+  @Column({ name: 'footer_text', type: 'varchar', length: 255, nullable: true, comment: 'نص حقوق التاجر مثل: made by y23 store 2026' }) footerText?: string;
+  @Column({ name: 'show_rafeq_badge', type: 'boolean', default: true }) showRafeqBadge: boolean;
 
   // Email IMAP
   @Column({ name: 'email_host' }) emailHost: string;
