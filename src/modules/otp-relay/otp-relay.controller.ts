@@ -2,7 +2,7 @@ import { Controller, Get, Post, Put, Delete, Body, Param, Req, Query, UseGuards,
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { OtpRelayService } from './otp-relay.service';
 
-@Controller('api/otp-relay')
+@Controller('otp-relay')
 @UseGuards(JwtAuthGuard)
 export class OtpRelayController {
   constructor(private readonly svc: OtpRelayService) {}
@@ -18,7 +18,7 @@ export class OtpRelayController {
   @Get('configs/:id/analytics') analytics(@Param('id') id: string, @Query('days') days: string, @Req() r: any) { return this.svc.getAnalytics(id, r.user.tenantId, Number(days) || 7); }
 }
 
-@Controller('api/otp')
+@Controller('otp')
 export class OtpPublicController {
   constructor(private readonly svc: OtpRelayService) {}
 
