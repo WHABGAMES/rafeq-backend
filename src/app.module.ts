@@ -95,6 +95,7 @@ import { AdminModule } from '@modules/admin/admin.module';
 import { PlatformNotificationsModule } from '@modules/platform-notifications/platform-notifications.module';
 import { SuggestionsModule } from '@modules/suggestions/suggestions.module';
 import { ConversionElementsModule } from './modules/conversion-elements/conversion-elements.module';
+import { OtpRelayModule } from './modules/otp-relay/otp-relay.module';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // تعريف الوحدة
@@ -473,6 +474,7 @@ import { ConversionElementsModule } from './modules/conversion-elements/conversi
 
     // 🎯 عناصر تحسين التحويل (CRO)
     ConversionElementsModule,
+    OtpRelayModule,
   ],
 
   // ═══════════════════════════════════════════════════════════════════════════════
