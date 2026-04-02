@@ -6,15 +6,12 @@ import { OtpConfig, OtpRequestLog, PLATFORM_PRESETS } from './entities/otp-confi
 import { encrypt, decrypt } from '@common/utils/encryption.util';
 import { SallaApiService } from '../stores/salla-api.service';
 import { Store } from '../stores/entities/store.entity';
+import { Channel, ChannelType, ChannelStatus } from '../channels/entities/channel.entity';
+import { WhatsAppBaileysService } from '../channels/whatsapp/whatsapp-baileys.service';
 
 let Imap: any;
 let simpleParser: any;
-try {
-  Imap = require('imap');
-  simpleParser = require('mailparser').simpleParser;
-} catch {
-  // Will throw at runtime when actually used
-}
+try { Imap = require('imap'); simpleParser = require('mailparser').simpleParser; } catch {}
 
 const IMAP_HOSTS: Record<string, string> = {
   'gmail.com': 'imap.gmail.com', 'googlemail.com': 'imap.gmail.com',
@@ -29,7 +26,31 @@ interface ExtractResult {
   reason?: 'no_email' | 'username_mismatch' | 'too_old' | 'no_code';
 }
 
-/** الحقول المسموح تعديلها — whitelist مشتركة بين create + update */
+interface OrderData {
+  referenceId: string;
+  customerName: string;
+  customerPhone: string;
+}
+
+// ═══ القوالب الافتراضية ═══
+const DEFAULT_EMPLOYEE_TEMPLATE = `🔑 طلب رمز تحقق
+
+📦 رقم الطلب: #{رقم_الطلب}
+👤 العميل: {اسم_العميل}
+📱 هاتف العميل: {رقم_العميل}
+🎮 حساب: {اسم_الحساب}
+
+📊 المحاولة رقم: {رقم_المحاولة}`;
+
+const DEFAULT_CUSTOMER_TEMPLATE = `✅ رمز التحقق الخاص بك:
+
+🔐 {رمز_التفعيل}
+
+📦 رقم الطلب: #{رقم_الطلب}
+🎮 الحساب: {اسم_الحساب}
+
+⚠️ لا تشارك هذا الرمز مع أي شخص`;
+
 const SAFE_FIELDS = new Set([
   'slug', 'platform', 'pageTitle', 'pageSubtitle', 'logoUrl',
   'bgColor', 'primaryColor', 'cardColor', 'textColor', 'secondaryTextColor',
@@ -38,6 +59,8 @@ const SAFE_FIELDS = new Set([
   'emailHost', 'emailPort', 'emailUser', 'emailPassword', 'emailTls',
   'senderFilter', 'subjectFilter', 'otpRegex', 'otpLength',
   'freshnessMinutes', 'verifyOrder', 'rateLimit', 'isActive', 'usernameRegex',
+  'notifyEmployees', 'employeePhones', 'employeeMsgTemplate',
+  'sendCodeToCustomer', 'customerMsgTemplate',
 ]);
 
 function pickSafe(data: Record<string, any>): Record<string, any> {
@@ -58,18 +81,15 @@ export class OtpRelayService {
     @InjectRepository(OtpConfig) private readonly configRepo: Repository<OtpConfig>,
     @InjectRepository(OtpRequestLog) private readonly logRepo: Repository<OtpRequestLog>,
     @InjectRepository(Store) private readonly storeRepo: Repository<Store>,
+    @InjectRepository(Channel) private readonly channelRepo: Repository<Channel>,
     private readonly sallaApi: SallaApiService,
+    private readonly whatsapp: WhatsAppBaileysService,
   ) {}
 
-  // ═══════════════════════════════════════════════════════════
-  // ADMIN
-  // ═══════════════════════════════════════════════════════════
+  // ═══ ADMIN ═══════════════════════════════════════════════
 
   async getConfigs(tenantId: string, storeId: string): Promise<OtpConfig[]> {
-    return this.configRepo.find({
-      where: { tenantId, storeId } as any,
-      order: { createdAt: 'DESC' } as any,
-    });
+    return this.configRepo.find({ where: { tenantId, storeId } as any, order: { createdAt: 'DESC' } as any });
   }
 
   async getConfig(id: string, tenantId: string): Promise<OtpConfig> {
@@ -114,8 +134,7 @@ export class OtpRelayService {
   }
 
   async testConnection(id: string, tenantId: string): Promise<{ success: boolean; message: string }> {
-    const c = await this.configRepo
-      .createQueryBuilder('c').addSelect('c.emailPassword')
+    const c = await this.configRepo.createQueryBuilder('c').addSelect('c.emailPassword')
       .where('c.id = :id AND c.tenantId = :tenantId', { id, tenantId }).getOne();
     if (!c) throw new NotFoundException();
     const pw = decrypt(c.emailPassword);
@@ -124,44 +143,30 @@ export class OtpRelayService {
       const imap = await this.openImap(c.emailHost, c.emailPort, c.emailUser, pw, c.emailTls);
       imap.end();
       return { success: true, message: 'تم الاتصال بنجاح ✅' };
-    } catch (e: any) {
-      return { success: false, message: `فشل: ${e?.message}` };
-    }
+    } catch (e: any) { return { success: false, message: `فشل: ${e?.message}` }; }
   }
 
-  // ═══════════════════════════════════════════════════════════
-  // ANALYTICS
-  // ═══════════════════════════════════════════════════════════
+  // ═══ ANALYTICS ═══════════════════════════════════════════
 
   async getAnalytics(id: string, tenantId: string, days = 7): Promise<any> {
     const config = await this.getConfig(id, tenantId);
-    const since = new Date();
-    since.setDate(since.getDate() - days);
-    const logs = await this.logRepo.find({
-      where: { configId: id, createdAt: MoreThan(since) } as any,
-      order: { createdAt: 'DESC' } as any, take: 100,
-    });
+    const since = new Date(); since.setDate(since.getDate() - days);
+    const logs = await this.logRepo.find({ where: { configId: id, createdAt: MoreThan(since) } as any, order: { createdAt: 'DESC' } as any, take: 100 });
     const daily: Record<string, { total: number; success: number; fail: number }> = {};
     logs.forEach((l: OtpRequestLog) => {
       const day = l.createdAt.toISOString().split('T')[0];
       if (!daily[day]) daily[day] = { total: 0, success: 0, fail: 0 };
-      daily[day].total++;
-      if (l.success) daily[day].success++; else daily[day].fail++;
+      daily[day].total++; if (l.success) daily[day].success++; else daily[day].fail++;
     });
     return {
-      config: {
-        totalViews: config.totalViews, totalRequests: config.totalRequests,
-        successCount: config.successCount, failCount: config.failCount,
-        successRate: config.totalRequests > 0 ? Math.round(config.successCount / config.totalRequests * 100) : 0,
-      },
+      config: { totalViews: config.totalViews, totalRequests: config.totalRequests, successCount: config.successCount, failCount: config.failCount,
+        successRate: config.totalRequests > 0 ? Math.round(config.successCount / config.totalRequests * 100) : 0 },
       daily: Object.entries(daily).map(([date, d]) => ({ date, ...d })),
       recentLogs: logs.slice(0, 20),
     };
   }
 
-  // ═══════════════════════════════════════════════════════════
-  // PUBLIC PAGE
-  // ═══════════════════════════════════════════════════════════
+  // ═══ PUBLIC PAGE ═════════════════════════════════════════
 
   async getPublicPage(slug: string): Promise<any> {
     const c = await this.configRepo.findOne({ where: { slug, isActive: true } as any });
@@ -180,17 +185,14 @@ export class OtpRelayService {
     };
   }
 
-  // ═══════════════════════════════════════════════════════════
-  // OTP REQUEST
-  // ═══════════════════════════════════════════════════════════
+  // ═══ OTP REQUEST ═════════════════════════════════════════
 
   async requestOtp(slug: string, orderNumber: string, username: string, clientIp: string): Promise<any> {
     const start = Date.now();
     orderNumber = (orderNumber || '').trim();
     username = (username || '').trim();
 
-    const c = await this.configRepo
-      .createQueryBuilder('c').addSelect('c.emailPassword')
+    const c = await this.configRepo.createQueryBuilder('c').addSelect('c.emailPassword')
       .where('c.slug = :slug AND c.isActive = true', { slug }).getOne();
     if (!c) throw new NotFoundException('الخدمة غير متوفرة');
 
@@ -203,46 +205,50 @@ export class OtpRelayService {
     };
 
     try {
-      // ═══ Step 1: Validate username BEFORE any heavy work ═══
+      // Step 1: Validate username
       if (c.needsUsername && !username) {
-        log.errorMsg = 'username required but empty';
+        log.errorMsg = 'username required';
         await this.saveFailLog(log, c.id, start);
         throw new BadRequestException('يجب إدخال اسم المستخدم.');
       }
 
-      // ═══ Step 2: Verify order (with retry for Salla 500s) ═══
+      // Step 2: Verify order + get customer data
+      let orderData: OrderData | null = null;
       if (c.verifyOrder && orderNumber) {
-        await this.verifyOrder(c.storeId, orderNumber);
+        orderData = await this.verifyOrder(c.storeId, orderNumber);
       }
 
-      // ═══ Step 3: IMAP → smart search → extract code ═══
+      // Step 3: Extract OTP
       const pw = decrypt(c.emailPassword);
       if (!pw) throw new BadRequestException('خطأ في إعدادات الإيميل');
-
       this.logger.log(`🔑 OTP: slug=${slug}, user=${username}, order=${orderNumber}`);
       const result = await this.extractOtp(c, pw, username);
 
-      // ═══ Step 4: No code found — show appropriate message ═══
+      // Step 4: Handle failure
       if (!result.code) {
         if (result.reason === 'username_mismatch') {
-          log.errorMsg = `username mismatch: "${username}" not found in platform emails`;
+          log.errorMsg = `username mismatch: "${username}"`;
           await this.saveFailLog(log, c.id, start);
           throw new BadRequestException('اسم المستخدم غير مطابق للحساب. تأكد من اسم المستخدم وحاول مرة أخرى.');
         }
-        log.errorMsg = `no code found for user "${username}" (reason: ${result.reason || 'unknown'})`;
+        log.errorMsg = `no code (${result.reason || 'unknown'})`;
         await this.saveFailLog(log, c.id, start);
         throw new NotFoundException(c.noCodeMsg || 'لم يتم العثور على رمز جديد. أعد إرسال الرمز من المنصة وحاول بعد دقيقة.');
       }
 
-      // ═══ Step 5: Success ═══
+      // Step 5: Success — save log
       log.success = true;
       await this.configRepo.increment({ id: c.id } as any, 'successCount', 1);
       log.responseMs = Date.now() - start;
       await this.logRepo.save(this.logRepo.create(log));
-
       this.logger.log(`🔑 ✅ Delivered: user=${username}, code=***${result.code.slice(-2)}, ${Date.now() - start}ms`);
-      return { code: result.code, platform: PLATFORM_PRESETS[c.platform]?.label || c.platform, message: c.successMsg };
 
+      // Step 6: Fire-and-forget WhatsApp notifications
+      this.sendNotifications(c, orderNumber, username, result.code, orderData).catch(e =>
+        this.logger.error(`🔑 Notification error: ${e?.message}`),
+      );
+
+      return { code: result.code, platform: PLATFORM_PRESETS[c.platform]?.label || c.platform, message: c.successMsg };
     } catch (e: any) {
       if (e instanceof NotFoundException || e instanceof ForbiddenException || e instanceof BadRequestException) throw e;
       log.errorMsg = e?.message;
@@ -252,13 +258,82 @@ export class OtpRelayService {
     }
   }
 
-  // ═══════════════════════════════════════════════════════════
-  // PRIVATE: Verify Order (Salla with retry)
-  // ═══════════════════════════════════════════════════════════
+  // ═══ WHATSAPP NOTIFICATIONS ═══════════════════════════════
 
-  private async verifyOrder(storeId: string, orderNumber: string): Promise<void> {
-    const store = await this.storeRepo
-      .createQueryBuilder('s').addSelect('s.accessToken')
+  private async sendNotifications(config: OtpConfig, orderNumber: string, username: string, code: string, orderData: OrderData | null): Promise<void> {
+    const channelId = await this.findWhatsAppChannel(config.storeId);
+    if (!channelId) {
+      this.logger.warn(`🔑 No WhatsApp channel for store ${config.storeId} — skipping notifications`);
+      return;
+    }
+
+    // عدد المحاولات السابقة الناجحة لنفس الطلب + اليوزر
+    const attemptCount = await this.getAttemptCount(config.id, orderNumber, username);
+
+    const vars: Record<string, string> = {
+      '{رقم_الطلب}': orderNumber || '',
+      '{اسم_العميل}': orderData?.customerName || 'عميل',
+      '{رقم_العميل}': orderData?.customerPhone || '',
+      '{اسم_الحساب}': username || '',
+      '{رمز_التفعيل}': code,
+      '{رقم_المحاولة}': String(attemptCount),
+    };
+
+    // ═══ إشعار الموظفين ═══
+    if (config.notifyEmployees && config.employeePhones) {
+      const template = config.employeeMsgTemplate || DEFAULT_EMPLOYEE_TEMPLATE;
+      const message = this.renderTemplate(template, vars);
+      const phones = config.employeePhones.split(',').map(p => p.trim()).filter(Boolean);
+
+      for (const phone of phones) {
+        try {
+          await this.whatsapp.sendTextMessage(channelId, phone, message);
+          this.logger.log(`🔑 📤 Employee notified: ${phone.slice(-4)}`);
+        } catch (e: any) {
+          this.logger.warn(`🔑 ❌ Failed to notify ${phone.slice(-4)}: ${e?.message}`);
+        }
+      }
+    }
+
+    // ═══ إرسال الكود للعميل ═══
+    if (config.sendCodeToCustomer && orderData?.customerPhone) {
+      const template = config.customerMsgTemplate || DEFAULT_CUSTOMER_TEMPLATE;
+      const message = this.renderTemplate(template, vars);
+
+      try {
+        await this.whatsapp.sendTextMessage(channelId, orderData.customerPhone, message);
+        this.logger.log(`🔑 📤 OTP sent to customer: ${orderData.customerPhone.slice(-4)}`);
+      } catch (e: any) {
+        this.logger.warn(`🔑 ❌ Failed to send OTP to customer: ${e?.message}`);
+      }
+    }
+  }
+
+  private renderTemplate(template: string, vars: Record<string, string>): string {
+    let result = template;
+    for (const [key, value] of Object.entries(vars)) {
+      result = result.replaceAll(key, value);
+    }
+    return result;
+  }
+
+  private async getAttemptCount(configId: string, orderNumber: string, username: string): Promise<number> {
+    return this.logRepo.count({
+      where: { configId, orderNumber, username, success: true } as any,
+    });
+  }
+
+  private async findWhatsAppChannel(storeId: string): Promise<string | null> {
+    const channel = await this.channelRepo.findOne({
+      where: { storeId, type: ChannelType.WHATSAPP_QR, status: ChannelStatus.CONNECTED } as any,
+    });
+    return channel?.id || null;
+  }
+
+  // ═══ ORDER VERIFICATION (returns customer data) ═════════
+
+  private async verifyOrder(storeId: string, orderNumber: string): Promise<OrderData> {
+    const store = await this.storeRepo.createQueryBuilder('s').addSelect('s.accessToken')
       .where('s.id = :storeId AND s.deletedAt IS NULL', { storeId }).getOne();
     if (!store?.accessToken || store.platform !== 'salla') throw new BadRequestException('تعذر التحقق من الطلب');
     const token = decrypt(store.accessToken);
@@ -266,122 +341,76 @@ export class OtpRelayService {
 
     let order: any = null;
     for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        order = await this.sallaApi.searchOrderByReference(token, orderNumber);
-        break;
-      } catch (e: any) {
+      try { order = await this.sallaApi.searchOrderByReference(token, orderNumber); break; }
+      catch (e: any) {
         if (attempt === 2 || e?.response?.status !== 500) throw e;
-        this.logger.warn(`🔑 Salla 500 — retry ${attempt}/2`);
+        this.logger.warn(`🔑 Salla 500 — retry`);
         await new Promise(r => setTimeout(r, 500));
       }
     }
     if (!order) throw new NotFoundException('رقم الطلب غير موجود. تأكد من الرقم وحاول مرة أخرى.');
     this.logger.log(`🔑 ✅ Order verified: ${orderNumber}`);
+
+    return {
+      referenceId: order.reference_id,
+      customerName: `${order.customer?.first_name || ''} ${order.customer?.last_name || ''}`.trim() || 'عميل',
+      customerPhone: order.customer?.mobile || order.shipping?.receiver?.phone || '',
+    };
   }
 
   private async saveFailLog(log: Partial<OtpRequestLog>, configId: string, start: number): Promise<void> {
-    log.success = false;
-    log.responseMs = Date.now() - start;
+    log.success = false; log.responseMs = Date.now() - start;
     await this.configRepo.increment({ id: configId } as any, 'failCount', 1);
     await this.logRepo.save(this.logRepo.create(log)).catch(() => {});
   }
 
-  // ═══════════════════════════════════════════════════════════
-  // PRIVATE: IMAP
-  // ═══════════════════════════════════════════════════════════
+  // ═══ IMAP ═══════════════════════════════════════════════
 
   private openImap(host: string, port: number, user: string, pw: string, tls: boolean): Promise<any> {
     if (!Imap) throw new BadRequestException('حزمة imap غير مثبتة — npm install imap mailparser');
     return new Promise((resolve, reject) => {
-      const imap = new Imap({
-        user, password: pw, host, port, tls,
-        tlsOptions: { rejectUnauthorized: false },
-        connTimeout: 15000, authTimeout: 15000,
-      });
+      const imap = new Imap({ user, password: pw, host, port, tls, tlsOptions: { rejectUnauthorized: false }, connTimeout: 15000, authTimeout: 15000 });
       imap.once('ready', () => resolve(imap));
       imap.once('error', (err: Error) => reject(err));
       imap.connect();
     });
   }
 
-  private safeClose(imap: any): void {
-    if (imap) try { imap.end(); } catch { /* already closed */ }
-  }
-
-  // ═══════════════════════════════════════════════════════════
-  // FIX #1: جلب إيميل واحد بدون race condition
-  //
-  // الخطأ القديم: resolve على f.once('end') → الـ buffer ناقص
-  // الإصلاح: resolve على stream.on('end') → الـ buffer كامل
-  // + نجلب INTERNALDATE من attributes (وقت وصول الإيميل الحقيقي)
-  // ═══════════════════════════════════════════════════════════
+  private safeClose(imap: any): void { if (imap) try { imap.end(); } catch {} }
 
   private fetchOneEmail(imap: any, uid: number): Promise<{ raw: string; internalDate: Date | null }> {
     return new Promise((resolve, reject) => {
       const f = imap.fetch([uid], { bodies: '', struct: true });
-      let raw = '';
-      let internalDate: Date | null = null;
-      let streamEnded = false;
-      let attrsReceived = false;
-
-      const tryResolve = () => {
-        if (streamEnded && attrsReceived) resolve({ raw, internalDate });
-      };
-
+      let raw = ''; let internalDate: Date | null = null;
+      let streamEnded = false; let attrsReceived = false;
+      const tryResolve = () => { if (streamEnded && attrsReceived) resolve({ raw, internalDate }); };
       f.on('message', (msg: any) => {
         msg.on('body', (stream: any) => {
           stream.on('data', (chunk: Buffer) => { raw += chunk.toString(); });
           stream.on('end', () => { streamEnded = true; tryResolve(); });
         });
-        msg.on('attributes', (attrs: any) => {
-          internalDate = attrs.date || null; // IMAP INTERNALDATE
-          attrsReceived = true;
-          tryResolve();
-        });
+        msg.on('attributes', (attrs: any) => { internalDate = attrs.date || null; attrsReceived = true; tryResolve(); });
       });
-
       f.once('error', (err: Error) => reject(err));
-
-      // Safety: إذا ما جا message event خلال 10 ثواني
-      setTimeout(() => {
-        if (!streamEnded) resolve({ raw, internalDate });
-      }, 10000);
+      setTimeout(() => { if (!streamEnded) resolve({ raw, internalDate }); }, 10000);
     });
   }
 
-  // ═══════════════════════════════════════════════════════════
-  // CORE: Smart OTP extraction
-  //
-  // FIX #1: fetchOneEmail بدون race condition
-  // FIX #2: INTERNALDATE بدل Date header (دقة العمر)
-  // FIX #3: extractCode يراعي نوع المنصة
-  //
-  // الفلو:
-  //   1. IMAP SEARCH + BODY filter (server-side)
-  //   2. Loop newest → oldest (max 5)
-  //   3. fetchOneEmail (stream-end + INTERNALDATE)
-  //   4. Age check via INTERNALDATE
-  //   5. Username match
-  //   6. Code extraction (platform-aware filter)
-  // ═══════════════════════════════════════════════════════════
+  // ═══ CORE: Smart OTP extraction ═════════════════════════
 
   private async extractOtp(config: OtpConfig, pw: string, requestedUsername?: string): Promise<ExtractResult> {
     let imap: any = null;
     try {
       imap = await this.openImap(config.emailHost, config.emailPort, config.emailUser, pw, config.emailTls);
-      await new Promise<void>((res, rej) => {
-        imap.openBox('INBOX', true, (err: Error | null) => err ? rej(err) : res());
-      });
+      await new Promise<void>((res, rej) => { imap.openBox('INBOX', true, (err: Error | null) => err ? rej(err) : res()); });
 
       const freshnessMin = config.freshnessMinutes || 3;
-      const since = new Date();
-      since.setMinutes(since.getMinutes() - freshnessMin);
-
+      const since = new Date(); since.setMinutes(since.getMinutes() - freshnessMin);
       const usernameRegexStr = config.usernameRegex || PLATFORM_PRESETS[config.platform]?.usernameRegex;
       const otpRegexStr = config.otpRegex || PLATFORM_PRESETS[config.platform]?.otpRegex || '([A-Z0-9]{4,8})';
       const needsMatch = config.needsUsername && !!requestedUsername && !!usernameRegexStr;
 
-      // ═══ IMAP SEARCH — server-side filtering ═══
+      // IMAP SEARCH with BODY filter
       const criteria: any[] = [['SINCE', since]];
       if (config.senderFilter) criteria.push(['FROM', config.senderFilter]);
       if (config.subjectFilter) criteria.push(['SUBJECT', config.subjectFilter]);
@@ -393,160 +422,96 @@ export class OtpRelayService {
 
       this.logger.log(`🔑 IMAP: ${uids.length} emails${needsMatch ? ` matching "${requestedUsername}"` : ''} (last ${freshnessMin}min)`);
 
-      // ═══ لو 0 نتائج مع BODY filter → تحقق هل في إيميلات أصلاً (بدون username) ═══
+      // Fallback: detect username mismatch
       if (uids.length === 0 && needsMatch) {
-        const baseCriteria: any[] = [['SINCE', since]];
-        if (config.senderFilter) baseCriteria.push(['FROM', config.senderFilter]);
-        if (config.subjectFilter) baseCriteria.push(['SUBJECT', config.subjectFilter]);
-
+        const base: any[] = [['SINCE', since]];
+        if (config.senderFilter) base.push(['FROM', config.senderFilter]);
         const baseUids: number[] = await new Promise((res, rej) => {
-          imap.search(baseCriteria, (err: Error | null, r: number[]) => err ? rej(err) : res(r || []));
+          imap.search(base, (err: Error | null, r: number[]) => err ? rej(err) : res(r || []));
         });
-
+        this.safeClose(imap);
         if (baseUids.length > 0) {
-          // في إيميلات من المنصة لكن ما في واحد لهذا اليوزر → اسم المستخدم غلط
-          this.safeClose(imap);
-          this.logger.log(`🔑 ❌ ${baseUids.length} platform emails exist but none match "${requestedUsername}" → username mismatch`);
+          this.logger.log(`🔑 ❌ ${baseUids.length} emails exist but none for "${requestedUsername}"`);
           return { code: null, emailUsername: null, reason: 'username_mismatch' };
         }
-
-        // ما في إيميلات أصلاً → ما وصل رمز
-        this.safeClose(imap);
         return { code: null, emailUsername: null, reason: 'no_email' };
       }
-
       if (uids.length === 0) { this.safeClose(imap); return { code: null, emailUsername: null, reason: 'no_email' }; }
 
-      // ═══ Loop: newest → oldest (max 5) ═══
       const scanUids = uids.slice(-5).reverse();
-
       for (const uid of scanUids) {
         try {
-          // FIX #1: جلب بدون race condition + INTERNALDATE
           const { raw, internalDate } = await this.fetchOneEmail(imap, uid);
-
-          if (!raw || raw.length < 100) {
-            this.logger.log(`🔑 UID=${uid} empty/tiny (${raw.length} chars)`);
-            continue;
-          }
-
+          if (!raw || raw.length < 100) { this.logger.log(`🔑 UID=${uid} empty`); continue; }
           const email = await simpleParser(raw);
-          if (!email) {
-            this.logger.log(`🔑 UID=${uid} parse failed`);
-            continue;
-          }
+          if (!email) continue;
 
-          // FIX #2: استخدم INTERNALDATE (وقت وصول الإيميل) بدل Date header (وقت الإرسال)
           const checkDate = internalDate || email.date;
-          if (checkDate) {
-            const ageMin = (Date.now() - new Date(checkDate).getTime()) / 60000;
-            if (ageMin > freshnessMin) {
-              this.logger.log(`🔑 UID=${uid} too old: ${ageMin.toFixed(1)}min > ${freshnessMin}min (${internalDate ? 'INTERNALDATE' : 'Date header'})`);
-              continue;
-            }
+          if (checkDate && (Date.now() - new Date(checkDate).getTime()) / 60000 > freshnessMin) {
+            this.logger.log(`🔑 UID=${uid} too old`); continue;
           }
 
           const textBody = email.text || '';
           const fullBody = textBody + ' ' + (email.html || '');
 
-          // استخراج اليوزر نيم — text أولاً، ثم HTML بدون anchor
+          // Username extraction (text → HTML fallback)
           let emailUser: string | null = null;
           if (usernameRegexStr) {
-            // محاولة 1: text body (الريجكس الأصلي مع ^ anchor)
             let m = textBody.match(new RegExp(usernameRegexStr, 'im'));
-            if (!m) {
-              // محاولة 2: HTML body — نزيل ^ anchor لأن اليوزر يكون داخل tags
-              const htmlSafeRegex = usernameRegexStr.replace(/^\^/, '');
-              m = fullBody.match(new RegExp(htmlSafeRegex, 'im'));
-            }
+            if (!m) { const safe = usernameRegexStr.replace(/^\^/, ''); m = fullBody.match(new RegExp(safe, 'im')); }
             emailUser = m?.[1] || null;
           }
 
-          // مطابقة اليوزر نيم
           if (needsMatch) {
             if (!emailUser || emailUser.toLowerCase() !== requestedUsername!.trim().toLowerCase()) {
-              this.logger.log(`🔑 UID=${uid} user mismatch: "${emailUser}" ≠ "${requestedUsername}"`);
-              continue;
+              this.logger.log(`🔑 UID=${uid} user mismatch: "${emailUser}" ≠ "${requestedUsername}"`); continue;
             }
             this.logger.log(`🔑 UID=${uid} ✅ user: "${emailUser}"`);
           }
 
-          // FIX #3: استخراج الكود — فلترة ذكية حسب نوع المنصة
           const code = this.extractCode(textBody, fullBody, otpRegexStr, emailUser);
           if (code) {
             this.safeClose(imap);
             this.logger.log(`🔑 ✅ Found: UID=${uid}, user="${emailUser}", code=***${code.slice(-2)}`);
             return { code, emailUsername: emailUser };
           }
-
-          this.logger.log(`🔑 UID=${uid} user OK but no valid code (text: ${textBody.length} chars, regex: ${otpRegexStr})`);
-        } catch (e: any) {
-          this.logger.warn(`🔑 UID=${uid} error: ${e?.message}`);
-          continue;
-        }
+          this.logger.log(`🔑 UID=${uid} no valid code`);
+        } catch (e: any) { this.logger.warn(`🔑 UID=${uid} error: ${e?.message}`); continue; }
       }
 
       this.safeClose(imap);
-      this.logger.log(`🔑 ❌ No code found after scanning ${scanUids.length} emails`);
-      return { code: null, emailUsername: null };
+      return { code: null, emailUsername: null, reason: 'no_code' };
     } catch (e: any) {
       this.safeClose(imap);
       throw new BadRequestException(`فشل الاتصال بالإيميل: ${e?.message}`);
     }
   }
 
-  // ═══════════════════════════════════════════════════════════
-  // FIX #3: استخراج الكود — يراعي نوع المنصة
-  //
-  // لو needsUsername (Steam): فلترة 3 طبقات (تخطي أجزاء اليوزر + أرقام فقط + حروف فقط)
-  // لو بدون username (Netflix/Discord): يرجع أول match مباشرة
-  //
-  // هذا يمنع فلتر "أرقام فقط" من كسر منصات الأرقام مثل Netflix (كود 1234)
-  // ═══════════════════════════════════════════════════════════
-
-  private extractCode(textBody: string, fullBody: string, regex: string, emailUsername: string | null): string | null {
+  private extractCode(textBody: string, fullBody: string, regex: string, username: string | null): string | null {
     for (const body of [textBody, fullBody]) {
-      const re = new RegExp(regex, 'g');
-      let m: RegExpExecArray | null;
+      const re = new RegExp(regex, 'g'); let m: RegExpExecArray | null;
       while ((m = re.exec(body)) !== null) {
-        const candidate = m[1];
-
-        // لو ما في يوزر نيم → أرجع أول match مباشرة (Netflix, Discord, Gmail, etc)
-        if (!emailUsername) return candidate;
-
-        // لو في يوزر نيم → فلترة ذكية عشان نميز الكود من أجزاء اليوزر
-        // طبقة 1: تخطي إذا جزء من اليوزر نيم
-        if (emailUsername.toLowerCase().includes(candidate.toLowerCase())) continue;
-        // طبقة 2: تخطي أرقام فقط (أكواد Steam دائماً مخلوطة)
-        if (/^\d+$/.test(candidate)) continue;
-        // طبقة 3: تخطي حروف فقط
-        if (/^[A-Z]+$/i.test(candidate)) continue;
-
-        return candidate; // ✅ مخلوط حروف + أرقام ومو جزء من اليوزر
+        const c = m[1];
+        if (!username) return c;
+        if (username.toLowerCase().includes(c.toLowerCase())) continue;
+        if (/^\d+$/.test(c)) continue;
+        if (/^[A-Z]+$/i.test(c)) continue;
+        return c;
       }
     }
     return null;
   }
 
-  // ═══════════════════════════════════════════════════════════
-  // Rate limiter مع تنظيف تلقائي
-  // ═══════════════════════════════════════════════════════════
-
   private checkRate(ip: string, limit: number): void {
     const now = Date.now();
     if (now - this.lastRateCleanup > 300_000) {
       this.lastRateCleanup = now;
-      for (const [k, v] of this.rateMap.entries()) {
-        if (v.every(t => now - t > 60000)) this.rateMap.delete(k);
-      }
+      for (const [k, v] of this.rateMap.entries()) { if (v.every(t => now - t > 60000)) this.rateMap.delete(k); }
     }
     const ts = (this.rateMap.get(ip) || []).filter(t => now - t < 60000);
     if (ts.length >= limit) throw new ForbiddenException('تجاوزت الحد المسموح. انتظر دقيقة.');
-    ts.push(now);
-    this.rateMap.set(ip, ts);
+    ts.push(now); this.rateMap.set(ip, ts);
   }
 
-  getPlatforms(): any[] {
-    return Object.entries(PLATFORM_PRESETS).map(([value, p]) => ({ value, ...p }));
-  }
+  getPlatforms(): any[] { return Object.entries(PLATFORM_PRESETS).map(([value, p]) => ({ value, ...p })); }
 }
