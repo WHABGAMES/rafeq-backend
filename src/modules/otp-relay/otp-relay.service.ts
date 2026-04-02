@@ -368,25 +368,36 @@ export class OtpRelayService {
         return { code: null, emailUsername: null };
       }
 
-      // أحدث رسالة
+      // أحدث رسالة — نجلب الإيميل كاملاً أولاً ثم نحلله (يمنع race condition)
       const latestUid = uids[uids.length - 1];
-      const email: any | null = await new Promise((resolve, reject) => {
+      this.logger.log(`🔑 Fetching latest email: UID=${latestUid}`);
+
+      const rawEmail: string = await new Promise((resolve, reject) => {
         const f = imap.fetch([latestUid], { bodies: '' });
-        let done = false;
+        let buffer = '';
         f.on('message', (msg: any) => {
           msg.on('body', (stream: any) => {
-            simpleParser(stream, (err: Error | null, parsed: any) => {
-              if (err) reject(err);
-              else { done = true; resolve(parsed); }
-            });
+            stream.on('data', (chunk: Buffer) => { buffer += chunk.toString(); });
           });
         });
-        f.once('error', (err: Error) => { if (!done) reject(err); });
-        f.once('end', () => { if (!done) resolve(null); });
+        f.once('error', (err: Error) => reject(err));
+        f.once('end', () => resolve(buffer));
       });
 
       imap.end();
-      if (!email) return { code: null, emailUsername: null };
+
+      if (!rawEmail) {
+        this.logger.log(`🔑 ❌ Empty email body for UID ${latestUid}`);
+        return { code: null, emailUsername: null };
+      }
+
+      this.logger.log(`🔑 Raw email size: ${rawEmail.length} chars — parsing...`);
+      const email = await simpleParser(rawEmail);
+
+      if (!email) {
+        this.logger.log(`🔑 ❌ simpleParser returned null`);
+        return { code: null, emailUsername: null };
+      }
 
       // التحقق من عمر الرسالة
       if (email.date) {
