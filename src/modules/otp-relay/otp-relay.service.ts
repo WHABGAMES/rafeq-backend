@@ -28,7 +28,7 @@ interface ExtractResult {
   emailUsername: string | null;
 }
 
-// ═══ Whitelist مشتركة — create + update ═══
+/** الحقول المسموح تعديلها — whitelist مشتركة بين create + update */
 const SAFE_FIELDS = new Set([
   'slug', 'platform', 'pageTitle', 'pageSubtitle', 'logoUrl',
   'bgColor', 'primaryColor', 'cardColor', 'textColor', 'secondaryTextColor',
@@ -214,7 +214,7 @@ export class OtpRelayService {
         await this.verifyOrder(c.storeId, orderNumber);
       }
 
-      // ═══ Step 3: IMAP → smart multi-email search → extract code ═══
+      // ═══ Step 3: IMAP → smart search → extract code ═══
       const pw = decrypt(c.emailPassword);
       if (!pw) throw new BadRequestException('خطأ في إعدادات الإيميل');
 
@@ -247,7 +247,7 @@ export class OtpRelayService {
   }
 
   // ═══════════════════════════════════════════════════════════
-  // PRIVATE HELPERS
+  // PRIVATE: Verify Order (Salla with retry)
   // ═══════════════════════════════════════════════════════════
 
   private async verifyOrder(storeId: string, orderNumber: string): Promise<void> {
@@ -258,7 +258,6 @@ export class OtpRelayService {
     const token = decrypt(store.accessToken);
     if (!token) throw new BadRequestException('تعذر التحقق');
 
-    // Retry once on Salla 500
     let order: any = null;
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
@@ -281,6 +280,10 @@ export class OtpRelayService {
     await this.logRepo.save(this.logRepo.create(log)).catch(() => {});
   }
 
+  // ═══════════════════════════════════════════════════════════
+  // PRIVATE: IMAP
+  // ═══════════════════════════════════════════════════════════
+
   private openImap(host: string, port: number, user: string, pw: string, tls: boolean): Promise<any> {
     if (!Imap) throw new BadRequestException('حزمة imap غير مثبتة — npm install imap mailparser');
     return new Promise((resolve, reject) => {
@@ -300,10 +303,60 @@ export class OtpRelayService {
   }
 
   // ═══════════════════════════════════════════════════════════
-  // CORE: Smart multi-email OTP extraction
+  // FIX #1: جلب إيميل واحد بدون race condition
   //
-  // يبحث من الأحدث للأقدم عن إيميل يطابق اليوزر نيم المطلوب
-  // ثم يستخرج الكود مع فلترة ذكية (3 طبقات)
+  // الخطأ القديم: resolve على f.once('end') → الـ buffer ناقص
+  // الإصلاح: resolve على stream.on('end') → الـ buffer كامل
+  // + نجلب INTERNALDATE من attributes (وقت وصول الإيميل الحقيقي)
+  // ═══════════════════════════════════════════════════════════
+
+  private fetchOneEmail(imap: any, uid: number): Promise<{ raw: string; internalDate: Date | null }> {
+    return new Promise((resolve, reject) => {
+      const f = imap.fetch([uid], { bodies: '', struct: true });
+      let raw = '';
+      let internalDate: Date | null = null;
+      let streamEnded = false;
+      let attrsReceived = false;
+
+      const tryResolve = () => {
+        if (streamEnded && attrsReceived) resolve({ raw, internalDate });
+      };
+
+      f.on('message', (msg: any) => {
+        msg.on('body', (stream: any) => {
+          stream.on('data', (chunk: Buffer) => { raw += chunk.toString(); });
+          stream.on('end', () => { streamEnded = true; tryResolve(); });
+        });
+        msg.on('attributes', (attrs: any) => {
+          internalDate = attrs.date || null; // IMAP INTERNALDATE
+          attrsReceived = true;
+          tryResolve();
+        });
+      });
+
+      f.once('error', (err: Error) => reject(err));
+
+      // Safety: إذا ما جا message event خلال 10 ثواني
+      setTimeout(() => {
+        if (!streamEnded) resolve({ raw, internalDate });
+      }, 10000);
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // CORE: Smart OTP extraction
+  //
+  // FIX #1: fetchOneEmail بدون race condition
+  // FIX #2: INTERNALDATE بدل Date header (دقة العمر)
+  // FIX #3: extractCode يراعي نوع المنصة
+  //
+  // الفلو:
+  //   1. IMAP SEARCH + BODY filter (server-side)
+  //   2. Loop newest → oldest (max 5)
+  //   3. fetchOneEmail (stream-end + INTERNALDATE)
+  //   4. Age check via INTERNALDATE
+  //   5. Username match
+  //   6. Code extraction (platform-aware filter)
   // ═══════════════════════════════════════════════════════════
 
   private async extractOtp(config: OtpConfig, pw: string, requestedUsername?: string): Promise<ExtractResult> {
@@ -318,14 +371,11 @@ export class OtpRelayService {
       const since = new Date();
       since.setMinutes(since.getMinutes() - freshnessMin);
 
-      const usernameRegex = config.usernameRegex || PLATFORM_PRESETS[config.platform]?.usernameRegex;
-      const otpRegex = config.otpRegex || PLATFORM_PRESETS[config.platform]?.otpRegex || '([A-Z0-9]{4,8})';
-      const needsMatch = config.needsUsername && !!requestedUsername && !!usernameRegex;
+      const usernameRegexStr = config.usernameRegex || PLATFORM_PRESETS[config.platform]?.usernameRegex;
+      const otpRegexStr = config.otpRegex || PLATFORM_PRESETS[config.platform]?.otpRegex || '([A-Z0-9]{4,8})';
+      const needsMatch = config.needsUsername && !!requestedUsername && !!usernameRegexStr;
 
-      // ═══ بحث ذكي — IMAP server يفلتر باليوزر نيم ═══
-      // بدل ما نجلب 69 إيميل ونفحصهم واحد واحد
-      // نقول لسيرفر Gmail: "ابحثلي عن إيميل فيه كلمة okfxf19729"
-      // النتيجة: 1-2 إيميل بدل 69 → أسرع 50x
+      // ═══ IMAP SEARCH — server-side filtering ═══
       const criteria: any[] = [['SINCE', since]];
       if (config.senderFilter) criteria.push(['FROM', config.senderFilter]);
       if (config.subjectFilter) criteria.push(['SUBJECT', config.subjectFilter]);
@@ -338,54 +388,71 @@ export class OtpRelayService {
       this.logger.log(`🔑 IMAP: ${uids.length} emails${needsMatch ? ` matching "${requestedUsername}"` : ''} (last ${freshnessMin}min)`);
       if (uids.length === 0) { this.safeClose(imap); return { code: null, emailUsername: null }; }
 
-      // آخر 5 إيميلات — بعد الفلترة عادةً يكون 1-3 فقط
+      // ═══ Loop: newest → oldest (max 5) ═══
       const scanUids = uids.slice(-5).reverse();
 
       for (const uid of scanUids) {
         try {
-          const raw: string = await new Promise((resolve, reject) => {
-            const f = imap.fetch([uid], { bodies: '' });
-            let buf = '';
-            f.on('message', (msg: any) => {
-              msg.on('body', (s: any) => { s.on('data', (c: Buffer) => { buf += c.toString(); }); });
-            });
-            f.once('error', (err: Error) => reject(err));
-            f.once('end', () => resolve(buf));
-          });
+          // FIX #1: جلب بدون race condition + INTERNALDATE
+          const { raw, internalDate } = await this.fetchOneEmail(imap, uid);
 
-          if (!raw) continue;
+          if (!raw || raw.length < 100) {
+            this.logger.log(`🔑 UID=${uid} empty/tiny (${raw.length} chars)`);
+            continue;
+          }
+
           const email = await simpleParser(raw);
-          if (!email) continue;
+          if (!email) {
+            this.logger.log(`🔑 UID=${uid} parse failed`);
+            continue;
+          }
 
-          // التحقق من العمر
-          if (email.date && (Date.now() - new Date(email.date).getTime()) / 60000 > freshnessMin) continue;
+          // FIX #2: استخدم INTERNALDATE (وقت وصول الإيميل) بدل Date header (وقت الإرسال)
+          const checkDate = internalDate || email.date;
+          if (checkDate) {
+            const ageMin = (Date.now() - new Date(checkDate).getTime()) / 60000;
+            if (ageMin > freshnessMin) {
+              this.logger.log(`🔑 UID=${uid} too old: ${ageMin.toFixed(1)}min > ${freshnessMin}min (${internalDate ? 'INTERNALDATE' : 'Date header'})`);
+              continue;
+            }
+          }
 
           const textBody = email.text || '';
           const fullBody = textBody + ' ' + (email.html || '');
 
-          // استخراج + تحقق اليوزر نيم (defense-in-depth بعد فلتر IMAP)
+          // استخراج اليوزر نيم
           let emailUser: string | null = null;
-          if (usernameRegex) {
-            const m = textBody.match(new RegExp(usernameRegex, 'im'));
+          if (usernameRegexStr) {
+            const m = textBody.match(new RegExp(usernameRegexStr, 'im'));
             emailUser = m?.[1] || null;
           }
 
+          // مطابقة اليوزر نيم
           if (needsMatch) {
-            if (!emailUser || emailUser.toLowerCase() !== requestedUsername!.trim().toLowerCase()) continue;
+            if (!emailUser || emailUser.toLowerCase() !== requestedUsername!.trim().toLowerCase()) {
+              this.logger.log(`🔑 UID=${uid} user mismatch: "${emailUser}" ≠ "${requestedUsername}"`);
+              continue;
+            }
             this.logger.log(`🔑 UID=${uid} ✅ user: "${emailUser}"`);
           }
 
-          // استخراج الكود
-          const code = this.extractCode(textBody, fullBody, otpRegex, emailUser);
+          // FIX #3: استخراج الكود — فلترة ذكية حسب نوع المنصة
+          const code = this.extractCode(textBody, fullBody, otpRegexStr, emailUser);
           if (code) {
             this.safeClose(imap);
             this.logger.log(`🔑 ✅ Found: UID=${uid}, user="${emailUser}", code=***${code.slice(-2)}`);
             return { code, emailUsername: emailUser };
           }
-        } catch { continue; }
+
+          this.logger.log(`🔑 UID=${uid} user OK but no valid code (text: ${textBody.length} chars, regex: ${otpRegexStr})`);
+        } catch (e: any) {
+          this.logger.warn(`🔑 UID=${uid} error: ${e?.message}`);
+          continue;
+        }
       }
 
       this.safeClose(imap);
+      this.logger.log(`🔑 ❌ No code found after scanning ${scanUids.length} emails`);
       return { code: null, emailUsername: null };
     } catch (e: any) {
       this.safeClose(imap);
@@ -393,26 +460,45 @@ export class OtpRelayService {
     }
   }
 
-  // ═══ استخراج كود التحقق — 3 طبقات فلترة ═══
-  private extractCode(textBody: string, fullBody: string, regex: string, username: string | null): string | null {
+  // ═══════════════════════════════════════════════════════════
+  // FIX #3: استخراج الكود — يراعي نوع المنصة
+  //
+  // لو needsUsername (Steam): فلترة 3 طبقات (تخطي أجزاء اليوزر + أرقام فقط + حروف فقط)
+  // لو بدون username (Netflix/Discord): يرجع أول match مباشرة
+  //
+  // هذا يمنع فلتر "أرقام فقط" من كسر منصات الأرقام مثل Netflix (كود 1234)
+  // ═══════════════════════════════════════════════════════════
+
+  private extractCode(textBody: string, fullBody: string, regex: string, emailUsername: string | null): string | null {
     for (const body of [textBody, fullBody]) {
       const re = new RegExp(regex, 'g');
       let m: RegExpExecArray | null;
       while ((m = re.exec(body)) !== null) {
-        const c = m[1];
-        if (username && username.toLowerCase().includes(c.toLowerCase())) continue; // جزء من اليوزر
-        if (/^\d+$/.test(c)) continue;         // أرقام فقط
-        if (/^[A-Z]+$/i.test(c)) continue;     // حروف فقط
-        return c; // ✅ مخلوط = كود صحيح
+        const candidate = m[1];
+
+        // لو ما في يوزر نيم → أرجع أول match مباشرة (Netflix, Discord, Gmail, etc)
+        if (!emailUsername) return candidate;
+
+        // لو في يوزر نيم → فلترة ذكية عشان نميز الكود من أجزاء اليوزر
+        // طبقة 1: تخطي إذا جزء من اليوزر نيم
+        if (emailUsername.toLowerCase().includes(candidate.toLowerCase())) continue;
+        // طبقة 2: تخطي أرقام فقط (أكواد Steam دائماً مخلوطة)
+        if (/^\d+$/.test(candidate)) continue;
+        // طبقة 3: تخطي حروف فقط
+        if (/^[A-Z]+$/i.test(candidate)) continue;
+
+        return candidate; // ✅ مخلوط حروف + أرقام ومو جزء من اليوزر
       }
     }
     return null;
   }
 
-  // ═══ Rate limiter مع تنظيف تلقائي ═══
+  // ═══════════════════════════════════════════════════════════
+  // Rate limiter مع تنظيف تلقائي
+  // ═══════════════════════════════════════════════════════════
+
   private checkRate(ip: string, limit: number): void {
     const now = Date.now();
-    // تنظيف كل 5 دقائق
     if (now - this.lastRateCleanup > 300_000) {
       this.lastRateCleanup = now;
       for (const [k, v] of this.rateMap.entries()) {
