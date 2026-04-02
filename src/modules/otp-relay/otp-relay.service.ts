@@ -420,10 +420,16 @@ export class OtpRelayService {
           const textBody = email.text || '';
           const fullBody = textBody + ' ' + (email.html || '');
 
-          // استخراج اليوزر نيم
+          // استخراج اليوزر نيم — text أولاً، ثم HTML بدون anchor
           let emailUser: string | null = null;
           if (usernameRegexStr) {
-            const m = textBody.match(new RegExp(usernameRegexStr, 'im'));
+            // محاولة 1: text body (الريجكس الأصلي مع ^ anchor)
+            let m = textBody.match(new RegExp(usernameRegexStr, 'im'));
+            if (!m) {
+              // محاولة 2: HTML body — نزيل ^ anchor لأن اليوزر يكون داخل tags
+              const htmlSafeRegex = usernameRegexStr.replace(/^\^/, '');
+              m = fullBody.match(new RegExp(htmlSafeRegex, 'im'));
+            }
             emailUser = m?.[1] || null;
           }
 
