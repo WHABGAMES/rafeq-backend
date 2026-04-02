@@ -253,8 +253,30 @@ export class OtpRelayService {
         throw new NotFoundException(c.noCodeMsg || 'لم يتم العثور على رمز جديد. أعد إرسال الرمز من المنصة وحاول بعد دقيقة.');
       }
 
-      // ═══ الخطوة 4: مطابقة اسم المستخدم ═══
-      if (c.needsUsername && username && result.emailUsername) {
+      // ═══ الخطوة 4: مطابقة اسم المستخدم (إلزامي إذا المنصة تتطلبه) ═══
+      if (c.needsUsername) {
+        // ✅ العميل لازم يدخل يوزر نيم
+        if (!username || !username.trim()) {
+          log.success = false;
+          log.errorMsg = 'username required but not provided';
+          await this.configRepo.increment({ id: c.id } as any, 'failCount', 1);
+          log.responseMs = Date.now() - start;
+          await this.logRepo.save(this.logRepo.create(log));
+          throw new BadRequestException('يجب إدخال اسم المستخدم.');
+        }
+
+        // ✅ لازم نقدر نستخرج اليوزر نيم من الإيميل
+        if (!result.emailUsername) {
+          this.logger.warn(`🔑 ❌ Could not extract username from email — cannot verify`);
+          log.success = false;
+          log.errorMsg = 'could not extract username from email';
+          await this.configRepo.increment({ id: c.id } as any, 'failCount', 1);
+          log.responseMs = Date.now() - start;
+          await this.logRepo.save(this.logRepo.create(log));
+          throw new BadRequestException('تعذر التحقق من اسم المستخدم. حاول مرة أخرى.');
+        }
+
+        // ✅ المطابقة — case insensitive
         const inputUser = username.trim().toLowerCase();
         const emailUser = result.emailUsername.trim().toLowerCase();
 
@@ -268,7 +290,7 @@ export class OtpRelayService {
           throw new BadRequestException('اسم المستخدم غير مطابق للحساب. تأكد من اسم المستخدم وحاول مرة أخرى.');
         }
 
-        this.logger.log(`🔑 ✅ Username verified: "${username}"`);
+        this.logger.log(`🔑 ✅ Username verified: "${username}" == "${result.emailUsername}"`);
       }
 
       // ═══ الخطوة 5: نجاح — إرجاع الكود ═══
