@@ -412,25 +412,39 @@ export class OtpRelayService {
       const textBody = email.text || '';
       const fullBody = textBody + ' ' + (email.html || '');
 
-      // ✅ استخراج الكود (OTP) — نبحث في text body أولاً (أنظف) ثم HTML كـ fallback
-      const otpRegexStr = config.otpRegex || PLATFORM_PRESETS[config.platform]?.otpRegex || '([A-Z0-9]{4,8})';
-      const otpRegex = new RegExp(otpRegexStr);
-      let codeMatch = textBody.match(otpRegex);
-      if (!codeMatch) codeMatch = fullBody.match(otpRegex);
-      const code = codeMatch?.[1] || null;
-      this.logger.log(`🔑 OTP extraction: regex="${otpRegexStr}" → code=${code ? '***' + code.slice(-2) : 'null'}`);
-
-      // ✅ استخراج اسم المستخدم من الإيميل (text body فقط — أنظف من HTML)
+      // ═══ الخطوة A: استخراج اليوزر نيم أولاً ═══
       let emailUsername: string | null = null;
       const usernameRegexStr = config.usernameRegex || PLATFORM_PRESETS[config.platform]?.usernameRegex;
 
       if (usernameRegexStr && config.needsUsername) {
         const usernameMatch = textBody.match(new RegExp(usernameRegexStr, 'im'));
         emailUsername = usernameMatch?.[1] || null;
-        this.logger.log(`🔑 Username extraction: regex="${usernameRegexStr}" → emailUsername="${emailUsername}"`);
+        this.logger.log(`🔑 Username extraction: "${emailUsername}" (regex: ${usernameRegexStr})`);
       }
 
-      this.logger.log(`🔑 ✅ Extract complete: code=${code ? 'YES' : 'NO'}, username=${emailUsername || 'N/A'}`);
+      // ═══ الخطوة B: استخراج كود التحقق — مع تخطي أي تطابق يكون جزء من اليوزر نيم ═══
+      const otpRegexStr = config.otpRegex || PLATFORM_PRESETS[config.platform]?.otpRegex || '([A-Z0-9]{4,8})';
+      let code: string | null = null;
+
+      // نبحث في text body أولاً (أنظف) ثم HTML كـ fallback
+      for (const body of [textBody, fullBody]) {
+        const regex = new RegExp(otpRegexStr, 'g');
+        let match: RegExpExecArray | null;
+        while ((match = regex.exec(body)) !== null) {
+          const candidate = match[1];
+          // ✅ تخطي إذا الكود جزء من اليوزر نيم (مثل "25077" من "pzvuw25077")
+          if (emailUsername && emailUsername.toLowerCase().includes(candidate.toLowerCase())) {
+            this.logger.log(`🔑 Skipping "${candidate}" — substring of username "${emailUsername}"`);
+            continue;
+          }
+          code = candidate;
+          break;
+        }
+        if (code) break; // لقينا كود صحيح
+      }
+
+      this.logger.log(`🔑 OTP extraction: regex="${otpRegexStr}" → code=${code ? '***' + code.slice(-2) : 'null'}`);
+      this.logger.log(`🔑 ✅ Extract complete: code=${code || 'NONE'}, username=${emailUsername || 'N/A'}`);
       return { code, emailUsername };
     } catch (e: any) {
       this.logger.error(`🔑 IMAP error: ${e?.message}`);
