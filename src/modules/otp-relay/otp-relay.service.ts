@@ -23,13 +23,17 @@ const IMAP_HOSTS: Record<string, string> = {
   'yahoo.com': 'imap.mail.yahoo.com', 'icloud.com': 'imap.mail.me.com',
 };
 
+/** نتيجة استخراج الكود من الإيميل */
+interface ExtractResult {
+  code: string | null;
+  emailUsername: string | null;
+}
+
 @Injectable()
 export class OtpRelayService {
   private readonly logger = new Logger(OtpRelayService.name);
   private readonly rateMap = new Map<string, number[]>();
 
-  // ✅ FIX: قائمة بيضاء بالحقول المسموح تعديلها فقط
-  // يمنع تعديل: id, tenantId, storeId, totalViews, totalRequests, successCount, failCount, createdAt, updatedAt, deletedAt
   private static readonly UPDATABLE_FIELDS = new Set([
     'slug', 'platform', 'pageTitle', 'pageSubtitle', 'logoUrl',
     'bgColor', 'primaryColor', 'cardColor', 'textColor', 'secondaryTextColor',
@@ -38,6 +42,7 @@ export class OtpRelayService {
     'emailHost', 'emailPort', 'emailUser', 'emailPassword', 'emailTls',
     'senderFilter', 'subjectFilter', 'otpRegex', 'otpLength',
     'freshnessMinutes', 'verifyOrder', 'rateLimit', 'isActive',
+    'usernameRegex',
   ]);
 
   constructor(
@@ -71,6 +76,7 @@ export class OtpRelayService {
       data.otpLength = data.otpLength || preset.otpLength;
       data.needsUsername = preset.needsUsername;
       data.usernameLabel = data.usernameLabel || preset.usernameLabel;
+      data.usernameRegex = data.usernameRegex || preset.usernameRegex;
     }
     if (!data.emailHost && data.emailUser) {
       const domain = data.emailUser.split('@')[1]?.toLowerCase();
@@ -82,18 +88,15 @@ export class OtpRelayService {
     return this.configRepo.save(entity);
   }
 
-  // ✅ FIX: updateConfig مع حماية بالقائمة البيضاء
   async updateConfig(id: string, tenantId: string, data: any): Promise<OtpConfig> {
     const config = await this.getConfig(id, tenantId);
 
-    // ✅ تشفير كلمة المرور إذا أرسلت
     if (data.emailPassword) {
       data.emailPassword = encrypt(data.emailPassword) || '';
     } else {
       delete data.emailPassword;
     }
 
-    // ✅ فلترة: فقط الحقول المسموح بتعديلها — يمنع تعديل id, tenantId, analytics, timestamps
     const safe: Record<string, any> = {};
     for (const key of Object.keys(data)) {
       if (OtpRelayService.UPDATABLE_FIELDS.has(key)) {
@@ -181,6 +184,17 @@ export class OtpRelayService {
     };
   }
 
+  // ═══ OTP REQUEST — السيناريو الكامل ═══════════════════════
+  //
+  // 1. العميل يدخل رقم الطلب + اسم المستخدم
+  // 2. التحقق من رقم الطلب موجود في متجر التاجر (Salla API)
+  // 3. فتح إيميل التاجر عبر IMAP
+  // 4. البحث عن آخر إيميل من المنصة (Steam مثلاً) خلال آخر X دقائق
+  // 5. استخراج اسم المستخدم من الإيميل ومطابقته مع المدخل
+  //    - مطابق → استخراج الكود وإرجاعه
+  //    - غير مطابق → رفض: "اسم المستخدم غير مطابق"
+  // 6. إذا ما في إيميل جديد → رفض: "أعد إرسال الرمز"
+
   async requestOtp(slug: string, orderNumber: string, username: string, clientIp: string): Promise<any> {
     const start = Date.now();
     const c = await this.configRepo
@@ -199,7 +213,7 @@ export class OtpRelayService {
     };
 
     try {
-      // ✅ التحقق من الطلب
+      // ═══ الخطوة 1: التحقق من رقم الطلب في متجر التاجر ═══
       if (c.verifyOrder && orderNumber) {
         const store = await this.storeRepo
           .createQueryBuilder('s')
@@ -222,14 +236,16 @@ export class OtpRelayService {
         this.logger.log(`🔑 ✅ Order verified: ref=${order.reference_id}`);
       }
 
+      // ═══ الخطوة 2: فتح الإيميل واستخراج الكود + اسم المستخدم ═══
       const pw = decrypt(c.emailPassword);
       if (!pw) throw new BadRequestException('خطأ في إعدادات الإيميل');
 
-      this.logger.log(`🔑 OTP: slug=${slug}, platform=${c.platform}, order=${orderNumber}`);
+      this.logger.log(`🔑 OTP: slug=${slug}, platform=${c.platform}, order=${orderNumber}, username=${username}`);
 
-      const code = await this.extractOtp(c, pw);
+      const result = await this.extractOtp(c, pw);
 
-      if (!code) {
+      // ═══ الخطوة 3: ما في إيميل جديد ═══
+      if (!result.code) {
         log.success = false;
         await this.configRepo.increment({ id: c.id } as any, 'failCount', 1);
         log.responseMs = Date.now() - start;
@@ -237,15 +253,34 @@ export class OtpRelayService {
         throw new NotFoundException(c.noCodeMsg || 'لم يتم العثور على رمز جديد. أعد إرسال الرمز من المنصة وحاول بعد دقيقة.');
       }
 
+      // ═══ الخطوة 4: مطابقة اسم المستخدم ═══
+      if (c.needsUsername && username && result.emailUsername) {
+        const inputUser = username.trim().toLowerCase();
+        const emailUser = result.emailUsername.trim().toLowerCase();
+
+        if (inputUser !== emailUser) {
+          this.logger.warn(`🔑 ❌ Username mismatch: input="${username}" vs email="${result.emailUsername}"`);
+          log.success = false;
+          log.errorMsg = `username mismatch: input=${username}, email=${result.emailUsername}`;
+          await this.configRepo.increment({ id: c.id } as any, 'failCount', 1);
+          log.responseMs = Date.now() - start;
+          await this.logRepo.save(this.logRepo.create(log));
+          throw new BadRequestException('اسم المستخدم غير مطابق للحساب. تأكد من اسم المستخدم وحاول مرة أخرى.');
+        }
+
+        this.logger.log(`🔑 ✅ Username verified: "${username}"`);
+      }
+
+      // ═══ الخطوة 5: نجاح — إرجاع الكود ═══
       log.success = true;
       await this.configRepo.increment({ id: c.id } as any, 'successCount', 1);
       log.responseMs = Date.now() - start;
       await this.logRepo.save(this.logRepo.create(log));
 
-      this.logger.log(`🔑 ✅ OTP found: slug=${slug}, code=***${code.slice(-2)}`);
-      return { code, platform: PLATFORM_PRESETS[c.platform]?.label || c.platform, message: c.successMsg };
+      this.logger.log(`🔑 ✅ OTP found: slug=${slug}, code=***${result.code.slice(-2)}`);
+      return { code: result.code, platform: PLATFORM_PRESETS[c.platform]?.label || c.platform, message: c.successMsg };
     } catch (e: any) {
-      if (e instanceof NotFoundException || e instanceof ForbiddenException) throw e;
+      if (e instanceof NotFoundException || e instanceof ForbiddenException || e instanceof BadRequestException) throw e;
       log.errorMsg = e?.message;
       log.responseMs = Date.now() - start;
       await this.logRepo.save(this.logRepo.create(log)).catch(() => {});
@@ -269,7 +304,8 @@ export class OtpRelayService {
     });
   }
 
-  private async extractOtp(config: OtpConfig, pw: string): Promise<string | null> {
+  // ✅ استخراج الكود + اسم المستخدم من الإيميل
+  private async extractOtp(config: OtpConfig, pw: string): Promise<ExtractResult> {
     let imap: any = null;
     try {
       imap = await this.openImap(config.emailHost, config.emailPort, config.emailUser, pw, config.emailTls);
@@ -278,7 +314,7 @@ export class OtpRelayService {
         imap.openBox('INBOX', true, (err: Error | null) => err ? rej(err) : res());
       });
 
-      // ✅ فقط رسائل آخر X دقائق
+      // فقط رسائل آخر X دقائق
       const since = new Date();
       since.setMinutes(since.getMinutes() - (config.freshnessMinutes || 3));
 
@@ -295,7 +331,7 @@ export class OtpRelayService {
       if (uids.length === 0) {
         this.logger.debug(`🔑 No fresh emails (last ${config.freshnessMinutes}min)`);
         imap.end();
-        return null;
+        return { code: null, emailUsername: null };
       }
 
       // أحدث رسالة
@@ -316,21 +352,36 @@ export class OtpRelayService {
       });
 
       imap.end();
-      if (!email) return null;
+      if (!email) return { code: null, emailUsername: null };
 
-      // ✅ التحقق من عمر الرسالة
+      // التحقق من عمر الرسالة
       if (email.date) {
         const emailAge = (Date.now() - new Date(email.date).getTime()) / 60000;
         if (emailAge > (config.freshnessMinutes || 3)) {
           this.logger.debug(`🔑 Email too old: ${emailAge.toFixed(1)}min`);
-          return null;
+          return { code: null, emailUsername: null };
         }
       }
 
-      const body = (email.text || '') + ' ' + (email.html || '');
-      const regexStr = config.otpRegex || PLATFORM_PRESETS[config.platform]?.otpRegex || '([A-Z0-9]{4,8})';
-      const match = body.match(new RegExp(regexStr, 'i'));
-      return match?.[1] || null;
+      const textBody = email.text || '';
+      const fullBody = textBody + ' ' + (email.html || '');
+
+      // ✅ استخراج الكود (OTP)
+      const otpRegexStr = config.otpRegex || PLATFORM_PRESETS[config.platform]?.otpRegex || '([A-Z0-9]{4,8})';
+      const codeMatch = fullBody.match(new RegExp(otpRegexStr, 'i'));
+      const code = codeMatch?.[1] || null;
+
+      // ✅ استخراج اسم المستخدم من الإيميل (text body فقط — أنظف من HTML)
+      let emailUsername: string | null = null;
+      const usernameRegexStr = config.usernameRegex || PLATFORM_PRESETS[config.platform]?.usernameRegex;
+
+      if (usernameRegexStr && config.needsUsername) {
+        const usernameMatch = textBody.match(new RegExp(usernameRegexStr, 'im'));
+        emailUsername = usernameMatch?.[1] || null;
+        this.logger.debug(`🔑 Username extracted from email: "${emailUsername}" (regex: ${usernameRegexStr})`);
+      }
+
+      return { code, emailUsername };
     } catch (e: any) {
       this.logger.error(`🔑 IMAP error: ${e?.message}`);
       if (imap) try { imap.end(); } catch { /* cleanup */ }
