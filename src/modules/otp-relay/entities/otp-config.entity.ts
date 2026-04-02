@@ -14,7 +14,7 @@ export const PLATFORM_PRESETS: Record<string, {
   usernameRegex: string;
 }> = {
   // ✅ Steam: الإيميل يبدأ بـ "username," ثم النص — نستخرج اليوزر نيم من أول سطر
-  steam: { label: 'Steam', icon: '🎮', senderEmail: 'noreply@steampowered.com', subjectContains: '', otpRegex: '\\n\\s*([A-Z0-9]{5})\\s*\\n', otpLength: 5, needsUsername: true, usernameLabel: 'اسم المستخدم (Steam)', usernameRegex: '^([A-Za-z0-9_.-]+),' },
+  steam: { label: 'Steam', icon: '🎮', senderEmail: 'noreply@steampowered.com', subjectContains: '', otpRegex: '([A-Z0-9]{5})', otpLength: 5, needsUsername: true, usernameLabel: 'اسم المستخدم (Steam)', usernameRegex: '^([A-Za-z0-9_.-]+),' },
   netflix: { label: 'Netflix', icon: '🎬', senderEmail: 'info@account.netflix.com', subjectContains: 'verification', otpRegex: '(\\d{4,6})', otpLength: 4, needsUsername: false, usernameLabel: '', usernameRegex: '' },
   gmail: { label: 'Gmail', icon: '📧', senderEmail: 'accounts.google.com', subjectContains: 'verification', otpRegex: '(\\d{6})', otpLength: 6, needsUsername: false, usernameLabel: '', usernameRegex: '' },
   hotmail: { label: 'Hotmail', icon: '📨', senderEmail: 'accountprotection.microsoft.com', subjectContains: 'security code', otpRegex: '(\\d{6,8})', otpLength: 6, needsUsername: false, usernameLabel: '', usernameRegex: '' },
