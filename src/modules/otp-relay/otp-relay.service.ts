@@ -422,29 +422,56 @@ export class OtpRelayService {
         this.logger.log(`🔑 Username extraction: "${emailUsername}" (regex: ${usernameRegexStr})`);
       }
 
-      // ═══ الخطوة B: استخراج كود التحقق — مع تخطي أي تطابق يكون جزء من اليوزر نيم ═══
+      // ═══ الخطوة B: استخراج كود التحقق — ذكاء متعدد الطبقات ═══
+      //
+      // المشكلة: اليوزر نيم مثل "naeto56987" فيه "56987" يطابق [A-Z0-9]{5}
+      // الحل: 3 طبقات فلترة:
+      //   1. تخطي إذا الكود جزء من اليوزر نيم
+      //   2. تخطي إذا الكود أرقام فقط (أكواد Steam/Epic/Discord دائماً فيها حروف)
+      //   3. تخطي إذا الكود حروف فقط بدون أرقام (لتأمين إضافي)
+      //
+      // أمثلة:
+      //   "56987" → أرقام فقط → SKIP
+      //   "naeto" → حروف فقط → SKIP  
+      //   "HQ57D" → حروف + أرقام → VALID ✅
+      //   "MR8TX" → حروف + أرقام → VALID ✅
+
       const otpRegexStr = config.otpRegex || PLATFORM_PRESETS[config.platform]?.otpRegex || '([A-Z0-9]{4,8})';
       let code: string | null = null;
 
-      // نبحث في text body أولاً (أنظف) ثم HTML كـ fallback
       for (const body of [textBody, fullBody]) {
         const regex = new RegExp(otpRegexStr, 'g');
         let match: RegExpExecArray | null;
         while ((match = regex.exec(body)) !== null) {
           const candidate = match[1];
-          // ✅ تخطي إذا الكود جزء من اليوزر نيم (مثل "25077" من "pzvuw25077")
+
+          // طبقة 1: تخطي إذا جزء من اليوزر نيم
           if (emailUsername && emailUsername.toLowerCase().includes(candidate.toLowerCase())) {
-            this.logger.log(`🔑 Skipping "${candidate}" — substring of username "${emailUsername}"`);
+            this.logger.log(`🔑 Skip "${candidate}" — substring of username "${emailUsername}"`);
             continue;
           }
+
+          // طبقة 2: تخطي إذا أرقام فقط (أكواد التحقق دائماً فيها حروف)
+          if (/^\d+$/.test(candidate)) {
+            this.logger.log(`🔑 Skip "${candidate}" — digits only (not a verification code)`);
+            continue;
+          }
+
+          // طبقة 3: تخطي إذا حروف فقط بدون أرقام (أكواد التحقق عادةً مخلوطة)
+          if (/^[A-Z]+$/i.test(candidate)) {
+            this.logger.log(`🔑 Skip "${candidate}" — letters only (not a verification code)`);
+            continue;
+          }
+
+          // ✅ الكود مخلوط (حروف + أرقام) ومو جزء من اليوزر = كود تحقق صحيح
           code = candidate;
+          this.logger.log(`🔑 ✅ Valid OTP found: "${candidate}"`);
           break;
         }
-        if (code) break; // لقينا كود صحيح
+        if (code) break;
       }
 
-      this.logger.log(`🔑 OTP extraction: regex="${otpRegexStr}" → code=${code ? '***' + code.slice(-2) : 'null'}`);
-      this.logger.log(`🔑 ✅ Extract complete: code=${code || 'NONE'}, username=${emailUsername || 'N/A'}`);
+      this.logger.log(`🔑 Extract result: code=${code || 'NONE'}, username=${emailUsername || 'N/A'}`);
       return { code, emailUsername };
     } catch (e: any) {
       this.logger.error(`🔑 IMAP error: ${e?.message}`);
