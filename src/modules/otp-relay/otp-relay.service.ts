@@ -61,6 +61,7 @@ const SAFE_FIELDS = new Set([
   'freshnessMinutes', 'verifyOrder', 'rateLimit', 'isActive', 'usernameRegex',
   'notifyEmployees', 'employeePhones', 'employeeMsgTemplate',
   'sendCodeToCustomer', 'customerMsgTemplate',
+  'maxCodesPerOrder',
 ]);
 
 function pickSafe(data: Record<string, any>): Record<string, any> {
@@ -216,6 +217,22 @@ export class OtpRelayService {
       let orderData: OrderData | null = null;
       if (c.verifyOrder && orderNumber) {
         orderData = await this.verifyOrder(c.storeId, orderNumber);
+      }
+
+      // Step 2.5: Check order code limit (before IMAP to save resources)
+      if (c.maxCodesPerOrder > 0 && orderNumber) {
+        const usedCount = await this.logRepo.count({
+          where: { configId: c.id, orderNumber, success: true } as any,
+        });
+        if (usedCount >= c.maxCodesPerOrder) {
+          log.errorMsg = `order limit reached: ${usedCount}/${c.maxCodesPerOrder}`;
+          await this.saveFailLog(log, c.id, start);
+          throw new BadRequestException(
+            c.maxCodesPerOrder === 1
+              ? 'سبق وتم إعطاؤك رمز التفعيل لهذا الطلب. يرجى التواصل مع الدعم.'
+              : `تم استخدام الحد المسموح (${c.maxCodesPerOrder} رموز) لهذا الطلب. يرجى التواصل مع الدعم.`,
+          );
+        }
       }
 
       // Step 3: Extract OTP
