@@ -13,7 +13,6 @@ export const PLATFORM_PRESETS: Record<string, {
   otpRegex: string; otpLength: number; needsUsername: boolean; usernameLabel: string;
   usernameRegex: string;
 }> = {
-  // ✅ Steam: الإيميل يبدأ بـ "username," ثم النص — نستخرج اليوزر نيم من أول سطر
   steam: { label: 'Steam', icon: '🎮', senderEmail: 'noreply@steampowered.com', subjectContains: '', otpRegex: '([A-Z0-9]{5})', otpLength: 5, needsUsername: true, usernameLabel: 'اسم المستخدم (Steam)', usernameRegex: '^([A-Za-z0-9_.-]+),' },
   netflix: { label: 'Netflix', icon: '🎬', senderEmail: 'info@account.netflix.com', subjectContains: 'verification', otpRegex: '(\\d{4,6})', otpLength: 4, needsUsername: false, usernameLabel: '', usernameRegex: '' },
   gmail: { label: 'Gmail', icon: '📧', senderEmail: 'accounts.google.com', subjectContains: 'verification', otpRegex: '(\\d{6})', otpLength: 6, needsUsername: false, usernameLabel: '', usernameRegex: '' },
@@ -50,7 +49,7 @@ export class OtpConfig extends BaseEntity {
   @Column({ name: 'username_label', default: 'اسم المستخدم' }) usernameLabel: string;
   @Column({ name: 'order_label', default: 'رقم الطلب' }) orderLabel: string;
   @Column({ name: 'button_text', default: 'الحصول على الرمز' }) buttonText: string;
-  @Column({ name: 'footer_text', type: 'varchar', length: 255, nullable: true, comment: 'نص حقوق التاجر مثل: made by y23 store 2026' }) footerText?: string;
+  @Column({ name: 'footer_text', type: 'varchar', length: 255, nullable: true }) footerText?: string;
   @Column({ name: 'show_rafeq_badge', type: 'boolean', default: true }) showRafeqBadge: boolean;
 
   // Email IMAP
@@ -66,14 +65,22 @@ export class OtpConfig extends BaseEntity {
   @Column({ name: 'otp_regex', type: 'varchar', length: 500, nullable: true }) otpRegex?: string;
   @Column({ name: 'otp_length', type: 'integer', default: 5 }) otpLength: number;
   @Column({ name: 'freshness_minutes', type: 'integer', default: 3 }) freshnessMinutes: number;
-
-  // ✅ Username Verification — ريجكس لاستخراج اليوزر نيم من الإيميل ومطابقته مع اللي أدخله العميل
   @Column({ name: 'username_regex', type: 'varchar', length: 500, nullable: true }) usernameRegex?: string;
 
   // Security
   @Column({ name: 'verify_order', type: 'boolean', default: true }) verifyOrder: boolean;
   @Column({ name: 'rate_limit', type: 'integer', default: 3 }) rateLimit: number;
   @Column({ name: 'is_active', type: 'boolean', default: true }) isActive: boolean;
+
+  // ═══ WhatsApp Notifications ═══════════════════════════════
+  // إشعار الموظفين عند طلب رمز تحقق
+  @Column({ name: 'notify_employees', type: 'boolean', default: false }) notifyEmployees: boolean;
+  @Column({ name: 'employee_phones', type: 'text', nullable: true, comment: 'أرقام هواتف الموظفين مفصولة بفاصلة (966XXXXXXXXX)' }) employeePhones?: string;
+  @Column({ name: 'employee_msg_template', type: 'text', nullable: true }) employeeMsgTemplate?: string;
+
+  // إرسال الكود للعميل عبر واتساب
+  @Column({ name: 'send_code_to_customer', type: 'boolean', default: false }) sendCodeToCustomer: boolean;
+  @Column({ name: 'customer_msg_template', type: 'text', nullable: true }) customerMsgTemplate?: string;
 
   // Analytics
   @Column({ name: 'total_views', type: 'integer', default: 0 }) totalViews: number;
