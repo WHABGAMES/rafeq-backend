@@ -28,6 +28,18 @@ export class OtpRelayService {
   private readonly logger = new Logger(OtpRelayService.name);
   private readonly rateMap = new Map<string, number[]>();
 
+  // ✅ FIX: قائمة بيضاء بالحقول المسموح تعديلها فقط
+  // يمنع تعديل: id, tenantId, storeId, totalViews, totalRequests, successCount, failCount, createdAt, updatedAt, deletedAt
+  private static readonly UPDATABLE_FIELDS = new Set([
+    'slug', 'platform', 'pageTitle', 'pageSubtitle', 'logoUrl',
+    'bgColor', 'primaryColor', 'cardColor', 'textColor', 'secondaryTextColor',
+    'bgImageUrl', 'successMsg', 'noCodeMsg', 'needsUsername', 'usernameLabel',
+    'orderLabel', 'buttonText', 'footerText', 'showRafeqBadge',
+    'emailHost', 'emailPort', 'emailUser', 'emailPassword', 'emailTls',
+    'senderFilter', 'subjectFilter', 'otpRegex', 'otpLength',
+    'freshnessMinutes', 'verifyOrder', 'rateLimit', 'isActive',
+  ]);
+
   constructor(
     @InjectRepository(OtpConfig) private readonly configRepo: Repository<OtpConfig>,
     @InjectRepository(OtpRequestLog) private readonly logRepo: Repository<OtpRequestLog>,
@@ -70,11 +82,26 @@ export class OtpRelayService {
     return this.configRepo.save(entity);
   }
 
+  // ✅ FIX: updateConfig مع حماية بالقائمة البيضاء
   async updateConfig(id: string, tenantId: string, data: any): Promise<OtpConfig> {
     const config = await this.getConfig(id, tenantId);
-    if (data.emailPassword) data.emailPassword = encrypt(data.emailPassword) || '';
-    else delete data.emailPassword;
-    Object.assign(config, data);
+
+    // ✅ تشفير كلمة المرور إذا أرسلت
+    if (data.emailPassword) {
+      data.emailPassword = encrypt(data.emailPassword) || '';
+    } else {
+      delete data.emailPassword;
+    }
+
+    // ✅ فلترة: فقط الحقول المسموح بتعديلها — يمنع تعديل id, tenantId, analytics, timestamps
+    const safe: Record<string, any> = {};
+    for (const key of Object.keys(data)) {
+      if (OtpRelayService.UPDATABLE_FIELDS.has(key)) {
+        safe[key] = data[key];
+      }
+    }
+
+    Object.assign(config, safe);
     return this.configRepo.save(config);
   }
 
