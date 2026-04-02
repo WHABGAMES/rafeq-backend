@@ -26,6 +26,7 @@ const IMAP_HOSTS: Record<string, string> = {
 interface ExtractResult {
   code: string | null;
   emailUsername: string | null;
+  reason?: 'no_email' | 'username_mismatch' | 'too_old' | 'no_code';
 }
 
 /** الحقول المسموح تعديلها — whitelist مشتركة بين create + update */
@@ -221,9 +222,14 @@ export class OtpRelayService {
       this.logger.log(`🔑 OTP: slug=${slug}, user=${username}, order=${orderNumber}`);
       const result = await this.extractOtp(c, pw, username);
 
-      // ═══ Step 4: No code found ═══
+      // ═══ Step 4: No code found — show appropriate message ═══
       if (!result.code) {
-        log.errorMsg = `no code found for user "${username}"`;
+        if (result.reason === 'username_mismatch') {
+          log.errorMsg = `username mismatch: "${username}" not found in platform emails`;
+          await this.saveFailLog(log, c.id, start);
+          throw new BadRequestException('اسم المستخدم غير مطابق للحساب. تأكد من اسم المستخدم وحاول مرة أخرى.');
+        }
+        log.errorMsg = `no code found for user "${username}" (reason: ${result.reason || 'unknown'})`;
         await this.saveFailLog(log, c.id, start);
         throw new NotFoundException(c.noCodeMsg || 'لم يتم العثور على رمز جديد. أعد إرسال الرمز من المنصة وحاول بعد دقيقة.');
       }
@@ -381,12 +387,35 @@ export class OtpRelayService {
       if (config.subjectFilter) criteria.push(['SUBJECT', config.subjectFilter]);
       if (needsMatch) criteria.push(['BODY', requestedUsername!.trim()]);
 
-      const uids: number[] = await new Promise((res, rej) => {
+      let uids: number[] = await new Promise((res, rej) => {
         imap.search(criteria, (err: Error | null, r: number[]) => err ? rej(err) : res(r || []));
       });
 
       this.logger.log(`🔑 IMAP: ${uids.length} emails${needsMatch ? ` matching "${requestedUsername}"` : ''} (last ${freshnessMin}min)`);
-      if (uids.length === 0) { this.safeClose(imap); return { code: null, emailUsername: null }; }
+
+      // ═══ لو 0 نتائج مع BODY filter → تحقق هل في إيميلات أصلاً (بدون username) ═══
+      if (uids.length === 0 && needsMatch) {
+        const baseCriteria: any[] = [['SINCE', since]];
+        if (config.senderFilter) baseCriteria.push(['FROM', config.senderFilter]);
+        if (config.subjectFilter) baseCriteria.push(['SUBJECT', config.subjectFilter]);
+
+        const baseUids: number[] = await new Promise((res, rej) => {
+          imap.search(baseCriteria, (err: Error | null, r: number[]) => err ? rej(err) : res(r || []));
+        });
+
+        if (baseUids.length > 0) {
+          // في إيميلات من المنصة لكن ما في واحد لهذا اليوزر → اسم المستخدم غلط
+          this.safeClose(imap);
+          this.logger.log(`🔑 ❌ ${baseUids.length} platform emails exist but none match "${requestedUsername}" → username mismatch`);
+          return { code: null, emailUsername: null, reason: 'username_mismatch' };
+        }
+
+        // ما في إيميلات أصلاً → ما وصل رمز
+        this.safeClose(imap);
+        return { code: null, emailUsername: null, reason: 'no_email' };
+      }
+
+      if (uids.length === 0) { this.safeClose(imap); return { code: null, emailUsername: null, reason: 'no_email' }; }
 
       // ═══ Loop: newest → oldest (max 5) ═══
       const scanUids = uids.slice(-5).reverse();
