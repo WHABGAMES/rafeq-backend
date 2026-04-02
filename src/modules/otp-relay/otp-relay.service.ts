@@ -318,23 +318,28 @@ export class OtpRelayService {
       const since = new Date();
       since.setMinutes(since.getMinutes() - freshnessMin);
 
+      const usernameRegex = config.usernameRegex || PLATFORM_PRESETS[config.platform]?.usernameRegex;
+      const otpRegex = config.otpRegex || PLATFORM_PRESETS[config.platform]?.otpRegex || '([A-Z0-9]{4,8})';
+      const needsMatch = config.needsUsername && !!requestedUsername && !!usernameRegex;
+
+      // ═══ بحث ذكي — IMAP server يفلتر باليوزر نيم ═══
+      // بدل ما نجلب 69 إيميل ونفحصهم واحد واحد
+      // نقول لسيرفر Gmail: "ابحثلي عن إيميل فيه كلمة okfxf19729"
+      // النتيجة: 1-2 إيميل بدل 69 → أسرع 50x
       const criteria: any[] = [['SINCE', since]];
       if (config.senderFilter) criteria.push(['FROM', config.senderFilter]);
       if (config.subjectFilter) criteria.push(['SUBJECT', config.subjectFilter]);
+      if (needsMatch) criteria.push(['BODY', requestedUsername!.trim()]);
 
       const uids: number[] = await new Promise((res, rej) => {
         imap.search(criteria, (err: Error | null, r: number[]) => err ? rej(err) : res(r || []));
       });
 
-      this.logger.log(`🔑 IMAP: ${uids.length} emails (last ${freshnessMin}min)`);
+      this.logger.log(`🔑 IMAP: ${uids.length} emails${needsMatch ? ` matching "${requestedUsername}"` : ''} (last ${freshnessMin}min)`);
       if (uids.length === 0) { this.safeClose(imap); return { code: null, emailUsername: null }; }
 
-      const usernameRegex = config.usernameRegex || PLATFORM_PRESETS[config.platform]?.usernameRegex;
-      const otpRegex = config.otpRegex || PLATFORM_PRESETS[config.platform]?.otpRegex || '([A-Z0-9]{4,8})';
-      const needsMatch = config.needsUsername && !!requestedUsername && !!usernameRegex;
-
-      // آخر 10 إيميلات من الأحدث للأقدم
-      const scanUids = uids.slice(-10).reverse();
+      // آخر 5 إيميلات — بعد الفلترة عادةً يكون 1-3 فقط
+      const scanUids = uids.slice(-5).reverse();
 
       for (const uid of scanUids) {
         try {
@@ -358,17 +363,16 @@ export class OtpRelayService {
           const textBody = email.text || '';
           const fullBody = textBody + ' ' + (email.html || '');
 
-          // استخراج اليوزر نيم
+          // استخراج + تحقق اليوزر نيم (defense-in-depth بعد فلتر IMAP)
           let emailUser: string | null = null;
           if (usernameRegex) {
             const m = textBody.match(new RegExp(usernameRegex, 'im'));
             emailUser = m?.[1] || null;
           }
 
-          // مطابقة اليوزر نيم
           if (needsMatch) {
             if (!emailUser || emailUser.toLowerCase() !== requestedUsername!.trim().toLowerCase()) continue;
-            this.logger.log(`🔑 UID=${uid} ✅ user match: "${emailUser}"`);
+            this.logger.log(`🔑 UID=${uid} ✅ user: "${emailUser}"`);
           }
 
           // استخراج الكود
