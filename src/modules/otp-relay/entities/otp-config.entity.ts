@@ -82,6 +82,10 @@ export class OtpConfig extends BaseEntity {
   @Column({ name: 'send_code_to_customer', type: 'boolean', default: false }) sendCodeToCustomer: boolean;
   @Column({ name: 'customer_msg_template', type: 'text', nullable: true }) customerMsgTemplate?: string;
 
+  // ═══ Order Code Limit ═══════════════════════════════════
+  // عدد مرات استخراج الكود لكل طلب — 0 = بلا حد
+  @Column({ name: 'max_codes_per_order', type: 'integer', default: 1 }) maxCodesPerOrder: number;
+
   // Analytics
   @Column({ name: 'total_views', type: 'integer', default: 0 }) totalViews: number;
   @Column({ name: 'total_requests', type: 'integer', default: 0 }) totalRequests: number;
