@@ -7,43 +7,51 @@ import { encrypt, decrypt } from '@common/utils/encryption.util';
 import { SallaApiService } from '../stores/salla-api.service';
 import { Store } from '../stores/entities/store.entity';
 
-// ✅ Dynamic require — لا يكسر البلد لو الحزم مو مثبتة بعد
 let Imap: any;
 let simpleParser: any;
 try {
   Imap = require('imap');
   simpleParser = require('mailparser').simpleParser;
 } catch {
-  // Will throw at runtime when actually used, not at build time
+  // Will throw at runtime when actually used
 }
 
 const IMAP_HOSTS: Record<string, string> = {
-  'gmail.com': 'imap.gmail.com', 'hotmail.com': 'imap-mail.outlook.com',
-  'outlook.com': 'imap-mail.outlook.com', 'live.com': 'imap-mail.outlook.com',
+  'gmail.com': 'imap.gmail.com', 'googlemail.com': 'imap.gmail.com',
+  'hotmail.com': 'imap-mail.outlook.com', 'outlook.com': 'imap-mail.outlook.com',
+  'outlook.sa': 'imap-mail.outlook.com', 'live.com': 'imap-mail.outlook.com',
   'yahoo.com': 'imap.mail.yahoo.com', 'icloud.com': 'imap.mail.me.com',
 };
 
-/** نتيجة استخراج الكود من الإيميل */
 interface ExtractResult {
   code: string | null;
   emailUsername: string | null;
+}
+
+// ═══ Whitelist مشتركة — create + update ═══
+const SAFE_FIELDS = new Set([
+  'slug', 'platform', 'pageTitle', 'pageSubtitle', 'logoUrl',
+  'bgColor', 'primaryColor', 'cardColor', 'textColor', 'secondaryTextColor',
+  'bgImageUrl', 'successMsg', 'noCodeMsg', 'needsUsername', 'usernameLabel',
+  'orderLabel', 'buttonText', 'footerText', 'showRafeqBadge',
+  'emailHost', 'emailPort', 'emailUser', 'emailPassword', 'emailTls',
+  'senderFilter', 'subjectFilter', 'otpRegex', 'otpLength',
+  'freshnessMinutes', 'verifyOrder', 'rateLimit', 'isActive', 'usernameRegex',
+]);
+
+function pickSafe(data: Record<string, any>): Record<string, any> {
+  const safe: Record<string, any> = {};
+  for (const key of Object.keys(data)) {
+    if (SAFE_FIELDS.has(key)) safe[key] = data[key];
+  }
+  return safe;
 }
 
 @Injectable()
 export class OtpRelayService {
   private readonly logger = new Logger(OtpRelayService.name);
   private readonly rateMap = new Map<string, number[]>();
-
-  private static readonly UPDATABLE_FIELDS = new Set([
-    'slug', 'platform', 'pageTitle', 'pageSubtitle', 'logoUrl',
-    'bgColor', 'primaryColor', 'cardColor', 'textColor', 'secondaryTextColor',
-    'bgImageUrl', 'successMsg', 'noCodeMsg', 'needsUsername', 'usernameLabel',
-    'orderLabel', 'buttonText', 'footerText', 'showRafeqBadge',
-    'emailHost', 'emailPort', 'emailUser', 'emailPassword', 'emailTls',
-    'senderFilter', 'subjectFilter', 'otpRegex', 'otpLength',
-    'freshnessMinutes', 'verifyOrder', 'rateLimit', 'isActive',
-    'usernameRegex',
-  ]);
+  private lastRateCleanup = Date.now();
 
   constructor(
     @InjectRepository(OtpConfig) private readonly configRepo: Repository<OtpConfig>,
@@ -52,7 +60,9 @@ export class OtpRelayService {
     private readonly sallaApi: SallaApiService,
   ) {}
 
-  // ═══ ADMIN ═══════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════
+  // ADMIN
+  // ═══════════════════════════════════════════════════════════
 
   async getConfigs(tenantId: string, storeId: string): Promise<OtpConfig[]> {
     return this.configRepo.find({
@@ -68,42 +78,32 @@ export class OtpRelayService {
   }
 
   async createConfig(tenantId: string, storeId: string, data: any): Promise<OtpConfig> {
-    const preset = PLATFORM_PRESETS[data.platform];
-    if (preset && data.platform !== 'custom') {
-      data.senderFilter = data.senderFilter || preset.senderEmail;
-      data.subjectFilter = data.subjectFilter || preset.subjectContains;
-      data.otpRegex = data.otpRegex || preset.otpRegex;
-      data.otpLength = data.otpLength || preset.otpLength;
-      data.needsUsername = preset.needsUsername;
-      data.usernameLabel = data.usernameLabel || preset.usernameLabel;
-      data.usernameRegex = data.usernameRegex || preset.usernameRegex;
+    const safe = pickSafe(data);
+    const preset = PLATFORM_PRESETS[safe.platform];
+    if (preset && safe.platform !== 'custom') {
+      safe.senderFilter = safe.senderFilter || preset.senderEmail;
+      safe.subjectFilter = safe.subjectFilter || preset.subjectContains;
+      safe.otpRegex = safe.otpRegex || preset.otpRegex;
+      safe.otpLength = safe.otpLength || preset.otpLength;
+      safe.needsUsername = preset.needsUsername;
+      safe.usernameLabel = safe.usernameLabel || preset.usernameLabel;
+      safe.usernameRegex = safe.usernameRegex || preset.usernameRegex;
     }
-    if (!data.emailHost && data.emailUser) {
-      const domain = data.emailUser.split('@')[1]?.toLowerCase();
-      if (domain && IMAP_HOSTS[domain]) data.emailHost = IMAP_HOSTS[domain];
+    if (!safe.emailHost && safe.emailUser) {
+      const domain = safe.emailUser.split('@')[1]?.toLowerCase();
+      if (domain && IMAP_HOSTS[domain]) safe.emailHost = IMAP_HOSTS[domain];
     }
-    if (data.emailPassword) data.emailPassword = encrypt(data.emailPassword) || '';
+    if (safe.emailPassword) safe.emailPassword = encrypt(safe.emailPassword) || '';
     const entity = this.configRepo.create();
-    Object.assign(entity, data, { tenantId, storeId });
+    Object.assign(entity, safe, { tenantId, storeId });
     return this.configRepo.save(entity);
   }
 
   async updateConfig(id: string, tenantId: string, data: any): Promise<OtpConfig> {
     const config = await this.getConfig(id, tenantId);
-
-    if (data.emailPassword) {
-      data.emailPassword = encrypt(data.emailPassword) || '';
-    } else {
-      delete data.emailPassword;
-    }
-
-    const safe: Record<string, any> = {};
-    for (const key of Object.keys(data)) {
-      if (OtpRelayService.UPDATABLE_FIELDS.has(key)) {
-        safe[key] = data[key];
-      }
-    }
-
+    const safe = pickSafe(data);
+    if (safe.emailPassword) safe.emailPassword = encrypt(safe.emailPassword) || '';
+    else delete safe.emailPassword;
     Object.assign(config, safe);
     return this.configRepo.save(config);
   }
@@ -114,10 +114,8 @@ export class OtpRelayService {
 
   async testConnection(id: string, tenantId: string): Promise<{ success: boolean; message: string }> {
     const c = await this.configRepo
-      .createQueryBuilder('c')
-      .addSelect('c.emailPassword')
-      .where('c.id = :id AND c.tenantId = :tenantId', { id, tenantId })
-      .getOne();
+      .createQueryBuilder('c').addSelect('c.emailPassword')
+      .where('c.id = :id AND c.tenantId = :tenantId', { id, tenantId }).getOne();
     if (!c) throw new NotFoundException();
     const pw = decrypt(c.emailPassword);
     if (!pw) return { success: false, message: 'فشل فك تشفير كلمة المرور' };
@@ -130,34 +128,29 @@ export class OtpRelayService {
     }
   }
 
-  // ═══ ANALYTICS ════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════
+  // ANALYTICS
+  // ═══════════════════════════════════════════════════════════
 
   async getAnalytics(id: string, tenantId: string, days = 7): Promise<any> {
     const config = await this.getConfig(id, tenantId);
     const since = new Date();
     since.setDate(since.getDate() - days);
-
     const logs = await this.logRepo.find({
       where: { configId: id, createdAt: MoreThan(since) } as any,
-      order: { createdAt: 'DESC' } as any,
-      take: 100,
+      order: { createdAt: 'DESC' } as any, take: 100,
     });
-
     const daily: Record<string, { total: number; success: number; fail: number }> = {};
     logs.forEach((l: OtpRequestLog) => {
       const day = l.createdAt.toISOString().split('T')[0];
       if (!daily[day]) daily[day] = { total: 0, success: 0, fail: 0 };
       daily[day].total++;
-      if (l.success) daily[day].success++;
-      else daily[day].fail++;
+      if (l.success) daily[day].success++; else daily[day].fail++;
     });
-
     return {
       config: {
-        totalViews: config.totalViews,
-        totalRequests: config.totalRequests,
-        successCount: config.successCount,
-        failCount: config.failCount,
+        totalViews: config.totalViews, totalRequests: config.totalRequests,
+        successCount: config.successCount, failCount: config.failCount,
         successRate: config.totalRequests > 0 ? Math.round(config.successCount / config.totalRequests * 100) : 0,
       },
       daily: Object.entries(daily).map(([date, d]) => ({ date, ...d })),
@@ -165,7 +158,9 @@ export class OtpRelayService {
     };
   }
 
-  // ═══ PUBLIC ══════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════
+  // PUBLIC PAGE
+  // ═══════════════════════════════════════════════════════════
 
   async getPublicPage(slug: string): Promise<any> {
     const c = await this.configRepo.findOne({ where: { slug, isActive: true } as any });
@@ -184,24 +179,18 @@ export class OtpRelayService {
     };
   }
 
-  // ═══ OTP REQUEST — السيناريو الكامل ═══════════════════════
-  //
-  // 1. العميل يدخل رقم الطلب + اسم المستخدم
-  // 2. التحقق من رقم الطلب موجود في متجر التاجر (Salla API)
-  // 3. فتح إيميل التاجر عبر IMAP
-  // 4. البحث عن آخر إيميل من المنصة (Steam مثلاً) خلال آخر X دقائق
-  // 5. استخراج اسم المستخدم من الإيميل ومطابقته مع المدخل
-  //    - مطابق → استخراج الكود وإرجاعه
-  //    - غير مطابق → رفض: "اسم المستخدم غير مطابق"
-  // 6. إذا ما في إيميل جديد → رفض: "أعد إرسال الرمز"
+  // ═══════════════════════════════════════════════════════════
+  // OTP REQUEST
+  // ═══════════════════════════════════════════════════════════
 
   async requestOtp(slug: string, orderNumber: string, username: string, clientIp: string): Promise<any> {
     const start = Date.now();
+    orderNumber = (orderNumber || '').trim();
+    username = (username || '').trim();
+
     const c = await this.configRepo
-      .createQueryBuilder('c')
-      .addSelect('c.emailPassword')
-      .where('c.slug = :slug AND c.isActive = true', { slug })
-      .getOne();
+      .createQueryBuilder('c').addSelect('c.emailPassword')
+      .where('c.slug = :slug AND c.isActive = true', { slug }).getOne();
     if (!c) throw new NotFoundException('الخدمة غير متوفرة');
 
     this.checkRate(clientIp, c.rateLimit);
@@ -213,94 +202,41 @@ export class OtpRelayService {
     };
 
     try {
-      // ═══ الخطوة 1: التحقق من رقم الطلب في متجر التاجر ═══
-      if (c.verifyOrder && orderNumber) {
-        const store = await this.storeRepo
-          .createQueryBuilder('s')
-          .addSelect('s.accessToken')
-          .where('s.id = :storeId AND s.deletedAt IS NULL', { storeId: c.storeId })
-          .getOne();
-
-        if (!store?.accessToken || store.platform !== 'salla') {
-          throw new BadRequestException('تعذر التحقق من الطلب');
-        }
-
-        const token = decrypt(store.accessToken);
-        if (!token) throw new BadRequestException('تعذر التحقق');
-
-        this.logger.log(`🔑 Verifying order ${orderNumber} in store ${c.storeId}`);
-        const order = await this.sallaApi.searchOrderByReference(token, orderNumber);
-        if (!order) {
-          throw new NotFoundException('رقم الطلب غير موجود. تأكد من الرقم وحاول مرة أخرى.');
-        }
-        this.logger.log(`🔑 ✅ Order verified: ref=${order.reference_id}`);
+      // ═══ Step 1: Validate username BEFORE any heavy work ═══
+      if (c.needsUsername && !username) {
+        log.errorMsg = 'username required but empty';
+        await this.saveFailLog(log, c.id, start);
+        throw new BadRequestException('يجب إدخال اسم المستخدم.');
       }
 
-      // ═══ الخطوة 2: فتح الإيميل واستخراج الكود + اسم المستخدم ═══
+      // ═══ Step 2: Verify order (with retry for Salla 500s) ═══
+      if (c.verifyOrder && orderNumber) {
+        await this.verifyOrder(c.storeId, orderNumber);
+      }
+
+      // ═══ Step 3: IMAP → smart multi-email search → extract code ═══
       const pw = decrypt(c.emailPassword);
       if (!pw) throw new BadRequestException('خطأ في إعدادات الإيميل');
 
-      this.logger.log(`🔑 OTP: slug=${slug}, platform=${c.platform}, order=${orderNumber}, username=${username}`);
+      this.logger.log(`🔑 OTP: slug=${slug}, user=${username}, order=${orderNumber}`);
+      const result = await this.extractOtp(c, pw, username);
 
-      const result = await this.extractOtp(c, pw);
-
-      // ═══ الخطوة 3: ما في إيميل جديد ═══
+      // ═══ Step 4: No code found ═══
       if (!result.code) {
-        log.success = false;
-        await this.configRepo.increment({ id: c.id } as any, 'failCount', 1);
-        log.responseMs = Date.now() - start;
-        await this.logRepo.save(this.logRepo.create(log));
+        log.errorMsg = `no code found for user "${username}"`;
+        await this.saveFailLog(log, c.id, start);
         throw new NotFoundException(c.noCodeMsg || 'لم يتم العثور على رمز جديد. أعد إرسال الرمز من المنصة وحاول بعد دقيقة.');
       }
 
-      // ═══ الخطوة 4: مطابقة اسم المستخدم (إلزامي إذا المنصة تتطلبه) ═══
-      if (c.needsUsername) {
-        // ✅ العميل لازم يدخل يوزر نيم
-        if (!username || !username.trim()) {
-          log.success = false;
-          log.errorMsg = 'username required but not provided';
-          await this.configRepo.increment({ id: c.id } as any, 'failCount', 1);
-          log.responseMs = Date.now() - start;
-          await this.logRepo.save(this.logRepo.create(log));
-          throw new BadRequestException('يجب إدخال اسم المستخدم.');
-        }
-
-        // ✅ لازم نقدر نستخرج اليوزر نيم من الإيميل
-        if (!result.emailUsername) {
-          this.logger.warn(`🔑 ❌ Could not extract username from email — cannot verify`);
-          log.success = false;
-          log.errorMsg = 'could not extract username from email';
-          await this.configRepo.increment({ id: c.id } as any, 'failCount', 1);
-          log.responseMs = Date.now() - start;
-          await this.logRepo.save(this.logRepo.create(log));
-          throw new BadRequestException('تعذر التحقق من اسم المستخدم. حاول مرة أخرى.');
-        }
-
-        // ✅ المطابقة — case insensitive
-        const inputUser = username.trim().toLowerCase();
-        const emailUser = result.emailUsername.trim().toLowerCase();
-
-        if (inputUser !== emailUser) {
-          this.logger.warn(`🔑 ❌ Username mismatch: input="${username}" vs email="${result.emailUsername}"`);
-          log.success = false;
-          log.errorMsg = `username mismatch: input=${username}, email=${result.emailUsername}`;
-          await this.configRepo.increment({ id: c.id } as any, 'failCount', 1);
-          log.responseMs = Date.now() - start;
-          await this.logRepo.save(this.logRepo.create(log));
-          throw new BadRequestException('اسم المستخدم غير مطابق للحساب. تأكد من اسم المستخدم وحاول مرة أخرى.');
-        }
-
-        this.logger.log(`🔑 ✅ Username verified: "${username}" == "${result.emailUsername}"`);
-      }
-
-      // ═══ الخطوة 5: نجاح — إرجاع الكود ═══
+      // ═══ Step 5: Success ═══
       log.success = true;
       await this.configRepo.increment({ id: c.id } as any, 'successCount', 1);
       log.responseMs = Date.now() - start;
       await this.logRepo.save(this.logRepo.create(log));
 
-      this.logger.log(`🔑 ✅ OTP found: slug=${slug}, code=***${result.code.slice(-2)}`);
+      this.logger.log(`🔑 ✅ Delivered: user=${username}, code=***${result.code.slice(-2)}, ${Date.now() - start}ms`);
       return { code: result.code, platform: PLATFORM_PRESETS[c.platform]?.label || c.platform, message: c.successMsg };
+
     } catch (e: any) {
       if (e instanceof NotFoundException || e instanceof ForbiddenException || e instanceof BadRequestException) throw e;
       log.errorMsg = e?.message;
@@ -310,10 +246,43 @@ export class OtpRelayService {
     }
   }
 
-  // ═══ IMAP ═══════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════
+  // PRIVATE HELPERS
+  // ═══════════════════════════════════════════════════════════
+
+  private async verifyOrder(storeId: string, orderNumber: string): Promise<void> {
+    const store = await this.storeRepo
+      .createQueryBuilder('s').addSelect('s.accessToken')
+      .where('s.id = :storeId AND s.deletedAt IS NULL', { storeId }).getOne();
+    if (!store?.accessToken || store.platform !== 'salla') throw new BadRequestException('تعذر التحقق من الطلب');
+    const token = decrypt(store.accessToken);
+    if (!token) throw new BadRequestException('تعذر التحقق');
+
+    // Retry once on Salla 500
+    let order: any = null;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        order = await this.sallaApi.searchOrderByReference(token, orderNumber);
+        break;
+      } catch (e: any) {
+        if (attempt === 2 || e?.response?.status !== 500) throw e;
+        this.logger.warn(`🔑 Salla 500 — retry ${attempt}/2`);
+        await new Promise(r => setTimeout(r, 500));
+      }
+    }
+    if (!order) throw new NotFoundException('رقم الطلب غير موجود. تأكد من الرقم وحاول مرة أخرى.');
+    this.logger.log(`🔑 ✅ Order verified: ${orderNumber}`);
+  }
+
+  private async saveFailLog(log: Partial<OtpRequestLog>, configId: string, start: number): Promise<void> {
+    log.success = false;
+    log.responseMs = Date.now() - start;
+    await this.configRepo.increment({ id: configId } as any, 'failCount', 1);
+    await this.logRepo.save(this.logRepo.create(log)).catch(() => {});
+  }
 
   private openImap(host: string, port: number, user: string, pw: string, tls: boolean): Promise<any> {
-    if (!Imap) throw new BadRequestException('حزمة imap غير مثبتة — شغّل: npm install imap mailparser');
+    if (!Imap) throw new BadRequestException('حزمة imap غير مثبتة — npm install imap mailparser');
     return new Promise((resolve, reject) => {
       const imap = new Imap({
         user, password: pw, host, port, tls,
@@ -326,13 +295,21 @@ export class OtpRelayService {
     });
   }
 
-  // ✅ استخراج الكود + اسم المستخدم من الإيميل
-  private async extractOtp(config: OtpConfig, pw: string): Promise<ExtractResult> {
+  private safeClose(imap: any): void {
+    if (imap) try { imap.end(); } catch { /* already closed */ }
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // CORE: Smart multi-email OTP extraction
+  //
+  // يبحث من الأحدث للأقدم عن إيميل يطابق اليوزر نيم المطلوب
+  // ثم يستخرج الكود مع فلترة ذكية (3 طبقات)
+  // ═══════════════════════════════════════════════════════════
+
+  private async extractOtp(config: OtpConfig, pw: string, requestedUsername?: string): Promise<ExtractResult> {
     let imap: any = null;
     try {
       imap = await this.openImap(config.emailHost, config.emailPort, config.emailUser, pw, config.emailTls);
-      this.logger.log(`🔑 IMAP connected: ${config.emailHost} (${config.emailUser})`);
-
       await new Promise<void>((res, rej) => {
         imap.openBox('INBOX', true, (err: Error | null) => err ? rej(err) : res());
       });
@@ -341,170 +318,104 @@ export class OtpRelayService {
       const since = new Date();
       since.setMinutes(since.getMinutes() - freshnessMin);
 
-      // ✅ بحث أولي: بدون فلاتر — فقط الرسائل الحديثة (تشخيص)
-      const allRecent: number[] = await new Promise((res, rej) => {
-        imap.search([['SINCE', since]], (err: Error | null, results: number[]) => {
-          if (err) rej(err); else res(results || []);
-        });
-      });
-      this.logger.log(`🔑 INBOX total recent (SINCE ${since.toISOString()}): ${allRecent.length} emails`);
-
-      // ✅ بحث بالفلاتر الكاملة
       const criteria: any[] = [['SINCE', since]];
       if (config.senderFilter) criteria.push(['FROM', config.senderFilter]);
       if (config.subjectFilter) criteria.push(['SUBJECT', config.subjectFilter]);
 
-      this.logger.log(`🔑 Search criteria: FROM="${config.senderFilter || '*'}" SUBJECT="${config.subjectFilter || '*'}" SINCE=${freshnessMin}min`);
-
       const uids: number[] = await new Promise((res, rej) => {
-        imap.search(criteria, (err: Error | null, results: number[]) => {
-          if (err) rej(err); else res(results || []);
-        });
+        imap.search(criteria, (err: Error | null, r: number[]) => err ? rej(err) : res(r || []));
       });
 
-      this.logger.log(`🔑 Filtered results: ${uids.length} emails matched`);
+      this.logger.log(`🔑 IMAP: ${uids.length} emails (last ${freshnessMin}min)`);
+      if (uids.length === 0) { this.safeClose(imap); return { code: null, emailUsername: null }; }
 
-      if (uids.length === 0) {
-        // ✅ إذا في إيميلات حديثة لكن الفلتر ما طابقها — نعرض آخر إيميل عشان التشخيص
-        if (allRecent.length > 0) {
-          try {
-            const lastUid = allRecent[allRecent.length - 1];
-            const peek: any = await new Promise((resolve, reject) => {
-              const f = imap.fetch([lastUid], { bodies: 'HEADER.FIELDS (FROM SUBJECT DATE)', struct: false });
-              let done = false;
-              f.on('message', (msg: any) => {
-                msg.on('body', (stream: any) => {
-                  let buf = '';
-                  stream.on('data', (chunk: Buffer) => { buf += chunk.toString(); });
-                  stream.on('end', () => { done = true; resolve(buf); });
-                });
-              });
-              f.once('error', (err: Error) => { if (!done) reject(err); });
-              f.once('end', () => { if (!done) resolve(null); });
+      const usernameRegex = config.usernameRegex || PLATFORM_PRESETS[config.platform]?.usernameRegex;
+      const otpRegex = config.otpRegex || PLATFORM_PRESETS[config.platform]?.otpRegex || '([A-Z0-9]{4,8})';
+      const needsMatch = config.needsUsername && !!requestedUsername && !!usernameRegex;
+
+      // آخر 10 إيميلات من الأحدث للأقدم
+      const scanUids = uids.slice(-10).reverse();
+
+      for (const uid of scanUids) {
+        try {
+          const raw: string = await new Promise((resolve, reject) => {
+            const f = imap.fetch([uid], { bodies: '' });
+            let buf = '';
+            f.on('message', (msg: any) => {
+              msg.on('body', (s: any) => { s.on('data', (c: Buffer) => { buf += c.toString(); }); });
             });
-            if (peek) this.logger.log(`🔑 Last inbox email headers:\n${peek.trim()}`);
-          } catch { /* ignore diagnostic errors */ }
-        }
-        imap.end();
-        this.logger.log(`🔑 ❌ No matching emails found — returning null`);
-        return { code: null, emailUsername: null };
-      }
-
-      // أحدث رسالة — نجلب الإيميل كاملاً أولاً ثم نحلله (يمنع race condition)
-      const latestUid = uids[uids.length - 1];
-      this.logger.log(`🔑 Fetching latest email: UID=${latestUid}`);
-
-      const rawEmail: string = await new Promise((resolve, reject) => {
-        const f = imap.fetch([latestUid], { bodies: '' });
-        let buffer = '';
-        f.on('message', (msg: any) => {
-          msg.on('body', (stream: any) => {
-            stream.on('data', (chunk: Buffer) => { buffer += chunk.toString(); });
+            f.once('error', (err: Error) => reject(err));
+            f.once('end', () => resolve(buf));
           });
-        });
-        f.once('error', (err: Error) => reject(err));
-        f.once('end', () => resolve(buffer));
-      });
 
-      imap.end();
+          if (!raw) continue;
+          const email = await simpleParser(raw);
+          if (!email) continue;
 
-      if (!rawEmail) {
-        this.logger.log(`🔑 ❌ Empty email body for UID ${latestUid}`);
-        return { code: null, emailUsername: null };
-      }
+          // التحقق من العمر
+          if (email.date && (Date.now() - new Date(email.date).getTime()) / 60000 > freshnessMin) continue;
 
-      this.logger.log(`🔑 Raw email size: ${rawEmail.length} chars — parsing...`);
-      const email = await simpleParser(rawEmail);
+          const textBody = email.text || '';
+          const fullBody = textBody + ' ' + (email.html || '');
 
-      if (!email) {
-        this.logger.log(`🔑 ❌ simpleParser returned null`);
-        return { code: null, emailUsername: null };
-      }
-
-      // التحقق من عمر الرسالة
-      if (email.date) {
-        const emailAge = (Date.now() - new Date(email.date).getTime()) / 60000;
-        this.logger.log(`🔑 Email date: ${email.date} | Age: ${emailAge.toFixed(1)}min | Limit: ${config.freshnessMinutes || 3}min`);
-        if (emailAge > (config.freshnessMinutes || 3)) {
-          this.logger.log(`🔑 ❌ Email too old: ${emailAge.toFixed(1)}min > ${config.freshnessMinutes || 3}min`);
-          return { code: null, emailUsername: null };
-        }
-      }
-
-      const textBody = email.text || '';
-      const fullBody = textBody + ' ' + (email.html || '');
-
-      // ═══ الخطوة A: استخراج اليوزر نيم أولاً ═══
-      let emailUsername: string | null = null;
-      const usernameRegexStr = config.usernameRegex || PLATFORM_PRESETS[config.platform]?.usernameRegex;
-
-      if (usernameRegexStr && config.needsUsername) {
-        const usernameMatch = textBody.match(new RegExp(usernameRegexStr, 'im'));
-        emailUsername = usernameMatch?.[1] || null;
-        this.logger.log(`🔑 Username extraction: "${emailUsername}" (regex: ${usernameRegexStr})`);
-      }
-
-      // ═══ الخطوة B: استخراج كود التحقق — ذكاء متعدد الطبقات ═══
-      //
-      // المشكلة: اليوزر نيم مثل "naeto56987" فيه "56987" يطابق [A-Z0-9]{5}
-      // الحل: 3 طبقات فلترة:
-      //   1. تخطي إذا الكود جزء من اليوزر نيم
-      //   2. تخطي إذا الكود أرقام فقط (أكواد Steam/Epic/Discord دائماً فيها حروف)
-      //   3. تخطي إذا الكود حروف فقط بدون أرقام (لتأمين إضافي)
-      //
-      // أمثلة:
-      //   "56987" → أرقام فقط → SKIP
-      //   "naeto" → حروف فقط → SKIP  
-      //   "HQ57D" → حروف + أرقام → VALID ✅
-      //   "MR8TX" → حروف + أرقام → VALID ✅
-
-      const otpRegexStr = config.otpRegex || PLATFORM_PRESETS[config.platform]?.otpRegex || '([A-Z0-9]{4,8})';
-      let code: string | null = null;
-
-      for (const body of [textBody, fullBody]) {
-        const regex = new RegExp(otpRegexStr, 'g');
-        let match: RegExpExecArray | null;
-        while ((match = regex.exec(body)) !== null) {
-          const candidate = match[1];
-
-          // طبقة 1: تخطي إذا جزء من اليوزر نيم
-          if (emailUsername && emailUsername.toLowerCase().includes(candidate.toLowerCase())) {
-            this.logger.log(`🔑 Skip "${candidate}" — substring of username "${emailUsername}"`);
-            continue;
+          // استخراج اليوزر نيم
+          let emailUser: string | null = null;
+          if (usernameRegex) {
+            const m = textBody.match(new RegExp(usernameRegex, 'im'));
+            emailUser = m?.[1] || null;
           }
 
-          // طبقة 2: تخطي إذا أرقام فقط (أكواد التحقق دائماً فيها حروف)
-          if (/^\d+$/.test(candidate)) {
-            this.logger.log(`🔑 Skip "${candidate}" — digits only (not a verification code)`);
-            continue;
+          // مطابقة اليوزر نيم
+          if (needsMatch) {
+            if (!emailUser || emailUser.toLowerCase() !== requestedUsername!.trim().toLowerCase()) continue;
+            this.logger.log(`🔑 UID=${uid} ✅ user match: "${emailUser}"`);
           }
 
-          // طبقة 3: تخطي إذا حروف فقط بدون أرقام (أكواد التحقق عادةً مخلوطة)
-          if (/^[A-Z]+$/i.test(candidate)) {
-            this.logger.log(`🔑 Skip "${candidate}" — letters only (not a verification code)`);
-            continue;
+          // استخراج الكود
+          const code = this.extractCode(textBody, fullBody, otpRegex, emailUser);
+          if (code) {
+            this.safeClose(imap);
+            this.logger.log(`🔑 ✅ Found: UID=${uid}, user="${emailUser}", code=***${code.slice(-2)}`);
+            return { code, emailUsername: emailUser };
           }
-
-          // ✅ الكود مخلوط (حروف + أرقام) ومو جزء من اليوزر = كود تحقق صحيح
-          code = candidate;
-          this.logger.log(`🔑 ✅ Valid OTP found: "${candidate}"`);
-          break;
-        }
-        if (code) break;
+        } catch { continue; }
       }
 
-      this.logger.log(`🔑 Extract result: code=${code || 'NONE'}, username=${emailUsername || 'N/A'}`);
-      return { code, emailUsername };
+      this.safeClose(imap);
+      return { code: null, emailUsername: null };
     } catch (e: any) {
-      this.logger.error(`🔑 IMAP error: ${e?.message}`);
-      if (imap) try { imap.end(); } catch { /* cleanup */ }
+      this.safeClose(imap);
       throw new BadRequestException(`فشل الاتصال بالإيميل: ${e?.message}`);
     }
   }
 
+  // ═══ استخراج كود التحقق — 3 طبقات فلترة ═══
+  private extractCode(textBody: string, fullBody: string, regex: string, username: string | null): string | null {
+    for (const body of [textBody, fullBody]) {
+      const re = new RegExp(regex, 'g');
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(body)) !== null) {
+        const c = m[1];
+        if (username && username.toLowerCase().includes(c.toLowerCase())) continue; // جزء من اليوزر
+        if (/^\d+$/.test(c)) continue;         // أرقام فقط
+        if (/^[A-Z]+$/i.test(c)) continue;     // حروف فقط
+        return c; // ✅ مخلوط = كود صحيح
+      }
+    }
+    return null;
+  }
+
+  // ═══ Rate limiter مع تنظيف تلقائي ═══
   private checkRate(ip: string, limit: number): void {
     const now = Date.now();
-    const ts = (this.rateMap.get(ip) || []).filter((t: number) => now - t < 60000);
+    // تنظيف كل 5 دقائق
+    if (now - this.lastRateCleanup > 300_000) {
+      this.lastRateCleanup = now;
+      for (const [k, v] of this.rateMap.entries()) {
+        if (v.every(t => now - t > 60000)) this.rateMap.delete(k);
+      }
+    }
+    const ts = (this.rateMap.get(ip) || []).filter(t => now - t < 60000);
     if (ts.length >= limit) throw new ForbiddenException('تجاوزت الحد المسموح. انتظر دقيقة.');
     ts.push(now);
     this.rateMap.set(ip, ts);
