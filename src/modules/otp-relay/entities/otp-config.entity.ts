@@ -35,7 +35,8 @@ export class OtpConfig extends BaseEntity {
   // Page Design
   @Column({ name: 'page_title', default: 'الحصول على رمز التحقق' }) pageTitle: string;
   @Column({ name: 'page_subtitle', type: 'text', nullable: true }) pageSubtitle?: string;
-  @Column({ name: 'logo_url', type: 'varchar', length: 500, nullable: true }) logoUrl?: string;
+  // ✅ FIX: تم تغيير النوع من varchar(500) إلى text لدعم base64 logos
+  @Column({ name: 'logo_url', type: 'text', nullable: true }) logoUrl?: string;
   @Column({ name: 'bg_color', type: 'varchar', length: 7, default: '#0a0e1a' }) bgColor: string;
   @Column({ name: 'primary_color', type: 'varchar', length: 7, default: '#06b6d4' }) primaryColor: string;
   @Column({ name: 'card_color', type: 'varchar', length: 9, default: '#111827' }) cardColor: string;
