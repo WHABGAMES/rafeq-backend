@@ -412,9 +412,9 @@ export class OtpRelayService {
       const textBody = email.text || '';
       const fullBody = textBody + ' ' + (email.html || '');
 
-      // ✅ استخراج الكود (OTP)
+      // ✅ استخراج الكود (OTP) — بدون i flag عشان ما يطابق اليوزر نيم (lowercase)
       const otpRegexStr = config.otpRegex || PLATFORM_PRESETS[config.platform]?.otpRegex || '([A-Z0-9]{4,8})';
-      const codeMatch = fullBody.match(new RegExp(otpRegexStr, 'i'));
+      const codeMatch = fullBody.match(new RegExp(otpRegexStr));
       const code = codeMatch?.[1] || null;
       this.logger.log(`🔑 OTP extraction: regex="${otpRegexStr}" → code=${code ? '***' + code.slice(-2) : 'null'}`);
 
