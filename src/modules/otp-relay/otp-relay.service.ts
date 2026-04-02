@@ -309,18 +309,30 @@ export class OtpRelayService {
     let imap: any = null;
     try {
       imap = await this.openImap(config.emailHost, config.emailPort, config.emailUser, pw, config.emailTls);
+      this.logger.log(`🔑 IMAP connected: ${config.emailHost} (${config.emailUser})`);
 
       await new Promise<void>((res, rej) => {
         imap.openBox('INBOX', true, (err: Error | null) => err ? rej(err) : res());
       });
 
-      // فقط رسائل آخر X دقائق
+      const freshnessMin = config.freshnessMinutes || 3;
       const since = new Date();
-      since.setMinutes(since.getMinutes() - (config.freshnessMinutes || 3));
+      since.setMinutes(since.getMinutes() - freshnessMin);
 
+      // ✅ بحث أولي: بدون فلاتر — فقط الرسائل الحديثة (تشخيص)
+      const allRecent: number[] = await new Promise((res, rej) => {
+        imap.search([['SINCE', since]], (err: Error | null, results: number[]) => {
+          if (err) rej(err); else res(results || []);
+        });
+      });
+      this.logger.log(`🔑 INBOX total recent (SINCE ${since.toISOString()}): ${allRecent.length} emails`);
+
+      // ✅ بحث بالفلاتر الكاملة
       const criteria: any[] = [['SINCE', since]];
       if (config.senderFilter) criteria.push(['FROM', config.senderFilter]);
       if (config.subjectFilter) criteria.push(['SUBJECT', config.subjectFilter]);
+
+      this.logger.log(`🔑 Search criteria: FROM="${config.senderFilter || '*'}" SUBJECT="${config.subjectFilter || '*'}" SINCE=${freshnessMin}min`);
 
       const uids: number[] = await new Promise((res, rej) => {
         imap.search(criteria, (err: Error | null, results: number[]) => {
@@ -328,9 +340,31 @@ export class OtpRelayService {
         });
       });
 
+      this.logger.log(`🔑 Filtered results: ${uids.length} emails matched`);
+
       if (uids.length === 0) {
-        this.logger.debug(`🔑 No fresh emails (last ${config.freshnessMinutes}min)`);
+        // ✅ إذا في إيميلات حديثة لكن الفلتر ما طابقها — نعرض آخر إيميل عشان التشخيص
+        if (allRecent.length > 0) {
+          try {
+            const lastUid = allRecent[allRecent.length - 1];
+            const peek: any = await new Promise((resolve, reject) => {
+              const f = imap.fetch([lastUid], { bodies: 'HEADER.FIELDS (FROM SUBJECT DATE)', struct: false });
+              let done = false;
+              f.on('message', (msg: any) => {
+                msg.on('body', (stream: any) => {
+                  let buf = '';
+                  stream.on('data', (chunk: Buffer) => { buf += chunk.toString(); });
+                  stream.on('end', () => { done = true; resolve(buf); });
+                });
+              });
+              f.once('error', (err: Error) => { if (!done) reject(err); });
+              f.once('end', () => { if (!done) resolve(null); });
+            });
+            if (peek) this.logger.log(`🔑 Last inbox email headers:\n${peek.trim()}`);
+          } catch { /* ignore diagnostic errors */ }
+        }
         imap.end();
+        this.logger.log(`🔑 ❌ No matching emails found — returning null`);
         return { code: null, emailUsername: null };
       }
 
@@ -357,8 +391,9 @@ export class OtpRelayService {
       // التحقق من عمر الرسالة
       if (email.date) {
         const emailAge = (Date.now() - new Date(email.date).getTime()) / 60000;
+        this.logger.log(`🔑 Email date: ${email.date} | Age: ${emailAge.toFixed(1)}min | Limit: ${config.freshnessMinutes || 3}min`);
         if (emailAge > (config.freshnessMinutes || 3)) {
-          this.logger.debug(`🔑 Email too old: ${emailAge.toFixed(1)}min`);
+          this.logger.log(`🔑 ❌ Email too old: ${emailAge.toFixed(1)}min > ${config.freshnessMinutes || 3}min`);
           return { code: null, emailUsername: null };
         }
       }
@@ -370,6 +405,7 @@ export class OtpRelayService {
       const otpRegexStr = config.otpRegex || PLATFORM_PRESETS[config.platform]?.otpRegex || '([A-Z0-9]{4,8})';
       const codeMatch = fullBody.match(new RegExp(otpRegexStr, 'i'));
       const code = codeMatch?.[1] || null;
+      this.logger.log(`🔑 OTP extraction: regex="${otpRegexStr}" → code=${code ? '***' + code.slice(-2) : 'null'}`);
 
       // ✅ استخراج اسم المستخدم من الإيميل (text body فقط — أنظف من HTML)
       let emailUsername: string | null = null;
@@ -378,9 +414,10 @@ export class OtpRelayService {
       if (usernameRegexStr && config.needsUsername) {
         const usernameMatch = textBody.match(new RegExp(usernameRegexStr, 'im'));
         emailUsername = usernameMatch?.[1] || null;
-        this.logger.debug(`🔑 Username extracted from email: "${emailUsername}" (regex: ${usernameRegexStr})`);
+        this.logger.log(`🔑 Username extraction: regex="${usernameRegexStr}" → emailUsername="${emailUsername}"`);
       }
 
+      this.logger.log(`🔑 ✅ Extract complete: code=${code ? 'YES' : 'NO'}, username=${emailUsername || 'N/A'}`);
       return { code, emailUsername };
     } catch (e: any) {
       this.logger.error(`🔑 IMAP error: ${e?.message}`);
