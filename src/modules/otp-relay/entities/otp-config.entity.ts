@@ -11,16 +11,18 @@ export enum OtpPlatform {
 export const PLATFORM_PRESETS: Record<string, {
   label: string; icon: string; senderEmail: string; subjectContains: string;
   otpRegex: string; otpLength: number; needsUsername: boolean; usernameLabel: string;
+  usernameRegex: string;
 }> = {
-  steam: { label: 'Steam', icon: '🎮', senderEmail: 'noreply@steampowered.com', subjectContains: 'Steam Guard', otpRegex: '([A-Z0-9]{5})', otpLength: 5, needsUsername: true, usernameLabel: 'اسم المستخدم (Steam)' },
-  netflix: { label: 'Netflix', icon: '🎬', senderEmail: 'info@account.netflix.com', subjectContains: 'verification', otpRegex: '(\\d{4,6})', otpLength: 4, needsUsername: false, usernameLabel: '' },
-  gmail: { label: 'Gmail', icon: '📧', senderEmail: 'accounts.google.com', subjectContains: 'verification', otpRegex: '(\\d{6})', otpLength: 6, needsUsername: false, usernameLabel: '' },
-  hotmail: { label: 'Hotmail', icon: '📨', senderEmail: 'accountprotection.microsoft.com', subjectContains: 'security code', otpRegex: '(\\d{6,8})', otpLength: 6, needsUsername: false, usernameLabel: '' },
-  outlook: { label: 'Outlook', icon: '📬', senderEmail: 'accountprotection.microsoft.com', subjectContains: 'security code', otpRegex: '(\\d{6,8})', otpLength: 6, needsUsername: false, usernameLabel: '' },
-  epic_games: { label: 'Epic Games', icon: '🎯', senderEmail: 'help@epicgames.com', subjectContains: 'verification', otpRegex: '(\\d{6})', otpLength: 6, needsUsername: false, usernameLabel: '' },
-  playstation: { label: 'PlayStation', icon: '🕹️', senderEmail: 'sony.com', subjectContains: 'verification', otpRegex: '(\\d{6})', otpLength: 6, needsUsername: false, usernameLabel: '' },
-  discord: { label: 'Discord', icon: '💬', senderEmail: 'noreply@discord.com', subjectContains: 'verify', otpRegex: '(\\d{6})', otpLength: 6, needsUsername: false, usernameLabel: '' },
-  custom: { label: 'مخصص', icon: '⚙️', senderEmail: '', subjectContains: '', otpRegex: '([A-Z0-9]{4,8})', otpLength: 6, needsUsername: false, usernameLabel: '' },
+  // ✅ Steam: الإيميل يبدأ بـ "username," ثم النص — نستخرج اليوزر نيم من أول سطر
+  steam: { label: 'Steam', icon: '🎮', senderEmail: 'noreply@steampowered.com', subjectContains: 'Steam Guard', otpRegex: '([A-Z0-9]{5})', otpLength: 5, needsUsername: true, usernameLabel: 'اسم المستخدم (Steam)', usernameRegex: '^([A-Za-z0-9_.-]+),' },
+  netflix: { label: 'Netflix', icon: '🎬', senderEmail: 'info@account.netflix.com', subjectContains: 'verification', otpRegex: '(\\d{4,6})', otpLength: 4, needsUsername: false, usernameLabel: '', usernameRegex: '' },
+  gmail: { label: 'Gmail', icon: '📧', senderEmail: 'accounts.google.com', subjectContains: 'verification', otpRegex: '(\\d{6})', otpLength: 6, needsUsername: false, usernameLabel: '', usernameRegex: '' },
+  hotmail: { label: 'Hotmail', icon: '📨', senderEmail: 'accountprotection.microsoft.com', subjectContains: 'security code', otpRegex: '(\\d{6,8})', otpLength: 6, needsUsername: false, usernameLabel: '', usernameRegex: '' },
+  outlook: { label: 'Outlook', icon: '📬', senderEmail: 'accountprotection.microsoft.com', subjectContains: 'security code', otpRegex: '(\\d{6,8})', otpLength: 6, needsUsername: false, usernameLabel: '', usernameRegex: '' },
+  epic_games: { label: 'Epic Games', icon: '🎯', senderEmail: 'help@epicgames.com', subjectContains: 'verification', otpRegex: '(\\d{6})', otpLength: 6, needsUsername: false, usernameLabel: '', usernameRegex: '' },
+  playstation: { label: 'PlayStation', icon: '🕹️', senderEmail: 'sony.com', subjectContains: 'verification', otpRegex: '(\\d{6})', otpLength: 6, needsUsername: false, usernameLabel: '', usernameRegex: '' },
+  discord: { label: 'Discord', icon: '💬', senderEmail: 'noreply@discord.com', subjectContains: 'verify', otpRegex: '(\\d{6})', otpLength: 6, needsUsername: false, usernameLabel: '', usernameRegex: '' },
+  custom: { label: 'مخصص', icon: '⚙️', senderEmail: '', subjectContains: '', otpRegex: '([A-Z0-9]{4,8})', otpLength: 6, needsUsername: false, usernameLabel: '', usernameRegex: '' },
 };
 
 @Entity('otp_configs')
@@ -35,7 +37,6 @@ export class OtpConfig extends BaseEntity {
   // Page Design
   @Column({ name: 'page_title', default: 'الحصول على رمز التحقق' }) pageTitle: string;
   @Column({ name: 'page_subtitle', type: 'text', nullable: true }) pageSubtitle?: string;
-  // ✅ FIX: تم تغيير النوع من varchar(500) إلى text لدعم base64 logos
   @Column({ name: 'logo_url', type: 'text', nullable: true }) logoUrl?: string;
   @Column({ name: 'bg_color', type: 'varchar', length: 7, default: '#0a0e1a' }) bgColor: string;
   @Column({ name: 'primary_color', type: 'varchar', length: 7, default: '#06b6d4' }) primaryColor: string;
@@ -65,6 +66,9 @@ export class OtpConfig extends BaseEntity {
   @Column({ name: 'otp_regex', type: 'varchar', length: 500, nullable: true }) otpRegex?: string;
   @Column({ name: 'otp_length', type: 'integer', default: 5 }) otpLength: number;
   @Column({ name: 'freshness_minutes', type: 'integer', default: 3 }) freshnessMinutes: number;
+
+  // ✅ Username Verification — ريجكس لاستخراج اليوزر نيم من الإيميل ومطابقته مع اللي أدخله العميل
+  @Column({ name: 'username_regex', type: 'varchar', length: 500, nullable: true }) usernameRegex?: string;
 
   // Security
   @Column({ name: 'verify_order', type: 'boolean', default: true }) verifyOrder: boolean;
