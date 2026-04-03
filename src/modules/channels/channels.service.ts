@@ -400,9 +400,25 @@ export class ChannelsService {
 
     if (status.status === 'connected') {
       // ✅ Fix: تحقق من التكرار عند الاتصال الناجح
-      // إذا وصل الرقم ووجدنا قناة قديمة بنفس الرقم → ننظفها
       if (status.phoneNumber) {
         await this.cleanupDuplicatesByPhone(sessionId, status.phoneNumber);
+      }
+
+      // ═══ اكتشاف تغيير الرقم → حذف المحادثات القديمة ═══
+      if (status.phoneNumber) {
+        const channel = await this.channelRepository.findOne({ where: { id: sessionId } });
+        if (channel?.whatsappPhoneNumber && !this.phonesMatch(channel.whatsappPhoneNumber, status.phoneNumber)) {
+          this.logger.warn(
+            `🔄 Phone changed: ${channel.whatsappPhoneNumber} → ${status.phoneNumber} | ` +
+            `Channel ${sessionId} | Auto-deleting old conversations...`,
+          );
+          const deleted = await this.channelRepository.manager.query(
+            `DELETE FROM conversations WHERE channel_id = $1`, [sessionId],
+          );
+          this.logger.log(
+            `✅ Phone change cleanup: deleted conversations for channel ${sessionId} (messages auto-cascaded)`,
+          );
+        }
       }
 
       await this.channelRepository.update(sessionId, {
