@@ -634,4 +634,41 @@ export class InboxService {
 
     this.logger.log(`✅ Conversation ${conversationId} deleted successfully`);
   }
+
+  // ═══ حذف جميع المحادثات للمتجر ═══
+  async deleteAllConversations(tenantId: string): Promise<{ deleted: number }> {
+    // عد قبل الحذف — أضمن من parsing نتيجة DELETE
+    const count = await this.conversationRepository.count({ where: { tenantId } as any });
+    if (count === 0) return { deleted: 0 };
+
+    await this.conversationRepository.manager.query(
+      `DELETE FROM conversations WHERE tenant_id = $1`, [tenantId],
+    );
+    this.logger.log(`🗑️ Bulk deleted ${count} conversations for tenant ${tenantId}`);
+    return { deleted: count };
+  }
+
+  // ═══ حالة قناة الواتساب للمتجر ═══
+  async getWhatsAppStatus(tenantId: string): Promise<{ connected: boolean; phoneNumber: string | null; channelId: string | null }> {
+    const conv = await this.conversationRepository.manager.query(
+      `SELECT c.id, c.status, c.whatsapp_phone_number 
+       FROM channels c 
+       INNER JOIN stores s ON s.id = c.store_id 
+       WHERE s.tenant_id = $1 
+         AND c.type = 'whatsapp_qr' 
+       ORDER BY c.connected_at DESC NULLS LAST 
+       LIMIT 1`,
+      [tenantId],
+    );
+
+    if (!conv || conv.length === 0) {
+      return { connected: false, phoneNumber: null, channelId: null };
+    }
+
+    return {
+      connected: conv[0].status === 'connected',
+      phoneNumber: conv[0].whatsapp_phone_number || null,
+      channelId: conv[0].id,
+    };
+  }
 }
