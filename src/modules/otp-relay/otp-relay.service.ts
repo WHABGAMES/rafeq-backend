@@ -62,6 +62,7 @@ const SAFE_FIELDS = new Set([
   'notifyEmployees', 'employeePhones', 'employeeMsgTemplate',
   'sendCodeToCustomer', 'customerMsgTemplate',
   'maxCodesPerOrder',
+  'supportWhatsapp', 'supportDiscord', 'supportInstagram', 'supportTiktok', 'supportTwitter',
 ]);
 
 function pickSafe(data: Record<string, any>): Record<string, any> {
@@ -183,6 +184,8 @@ export class OtpRelayService {
       orderLabel: c.orderLabel, buttonText: c.buttonText, platform: c.platform,
       platformLabel: preset?.label || c.platform, platformIcon: preset?.icon || '🔑',
       verifyOrder: c.verifyOrder, footerText: c.footerText, showRafeqBadge: c.showRafeqBadge,
+      supportWhatsapp: c.supportWhatsapp, supportDiscord: c.supportDiscord,
+      supportInstagram: c.supportInstagram, supportTiktok: c.supportTiktok, supportTwitter: c.supportTwitter,
     };
   }
 
