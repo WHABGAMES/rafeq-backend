@@ -111,6 +111,27 @@ export class InboxController {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // 📱 حالة قناة الواتساب
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  @Get('channel-status')
+  @ApiOperation({ summary: 'حالة قناة الواتساب للمتجر' })
+  async getChannelStatus(@CurrentUser() user: any) {
+    return this.inboxService.getWhatsAppStatus(user.tenantId);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🗑️ حذف جميع المحادثات
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  @Delete('conversations')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'حذف جميع المحادثات' })
+  async deleteAllConversations(@CurrentUser() user: any) {
+    return this.inboxService.deleteAllConversations(user.tenantId);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // 📝 تفاصيل محادثة
   // ═══════════════════════════════════════════════════════════════════════════
 
