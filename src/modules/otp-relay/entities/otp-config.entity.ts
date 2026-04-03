@@ -52,6 +52,13 @@ export class OtpConfig extends BaseEntity {
   @Column({ name: 'footer_text', type: 'varchar', length: 255, nullable: true }) footerText?: string;
   @Column({ name: 'show_rafeq_badge', type: 'boolean', default: true }) showRafeqBadge: boolean;
 
+  // ═══ Support Contact ═══
+  @Column({ name: 'support_whatsapp', type: 'varchar', length: 20, nullable: true }) supportWhatsapp?: string;
+  @Column({ name: 'support_discord', type: 'varchar', length: 255, nullable: true }) supportDiscord?: string;
+  @Column({ name: 'support_instagram', type: 'varchar', length: 100, nullable: true }) supportInstagram?: string;
+  @Column({ name: 'support_tiktok', type: 'varchar', length: 100, nullable: true }) supportTiktok?: string;
+  @Column({ name: 'support_twitter', type: 'varchar', length: 100, nullable: true }) supportTwitter?: string;
+
   // Email IMAP
   @Column({ name: 'email_host' }) emailHost: string;
   @Column({ name: 'email_port', type: 'integer', default: 993 }) emailPort: number;
