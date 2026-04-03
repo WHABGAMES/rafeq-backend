@@ -412,7 +412,7 @@ export class ChannelsService {
             `🔄 Phone changed: ${channel.whatsappPhoneNumber} → ${status.phoneNumber} | ` +
             `Channel ${sessionId} | Auto-deleting old conversations...`,
           );
-          const deleted = await this.channelRepository.manager.query(
+          await this.channelRepository.manager.query(
             `DELETE FROM conversations WHERE channel_id = $1`, [sessionId],
           );
           this.logger.log(
