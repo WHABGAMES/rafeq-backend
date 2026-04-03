@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-var-requires */
 import { Injectable, Logger, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, MoreThan } from 'typeorm';
+import { Repository, MoreThan, Raw } from 'typeorm';
 import { OtpConfig, OtpRequestLog, PLATFORM_PRESETS } from './entities/otp-config.entity';
 import { encrypt, decrypt } from '@common/utils/encryption.util';
 import { SallaApiService } from '../stores/salla-api.service';
@@ -223,17 +223,21 @@ export class OtpRelayService {
       }
 
       // Step 2.5: Check order code limit (before IMAP to save resources)
+      // ✅ الحد يتحقق بـ order + username — طلب واحد فيه عدة حسابات، كل حساب له حده
       if (c.maxCodesPerOrder > 0 && orderNumber) {
-        const usedCount = await this.logRepo.count({
-          where: { configId: c.id, orderNumber, success: true } as any,
-        });
+        const where: any = { configId: c.id, orderNumber, success: true };
+        if (c.needsUsername && username) {
+          where.username = Raw(alias => `LOWER(${alias}) = LOWER(:uname)`, { uname: username });
+        }
+
+        const usedCount = await this.logRepo.count({ where });
         if (usedCount >= c.maxCodesPerOrder) {
-          log.errorMsg = `order limit reached: ${usedCount}/${c.maxCodesPerOrder}`;
+          log.errorMsg = `order limit reached: ${usedCount}/${c.maxCodesPerOrder} (user=${username || 'N/A'})`;
           await this.saveFailLog(log, c.id, start);
           throw new BadRequestException(
             c.maxCodesPerOrder === 1
-              ? 'سبق وتم إعطاؤك رمز التفعيل لهذا الطلب. يرجى التواصل مع الدعم.'
-              : `تم استخدام الحد المسموح (${c.maxCodesPerOrder} رموز) لهذا الطلب. يرجى التواصل مع الدعم.`,
+              ? 'سبق وتم إعطاؤك رمز التفعيل لهذا الحساب. يرجى التواصل مع الدعم.'
+              : `تم استخدام الحد المسموح (${c.maxCodesPerOrder} رموز) لهذا الحساب في هذا الطلب. يرجى التواصل مع الدعم.`,
           );
         }
       }
