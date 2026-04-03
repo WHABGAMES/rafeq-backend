@@ -430,35 +430,22 @@ export class OtpRelayService {
       const otpRegexStr = config.otpRegex || PLATFORM_PRESETS[config.platform]?.otpRegex || '([A-Z0-9]{4,8})';
       const needsMatch = config.needsUsername && !!requestedUsername && !!usernameRegexStr;
 
-      // IMAP SEARCH with BODY filter
+      // ✅ IMAP SEARCH — بدون BODY filter لأن بعض السيرفرات حساسة لحالة الأحرف
+      // المطابقة تتم في الكود (case-insensitive) بعد جلب الإيميلات
       const criteria: any[] = [['SINCE', since]];
       if (config.senderFilter) criteria.push(['FROM', config.senderFilter]);
       if (config.subjectFilter) criteria.push(['SUBJECT', config.subjectFilter]);
-      if (needsMatch) criteria.push(['BODY', requestedUsername!.trim()]);
 
       let uids: number[] = await new Promise((res, rej) => {
         imap.search(criteria, (err: Error | null, r: number[]) => err ? rej(err) : res(r || []));
       });
 
-      this.logger.log(`🔑 IMAP: ${uids.length} emails${needsMatch ? ` matching "${requestedUsername}"` : ''} (last ${freshnessMin}min)`);
+      this.logger.log(`🔑 IMAP: ${uids.length} emails (last ${freshnessMin}min)${needsMatch ? `, will match "${requestedUsername}" in code` : ''}`);
 
-      // Fallback: detect username mismatch
-      if (uids.length === 0 && needsMatch) {
-        const base: any[] = [['SINCE', since]];
-        if (config.senderFilter) base.push(['FROM', config.senderFilter]);
-        const baseUids: number[] = await new Promise((res, rej) => {
-          imap.search(base, (err: Error | null, r: number[]) => err ? rej(err) : res(r || []));
-        });
-        this.safeClose(imap);
-        if (baseUids.length > 0) {
-          this.logger.log(`🔑 ❌ ${baseUids.length} emails exist but none for "${requestedUsername}"`);
-          return { code: null, emailUsername: null, reason: 'username_mismatch' };
-        }
-        return { code: null, emailUsername: null, reason: 'no_email' };
-      }
       if (uids.length === 0) { this.safeClose(imap); return { code: null, emailUsername: null, reason: 'no_email' }; }
 
-      const scanUids = uids.slice(-5).reverse();
+      const scanUids = uids.slice(-10).reverse();
+      let hadUserMismatch = false;
       for (const uid of scanUids) {
         try {
           const { raw, internalDate } = await this.fetchOneEmail(imap, uid);
@@ -484,7 +471,9 @@ export class OtpRelayService {
 
           if (needsMatch) {
             if (!emailUser || emailUser.toLowerCase() !== requestedUsername!.trim().toLowerCase()) {
-              this.logger.log(`🔑 UID=${uid} user mismatch: "${emailUser}" ≠ "${requestedUsername}"`); continue;
+              this.logger.log(`🔑 UID=${uid} user mismatch: "${emailUser}" ≠ "${requestedUsername}"`);
+              hadUserMismatch = true;
+              continue;
             }
             this.logger.log(`🔑 UID=${uid} ✅ user: "${emailUser}"`);
           }
@@ -500,6 +489,11 @@ export class OtpRelayService {
       }
 
       this.safeClose(imap);
+      // ✅ إذا فيه إيميلات لكن ما طابق اليوزرنيم → username_mismatch
+      if (needsMatch && hadUserMismatch) {
+        this.logger.log(`🔑 ❌ Scanned ${scanUids.length} emails, none matched "${requestedUsername}" (case-insensitive)`);
+        return { code: null, emailUsername: null, reason: 'username_mismatch' };
+      }
       return { code: null, emailUsername: null, reason: 'no_code' };
     } catch (e: any) {
       this.safeClose(imap);
