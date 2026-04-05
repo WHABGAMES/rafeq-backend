@@ -47,6 +47,8 @@ import {
 
 import { AuthService } from './auth.service';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { AuditService } from '../admin/services/audit.service';
+import { AuditAction } from '../admin/entities/audit-log.entity';
 
 import {
   LoginDto,
@@ -75,7 +77,10 @@ import {
 export class AuthController {
   private readonly logger = new Logger(AuthController.name);
 
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly auditService: AuditService,
+  ) {}
 
   private maskEmail(email: string): string {
     const [local, domain] = email.split('@');
@@ -111,6 +116,7 @@ export class AuthController {
     const ip = (req.headers?.['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || '';
     const ua = req.headers?.['user-agent'] || '';
     const result = await this.authService.login(dto.email, dto.password, { ip, ua });
+    this._auditAsync(AuditAction.TENANT_LOGIN, req, result.user?.id, result.user?.email, result.user?.tenantId, { method: 'email' });
     return result;
   }
 
@@ -131,6 +137,7 @@ export class AuthController {
       storeName: dto.storeName,
     });
     this._trackDeviceAsync(result?.user?.id, result, req);
+    this._auditAsync(AuditAction.TENANT_REGISTER, req, result.user?.id, result.user?.email, result.user?.tenantId, { storeName: dto.storeName });
     return result;
   }
 
@@ -186,6 +193,7 @@ export class AuthController {
   async sallaCallback(@Body() dto: SallaAuthDto, @Request() req: any): Promise<LoginResponseDto> {
     const result = await this.authService.sallaAuth(dto.code, dto.state);
     this._trackDeviceAsync(result?.user?.id, result, req);
+    this._auditAsync(AuditAction.TENANT_SALLA_LOGIN, req, result.user?.id, result.user?.email, result.user?.tenantId, { method: 'salla_oauth' });
     return result;
   }
 
@@ -206,6 +214,7 @@ export class AuthController {
   async zidCallback(@Body() dto: ZidAuthDto, @Request() req: any): Promise<LoginResponseDto> {
     const result = await this.authService.zidAuth(dto.code, dto.state);
     this._trackDeviceAsync(result?.user?.id, result, req);
+    this._auditAsync(AuditAction.TENANT_ZID_LOGIN, req, result.user?.id, result.user?.email, result.user?.tenantId, { method: 'zid_oauth' });
     return result;
   }
 
@@ -223,6 +232,7 @@ export class AuthController {
     @Body() dto: SetPasswordDto,
   ): Promise<MessageResponseDto> {
     await this.authService.setPassword(req.user.sub || req.user.id, dto.password);
+    this._auditAsync(AuditAction.TENANT_PASSWORD_CHANGED, req, undefined, undefined, undefined, { method: 'set_password' });
     return { message: 'تم تعيين كلمة المرور بنجاح' };
   }
 
@@ -248,11 +258,9 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'تسجيل الخروج' })
   async logout(@Request() req: any): Promise<MessageResponseDto> {
-    await this.authService.logout(
-      req.user.sub || req.user.id,
-      req.user.jti,
-      req.body?.refreshJti,
-    );
+    const userId = req.user.sub || req.user.id;
+    this._auditAsync(AuditAction.TENANT_LOGOUT, req);
+    await this.authService.logout(userId, req.user.jti, req.body?.refreshJti);
     return { message: 'تم تسجيل الخروج بنجاح' };
   }
 
@@ -283,6 +291,7 @@ export class AuthController {
     @Body() dto: ChangePasswordDto,
   ): Promise<MessageResponseDto> {
     await this.authService.changePassword(req.user.sub || req.user.id, dto.currentPassword, dto.newPassword);
+    this._auditAsync(AuditAction.TENANT_PASSWORD_CHANGED, req);
     return { message: 'تم تغيير كلمة المرور بنجاح' };
   }
 
@@ -363,5 +372,31 @@ export class AuthController {
     const ip = (req.headers?.['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || '';
     const ua = req.headers?.['user-agent'] || '';
     this.authService.trackDevice(userId, tenantId, { ip, userAgent: ua }).catch(() => {});
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 📋 PRIVATE HELPER — تسجيل أحداث التاجر في سجل التدقيق (fire-and-forget)
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  private _auditAsync(
+    action: AuditAction,
+    req: any,
+    userId?: string,
+    email?: string,
+    tenantId?: string,
+    meta?: Record<string, unknown>,
+  ): void {
+    const ip = (req.headers?.['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || '';
+    const ua = req.headers?.['user-agent'] || '';
+    this.auditService.logTenant({
+      actorId: userId || req.user?.sub || req.user?.id || 'unknown',
+      actorEmail: email || req.user?.email || 'unknown',
+      tenantId: tenantId || req.user?.tenantId || '',
+      action,
+      targetType: 'auth',
+      metadata: meta || {},
+      ipAddress: ip,
+      userAgent: ua,
+    }).catch(() => {});
   }
 }
