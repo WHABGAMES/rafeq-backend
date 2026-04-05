@@ -100,6 +100,10 @@ const RECONNECT_BASE_DELAY_MS = 5_000;
 const MAX_CONCURRENT_RESTORES = 5;
 /** FIX-1: debounce قبل حفظ lid mappings في DB */
 const LID_PERSIST_DEBOUNCE_MS = 3_000;
+/** Message cache TTL — 5 دقائق كافية لأي retry */
+const MSG_CACHE_TTL_MS = 5 * 60 * 1000;
+/** حد أقصى للرسائل المخزنة في الكاش لكل قناة */
+const MSG_CACHE_MAX_SIZE = 500;
 
 @Injectable()
 export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
@@ -108,6 +112,14 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
 
   /** FIX-1: خريطة lid→phone في الذاكرة */
   private readonly lidToPhone = new Map<string, Map<string, string>>();
+
+  /**
+   * ✅ FIX: Message Retry Protocol
+   * msgCache: يحفظ الرسائل المرسلة مؤقتاً — واتساب يطلبها عند فشل التشفير
+   * msgRetryCounters: يمنع retry loops — بعد 5 محاولات يتوقف
+   */
+  private readonly msgCache = new Map<string, { msg: any; ts: number }>();
+  private readonly msgRetryCounters = new Map<string, number>();
 
   /** FIX-1: debounce timers لحفظ lid mappings في DB */
   private readonly lidPersistTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -324,22 +336,7 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
     const { version } = await fetchLatestBaileysVersion();
     const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
 
-    const sock = makeWASocket({
-      auth: {
-        creds: state.creds,
-        keys: makeCacheableSignalKeyStore(state.keys, silentLogger),
-      },
-      version,
-      printQRInTerminal: false,
-      browser: ['Rafiq Platform', 'Chrome', '126.0.0'],
-      connectTimeoutMs: 60_000,
-      defaultQueryTimeoutMs: 60_000,
-      keepAliveIntervalMs: 25_000,
-      markOnlineOnConnect: false,
-      generateHighQualityLinkPreview: false,
-      logger: silentLogger,
-      syncFullHistory: false,
-    });
+    const sock = makeWASocket(this.buildSocketConfig(state, version));
 
     const session: WhatsAppSession = {
       socket: sock, channelId, status: 'connecting', retryCount: 0,
@@ -395,6 +392,63 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
     return fallback;
   }
 
+  // ── Message Retry Cache ─────────────────────────────────────────────────────
+  //
+  // ✅ FIX: "في انتظار هذه الرسالة" — WhatsApp Message Retry Protocol
+  //
+  // عندما يفشل تشفير رسالة مرسلة، واتساب يطلب من Baileys إعادة إرسالها.
+  // Baileys يستدعي `getMessage(key)` للحصول على المحتوى الأصلي وإعادة التشفير.
+  // بدون هذا الكاش → واتساب يعرض "في انتظار هذه الرسالة" للمستلم.
+  //
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /** حفظ رسالة مرسلة في الكاش للـ retry */
+  private cacheMessage(msgId: string, message: any): void {
+    // تنظيف الكاش القديم إذا تجاوز الحد
+    if (this.msgCache.size > MSG_CACHE_MAX_SIZE) {
+      const now = Date.now();
+      this.msgCache.forEach((v, k) => { if (now - v.ts > MSG_CACHE_TTL_MS) this.msgCache.delete(k); });
+    }
+    this.msgCache.set(msgId, { msg: message, ts: Date.now() });
+  }
+
+  /** استرجاع رسالة من الكاش — يُستدعى من Baileys عند طلب retry */
+  private async getMessageFromCache(key: any): Promise<any | undefined> {
+    const id = key?.id;
+    if (!id) return undefined;
+    const cached = this.msgCache.get(id);
+    if (cached) {
+      this.logger.debug(`🔄 getMessage hit: ${id}`);
+      return cached.msg;
+    }
+    this.logger.debug(`🔄 getMessage miss: ${id}`);
+    return undefined;
+  }
+
+  /** بناء إعدادات Socket المشتركة — DRY بدل تكرار الكود */
+  private buildSocketConfig(state: any, version: [number, number, number]): any {
+    return {
+      auth: {
+        creds: state.creds,
+        keys: makeCacheableSignalKeyStore(state.keys, silentLogger),
+      },
+      version,
+      printQRInTerminal: false,
+      browser: ['Rafiq Platform', 'Chrome', '126.0.0'] as [string, string, string],
+      connectTimeoutMs: 60_000,
+      defaultQueryTimeoutMs: 60_000,
+      keepAliveIntervalMs: 25_000,
+      markOnlineOnConnect: false,
+      generateHighQualityLinkPreview: false,
+      logger: silentLogger,
+      syncFullHistory: false,
+      // ✅ FIX: getMessage — حل "في انتظار هذه الرسالة"
+      getMessage: async (key: any) => this.getMessageFromCache(key),
+      // ✅ FIX: msgRetryCounterCache — يمنع retry loops (max 5 per message)
+      msgRetryCounterMap: this.msgRetryCounters,
+    };
+  }
+
   async onModuleDestroy(): Promise<void> {
     this.logger.log('Shutting down all WhatsApp sessions...');
     for (const timer of this.lidPersistTimers.values()) clearTimeout(timer);
@@ -407,6 +461,8 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
 
     await Promise.allSettled(Array.from(this.sessions.keys()).map(id => this.closeSession(id)));
     this.sessions.clear();
+    this.msgCache.clear();
+    this.msgRetryCounters.clear();
   }
 
   // ── Session Init ──────────────────────────────────────────────────────────
@@ -433,14 +489,8 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
       const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
 
       const sock = makeWASocket({
-        auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, silentLogger) },
-        version,
+        ...this.buildSocketConfig(state, version),
         printQRInTerminal: method === 'qr',
-        // ✅ FIX: phone pairing requires Ubuntu browser string (Chrome custom breaks WhatsApp protocol)
-        browser: ['Rafiq Platform', 'Chrome', '126.0.0'],
-        connectTimeoutMs: 60_000, defaultQueryTimeoutMs: 60_000,
-        keepAliveIntervalMs: 25_000, markOnlineOnConnect: false,
-        generateHighQualityLinkPreview: false, logger: silentLogger, syncFullHistory: false,
       });
 
       const session: WhatsAppSession = {
@@ -559,9 +609,12 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
     const session = this.getConnectedSession(channelId);
     const resolvedJid = this.resolveJidForSending(channelId, to, session.socket!);
     this.logger.debug(`📤 Sending text: ${to} → resolved: ${resolvedJid}`);
-    const result = await session.socket!.sendMessage(resolvedJid, { text });
+    const msgContent = { text };
+    const result = await session.socket!.sendMessage(resolvedJid, msgContent);
     const messageId = result?.key?.id;
     if (!messageId) throw new Error(`WhatsApp send failed: no messageId for ${resolvedJid}`);
+    // ✅ Cache for retry protocol
+    this.cacheMessage(messageId, { conversation: text });
     this.logger.log(`✅ Sent: messageId=${messageId} to=${resolvedJid}`);
     return { messageId };
   }
@@ -572,6 +625,8 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
     const result = await session.socket!.sendMessage(resolvedJid, { image: { url: imageUrl }, caption });
     const messageId = result?.key?.id;
     if (!messageId) throw new Error(`WhatsApp image send failed: no messageId for ${resolvedJid}`);
+    // ✅ Cache for retry protocol
+    this.cacheMessage(messageId, { imageMessage: { url: imageUrl, caption } });
     return { messageId };
   }
 
@@ -581,6 +636,8 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
     const result = await session.socket!.sendMessage(resolvedJid, { document: { url: documentUrl }, fileName, mimetype: mimeType });
     const messageId = result?.key?.id;
     if (!messageId) throw new Error(`WhatsApp document send failed: no messageId for ${resolvedJid}`);
+    // ✅ Cache for retry protocol
+    this.cacheMessage(messageId, { documentMessage: { url: documentUrl, fileName, mimetype: mimeType } });
     return { messageId };
   }
 
