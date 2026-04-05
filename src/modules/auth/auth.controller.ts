@@ -116,7 +116,7 @@ export class AuthController {
     const ip = (req.headers?.['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || '';
     const ua = req.headers?.['user-agent'] || '';
     const result = await this.authService.login(dto.email, dto.password, { ip, ua });
-    this._auditAsync(AuditAction.TENANT_LOGIN, req, result.user?.id, result.user?.email, result.user?.tenantId, { method: 'email' });
+    this._auditAsync(AuditAction.TENANT_LOGIN, req, result.user?.id, result.user?.email, (result as any).user?.tenantId, { method: 'email' });
     return result;
   }
 
@@ -137,7 +137,7 @@ export class AuthController {
       storeName: dto.storeName,
     });
     this._trackDeviceAsync(result?.user?.id, result, req);
-    this._auditAsync(AuditAction.TENANT_REGISTER, req, result.user?.id, result.user?.email, result.user?.tenantId, { storeName: dto.storeName });
+    this._auditAsync(AuditAction.TENANT_REGISTER, req, result.user?.id, result.user?.email, (result as any).user?.tenantId, { storeName: dto.storeName });
     return result;
   }
 
@@ -193,7 +193,7 @@ export class AuthController {
   async sallaCallback(@Body() dto: SallaAuthDto, @Request() req: any): Promise<LoginResponseDto> {
     const result = await this.authService.sallaAuth(dto.code, dto.state);
     this._trackDeviceAsync(result?.user?.id, result, req);
-    this._auditAsync(AuditAction.TENANT_SALLA_LOGIN, req, result.user?.id, result.user?.email, result.user?.tenantId, { method: 'salla_oauth' });
+    this._auditAsync(AuditAction.TENANT_SALLA_LOGIN, req, result.user?.id, result.user?.email, (result as any).user?.tenantId, { method: 'salla_oauth' });
     return result;
   }
 
@@ -214,7 +214,7 @@ export class AuthController {
   async zidCallback(@Body() dto: ZidAuthDto, @Request() req: any): Promise<LoginResponseDto> {
     const result = await this.authService.zidAuth(dto.code, dto.state);
     this._trackDeviceAsync(result?.user?.id, result, req);
-    this._auditAsync(AuditAction.TENANT_ZID_LOGIN, req, result.user?.id, result.user?.email, result.user?.tenantId, { method: 'zid_oauth' });
+    this._auditAsync(AuditAction.TENANT_ZID_LOGIN, req, result.user?.id, result.user?.email, (result as any).user?.tenantId, { method: 'zid_oauth' });
     return result;
   }
 
