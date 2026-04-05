@@ -307,7 +307,7 @@ export class OtpRelayService {
     if (config.notifyEmployees && config.employeePhones) {
       const template = config.employeeMsgTemplate || DEFAULT_EMPLOYEE_TEMPLATE;
       const message = this.renderTemplate(template, vars);
-      const phones = config.employeePhones.split(',').map(p => p.trim()).filter(Boolean);
+      const phones = String(config.employeePhones).split(',').map(p => p.trim().replace(/[^0-9+]/g, '')).filter(p => p.length >= 9);
 
       for (const phone of phones) {
         try {
@@ -323,12 +323,17 @@ export class OtpRelayService {
     if (config.sendCodeToCustomer && orderData?.customerPhone) {
       const template = config.customerMsgTemplate || DEFAULT_CUSTOMER_TEMPLATE;
       const message = this.renderTemplate(template, vars);
+      const phone = String(orderData.customerPhone).replace(/[^0-9+]/g, '');
 
-      try {
-        await this.whatsapp.sendTextMessage(channelId, orderData.customerPhone, message);
-        this.logger.log(`🔑 📤 OTP sent to customer: ${orderData.customerPhone.slice(-4)}`);
-      } catch (e: any) {
-        this.logger.warn(`🔑 ❌ Failed to send OTP to customer: ${e?.message}`);
+      if (phone.length >= 9) {
+        try {
+          await this.whatsapp.sendTextMessage(channelId, phone, message);
+          this.logger.log(`🔑 📤 OTP sent to customer: ${phone.slice(-4)}`);
+        } catch (e: any) {
+          this.logger.warn(`🔑 ❌ Failed to send OTP to customer: ${e?.message}`);
+        }
+      } else {
+        this.logger.warn(`🔑 ⚠️ Invalid customer phone: "${orderData.customerPhone}" — skipping`);
       }
     }
   }
@@ -342,9 +347,11 @@ export class OtpRelayService {
   }
 
   private async getAttemptCount(configId: string, orderNumber: string, username: string): Promise<number> {
-    return this.logRepo.count({
-      where: { configId, orderNumber, username, success: true } as any,
-    });
+    const where: any = { configId, orderNumber, success: true };
+    if (username) {
+      where.username = Raw(alias => `LOWER(${alias}) = LOWER(:uname)`, { uname: username });
+    }
+    return this.logRepo.count({ where });
   }
 
   private async findWhatsAppChannel(storeId: string): Promise<string | null> {
@@ -378,7 +385,7 @@ export class OtpRelayService {
     return {
       referenceId: order.reference_id,
       customerName: `${order.customer?.first_name || ''} ${order.customer?.last_name || ''}`.trim() || 'عميل',
-      customerPhone: order.customer?.mobile || order.shipping?.receiver?.phone || '',
+      customerPhone: String(order.customer?.mobile || order.shipping?.receiver?.phone || '').replace(/[^0-9+]/g, ''),
     };
   }
 
