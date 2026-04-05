@@ -233,9 +233,11 @@ export class AuditLogsController {
   @RequirePermissions(PERMISSIONS.AUDIT_READ)
   getLogs(
     @Query('actorId') actorId?: string,
+    @Query('tenantId') tenantId?: string,
     @Query('targetType') targetType?: string,
     @Query('targetId') targetId?: string,
     @Query('action') action?: string,
+    @Query('actionPrefix') actionPrefix?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('page') page = 1,
@@ -243,9 +245,11 @@ export class AuditLogsController {
   ) {
     return this.auditService.getAuditLogs({
       actorId,
+      tenantId,
       targetType,
       targetId,
       action,
+      actionPrefix,
       from: from ? new Date(from) : undefined,
       to: to ? new Date(to) : undefined,
       page: +page,
