@@ -84,7 +84,7 @@ export class TenantAuditInterceptor implements NestInterceptor {
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
     const request = context.switchToHttp().getRequest();
-    const { method, url, user, headers } = request;
+    const { method, url } = request;
 
     // Only intercept write operations
     if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') {
@@ -111,11 +111,9 @@ export class TenantAuditInterceptor implements NestInterceptor {
     return next.handle().pipe(
       tap({
         next: (responseData) => {
-          // Fire-and-forget — don't block response
-          this.logAction(request, mapping, responseData, startTime).catch(() => {});
-        },
-        error: () => {
-          // Don't log failed requests
+          this.logAction(request, mapping, responseData, startTime).catch(err =>
+            this.logger.warn(`Audit log failed: ${err?.message}`),
+          );
         },
       }),
     );
@@ -138,7 +136,6 @@ export class TenantAuditInterceptor implements NestInterceptor {
     if (actorId === 'unknown' && actorEmail === 'unknown') return;
 
     // Extract target ID from URL or response
-    const urlParts = (request.url || '').split('/').filter(Boolean);
     const uuidMatch = (request.url || '').match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
     const targetId = uuidMatch?.[1] || responseData?.id || undefined;
 
