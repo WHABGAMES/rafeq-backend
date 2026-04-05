@@ -4,6 +4,10 @@ import { Repository, DataSource } from 'typeorm';
 import { AuditLog, AuditAction } from '../entities/audit-log.entity';
 import { AdminUser } from '../entities/admin-user.entity';
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// Input Types
+// ═══════════════════════════════════════════════════════════════════════════════
+
 export interface AuditLogCreateInput {
   actor: AdminUser;
   action: AuditAction | string;
@@ -13,6 +17,25 @@ export interface AuditLogCreateInput {
   ipAddress?: string;
   userAgent?: string;
 }
+
+export interface TenantAuditInput {
+  actorId: string;
+  actorEmail: string;
+  actorRole?: string;
+  tenantId: string;
+  tenantName?: string;
+  storeName?: string;
+  action: AuditAction | string;
+  targetType?: string;
+  targetId?: string;
+  metadata?: Record<string, unknown>;
+  ipAddress?: string;
+  userAgent?: string;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Service
+// ═══════════════════════════════════════════════════════════════════════════════
 
 @Injectable()
 export class AuditService implements OnModuleInit {
@@ -27,12 +50,7 @@ export class AuditService implements OnModuleInit {
   ) {}
 
   // ─────────────────────────────────────────────────────────────────────────
-  // 🚀 على بداية التطبيق — تأكد أن جدول audit_logs موجود في قاعدة البيانات
-  //
-  //  نستخدم IF NOT EXISTS لأن:
-  //  ✅ آمن — لا يُدمّر بيانات موجودة
-  //  ✅ لا يفشل إذا الجدول موجود مسبقاً
-  //  ✅ synchronize=false لذا TypeORM لا يصنع الجداول تلقائياً
+  // Ensure audit_logs table + new columns exist
   // ─────────────────────────────────────────────────────────────────────────
   async onModuleInit(): Promise<void> {
     try {
@@ -48,23 +66,32 @@ export class AuditService implements OnModuleInit {
           metadata      JSONB        NOT NULL DEFAULT '{}',
           ip_address    VARCHAR(45),
           user_agent    TEXT,
-          created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+          created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+          tenant_id     UUID,
+          tenant_name   VARCHAR(255),
+          store_name    VARCHAR(255)
         );
       `);
 
-      // الـ Indexes — IF NOT EXISTS متوفرة في PostgreSQL 9.5+
+      // Add new columns if table existed before this update
+      await this.dataSource.query(`
+        ALTER TABLE audit_logs
+          ADD COLUMN IF NOT EXISTS tenant_id   UUID,
+          ADD COLUMN IF NOT EXISTS tenant_name VARCHAR(255),
+          ADD COLUMN IF NOT EXISTS store_name  VARCHAR(255);
+      `);
+
       await this.dataSource.query(`
         CREATE INDEX IF NOT EXISTS idx_audit_actor   ON audit_logs (actor_id);
         CREATE INDEX IF NOT EXISTS idx_audit_action  ON audit_logs (action);
         CREATE INDEX IF NOT EXISTS idx_audit_target  ON audit_logs (target_type, target_id);
         CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs (created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_audit_tenant  ON audit_logs (tenant_id);
       `);
 
-      // قواعد الحماية — تمنع التعديل والحذف على سجلات التدقيق
-      // CREATE RULE لا تدعم IF NOT EXISTS لذا نتحقق أولاً
+      // Immutability rules
       const ruleExists = await this.dataSource.query(`
-        SELECT COUNT(*) AS cnt
-        FROM pg_rules
+        SELECT COUNT(*) AS cnt FROM pg_rules
         WHERE tablename = 'audit_logs'
           AND rulename IN ('no_update_audit', 'no_delete_audit')
       `);
@@ -73,15 +100,12 @@ export class AuditService implements OnModuleInit {
         await this.dataSource.query(`
           DO $$ BEGIN
             IF NOT EXISTS (
-              SELECT 1 FROM pg_rules
-              WHERE tablename = 'audit_logs' AND rulename = 'no_update_audit'
+              SELECT 1 FROM pg_rules WHERE tablename = 'audit_logs' AND rulename = 'no_update_audit'
             ) THEN
               CREATE RULE no_update_audit AS ON UPDATE TO audit_logs DO INSTEAD NOTHING;
             END IF;
-
             IF NOT EXISTS (
-              SELECT 1 FROM pg_rules
-              WHERE tablename = 'audit_logs' AND rulename = 'no_delete_audit'
+              SELECT 1 FROM pg_rules WHERE tablename = 'audit_logs' AND rulename = 'no_delete_audit'
             ) THEN
               CREATE RULE no_delete_audit AS ON DELETE TO audit_logs DO INSTEAD NOTHING;
             END IF;
@@ -89,9 +113,8 @@ export class AuditService implements OnModuleInit {
         `);
       }
 
-      this.logger.log('✅ audit_logs table ready');
+      this.logger.log('✅ audit_logs table ready (with tenant columns)');
     } catch (err) {
-      // نُسجّل الخطأ ولكن لا نوقف التطبيق
       this.logger.error('❌ Failed to initialize audit_logs table', {
         error: err instanceof Error ? err.message : 'Unknown',
       });
@@ -99,7 +122,7 @@ export class AuditService implements OnModuleInit {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // تسجيل حدث جديد في سجل التدقيق
+  // Admin audit log (existing — backward compatible)
   // ─────────────────────────────────────────────────────────────────────────
   async log(input: AuditLogCreateInput): Promise<void> {
     try {
@@ -117,8 +140,7 @@ export class AuditService implements OnModuleInit {
 
       await this.auditLogRepository.save(log);
     } catch (err) {
-      // لا نرمي خطأ — فشل التسجيل لا يجب أن يوقف العملية الأساسية
-      this.logger.error('Failed to write audit log', {
+      this.logger.error('Failed to write admin audit log', {
         action: input.action,
         error: err instanceof Error ? err.message : 'Unknown',
       });
@@ -126,13 +148,45 @@ export class AuditService implements OnModuleInit {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // استرجاع سجلات التدقيق مع فلاتر
+  // Tenant (merchant) audit log — NEW
+  // ─────────────────────────────────────────────────────────────────────────
+  async logTenant(input: TenantAuditInput): Promise<void> {
+    try {
+      const log = this.auditLogRepository.create({
+        actorId: input.actorId,
+        actorEmail: input.actorEmail,
+        actorRole: input.actorRole || 'tenant',
+        tenantId: input.tenantId,
+        tenantName: input.tenantName,
+        storeName: input.storeName,
+        action: input.action,
+        targetType: input.targetType,
+        targetId: input.targetId,
+        metadata: input.metadata || {},
+        ipAddress: input.ipAddress,
+        userAgent: input.userAgent,
+      });
+
+      await this.auditLogRepository.save(log);
+    } catch (err) {
+      this.logger.error('Failed to write tenant audit log', {
+        action: input.action,
+        tenantId: input.tenantId,
+        error: err instanceof Error ? err.message : 'Unknown',
+      });
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Query logs — supports both admin and tenant filters
   // ─────────────────────────────────────────────────────────────────────────
   async getAuditLogs(filters: {
     actorId?: string;
+    tenantId?: string;
     targetType?: string;
     targetId?: string;
     action?: string;
+    actionPrefix?: string;
     from?: Date;
     to?: Date;
     page?: number;
@@ -146,12 +200,14 @@ export class AuditService implements OnModuleInit {
       .skip((page - 1) * limit)
       .take(Math.min(limit, 200));
 
-    if (filters.actorId)    qb.andWhere('log.actorId = :actorId',       { actorId:    filters.actorId });
-    if (filters.targetType) qb.andWhere('log.targetType = :targetType', { targetType: filters.targetType });
-    if (filters.targetId)   qb.andWhere('log.targetId = :targetId',     { targetId:   filters.targetId });
-    if (filters.action)     qb.andWhere('log.action = :action',         { action:     filters.action });
-    if (filters.from)       qb.andWhere('log.createdAt >= :from',       { from:       filters.from });
-    if (filters.to)         qb.andWhere('log.createdAt <= :to',         { to:         filters.to });
+    if (filters.actorId)      qb.andWhere('log.actorId = :actorId',       { actorId:    filters.actorId });
+    if (filters.tenantId)     qb.andWhere('log.tenantId = :tenantId',     { tenantId:   filters.tenantId });
+    if (filters.targetType)   qb.andWhere('log.targetType = :targetType', { targetType: filters.targetType });
+    if (filters.targetId)     qb.andWhere('log.targetId = :targetId',     { targetId:   filters.targetId });
+    if (filters.action)       qb.andWhere('log.action = :action',         { action:     filters.action });
+    if (filters.actionPrefix) qb.andWhere('log.action LIKE :prefix',      { prefix:     `${filters.actionPrefix}%` });
+    if (filters.from)         qb.andWhere('log.createdAt >= :from',       { from:       filters.from });
+    if (filters.to)           qb.andWhere('log.createdAt <= :to',         { to:         filters.to });
 
     const [items, total] = await qb.getManyAndCount();
     return { items, total, page, limit };
