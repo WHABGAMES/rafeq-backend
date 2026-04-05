@@ -259,7 +259,19 @@ export class AuthController {
   @ApiOperation({ summary: 'تسجيل الخروج' })
   async logout(@Request() req: any): Promise<MessageResponseDto> {
     const userId = req.user.sub || req.user.id;
-    this._auditAsync(AuditAction.TENANT_LOGOUT, req);
+    // حساب مدة الجلسة من JWT iat
+    let sessionMinutes: number | undefined;
+    try {
+      const token = req.headers?.authorization?.replace('Bearer ', '');
+      if (token) {
+        const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
+        if (payload.iat) sessionMinutes = Math.round((Date.now() / 1000 - payload.iat) / 60);
+      }
+    } catch {}
+    this._auditAsync(AuditAction.TENANT_LOGOUT, req, undefined, undefined, undefined, {
+      ...(sessionMinutes !== undefined && { sessionDuration: `${sessionMinutes} دقيقة` }),
+      ...(sessionMinutes !== undefined && { sessionMinutes }),
+    });
     await this.authService.logout(userId, req.user.jti, req.body?.refreshJti);
     return { message: 'تم تسجيل الخروج بنجاح' };
   }
