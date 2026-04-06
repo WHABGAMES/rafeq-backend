@@ -609,36 +609,54 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
     const session = this.getConnectedSession(channelId);
     const resolvedJid = this.resolveJidForSending(channelId, to, session.socket!);
     this.logger.debug(`📤 Sending text: ${to} → resolved: ${resolvedJid}`);
-    const msgContent = { text };
-    const result = await session.socket!.sendMessage(resolvedJid, msgContent);
-    const messageId = result?.key?.id;
-    if (!messageId) throw new Error(`WhatsApp send failed: no messageId for ${resolvedJid}`);
-    // ✅ Cache for retry protocol
-    this.cacheMessage(messageId, { conversation: text });
-    this.logger.log(`✅ Sent: messageId=${messageId} to=${resolvedJid}`);
-    return { messageId };
+    const startMs = Date.now();
+    try {
+      const msgContent = { text };
+      const result = await session.socket!.sendMessage(resolvedJid, msgContent);
+      const messageId = result?.key?.id;
+      if (!messageId) throw new Error(`WhatsApp send failed: no messageId for ${resolvedJid}`);
+      this.cacheMessage(messageId, { conversation: text });
+      this.logger.log(`✅ Sent: messageId=${messageId} to=${resolvedJid}`);
+      this.eventEmitter.emit('audit.whatsapp.sent', { channelId, to, messageType: 'text', messageId, durationMs: Date.now() - startMs });
+      return { messageId };
+    } catch (err: any) {
+      this.eventEmitter.emit('audit.whatsapp.failed', { channelId, to, messageType: 'text', error: err?.message, durationMs: Date.now() - startMs });
+      throw err;
+    }
   }
 
   async sendImageMessage(channelId: string, to: string, imageUrl: string, caption?: string): Promise<{ messageId: string }> {
     const session = this.getConnectedSession(channelId);
     const resolvedJid = this.resolveJidForSending(channelId, to, session.socket!);
-    const result = await session.socket!.sendMessage(resolvedJid, { image: { url: imageUrl }, caption });
-    const messageId = result?.key?.id;
-    if (!messageId) throw new Error(`WhatsApp image send failed: no messageId for ${resolvedJid}`);
-    // ✅ Cache for retry protocol
-    this.cacheMessage(messageId, { imageMessage: { url: imageUrl, caption } });
-    return { messageId };
+    const startMs = Date.now();
+    try {
+      const result = await session.socket!.sendMessage(resolvedJid, { image: { url: imageUrl }, caption });
+      const messageId = result?.key?.id;
+      if (!messageId) throw new Error(`WhatsApp image send failed: no messageId for ${resolvedJid}`);
+      this.cacheMessage(messageId, { imageMessage: { url: imageUrl, caption } });
+      this.eventEmitter.emit('audit.whatsapp.sent', { channelId, to, messageType: 'image', messageId, durationMs: Date.now() - startMs });
+      return { messageId };
+    } catch (err: any) {
+      this.eventEmitter.emit('audit.whatsapp.failed', { channelId, to, messageType: 'image', error: err?.message, durationMs: Date.now() - startMs });
+      throw err;
+    }
   }
 
   async sendDocumentMessage(channelId: string, to: string, documentUrl: string, fileName: string, mimeType: string): Promise<{ messageId: string }> {
     const session = this.getConnectedSession(channelId);
     const resolvedJid = this.resolveJidForSending(channelId, to, session.socket!);
-    const result = await session.socket!.sendMessage(resolvedJid, { document: { url: documentUrl }, fileName, mimetype: mimeType });
-    const messageId = result?.key?.id;
-    if (!messageId) throw new Error(`WhatsApp document send failed: no messageId for ${resolvedJid}`);
-    // ✅ Cache for retry protocol
-    this.cacheMessage(messageId, { documentMessage: { url: documentUrl, fileName, mimetype: mimeType } });
-    return { messageId };
+    const startMs = Date.now();
+    try {
+      const result = await session.socket!.sendMessage(resolvedJid, { document: { url: documentUrl }, fileName, mimetype: mimeType });
+      const messageId = result?.key?.id;
+      if (!messageId) throw new Error(`WhatsApp document send failed: no messageId for ${resolvedJid}`);
+      this.cacheMessage(messageId, { documentMessage: { url: documentUrl, fileName, mimetype: mimeType } });
+      this.eventEmitter.emit('audit.whatsapp.sent', { channelId, to, messageType: 'document', messageId, durationMs: Date.now() - startMs });
+      return { messageId };
+    } catch (err: any) {
+      this.eventEmitter.emit('audit.whatsapp.failed', { channelId, to, messageType: 'document', error: err?.message, durationMs: Date.now() - startMs });
+      throw err;
+    }
   }
 
   // ── Connection Update Handler ─────────────────────────────────────────────
@@ -667,6 +685,7 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
       if (user?.id) session.phoneNumber = user.id.split(':')[0].split('@')[0];
       this.logger.log(`✅ Connected: ${channelId}, phone: ${session.phoneNumber}`);
       this.eventEmitter.emit('whatsapp.connected', { channelId, phoneNumber: session.phoneNumber });
+      this.eventEmitter.emit('audit.whatsapp.session_connected', { channelId, phoneNumber: session.phoneNumber });
 
       try {
         // ✅ FIX: كشف تغيير الرقم — لو الرقم تغيّر نحذف المحادثات القديمة
