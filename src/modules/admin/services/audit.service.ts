@@ -22,7 +22,7 @@ export interface TenantAuditInput {
   actorId: string;
   actorEmail: string;
   actorRole?: string;
-  tenantId: string;
+  tenantId?: string;
   tenantName?: string;
   storeName?: string;
   action: AuditAction | string;
