@@ -36,6 +36,7 @@ import { SallaWebhooksService } from './salla-webhooks.service';
 import { SallaOAuthService, SallaAppAuthorizeData } from '../stores/salla-oauth.service';
 import { SallaWebhookDto, SallaWebhookJobDto } from './dto/salla-webhook.dto';
 import { WebhookIpGuard } from './guards/webhook-ip.guard';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 
 @ApiTags('Webhooks - Salla')
 @Controller('webhooks/salla')
@@ -49,6 +50,7 @@ export class SallaWebhooksController {
     private readonly webhooksService: SallaWebhooksService,
     private readonly sallaOAuthService: SallaOAuthService,
     private readonly configService: ConfigService,
+    private readonly eventEmitter: EventEmitter2,
   ) {
     this.isProduction = this.configService.get<string>('NODE_ENV') === 'production';
 
@@ -186,6 +188,16 @@ export class SallaWebhooksController {
       merchant: payload.merchant,
       duration: `${Date.now() - startTime}ms`,
       signatureVerified: signatureValid,
+    });
+
+    // 📋 Audit — webhook received
+    this.eventEmitter.emit('audit.webhook.received', {
+      platform: 'salla',
+      event: payload.event,
+      merchantId: payload.merchant,
+      deliveryId: deliveryId,
+      durationMs: Date.now() - startTime,
+      signatureValid,
     });
 
     return { success: true, message: 'Webhook received', jobId };
