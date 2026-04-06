@@ -93,6 +93,32 @@ export enum AuditAction {
   // ── Staff ──
   TENANT_STAFF_ADDED = 'tenant.staff_added',
   TENANT_STAFF_REMOVED = 'tenant.staff_removed',
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Security Events
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  SECURITY_LOGIN_FAILED = 'security.login_failed',
+  SECURITY_ACCOUNT_LOCKED = 'security.account_locked',
+  SECURITY_PASSWORD_RESET_REQUESTED = 'security.password_reset_requested',
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // WhatsApp Message Events
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  WHATSAPP_MESSAGE_SENT = 'whatsapp.message_sent',
+  WHATSAPP_MESSAGE_FAILED = 'whatsapp.message_failed',
+  WHATSAPP_SESSION_CONNECTED = 'whatsapp.session_connected',
+  WHATSAPP_SESSION_DISCONNECTED = 'whatsapp.session_disconnected',
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Webhook Events
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  WEBHOOK_RECEIVED = 'webhook.received',
+  WEBHOOK_PROCESSED = 'webhook.processed',
+  WEBHOOK_FAILED = 'webhook.failed',
+  WEBHOOK_SIGNATURE_INVALID = 'webhook.signature_invalid',
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
