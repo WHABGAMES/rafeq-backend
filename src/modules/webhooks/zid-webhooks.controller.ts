@@ -39,6 +39,7 @@ import { ConfigService } from '@nestjs/config';
 import { ZidWebhooksService } from './zid-webhooks.service';
 import { ZidWebhookJobDto } from './dto/zid-webhook.dto';
 import { WebhookIpGuard } from './guards/webhook-ip.guard';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 
 @ApiTags('Webhooks - Zid')
 @Controller('webhooks/zid')
@@ -50,6 +51,7 @@ export class ZidWebhooksController {
   constructor(
     private readonly webhooksService: ZidWebhooksService,
     private readonly configService: ConfigService,
+    private readonly eventEmitter: EventEmitter2,
   ) {
     this.webhookSecret =
       this.configService.get<string>('ZID_WEBHOOK_SECRET') ||
@@ -193,6 +195,13 @@ export class ZidWebhooksController {
       orderId: body.id,
       orderStatus: body.order_status,
       duration: `${Date.now() - startTime}ms`,
+    });
+
+    this.eventEmitter.emit('audit.webhook.received', {
+      platform: 'zid',
+      event: detectedEvent,
+      merchantId: body.store_id,
+      durationMs: Date.now() - startTime,
     });
 
     return { success: true, message: 'Webhook received', jobId };
