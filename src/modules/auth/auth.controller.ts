@@ -49,6 +49,7 @@ import { AuthService } from './auth.service';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { AuditService } from '../admin/services/audit.service';
 import { AuditAction } from '../admin/entities/audit-log.entity';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 
 import {
   LoginDto,
@@ -80,6 +81,7 @@ export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly auditService: AuditService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   private maskEmail(email: string): string {
@@ -115,9 +117,24 @@ export class AuthController {
     this.logger.log(`Login attempt: ${this.maskEmail(dto.email)}`);
     const ip = (req.headers?.['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || '';
     const ua = req.headers?.['user-agent'] || '';
-    const result = await this.authService.login(dto.email, dto.password, { ip, ua });
-    this._auditAsync(AuditAction.TENANT_LOGIN, req, result.user?.id, result.user?.email, (result as any).user?.tenantId, { method: 'email' });
-    return result;
+    try {
+      const result = await this.authService.login(dto.email, dto.password, { ip, ua });
+      this._auditAsync(AuditAction.TENANT_LOGIN, req, result.user?.id, result.user?.email, (result as any).user?.tenantId, { method: 'email' });
+      return result;
+    } catch (error: any) {
+      // 🔐 تسجيل محاولات الدخول الفاشلة
+      const reason = error?.message?.includes('قفل') ? 'account_locked'
+        : error?.message?.includes('غير مفعّل') ? 'account_inactive'
+        : error?.message?.includes('مسجّل عبر') ? 'no_password'
+        : 'wrong_password';
+      this.eventEmitter.emit('audit.login.failed', {
+        email: dto.email,
+        reason,
+        ipAddress: ip,
+        userAgent: ua,
+      });
+      throw error;
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -315,8 +332,10 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'طلب استعادة كلمة المرور' })
   @ApiResponse({ status: 200, description: 'تم إرسال رابط الاستعادة (إذا كان الإيميل مسجلاً)' })
-  async forgotPassword(@Body() dto: ForgotPasswordDto): Promise<MessageResponseDto> {
+  async forgotPassword(@Body() dto: ForgotPasswordDto, @Request() req: any): Promise<MessageResponseDto> {
     this.logger.log(`Forgot password request: ${this.maskEmail(dto.email)}`);
+    const ip = (req.headers?.['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || '';
+    this.eventEmitter.emit('audit.password.reset_requested', { email: dto.email, ipAddress: ip, userAgent: req.headers?.['user-agent'] || '' });
     return this.authService.forgotPassword(dto.email);
   }
 
@@ -401,7 +420,7 @@ export class AuthController {
     const ip = (req.headers?.['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || '';
     const ua = req.headers?.['user-agent'] || '';
     this.auditService.logTenant({
-      actorId: userId || req.user?.sub || req.user?.id || 'unknown',
+      actorId: userId || req.user?.sub || req.user?.id || '00000000-0000-0000-0000-000000000000',
       actorEmail: email || req.user?.email || 'unknown',
       tenantId: tenantId || req.user?.tenantId || undefined,
       action,
