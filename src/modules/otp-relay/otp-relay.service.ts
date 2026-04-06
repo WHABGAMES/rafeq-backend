@@ -127,6 +127,21 @@ export class OtpRelayService {
     const safe = pickSafe(data);
     if (safe.emailPassword) safe.emailPassword = encrypt(safe.emailPassword) || '';
     else delete safe.emailPassword;
+
+    // ✅ FIX: عند تغيير المنصة → إعادة تعيين الإعدادات للـ preset الجديد
+    if (safe.platform && safe.platform !== config.platform) {
+      const preset = PLATFORM_PRESETS[safe.platform];
+      if (preset) {
+        this.logger.log(`🔄 Platform changed: ${config.platform} → ${safe.platform} — resetting to preset`);
+        safe.senderFilter = safe.senderFilter || preset.senderEmail;
+        safe.otpRegex = preset.otpRegex;
+        safe.otpLength = preset.otpLength;
+        safe.needsUsername = preset.needsUsername;
+        safe.usernameLabel = preset.usernameLabel;
+        safe.usernameRegex = preset.usernameRegex;
+      }
+    }
+
     Object.assign(config, safe);
     return this.configRepo.save(config);
   }
@@ -489,7 +504,7 @@ export class OtpRelayService {
             this.logger.log(`🔑 UID=${uid} ✅ user: "${emailUser}"`);
           }
 
-          const code = this.extractCode(textBody, fullBody, otpRegexStr, emailUser);
+          const code = this.extractCode(textBody, fullBody, otpRegexStr, emailUser, config.otpLength);
           if (code) {
             this.safeClose(imap);
             this.logger.log(`🔑 ✅ Found: UID=${uid}, user="${emailUser}", code=***${code.slice(-2)}`);
@@ -512,11 +527,13 @@ export class OtpRelayService {
     }
   }
 
-  private extractCode(textBody: string, fullBody: string, regex: string, username: string | null): string | null {
+  private extractCode(textBody: string, fullBody: string, regex: string, username: string | null, expectedLength?: number): string | null {
     for (const body of [textBody, fullBody]) {
       const re = new RegExp(regex, 'g'); let m: RegExpExecArray | null;
       while ((m = re.exec(body)) !== null) {
         const c = m[1];
+        // ✅ FIX: تحقق من طول الكود إذا محدد
+        if (expectedLength && expectedLength > 0 && c.length !== expectedLength) continue;
         if (!username) return c;
         if (username.toLowerCase().includes(c.toLowerCase())) continue;
         if (/^\d+$/.test(c)) continue;
