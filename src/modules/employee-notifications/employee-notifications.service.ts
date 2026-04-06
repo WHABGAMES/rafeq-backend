@@ -316,6 +316,7 @@ export class EmployeeNotificationsService {
                 message: notification.message,
                 actionUrl: notification.actionUrl,
                 priority: rule.priority,
+                tenantId: context.tenantId,
               },
               {
                 priority: rule.priority,
