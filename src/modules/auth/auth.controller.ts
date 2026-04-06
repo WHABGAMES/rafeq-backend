@@ -403,12 +403,12 @@ export class AuthController {
     this.auditService.logTenant({
       actorId: userId || req.user?.sub || req.user?.id || 'unknown',
       actorEmail: email || req.user?.email || 'unknown',
-      tenantId: tenantId || req.user?.tenantId || '',
+      tenantId: tenantId || req.user?.tenantId || undefined,
       action,
       targetType: 'auth',
       metadata: meta || {},
       ipAddress: ip,
       userAgent: ua,
-    }).catch(() => {});
+    }).catch(err => this.logger.warn(`Audit log failed: ${err?.message}`));
   }
 }
