@@ -66,6 +66,7 @@ export interface LoginResult {
     avatar?: string;
     authProvider?: string;
     needsPassword?: boolean;
+    tenantId?: string;
   };
 }
 
@@ -340,6 +341,7 @@ export class AuthService implements OnModuleInit {
         role: user.role,
         avatar: user.avatar,
         authProvider: user.authProvider,
+        tenantId: user.tenantId,
       },
     };
   }
@@ -864,6 +866,7 @@ export class AuthService implements OnModuleInit {
         avatar: user.avatar,
         authProvider: user.authProvider,
         needsPassword: !user.password,
+        tenantId: user.tenantId,
       },
     };
   }
@@ -1137,6 +1140,7 @@ export class AuthService implements OnModuleInit {
         role: savedUser.role,
         avatar: savedUser.avatar,
         authProvider: AuthProvider.LOCAL,
+        tenantId: savedUser.tenantId,
       },
     };
   }
