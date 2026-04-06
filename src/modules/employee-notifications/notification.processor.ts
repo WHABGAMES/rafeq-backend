@@ -21,7 +21,7 @@ import { NotificationStatus } from './entities/employee-notification.entity';
 // ✅ خدمات الإرسال الفعلية
 import { MailService } from '../mail/mail.service';
 import { WhatsAppBaileysService } from '../channels/whatsapp/whatsapp-baileys.service';
-import { Channel, ChannelStatus } from '../channels/entities/channel.entity';
+import { Channel, ChannelStatus, ChannelType } from '../channels/entities/channel.entity';
 
 // ═══════════════════════════════════════════════════════════
 // Types
@@ -175,15 +175,28 @@ export class NotificationProcessor extends WorkerHost {
       return; // لا ترمي خطأ — لا حاجة لإعادة المحاولة
     }
 
-    // البحث عن قناة واتساب متصلة
-    const channel = await this.channelRepository.findOne({
-      where: { status: ChannelStatus.CONNECTED },
-      order: { createdAt: 'DESC' },
-    });
+    // 🔐 CRITICAL: البحث عن قناة واتساب متصلة تابعة لنفس الـ tenant فقط
+    // بدون هذا الفلتر → إشعارات تاجر A تُرسل من رقم تاجر B!
+    if (!data.tenantId) {
+      this.logger.error(`❌ CRITICAL: No tenantId in notification job ${data.notificationId} — refusing to send to prevent cross-tenant leak`);
+      throw new Error('Missing tenantId — cannot determine which WhatsApp channel to use');
+    }
+
+    const channel = await this.channelRepository
+      .createQueryBuilder('ch')
+      .innerJoin('ch.store', 's')
+      .where('ch.status = :status', { status: ChannelStatus.CONNECTED })
+      .andWhere('ch.type = :type', { type: ChannelType.WHATSAPP_QR })
+      .andWhere('s.tenantId = :tenantId', { tenantId: data.tenantId })
+      .orderBy('ch.createdAt', 'DESC')
+      .getOne();
 
     if (!channel) {
-      throw new Error('No connected WhatsApp channel found');
+      this.logger.warn(`⚠️ No connected WhatsApp QR channel for tenant ${data.tenantId} — notification ${data.notificationId} skipped`);
+      throw new Error(`No connected WhatsApp channel found for tenant ${data.tenantId}`);
     }
+
+    this.logger.debug(`🔐 Tenant-isolated channel resolved: ${channel.id} for tenant ${data.tenantId}`);
 
     // تنظيف الرقم
     const phone = data.employeePhone.replace(/[^0-9]/g, '');
