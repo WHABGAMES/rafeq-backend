@@ -95,8 +95,8 @@ export class OtpPublicController {
   }
 
   @Post(':slug/compensate') @HttpCode(200)
-  compensate(@Param('slug') slug: string, @Body() b: { orderNumber: string; username?: string }, @Req() r: any) {
+  compensate(@Param('slug') slug: string, @Body() b: { orderNumber: string; username?: string; reason?: string }, @Req() r: any) {
     const ip = r.headers['x-forwarded-for']?.split(',')[0] || r.ip || 'unknown';
-    return this.inventorySvc.requestCompensation(slug, b.orderNumber, b.username || '', ip);
+    return this.inventorySvc.requestCompensation(slug, b.orderNumber, b.username || '', b.reason || '', ip);
   }
 }
