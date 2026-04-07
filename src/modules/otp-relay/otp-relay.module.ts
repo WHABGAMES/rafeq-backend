@@ -6,6 +6,7 @@ import { Store } from '../stores/entities/store.entity';
 import { Channel } from '../channels/entities/channel.entity';
 import { OtpRelayService } from './otp-relay.service';
 import { OtpInventoryService } from './otp-inventory.service';
+import { TelegramOtpClientService } from './telegram-otp-client.service';
 import { OtpRelayController, OtpPublicController } from './otp-relay.controller';
 import { StoresModule } from '../stores/stores.module';
 import { ChannelsModule } from '../channels/channels.module';
@@ -17,7 +18,7 @@ import { ChannelsModule } from '../channels/channels.module';
     ChannelsModule,
   ],
   controllers: [OtpRelayController, OtpPublicController],
-  providers: [OtpRelayService, OtpInventoryService],
-  exports: [OtpRelayService, OtpInventoryService],
+  providers: [OtpRelayService, OtpInventoryService, TelegramOtpClientService],
+  exports: [OtpRelayService, OtpInventoryService, TelegramOtpClientService],
 })
 export class OtpRelayModule {}
