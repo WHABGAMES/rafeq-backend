@@ -114,6 +114,7 @@ export class OtpRelayService {
       safe.senderFilter = safe.senderFilter || preset.senderEmail;
       safe.otpRegex = safe.otpRegex || preset.otpRegex;
       safe.otpLength = safe.otpLength || preset.otpLength;
+      if (preset.freshnessMinutes) safe.freshnessMinutes = preset.freshnessMinutes;
       safe.needsUsername = preset.needsUsername;
       safe.usernameLabel = safe.usernameLabel || preset.usernameLabel;
       safe.usernameRegex = safe.usernameRegex || preset.usernameRegex;
@@ -142,6 +143,7 @@ export class OtpRelayService {
         safe.senderFilter = preset.senderEmail || '';
         safe.otpRegex = preset.otpRegex;
         safe.otpLength = preset.otpLength;
+        if (preset.freshnessMinutes) safe.freshnessMinutes = preset.freshnessMinutes;
         safe.needsUsername = preset.needsUsername;
         safe.usernameLabel = preset.usernameLabel;
         safe.usernameRegex = preset.usernameRegex;
@@ -281,20 +283,20 @@ export class OtpRelayService {
         if (!c.telegramBotFlowId) {
           log.errorMsg = 'telegram bot not configured';
           await this.saveFailLog(log, c.id, start);
-          throw new BadRequestException('لم يتم تحديد بوت Telegram. تواصل مع صاحب المتجر.');
+          throw new BadRequestException('يوجد خلل في الإعدادات. تواصل مع الدعم.');
         }
         // ── Telegram Bot method ──
         if (!this.telegramOtp?.isAvailable()) {
           log.errorMsg = 'telegram client not available';
           await this.saveFailLog(log, c.id, start);
-          throw new BadRequestException('خدمة Telegram غير متاحة حالياً. حاول لاحقاً.');
+          throw new BadRequestException('يوجد خلل مؤقت. حاول لاحقاً أو تواصل مع الدعم.');
         }
 
         const flowDef = PREDEFINED_BOT_FLOWS[c.telegramBotFlowId];
         if (!flowDef) {
           log.errorMsg = `unknown flow: ${c.telegramBotFlowId}`;
           await this.saveFailLog(log, c.id, start);
-          throw new BadRequestException('إعدادات البوت غير صحيحة');
+          throw new BadRequestException('يوجد خلل في الإعدادات. تواصل مع الدعم.');
         }
 
         const email = username; // في Telegram method، اليوزرنيم = الإيميل
@@ -327,6 +329,11 @@ export class OtpRelayService {
           log.errorMsg = `username mismatch: "${username}"`;
           await this.saveFailLog(log, c.id, start);
           throw new BadRequestException('اسم المستخدم غير مطابق للحساب. تأكد من اسم المستخدم وحاول مرة أخرى.');
+        }
+        if (result.reason === 'telegram_bot_failed') {
+          log.errorMsg = `telegram bot failed`;
+          await this.saveFailLog(log, c.id, start);
+          throw new BadRequestException('يوجد خلل في استخراج الكود. تواصل مع الدعم.');
         }
         log.errorMsg = `no code (${result.reason || 'unknown'})`;
         await this.saveFailLog(log, c.id, start);
