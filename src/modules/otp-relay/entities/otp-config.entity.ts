@@ -83,6 +83,8 @@ export class OtpConfig extends BaseEntity {
   // إشعار الموظفين عند طلب رمز تحقق
   @Column({ name: 'notify_employees', type: 'boolean', default: false }) notifyEmployees: boolean;
   @Column({ name: 'employee_phones', type: 'text', nullable: true, comment: 'أرقام هواتف الموظفين مفصولة بفاصلة (966XXXXXXXXX)' }) employeePhones?: string;
+
+  @Column({ name: 'employee_emails', type: 'text', nullable: true, comment: 'إيميلات الموظفين مفصولة بفاصلة' }) employeeEmails?: string;
   @Column({ name: 'employee_msg_template', type: 'text', nullable: true }) employeeMsgTemplate?: string;
 
   // إرسال الكود للعميل عبر واتساب
