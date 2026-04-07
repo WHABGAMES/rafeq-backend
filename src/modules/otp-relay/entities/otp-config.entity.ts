@@ -104,6 +104,9 @@ export class OtpConfig extends BaseEntity {
   @Column({ name: 'compensation_enabled', type: 'boolean', default: false, comment: 'تفعيل خدمة التعويضات' })
   compensationEnabled: boolean;
 
+  @Column({ name: 'compensation_method', type: 'varchar', length: 20, default: 'auto', comment: 'manual | auto' })
+  compensationMethod: string;
+
   @Column({ name: 'max_compensations_per_order', type: 'integer', default: 1, comment: 'عدد التعويضات المسموحة لكل طلب' })
   maxCompensationsPerOrder: number;
 
