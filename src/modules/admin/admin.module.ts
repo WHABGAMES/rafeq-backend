@@ -69,6 +69,10 @@ import { AdminInboxController } from './controllers/admin-inbox.controller';
 // ✅ NEW: Maintenance Controllers
 import { MaintenancePublicController, MaintenanceAdminController } from './controllers/maintenance.controller';
 
+// ✅ NEW: Telegram OTP Admin
+import { AdminTelegramController } from './controllers/admin-telegram.controller';
+import { OtpRelayModule } from '../otp-relay/otp-relay.module';
+
 // ─── [C-2] Startup Validation ─────────────────────────────────────────────────
 // يُنفَّذ قبل أي شيء عند تحميل الـ module
 const jwtSecret = process.env.ADMIN_JWT_SECRET || process.env.JWT_SECRET;
@@ -148,6 +152,9 @@ if (!jwtSecret) {
 
     // ✅ NEW: InboxModule — يوفر InboxService لصندوق رسائل الأدمن
     InboxModule,
+
+    // ✅ NEW: OtpRelayModule — يوفر TelegramOtpClientService لإعدادات Telegram
+    OtpRelayModule,
   ],
 
   controllers: [
@@ -165,6 +172,8 @@ if (!jwtSecret) {
     // ✅ NEW: نظام الصيانة الجزئي
     MaintenancePublicController,
     MaintenanceAdminController,
+    // ✅ NEW: إعدادات Telegram OTP
+    AdminTelegramController,
   ],
 
   providers: [
