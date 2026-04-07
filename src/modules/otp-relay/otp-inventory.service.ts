@@ -193,13 +193,14 @@ export class OtpInventoryService {
     item.assignedAt = new Date();
     await this.inventoryRepo.save(item);
 
-    let customerName: string | undefined;
-    let customerPhone: string | undefined;
-    try {
-      const orderData = await this.getOrderInfo(config.storeId, orderNumber);
-      customerName = orderData?.customerName;
-      customerPhone = orderData?.customerPhone;
-    } catch {}
+    // Reuse customerName/customerPhone from above (already fetched before method branch)
+    if (!customerName && !customerPhone) {
+      try {
+        const orderData = await this.getOrderInfo(config.storeId, orderNumber);
+        customerName = orderData?.customerName;
+        customerPhone = orderData?.customerPhone;
+      } catch {}
+    }
 
     const compensation = this.compensationRepo.create({
       configId: config.id, tenantId: config.tenantId, storeId: config.storeId,
