@@ -344,7 +344,7 @@ export const PREDEFINED_BOT_FLOWS: Record<string, {
   netflix_household: {
     label: 'Netflix HouseHold',
     description: 'بوت استخراج كود Netflix + رابط التلفاز',
-    botUsername: 'NetflixHouseHoldBot',
+    botUsername: 'ZkaHousebot',
     buildFlow: (email: string): BotFlowStep[] => [
       // أول مرة: /start يبدأ المحادثة — لو المحادثة موجودة مسبقاً ما يأثر
       { action: 'send_message', text: '/start', delayAfter: 2000 },
