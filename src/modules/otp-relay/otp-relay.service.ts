@@ -24,7 +24,7 @@ const IMAP_HOSTS: Record<string, string> = {
 interface ExtractResult {
   code: string | null;
   emailUsername: string | null;
-  reason?: 'no_email' | 'username_mismatch' | 'too_old' | 'no_code';
+  reason?: 'no_email' | 'username_mismatch' | 'too_old' | 'no_code' | 'telegram_bot_failed';
 }
 
 interface OrderData {
