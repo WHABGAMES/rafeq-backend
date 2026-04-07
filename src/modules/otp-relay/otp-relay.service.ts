@@ -60,7 +60,7 @@ const SAFE_FIELDS = new Set([
   'emailHost', 'emailPort', 'emailUser', 'emailPassword', 'emailTls',
   'senderFilter', 'subjectFilter', 'otpRegex', 'otpLength',
   'freshnessMinutes', 'verifyOrder', 'rateLimit', 'isActive', 'usernameRegex',
-  'notifyEmployees', 'employeePhones', 'employeeMsgTemplate',
+  'notifyEmployees', 'employeePhones', 'employeeEmails', 'employeeMsgTemplate',
   'sendCodeToCustomer', 'customerMsgTemplate',
   'maxCodesPerOrder',
   'otpMethod', 'telegramBotFlowId',
