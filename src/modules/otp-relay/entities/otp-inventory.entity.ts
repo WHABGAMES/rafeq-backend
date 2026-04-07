@@ -95,6 +95,16 @@ export class OtpCompensation {
   @Column({ name: 'client_ip', type: 'varchar', length: 50, nullable: true })
   clientIp?: string;
 
+  // ── Method & Status ──
+  @Column({ type: 'varchar', length: 20, default: 'auto', comment: 'manual | auto' })
+  method: string;
+
+  @Column({ type: 'varchar', length: 20, default: 'completed', comment: 'pending | completed | rejected' })
+  status: string;
+
+  @Column({ type: 'text', nullable: true, comment: 'سبب طلب التعويض (للطريقة اليدوية)' })
+  reason?: string;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 }
