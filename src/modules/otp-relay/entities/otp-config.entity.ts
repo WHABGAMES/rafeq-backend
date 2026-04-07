@@ -10,11 +10,11 @@ export enum OtpPlatform {
 
 export const PLATFORM_PRESETS: Record<string, {
   label: string; icon: string; senderEmail: string;
-  otpRegex: string; otpLength: number; needsUsername: boolean; usernameLabel: string;
+  otpRegex: string; otpLength: number; freshnessMinutes?: number; needsUsername: boolean; usernameLabel: string;
   usernameRegex: string;
 }> = {
-  steam: { label: 'Steam', icon: '🎮', senderEmail: 'noreply@steampowered.com', otpRegex: '([A-Z0-9]{5})', otpLength: 5, needsUsername: true, usernameLabel: 'اسم المستخدم (Steam)', usernameRegex: '^([A-Za-z0-9_.-]+),' },
-  netflix: { label: 'Netflix', icon: '🎬', senderEmail: 'info@account.netflix.com', otpRegex: '(\\d{4,6})', otpLength: 4, needsUsername: false, usernameLabel: '', usernameRegex: '' },
+  steam: { label: 'Steam', icon: '🎮', senderEmail: 'noreply@steampowered.com', otpRegex: '([A-Z0-9]{5})', otpLength: 5, freshnessMinutes: 5, needsUsername: true, usernameLabel: 'اسم المستخدم (Steam)', usernameRegex: '^([A-Za-z0-9_.-]+),' },
+  netflix: { label: 'Netflix', icon: '🎬', senderEmail: 'info@account.netflix.com', otpRegex: '(\\d{4,6})', otpLength: 4, freshnessMinutes: 15, needsUsername: false, usernameLabel: '', usernameRegex: '' },
   gmail: { label: 'Gmail', icon: '📧', senderEmail: 'accounts.google.com', otpRegex: '(\\d{6})', otpLength: 6, needsUsername: false, usernameLabel: '', usernameRegex: '' },
   hotmail: { label: 'Hotmail', icon: '📨', senderEmail: 'accountprotection.microsoft.com', otpRegex: '(\\d{6,8})', otpLength: 6, needsUsername: false, usernameLabel: '', usernameRegex: '' },
   outlook: { label: 'Outlook', icon: '📬', senderEmail: 'accountprotection.microsoft.com', otpRegex: '(\\d{6,8})', otpLength: 6, needsUsername: false, usernameLabel: '', usernameRegex: '' },
