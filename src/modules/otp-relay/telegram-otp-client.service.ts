@@ -144,11 +144,25 @@ export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
 
       for (let i = 0; i < flow.length; i++) {
         const step = flow[i];
+        const nextStep = flow[i + 1];
 
         switch (step.action) {
           case 'send_message':
-            await this.client.sendMessage(botEntity, { message: step.text! });
-            this.logger.debug(`  [${i + 1}] sent: "${step.text}"`);
+            // ✅ FIX: إذا الخطوة التالية wait_response → جهّز المستمع قبل الإرسال
+            if (nextStep?.action === 'wait_response') {
+              const responsePromise = this.waitForBotResponse(botUsername, nextStep.timeout || 15000);
+              await this.client.sendMessage(botEntity, { message: step.text! });
+              this.logger.debug(`  [${i + 1}] sent: "${step.text}"`);
+              // انتظر الرد (المستمع جاهز من قبل الإرسال)
+              if (step.delayAfter) await this.sleep(step.delayAfter);
+              lastResponse = await responsePromise;
+              if (!lastResponse) return { success: false, error: `Timeout waiting for bot after: "${step.text}"` };
+              this.logger.debug(`  [${i + 2}] received: ${(lastResponse.text || '').slice(0, 50)}...`);
+              i++; // تخطّي الـ wait_response لأنه تم
+            } else {
+              await this.client.sendMessage(botEntity, { message: step.text! });
+              this.logger.debug(`  [${i + 1}] sent: "${step.text}"`);
+            }
             break;
 
           case 'wait_response':
@@ -161,9 +175,22 @@ export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
 
           case 'click_button':
             if (!lastResponse) return { success: false, error: 'No message to click button on' };
-            const clicked = await this.clickButton(botEntity, lastResponse, step.buttonText!);
-            if (!clicked) return { success: false, error: `Button "${step.buttonText}" not found` };
-            this.logger.debug(`  [${i + 1}] clicked: "${step.buttonText}"`);
+            // ✅ FIX: جهّز المستمع قبل الضغط
+            if (nextStep?.action === 'wait_response') {
+              const responsePromise = this.waitForBotResponse(botUsername, nextStep.timeout || 15000);
+              const clicked = await this.clickButton(botEntity, lastResponse, step.buttonText!);
+              if (!clicked) return { success: false, error: `Button "${step.buttonText}" not found` };
+              this.logger.debug(`  [${i + 1}] clicked: "${step.buttonText}"`);
+              if (step.delayAfter) await this.sleep(step.delayAfter);
+              lastResponse = await responsePromise;
+              if (!lastResponse) return { success: false, error: `Timeout waiting for bot after clicking: "${step.buttonText}"` };
+              this.logger.debug(`  [${i + 2}] received: ${(lastResponse.text || '').slice(0, 50)}...`);
+              i++; // تخطّي الـ wait_response
+            } else {
+              const clicked = await this.clickButton(botEntity, lastResponse, step.buttonText!);
+              if (!clicked) return { success: false, error: `Button "${step.buttonText}" not found` };
+              this.logger.debug(`  [${i + 1}] clicked: "${step.buttonText}"`);
+            }
             break;
 
           case 'extract_code':
@@ -177,9 +204,9 @@ export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
             return { success: false, error: 'Code not found in response', fullResponse: lastResponse.text };
         }
 
-        // Rate limit: delay between steps
-        if (i < flow.length - 1 && (step.action as string) !== 'extract_code') {
-          await this.sleep(step.delayAfter || 2000);
+        // Rate limit: delay between steps (only if not already handled above)
+        if (step.action !== 'send_message' && step.action !== 'click_button' && i < flow.length - 1 && (step.action as string) !== 'extract_code') {
+          await this.sleep(step.delayAfter || 1000);
         }
       }
 
