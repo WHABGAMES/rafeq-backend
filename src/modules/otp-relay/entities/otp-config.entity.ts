@@ -93,6 +93,13 @@ export class OtpConfig extends BaseEntity {
   // عدد مرات استخراج الكود لكل طلب — 0 = بلا حد
   @Column({ name: 'max_codes_per_order', type: 'integer', default: 1 }) maxCodesPerOrder: number;
 
+  // ═══ OTP Method — طريقة استخراج الكود ═══════════════════
+  @Column({ name: 'otp_method', type: 'varchar', length: 20, default: 'email', comment: 'email | telegram_bot' })
+  otpMethod: string;
+
+  @Column({ name: 'telegram_bot_flow_id', type: 'varchar', length: 50, nullable: true, comment: 'معرّف flow البوت (مثل: netflix_household)' })
+  telegramBotFlowId?: string;
+
   // ═══ Compensation System — نظام التعويضات ═══════════════
   @Column({ name: 'compensation_enabled', type: 'boolean', default: false, comment: 'تفعيل خدمة التعويضات' })
   compensationEnabled: boolean;
