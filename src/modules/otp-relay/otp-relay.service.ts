@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-var-requires */
-import { Injectable, Logger, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, ForbiddenException, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, MoreThan, Raw } from 'typeorm';
 import { OtpConfig, OtpRequestLog, PLATFORM_PRESETS } from './entities/otp-config.entity';
@@ -8,6 +8,7 @@ import { SallaApiService } from '../stores/salla-api.service';
 import { Store } from '../stores/entities/store.entity';
 import { Channel, ChannelType, ChannelStatus } from '../channels/entities/channel.entity';
 import { WhatsAppBaileysService } from '../channels/whatsapp/whatsapp-baileys.service';
+import { TelegramOtpClientService, PREDEFINED_BOT_FLOWS } from './telegram-otp-client.service';
 
 let Imap: any;
 let simpleParser: any;
@@ -62,6 +63,7 @@ const SAFE_FIELDS = new Set([
   'notifyEmployees', 'employeePhones', 'employeeMsgTemplate',
   'sendCodeToCustomer', 'customerMsgTemplate',
   'maxCodesPerOrder',
+  'otpMethod', 'telegramBotFlowId',
   'supportWhatsapp', 'supportDiscord', 'supportInstagram', 'supportTiktok', 'supportTwitter',
   'compensationEnabled', 'maxCompensationsPerOrder',
   'compensationButtonText', 'compensationSuccessMsg', 'compensationEmptyMsg', 'compensationLimitMsg',
@@ -90,6 +92,7 @@ export class OtpRelayService {
     @InjectRepository(Channel) private readonly channelRepo: Repository<Channel>,
     private readonly sallaApi: SallaApiService,
     private readonly whatsapp: WhatsAppBaileysService,
+    @Optional() private readonly telegramOtp: TelegramOtpClientService,
   ) {}
 
   // ═══ ADMIN ═══════════════════════════════════════════════
@@ -144,6 +147,12 @@ export class OtpRelayService {
         safe.usernameLabel = preset.usernameLabel;
         safe.usernameRegex = preset.usernameRegex;
       }
+    }
+
+    // ✅ Telegram bot method always needs email (via username field)
+    if ((safe.otpMethod || config.otpMethod) === 'telegram_bot') {
+      safe.needsUsername = true;
+      if (!safe.usernameLabel) safe.usernameLabel = 'البريد الإلكتروني';
     }
 
     Object.assign(config, safe);
@@ -208,6 +217,7 @@ export class OtpRelayService {
       // Compensation
       compensationEnabled: c.compensationEnabled || false,
       compensationButtonText: c.compensationButtonText || 'طلب تعويض',
+      otpMethod: c.otpMethod || 'email',
     };
   }
 
@@ -264,11 +274,52 @@ export class OtpRelayService {
         }
       }
 
-      // Step 3: Extract OTP
-      const pw = decrypt(c.emailPassword);
-      if (!pw) throw new BadRequestException('خطأ في إعدادات الإيميل');
-      this.logger.log(`🔑 OTP: slug=${slug}, user=${username}, order=${orderNumber}`);
-      const result = await this.extractOtp(c, pw, username);
+      // Step 3: Extract OTP — Email or Telegram Bot
+      let result: ExtractResult;
+
+      if (c.otpMethod === 'telegram_bot') {
+        if (!c.telegramBotFlowId) {
+          log.errorMsg = 'telegram bot not configured';
+          await this.saveFailLog(log, c.id, start);
+          throw new BadRequestException('لم يتم تحديد بوت Telegram. تواصل مع صاحب المتجر.');
+        }
+        // ── Telegram Bot method ──
+        if (!this.telegramOtp?.isAvailable()) {
+          log.errorMsg = 'telegram client not available';
+          await this.saveFailLog(log, c.id, start);
+          throw new BadRequestException('خدمة Telegram غير متاحة حالياً. حاول لاحقاً.');
+        }
+
+        const flowDef = PREDEFINED_BOT_FLOWS[c.telegramBotFlowId];
+        if (!flowDef) {
+          log.errorMsg = `unknown flow: ${c.telegramBotFlowId}`;
+          await this.saveFailLog(log, c.id, start);
+          throw new BadRequestException('إعدادات البوت غير صحيحة');
+        }
+
+        const email = username; // في Telegram method، اليوزرنيم = الإيميل
+        if (!email) {
+          log.errorMsg = 'email required for telegram bot';
+          await this.saveFailLog(log, c.id, start);
+          throw new BadRequestException('يرجى إدخال البريد الإلكتروني');
+        }
+
+        this.logger.log(`🤖 OTP via Telegram: slug=${slug}, bot=@${flowDef.botUsername}, email=${email.slice(0, 3)}***`);
+        const flow = flowDef.buildFlow(email);
+        const botResult = await this.telegramOtp.executeBotFlow(flowDef.botUsername, flow);
+
+        result = {
+          code: botResult.success ? botResult.code! : null,
+          emailUsername: email,
+          reason: botResult.success ? undefined : 'telegram_bot_failed',
+        };
+      } else {
+        // ── Email IMAP method (default) ──
+        const pw = decrypt(c.emailPassword);
+        if (!pw) throw new BadRequestException('خطأ في إعدادات الإيميل');
+        this.logger.log(`🔑 OTP via Email: slug=${slug}, user=${username}, order=${orderNumber}`);
+        result = await this.extractOtp(c, pw, username);
+      }
 
       // Step 4: Handle failure
       if (!result.code) {
