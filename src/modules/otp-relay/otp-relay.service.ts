@@ -63,6 +63,10 @@ const SAFE_FIELDS = new Set([
   'sendCodeToCustomer', 'customerMsgTemplate',
   'maxCodesPerOrder',
   'supportWhatsapp', 'supportDiscord', 'supportInstagram', 'supportTiktok', 'supportTwitter',
+  'compensationEnabled', 'maxCompensationsPerOrder',
+  'compensationButtonText', 'compensationSuccessMsg', 'compensationEmptyMsg', 'compensationLimitMsg',
+  'compensationNotifyEmployee', 'compensationEmployeeTemplate',
+  'compensationNotifyCustomer', 'compensationCustomerTemplate',
 ]);
 
 function pickSafe(data: Record<string, any>): Record<string, any> {
@@ -201,6 +205,9 @@ export class OtpRelayService {
       verifyOrder: c.verifyOrder, footerText: c.footerText, showRafeqBadge: c.showRafeqBadge,
       supportWhatsapp: c.supportWhatsapp, supportDiscord: c.supportDiscord,
       supportInstagram: c.supportInstagram, supportTiktok: c.supportTiktok, supportTwitter: c.supportTwitter,
+      // Compensation
+      compensationEnabled: c.compensationEnabled || false,
+      compensationButtonText: c.compensationButtonText || 'طلب تعويض',
     };
   }
 
