@@ -170,14 +170,25 @@ export class OtpInventoryService {
 
     // ═══ METHOD 2: Auto — سحب من المخزون ═══
 
-    // ── سحب حساب (FIFO + pessimistic lock) ──
-    const item = await this.inventoryRepo.createQueryBuilder('i')
-      .setLock('pessimistic_write')
-      .where('i.configId = :configId AND i.status = :status', {
-        configId: config.id, status: InventoryStatus.AVAILABLE,
-      })
-      .orderBy('i.createdAt', 'ASC')
-      .getOne();
+    // ── سحب حساب (FIFO + pessimistic lock inside transaction) ──
+    const item = await this.inventoryRepo.manager.transaction(async (em) => {
+      const found = await em.createQueryBuilder(OtpInventoryItem, 'i')
+        .setLock('pessimistic_write')
+        .where('i.configId = :configId AND i.status = :status', {
+          configId: config.id, status: InventoryStatus.AVAILABLE,
+        })
+        .orderBy('i.createdAt', 'ASC')
+        .getOne();
+
+      if (!found) return null;
+
+      found.status = InventoryStatus.ASSIGNED;
+      found.assignedToOrder = orderNumber;
+      found.assignedToUsername = username || undefined;
+      found.assignedAt = new Date();
+      await em.save(found);
+      return found;
+    });
 
     if (!item) {
       return {
@@ -186,12 +197,6 @@ export class OtpInventoryService {
         outOfStock: true,
       };
     }
-
-    item.status = InventoryStatus.ASSIGNED;
-    item.assignedToOrder = orderNumber;
-    item.assignedToUsername = username || undefined;
-    item.assignedAt = new Date();
-    await this.inventoryRepo.save(item);
 
     // Reuse customerName/customerPhone from above (already fetched before method branch)
     if (!customerName && !customerPhone) {
