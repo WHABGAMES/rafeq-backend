@@ -12,6 +12,8 @@ import { decrypt } from '@common/utils/encryption.util';
 @Injectable()
 export class OtpInventoryService {
   private readonly logger = new Logger(OtpInventoryService.name);
+  private rateMap = new Map<string, number[]>();
+  private lastRateCleanup = Date.now();
 
   constructor(
     @InjectRepository(OtpConfig) private readonly configRepo: Repository<OtpConfig>,
@@ -103,13 +105,17 @@ export class OtpInventoryService {
   // 🎁 COMPENSATION
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  async requestCompensation(slug: string, orderNumber: string, username: string, clientIp: string): Promise<any> {
+  async requestCompensation(slug: string, orderNumber: string, username: string, reason: string, clientIp: string): Promise<any> {
     orderNumber = (orderNumber || '').trim();
     username = (username || '').trim();
+    reason = (reason || '').trim();
 
     const config = await this.configRepo.findOne({ where: { slug, isActive: true } as any });
     if (!config) throw new NotFoundException('الخدمة غير متوفرة');
     if (!config.compensationEnabled) throw new BadRequestException('خدمة التعويضات غير مفعلة');
+
+    // ── Rate Limit ──
+    this.checkRate(clientIp, config.rateLimit || 3);
 
     if (config.verifyOrder && orderNumber) {
       await this.verifyOrderExists(config.storeId, orderNumber);
@@ -127,6 +133,42 @@ export class OtpInventoryService {
         };
       }
     }
+
+    let customerName: string | undefined;
+    let customerPhone: string | undefined;
+    try {
+      const orderData = await this.getOrderInfo(config.storeId, orderNumber);
+      customerName = orderData?.customerName;
+      customerPhone = orderData?.customerPhone;
+    } catch {}
+
+    // ═══ METHOD 1: Manual — إرسال طلب للتاجر ═══
+    if (config.compensationMethod === 'manual') {
+      const compensation = this.compensationRepo.create({
+        configId: config.id, tenantId: config.tenantId, storeId: config.storeId,
+        inventoryItemId: '00000000-0000-0000-0000-000000000000',
+        orderNumber, username: username || undefined,
+        accountDataSnapshot: '',
+        customerName, customerPhone, clientIp,
+        method: 'manual', status: 'pending', reason,
+      });
+      await this.compensationRepo.save(compensation);
+      await this.configRepo.increment({ id: config.id } as any, 'totalCompensations', 1);
+
+      // إشعار التاجر
+      this.sendManualRequestNotification(config, orderNumber, reason, customerName, customerPhone).catch(e =>
+        this.logger.warn(`📦 Manual notification failed: ${e?.message}`),
+      );
+
+      this.logger.log(`📋 Manual compensation request: order=${orderNumber}`);
+      return {
+        success: true,
+        method: 'manual',
+        message: 'تم إرسال طلب التعويض بنجاح ✅ سيتم التواصل معك قريباً.',
+      };
+    }
+
+    // ═══ METHOD 2: Auto — سحب من المخزون ═══
 
     // ── سحب حساب (FIFO + pessimistic lock) ──
     const item = await this.inventoryRepo.createQueryBuilder('i')
@@ -165,6 +207,7 @@ export class OtpInventoryService {
       orderNumber, username: username || undefined,
       accountDataSnapshot: item.accountData,
       customerName, customerPhone, clientIp,
+      method: 'auto', status: 'completed', reason,
     });
     await this.compensationRepo.save(compensation);
 
@@ -179,6 +222,7 @@ export class OtpInventoryService {
 
     return {
       success: true,
+      method: 'auto',
       message: config.compensationSuccessMsg || 'تم تعويضك بحساب جديد بنجاح ✅',
       accountData: item.accountData,
       accountLabel: item.accountLabel,
@@ -288,9 +332,42 @@ export class OtpInventoryService {
     }
   }
 
+  private async sendManualRequestNotification(
+    config: OtpConfig, orderNumber: string, reason: string,
+    customerName?: string, customerPhone?: string,
+  ): Promise<void> {
+    if (!config.employeePhones) {
+      this.logger.warn(`⚠️ Manual compensation: no employee phones for config ${config.id} — notification skipped!`);
+      return;
+    }
+    const channelId = await this.findWhatsAppChannel(config.storeId);
+    if (!channelId) {
+      this.logger.warn(`⚠️ Manual compensation: no WhatsApp channel for store ${config.storeId}`);
+      return;
+    }
+
+    const message = `📋 طلب تعويض جديد\n\n📦 رقم الطلب: #${orderNumber}\n👤 العميل: ${customerName || 'غير معروف'}\n📱 الهاتف: ${customerPhone || 'غير متوفر'}\n📝 السبب: ${reason || 'لم يُحدد'}\n\n⚠️ يرجى مراجعة الطلب والتواصل مع العميل`;
+    const phones = String(config.employeePhones).split(',').map(p => p.trim().replace(/[^0-9+]/g, '')).filter(p => p.length >= 9);
+
+    for (const phone of phones) {
+      try { await this.whatsapp.sendTextMessage(channelId, phone, message); } catch {}
+    }
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════════
   // 🔧 HELPERS
   // ═══════════════════════════════════════════════════════════════════════════════
+
+  private checkRate(ip: string, limit: number): void {
+    const now = Date.now();
+    if (now - this.lastRateCleanup > 300_000) {
+      this.lastRateCleanup = now;
+      for (const [k, v] of this.rateMap.entries()) { if (v.every(t => now - t > 60000)) this.rateMap.delete(k); }
+    }
+    const ts = (this.rateMap.get(ip) || []).filter(t => now - t < 60000);
+    if (ts.length >= limit) throw new BadRequestException('تجاوزت الحد المسموح. انتظر دقيقة.');
+    ts.push(now); this.rateMap.set(ip, ts);
+  }
 
   private async getConfigSafe(id: string, tenantId: string): Promise<OtpConfig> {
     const c = await this.configRepo.findOne({ where: { id, tenantId } as any });
