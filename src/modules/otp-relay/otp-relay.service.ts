@@ -53,7 +53,7 @@ const DEFAULT_CUSTOMER_TEMPLATE = `✅ رمز التحقق الخاص بك:
 ⚠️ لا تشارك هذا الرمز مع أي شخص`;
 
 const SAFE_FIELDS = new Set([
-  'slug', 'platform', 'pageTitle', 'pageSubtitle', 'logoUrl',
+  'slug', 'platform', 'pageTitle', 'pageSubtitle', 'logoUrl', 'logoSize',
   'bgColor', 'primaryColor', 'cardColor', 'textColor', 'secondaryTextColor',
   'bgImageUrl', 'successMsg', 'noCodeMsg', 'needsUsername', 'usernameLabel',
   'orderLabel', 'buttonText', 'footerText', 'showRafeqBadge',
@@ -205,7 +205,7 @@ export class OtpRelayService {
     await this.configRepo.increment({ id: c.id } as any, 'totalViews', 1);
     const preset = PLATFORM_PRESETS[c.platform];
     return {
-      pageTitle: c.pageTitle, pageSubtitle: c.pageSubtitle, logoUrl: c.logoUrl,
+      pageTitle: c.pageTitle, pageSubtitle: c.pageSubtitle, logoUrl: c.logoUrl, logoSize: c.logoSize || 96,
       bgColor: c.bgColor, primaryColor: c.primaryColor, cardColor: c.cardColor,
       textColor: c.textColor, secondaryTextColor: c.secondaryTextColor,
       bgImageUrl: c.bgImageUrl, successMsg: c.successMsg,
