@@ -1,16 +1,4 @@
-/**
- * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║          RAFIQ PLATFORM — OTP Inventory & Compensation Service                ║
- * ║                                                                               ║
- * ║  نظام مخزون + تعويضات لمنصة تخدم آلاف التجار:                                  ║
- * ║  • إدارة مخزون الحسابات (إضافة فردي/جماعي، حذف، تعديل)                        ║
- * ║  • تعويض تلقائي للعملاء مع قفل الطلب بعد الحد المسموح                          ║
- * ║  • إشعارات واتساب للتاجر والعميل                                               ║
- * ║  • إحصائيات مفصلة                                                              ║
- * ╚═══════════════════════════════════════════════════════════════════════════════╝
- */
-
-import { Injectable, Logger, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, MoreThan } from 'typeorm';
 import { OtpConfig } from './entities/otp-config.entity';
@@ -36,10 +24,9 @@ export class OtpInventoryService {
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 📦 INVENTORY MANAGEMENT — Dashboard endpoints (tenant-authenticated)
+  // 📦 INVENTORY MANAGEMENT
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  /** إضافة حساب واحد للمخزون */
   async addItem(configId: string, tenantId: string, data: { accountData: string; accountLabel?: string; notes?: string }): Promise<OtpInventoryItem> {
     const config = await this.getConfigSafe(configId, tenantId);
     const item = this.inventoryRepo.create({
@@ -54,7 +41,6 @@ export class OtpInventoryService {
     return saved;
   }
 
-  /** إضافة حسابات متعددة دفعة واحدة (كل سطر = حساب) */
   async bulkAdd(configId: string, tenantId: string, data: { accounts: string; accountLabel?: string }): Promise<{ added: number }> {
     const config = await this.getConfigSafe(configId, tenantId);
     const lines = data.accounts.split('\n').map(l => l.trim()).filter(l => l.length > 0);
@@ -74,7 +60,6 @@ export class OtpInventoryService {
     return { added: items.length };
   }
 
-  /** قائمة المخزون */
   async listItems(configId: string, tenantId: string, filters?: { status?: string; page?: number; limit?: number }): Promise<{ items: OtpInventoryItem[]; total: number; stats: any }> {
     await this.getConfigSafe(configId, tenantId);
     const page = filters?.page || 1;
@@ -89,7 +74,6 @@ export class OtpInventoryService {
 
     const [items, total] = await qb.getManyAndCount();
 
-    // إحصائيات سريعة
     const stats = await this.inventoryRepo.createQueryBuilder('i')
       .select('i.status', 'status')
       .addSelect('COUNT(*)', 'count')
@@ -100,7 +84,6 @@ export class OtpInventoryService {
     return { items, total, stats };
   }
 
-  /** حذف حساب من المخزون (فقط إذا available) */
   async deleteItem(itemId: string, tenantId: string): Promise<void> {
     const item = await this.inventoryRepo.findOne({ where: { id: itemId, tenantId } as any });
     if (!item) throw new NotFoundException('العنصر غير موجود');
@@ -109,7 +92,6 @@ export class OtpInventoryService {
     await this.refreshInventoryCount(item.configId);
   }
 
-  /** حذف جميع الحسابات المتاحة */
   async deleteAllAvailable(configId: string, tenantId: string): Promise<{ deleted: number }> {
     await this.getConfigSafe(configId, tenantId);
     const result = await this.inventoryRepo.delete({ configId, tenantId, status: InventoryStatus.AVAILABLE } as any);
@@ -118,27 +100,21 @@ export class OtpInventoryService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 🎁 COMPENSATION — Public endpoint (customer-facing)
+  // 🎁 COMPENSATION
   // ═══════════════════════════════════════════════════════════════════════════════
 
   async requestCompensation(slug: string, orderNumber: string, username: string, clientIp: string): Promise<any> {
     orderNumber = (orderNumber || '').trim();
     username = (username || '').trim();
 
-    // ── تحميل Config ──
     const config = await this.configRepo.findOne({ where: { slug, isActive: true } as any });
     if (!config) throw new NotFoundException('الخدمة غير متوفرة');
     if (!config.compensationEnabled) throw new BadRequestException('خدمة التعويضات غير مفعلة');
 
-    // ── Rate Limit ──
-    // (يستخدم نفس rate limit الموجود في otp-relay)
-
-    // ── التحقق من الطلب ──
     if (config.verifyOrder && orderNumber) {
       await this.verifyOrderExists(config.storeId, orderNumber);
     }
 
-    // ── التحقق من حد التعويضات ──
     if (config.maxCompensationsPerOrder > 0) {
       const used = await this.compensationRepo.count({
         where: { configId: config.id, orderNumber } as any,
@@ -147,25 +123,21 @@ export class OtpInventoryService {
         return {
           success: false,
           message: config.compensationLimitMsg || 'تم استنفاد عدد التعويضات المسموحة لهذا الطلب.',
-          limitReached: true,
-          used,
-          max: config.maxCompensationsPerOrder,
+          limitReached: true, used, max: config.maxCompensationsPerOrder,
         };
       }
     }
 
-    // ── سحب حساب من المخزون (FIFO + pessimistic lock — يمنع التعيين المزدوج) ──
+    // ── سحب حساب (FIFO + pessimistic lock) ──
     const item = await this.inventoryRepo.createQueryBuilder('i')
       .setLock('pessimistic_write')
       .where('i.configId = :configId AND i.status = :status', {
-        configId: config.id,
-        status: InventoryStatus.AVAILABLE,
+        configId: config.id, status: InventoryStatus.AVAILABLE,
       })
       .orderBy('i.createdAt', 'ASC')
       .getOne();
 
     if (!item) {
-      this.logger.warn(`📦 No available inventory for config ${config.id} (slug: ${slug})`);
       return {
         success: false,
         message: config.compensationEmptyMsg || 'عذراً، لا توجد حسابات متاحة حالياً.',
@@ -173,14 +145,12 @@ export class OtpInventoryService {
       };
     }
 
-    // ── تعيين الحساب ──
     item.status = InventoryStatus.ASSIGNED;
     item.assignedToOrder = orderNumber;
     item.assignedToUsername = username || undefined;
     item.assignedAt = new Date();
     await this.inventoryRepo.save(item);
 
-    // ── حفظ سجل التعويض ──
     let customerName: string | undefined;
     let customerPhone: string | undefined;
     try {
@@ -198,11 +168,9 @@ export class OtpInventoryService {
     });
     await this.compensationRepo.save(compensation);
 
-    // ── تحديث الإحصائيات ──
     await this.configRepo.increment({ id: config.id } as any, 'totalCompensations', 1);
     await this.refreshInventoryCount(config.id);
 
-    // ── إشعارات (fire-and-forget) ──
     this.sendCompensationNotifications(config, orderNumber, username, item.accountData, customerName, customerPhone).catch(e =>
       this.logger.warn(`📦 Notification failed: ${e?.message}`),
     );
@@ -218,7 +186,7 @@ export class OtpInventoryService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 📊 ANALYTICS — Dashboard
+  // 📊 ANALYTICS
   // ═══════════════════════════════════════════════════════════════════════════════
 
   async getCompensationStats(configId: string, tenantId: string, days = 30): Promise<any> {
@@ -226,7 +194,6 @@ export class OtpInventoryService {
     const since = new Date();
     since.setDate(since.getDate() - days);
 
-    // ── المخزون ──
     const inventoryStats = await this.inventoryRepo.createQueryBuilder('i')
       .select('i.status', 'status')
       .addSelect('COUNT(*)', 'count')
@@ -234,21 +201,18 @@ export class OtpInventoryService {
       .groupBy('i.status')
       .getRawMany();
 
-    // ── التعويضات ──
     const compensations = await this.compensationRepo.find({
       where: { configId, createdAt: MoreThan(since) } as any,
       order: { createdAt: 'DESC' } as any,
       take: 100,
     });
 
-    // ── التعويضات اليومية ──
     const daily: Record<string, number> = {};
     compensations.forEach(c => {
       const day = c.createdAt.toISOString().split('T')[0];
       daily[day] = (daily[day] || 0) + 1;
     });
 
-    // ── أكثر الطلبات تعويضاً ──
     const topOrders = await this.compensationRepo.createQueryBuilder('c')
       .select('c.orderNumber', 'orderNumber')
       .addSelect('COUNT(*)', 'count')
@@ -265,21 +229,16 @@ export class OtpInventoryService {
         assigned: +((inventoryStats.find((r: any) => r.status === 'assigned')?.count) || 0),
       },
       compensations: {
-        total: compensations.length,
-        daily,
+        total: compensations.length, daily,
         recentList: compensations.slice(0, 20).map(c => ({
-          id: c.id,
-          orderNumber: c.orderNumber,
-          username: c.username,
-          customerName: c.customerName,
-          createdAt: c.createdAt,
+          id: c.id, orderNumber: c.orderNumber, username: c.username,
+          customerName: c.customerName, createdAt: c.createdAt,
         })),
         topOrders,
       },
     };
   }
 
-  /** قائمة التعويضات */
   async listCompensations(configId: string, tenantId: string, page = 1, limit = 30): Promise<{ items: OtpCompensation[]; total: number }> {
     await this.getConfigSafe(configId, tenantId);
     const [items, total] = await this.compensationRepo.findAndCount({
@@ -310,28 +269,21 @@ export class OtpInventoryService {
       '{بيانات_التعويض}': accountData,
     };
 
-    // ── إشعار الموظف ──
     if (config.compensationNotifyEmployee && config.employeePhones) {
-      const template = config.compensationEmployeeTemplate || `🎁 تعويض جديد\n\n📦 رقم الطلب: #{رقم_الطلب}\n👤 العميل: {اسم_العميل}\n📱 الهاتف: {رقم_العميل}\n🎮 الحساب: {اسم_الحساب}\n\n💰 التعويض:\n{بيانات_التعويض}`;
+      const template = config.compensationEmployeeTemplate || `🎁 تعويض جديد\n\n📦 رقم الطلب: #{رقم_الطلب}\n👤 العميل: {اسم_العميل}\n💰 التعويض:\n{بيانات_التعويض}`;
       const message = this.renderTemplate(template, vars);
       const phones = String(config.employeePhones).split(',').map(p => p.trim().replace(/[^0-9+]/g, '')).filter(p => p.length >= 9);
-
       for (const phone of phones) {
-        try {
-          await this.whatsapp.sendTextMessage(channelId, phone, message);
-        } catch {}
+        try { await this.whatsapp.sendTextMessage(channelId, phone, message); } catch {}
       }
     }
 
-    // ── إشعار العميل ──
     if (config.compensationNotifyCustomer && customerPhone) {
       const template = config.compensationCustomerTemplate || `✅ تم تعويضك بحساب جديد\n\n📦 رقم الطلب: #{رقم_الطلب}\n\n💰 بيانات حسابك:\n{بيانات_التعويض}\n\n⚠️ لا تشارك هذه البيانات مع أي شخص`;
       const message = this.renderTemplate(template, vars);
       const phone = String(customerPhone).replace(/[^0-9+]/g, '');
       if (phone.length >= 9) {
-        try {
-          await this.whatsapp.sendTextMessage(channelId, phone, message);
-        } catch {}
+        try { await this.whatsapp.sendTextMessage(channelId, phone, message); } catch {}
       }
     }
   }
@@ -354,7 +306,7 @@ export class OtpInventoryService {
 
   private async findWhatsAppChannel(storeId: string): Promise<string | null> {
     const ch = await this.channelRepo.findOne({
-      where: { storeId, type: ChannelType.WHATSAPP_QR, status: ChannelStatus.ACTIVE } as any,
+      where: { storeId, type: ChannelType.WHATSAPP_QR, status: ChannelStatus.CONNECTED } as any,
     });
     return ch?.id || null;
   }
