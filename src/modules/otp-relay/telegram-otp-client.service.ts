@@ -346,17 +346,14 @@ export const PREDEFINED_BOT_FLOWS: Record<string, {
     description: 'بوت استخراج كود Netflix + رابط التلفاز',
     botUsername: 'ZkaHousebot',
     buildFlow: (email: string): BotFlowStep[] => [
-      // أول مرة: /start يبدأ المحادثة — لو المحادثة موجودة مسبقاً ما يأثر
-      { action: 'send_message', text: '/start', delayAfter: 2000 },
-      { action: 'wait_response', timeout: 5000 },
-      // إرسال إيميل العميل
-      { action: 'send_message', text: email, delayAfter: 2000 },
+      // إرسال إيميل العميل مباشرة (المحادثة مفتوحة مسبقاً)
+      { action: 'send_message', text: email, delayAfter: 5000 },
       // البوت يرد بأزرار: "كود الدخول / رابط التلفاز" + "تحديث السكن / السفر"
       { action: 'wait_response', timeout: 5000 },
-      // اضغط "كود الدخول" (partial match — "كود" يكفي)
-      { action: 'click_button', buttonText: 'كود', delayAfter: 2000 },
+      // اضغط "كود الدخول"
+      { action: 'click_button', buttonText: 'كود', delayAfter: 7000 },
       // البوت يرسل الكود
-      { action: 'wait_response', timeout: 5000 },
+      { action: 'wait_response', timeout: 7000 },
       // استخراج الكود (4-6 أرقام)
       { action: 'extract_code', regex: '(\\d{4,6})' },
     ],
