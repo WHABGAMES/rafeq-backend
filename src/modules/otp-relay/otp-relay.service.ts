@@ -65,7 +65,7 @@ const SAFE_FIELDS = new Set([
   'maxCodesPerOrder',
   'otpMethod', 'telegramBotFlowId',
   'supportWhatsapp', 'supportDiscord', 'supportInstagram', 'supportTiktok', 'supportTwitter',
-  'compensationEnabled', 'maxCompensationsPerOrder',
+  'compensationEnabled', 'maxCompensationsPerOrder', 'compensationMethod',
   'compensationButtonText', 'compensationSuccessMsg', 'compensationEmptyMsg', 'compensationLimitMsg',
   'compensationNotifyEmployee', 'compensationEmployeeTemplate',
   'compensationNotifyCustomer', 'compensationCustomerTemplate',
@@ -216,6 +216,7 @@ export class OtpRelayService {
       supportInstagram: c.supportInstagram, supportTiktok: c.supportTiktok, supportTwitter: c.supportTwitter,
       // Compensation
       compensationEnabled: c.compensationEnabled || false,
+      compensationMethod: c.compensationMethod || 'auto',
       compensationButtonText: c.compensationButtonText || 'طلب تعويض',
       otpMethod: c.otpMethod || 'email',
     };
