@@ -58,7 +58,7 @@ const SAFE_FIELDS = new Set([
   'bgImageUrl', 'successMsg', 'noCodeMsg', 'needsUsername', 'usernameLabel',
   'orderLabel', 'buttonText', 'footerText', 'showRafeqBadge',
   'emailHost', 'emailPort', 'emailUser', 'emailPassword', 'emailTls',
-  'senderFilter', 'subjectFilter', 'otpRegex', 'otpLength',
+  'senderFilter', 'otpRegex', 'otpLength',
   'freshnessMinutes', 'verifyOrder', 'rateLimit', 'isActive', 'usernameRegex',
   'notifyEmployees', 'employeePhones', 'employeeEmails', 'employeeMsgTemplate',
   'sendCodeToCustomer', 'customerMsgTemplate',
@@ -112,7 +112,6 @@ export class OtpRelayService {
     const preset = PLATFORM_PRESETS[safe.platform];
     if (preset && safe.platform !== 'custom') {
       safe.senderFilter = safe.senderFilter || preset.senderEmail;
-      safe.subjectFilter = safe.subjectFilter || preset.subjectContains;
       safe.otpRegex = safe.otpRegex || preset.otpRegex;
       safe.otpLength = safe.otpLength || preset.otpLength;
       safe.needsUsername = preset.needsUsername;
@@ -140,7 +139,7 @@ export class OtpRelayService {
       const preset = PLATFORM_PRESETS[safe.platform];
       if (preset) {
         this.logger.log(`🔄 Platform changed: ${config.platform} → ${safe.platform} — resetting to preset`);
-        safe.senderFilter = safe.senderFilter || preset.senderEmail;
+        safe.senderFilter = preset.senderEmail || '';
         safe.otpRegex = preset.otpRegex;
         safe.otpLength = preset.otpLength;
         safe.needsUsername = preset.needsUsername;
@@ -519,7 +518,6 @@ export class OtpRelayService {
       // المطابقة تتم في الكود (case-insensitive) بعد جلب الإيميلات
       const criteria: any[] = [['SINCE', since]];
       if (config.senderFilter) criteria.push(['FROM', config.senderFilter]);
-      if (config.subjectFilter) criteria.push(['SUBJECT', config.subjectFilter]);
 
       let uids: number[] = await new Promise((res, rej) => {
         imap.search(criteria, (err: Error | null, r: number[]) => err ? rej(err) : res(r || []));
