@@ -2,6 +2,7 @@ import { Controller, Get, Post, Put, Delete, Body, Param, Req, Query, UseGuards,
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { OtpRelayService } from './otp-relay.service';
 import { OtpInventoryService } from './otp-inventory.service';
+import { PREDEFINED_BOT_FLOWS } from './telegram-otp-client.service';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Dashboard Controller (JWT-protected)
@@ -20,6 +21,12 @@ export class OtpRelayController {
   }
 
   @Get('platforms') getPlatforms() { return this.svc.getPlatforms(); }
+
+  @Get('bot-flows') getBotFlows() {
+    return Object.entries(PREDEFINED_BOT_FLOWS).map(([id, f]) => ({
+      id, label: f.label, description: f.description, botUsername: f.botUsername,
+    }));
+  }
 
   // ── Config CRUD ──
   @Get('configs') getConfigs(@Req() r: any) { return this.svc.getConfigs(r.user.tenantId, this.getStoreId(r)); }
