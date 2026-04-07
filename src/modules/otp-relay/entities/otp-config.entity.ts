@@ -93,6 +93,42 @@ export class OtpConfig extends BaseEntity {
   // عدد مرات استخراج الكود لكل طلب — 0 = بلا حد
   @Column({ name: 'max_codes_per_order', type: 'integer', default: 1 }) maxCodesPerOrder: number;
 
+  // ═══ Compensation System — نظام التعويضات ═══════════════
+  @Column({ name: 'compensation_enabled', type: 'boolean', default: false, comment: 'تفعيل خدمة التعويضات' })
+  compensationEnabled: boolean;
+
+  @Column({ name: 'max_compensations_per_order', type: 'integer', default: 1, comment: 'عدد التعويضات المسموحة لكل طلب' })
+  maxCompensationsPerOrder: number;
+
+  @Column({ name: 'compensation_button_text', type: 'varchar', length: 100, default: 'طلب تعويض', comment: 'نص زر التعويض' })
+  compensationButtonText: string;
+
+  @Column({ name: 'compensation_success_msg', type: 'text', default: 'تم تعويضك بحساب جديد بنجاح ✅', comment: 'رسالة نجاح التعويض' })
+  compensationSuccessMsg: string;
+
+  @Column({ name: 'compensation_empty_msg', type: 'text', default: 'عذراً، لا توجد حسابات متاحة حالياً. تواصل مع الدعم.', comment: 'رسالة نفاذ المخزون' })
+  compensationEmptyMsg: string;
+
+  @Column({ name: 'compensation_limit_msg', type: 'text', default: 'تم استنفاد عدد التعويضات المسموحة لهذا الطلب.', comment: 'رسالة تجاوز الحد' })
+  compensationLimitMsg: string;
+
+  @Column({ name: 'compensation_notify_employee', type: 'boolean', default: false, comment: 'إشعار الموظف عند التعويض' })
+  compensationNotifyEmployee: boolean;
+
+  @Column({ name: 'compensation_employee_template', type: 'text', nullable: true, comment: 'قالب رسالة إشعار التعويض للموظف' })
+  compensationEmployeeTemplate?: string;
+
+  @Column({ name: 'compensation_notify_customer', type: 'boolean', default: false, comment: 'إرسال التعويض للعميل عبر واتساب' })
+  compensationNotifyCustomer: boolean;
+
+  @Column({ name: 'compensation_customer_template', type: 'text', nullable: true, comment: 'قالب رسالة التعويض للعميل' })
+  compensationCustomerTemplate?: string;
+
+  // ── إحصائيات التعويضات (cached) ──
+  @Column({ name: 'inventory_total', type: 'integer', default: 0 }) inventoryTotal: number;
+  @Column({ name: 'inventory_available', type: 'integer', default: 0 }) inventoryAvailable: number;
+  @Column({ name: 'total_compensations', type: 'integer', default: 0 }) totalCompensations: number;
+
   // Analytics
   @Column({ name: 'total_views', type: 'integer', default: 0 }) totalViews: number;
   @Column({ name: 'total_requests', type: 'integer', default: 0 }) totalRequests: number;
