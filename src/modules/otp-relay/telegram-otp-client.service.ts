@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-var-requires */
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║     RAFIQ PLATFORM — Telegram OTP Client Service                              ║
@@ -50,9 +51,9 @@ export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
       return;
     }
     try {
-      const tg = await import('telegram');
-      const sess = await import('telegram/sessions');
-      const events = await import('telegram/events');
+      const tg = require('telegram');
+      const sess = require('telegram/sessions');
+      const events = require('telegram/events');
       TelegramClient = tg.TelegramClient;
       StringSession = sess.StringSession;
       Api = tg.Api;
@@ -177,7 +178,7 @@ export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
         }
 
         // Rate limit: delay between steps
-        if (i < flow.length - 1 && step.action !== 'extract_code') {
+        if (i < flow.length - 1 && (step.action as string) !== 'extract_code') {
           await this.sleep(step.delayAfter || 2000);
         }
       }
@@ -264,8 +265,8 @@ export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
   async startAuth(apiId: number, apiHash: string, phone: string): Promise<{ phoneCodeHash: string }> {
     if (!TelegramClient) {
       try {
-        const tg = await import('telegram');
-        const sess = await import('telegram/sessions');
+        const tg = require('telegram');
+        const sess = require('telegram/sessions');
         TelegramClient = tg.TelegramClient;
         StringSession = sess.StringSession;
         Api = tg.Api;
