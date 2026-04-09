@@ -11,6 +11,7 @@ import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
 import {
   SubscriptionManagementService,
 } from './services/subscription-management.service';
+import { SubscriptionExpiryService } from './services/subscription-expiry.service';
 
 interface AuthReq { user: { id: string; tenantId: string; role: string } }
 
@@ -19,7 +20,10 @@ interface AuthReq { user: { id: string; tenantId: string; role: string } }
 @ApiBearerAuth()
 @ApiTags('Billing')
 export class SubscriptionInfoController {
-  constructor(private readonly subService: SubscriptionManagementService) {}
+  constructor(
+    private readonly subService: SubscriptionManagementService,
+    private readonly expiryService: SubscriptionExpiryService,
+  ) {}
 
   @Get('subscription-info')
   @ApiOperation({ summary: 'معلومات الاشتراك الحالي' })
@@ -57,5 +61,15 @@ export class SubscriptionInfoController {
       messagesRemaining: info.messagesRemaining,
       plan: info.plan,
     };
+  }
+
+  /**
+   * 🔒 فحص حالة الاشتراك - يُستدعى عند تسجيل الدخول
+   * يعيد رسالة انتهاء الاشتراك والمميزات المعطلة
+   */
+  @Get('subscription-status')
+  @ApiOperation({ summary: 'فحص حالة الاشتراك (انتهاء/إيقاف)' })
+  async checkSubscriptionStatus(@Request() req: AuthReq) {
+    return this.expiryService.checkTenantSubscriptionStatus(req.user.tenantId);
   }
 }
