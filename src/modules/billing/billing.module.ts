@@ -22,6 +22,9 @@ import { PaymentService } from './services/payment.service';
 // ✅ NEW: Subscription management
 import { SubscriptionManagementService } from './services/subscription-management.service';
 
+// ✅ NEW: Subscription expiry cron
+import { SubscriptionExpiryService } from './services/subscription-expiry.service';
+
 // Existing controllers
 import { BillingController } from './billing.controller';
 import { PlansController } from './controllers/plans.controller';
@@ -75,6 +78,7 @@ import { TenantsModule } from '@modules/tenants/tenants.module';
     UsageTrackingService,
     PaymentService,
     SubscriptionManagementService,
+    SubscriptionExpiryService,
     PlanGuard,
     SubscriptionWebhookListener,
     BillingProcessor,
@@ -85,6 +89,7 @@ import { TenantsModule } from '@modules/tenants/tenants.module';
     SubscriptionPlanService,
     UsageTrackingService,
     SubscriptionManagementService,
+    SubscriptionExpiryService,
     PlanGuard,
   ],
 })
