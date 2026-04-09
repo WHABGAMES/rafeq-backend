@@ -200,8 +200,25 @@ export class OtpRelayService {
   // ═══ PUBLIC PAGE ═════════════════════════════════════════
 
   async getPublicPage(slug: string): Promise<any> {
-    const c = await this.configRepo.findOne({ where: { slug, isActive: true } as any });
-    if (!c) return null;
+    // أولاً: فحص بدون فلتر isActive لمعرفة إذا الرابط معطل بسبب انتهاء الاشتراك
+    const anyConfig = await this.configRepo.findOne({ where: { slug } as any });
+    if (!anyConfig) return null;
+
+    if (!anyConfig.isActive) {
+      // الرابط موجود لكن معطل — على الأغلب بسبب انتهاء الاشتراك
+      return {
+        suspended: true,
+        message: 'هذه الخدمة متوقفة حالياً. يرجى التواصل مع صاحب المتجر.',
+        pageTitle: anyConfig.pageTitle,
+        logoUrl: anyConfig.logoUrl,
+        bgColor: anyConfig.bgColor,
+        cardColor: anyConfig.cardColor,
+        textColor: anyConfig.textColor,
+        primaryColor: anyConfig.primaryColor,
+      };
+    }
+
+    const c = anyConfig;
     await this.configRepo.increment({ id: c.id } as any, 'totalViews', 1);
     const preset = PLATFORM_PRESETS[c.platform];
     return {
