@@ -195,6 +195,10 @@ export class SubscriptionExpiryService {
         name: 'عناصر التحويل',
         sql: `UPDATE conversion_elements SET status = 'paused', updated_at = NOW() WHERE tenant_id = $1 AND status = 'active'`,
       },
+      {
+        name: 'قوالب الرسائل',
+        sql: `UPDATE message_templates SET status = 'disabled', updated_at = NOW() WHERE tenant_id = $1 AND status = 'active'`,
+      },
     ];
 
     for (const task of deactivations) {
@@ -314,7 +318,7 @@ export class SubscriptionExpiryService {
 
     const [
       automationsCount, campaignsCount, otpCount,
-      linksCount, widgetsCount, kbCount, rulesCount,
+      linksCount, widgetsCount, kbCount, rulesCount, templatesCount,
     ] = await Promise.all([
       safeCount(`SELECT COUNT(*) as count FROM automations WHERE tenant_id = $1 AND status = 'inactive'`),
       safeCount(`SELECT COUNT(*) as count FROM campaigns WHERE tenant_id = $1 AND status = 'paused'`),
@@ -323,6 +327,7 @@ export class SubscriptionExpiryService {
       safeCount(`SELECT COUNT(*) as count FROM widget_settings WHERE tenant_id = $1 AND is_enabled = false`),
       safeCount(`SELECT COUNT(*) as count FROM knowledge_base WHERE tenant_id = $1 AND is_active = false`),
       safeCount(`SELECT COUNT(*) as count FROM notification_rules WHERE "tenantId" = $1 AND "isActive" = false`),
+      safeCount(`SELECT COUNT(*) as count FROM message_templates WHERE tenant_id = $1 AND status = 'disabled'`),
     ]);
 
     if (automationsCount > 0) disabledFeatures.push(`${automationsCount} أتمتة معطلة`);
@@ -332,6 +337,7 @@ export class SubscriptionExpiryService {
     if (widgetsCount > 0) disabledFeatures.push('ويدجت الدردشة معطل');
     if (kbCount > 0) disabledFeatures.push('قاعدة المعرفة AI معطلة');
     if (rulesCount > 0) disabledFeatures.push(`${rulesCount} قاعدة إشعارات معطلة`);
+    if (templatesCount > 0) disabledFeatures.push(`${templatesCount} قالب رسائل معطل`);
 
     return {
       isExpired: true,
