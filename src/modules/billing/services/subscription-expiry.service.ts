@@ -258,12 +258,18 @@ export class SubscriptionExpiryService {
     const isSuspended = t.status === 'suspended';
     const isFreePlan =
       t.subscription_plan === 'free' || !t.subscription_plan;
+    const isTrial = t.status === 'trial';
     const subscriptionEndsAt = t.subscription_ends_at
       ? new Date(t.subscription_ends_at)
       : null;
     const now = new Date();
+
+    // بدون اشتراك = free plan وليس تجريبي
+    const hasNoSubscription = isFreePlan && !isTrial;
+
     const isExpired =
       isSuspended ||
+      hasNoSubscription ||
       (subscriptionEndsAt !== null && subscriptionEndsAt < now && !isFreePlan);
 
     // حساب الأيام المتبقية
@@ -345,8 +351,9 @@ export class SubscriptionExpiryService {
       isExpiringSoon: false,
       daysRemaining,
       expiredAt: subscriptionEndsAt,
-      message:
-        'انتهى اشتراكك في رفيق. تم إيقاف جميع المميزات تلقائياً. يرجى تجديد اشتراكك لاستعادة جميع الخدمات.',
+      message: hasNoSubscription
+        ? 'لا يوجد اشتراك نشط. يرجى الاشتراك في إحدى الباقات لتفعيل جميع الخدمات.'
+        : 'انتهى اشتراكك في رفيق. تم إيقاف جميع المميزات تلقائياً. يرجى تجديد اشتراكك لاستعادة جميع الخدمات.',
       disabledFeatures,
     };
   }
