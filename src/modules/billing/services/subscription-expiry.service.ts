@@ -66,7 +66,6 @@ export class SubscriptionExpiryService {
       .getMany();
 
     // 3. جلب التاجرين الذين انتهى اشتراكهم عبر subscription_ends_at في tenants
-    //    مع استثناء من لديهم اشتراك نشط (يُعالج بالكيريات أعلاه) أو تجديد تلقائي
     const expiredTenants = await this.dataSource.query(
       `SELECT t.id FROM tenants t
        WHERE t.subscription_ends_at IS NOT NULL 
@@ -83,6 +82,22 @@ export class SubscriptionExpiryService {
       [now.toISOString()],
     );
 
+    // 4. جلب تجار الباقة المجانية (غير تجريبي) الذين لديهم ميزات مفعلة يجب إيقافها
+    const freeTenants = await this.dataSource.query(
+      `SELECT t.id FROM tenants t
+       WHERE (t.subscription_plan = 'free' OR t.subscription_plan IS NULL)
+       AND t.status != 'trial'
+       AND t.status != 'suspended'
+       AND t.deleted_at IS NULL
+       AND (
+         EXISTS (SELECT 1 FROM otp_configs o WHERE o.tenant_id = t.id AND o.is_active = true)
+         OR EXISTS (SELECT 1 FROM short_links s WHERE s.tenant_id = t.id AND s.is_active = true)
+         OR EXISTS (SELECT 1 FROM message_templates m WHERE m.tenant_id = t.id AND m.status = 'active')
+         OR EXISTS (SELECT 1 FROM automations a WHERE a.tenant_id = t.id AND a.status = 'active')
+         OR EXISTS (SELECT 1 FROM campaigns c WHERE c.tenant_id = t.id AND c.status IN ('active', 'scheduled'))
+       )`,
+    );
+
     // دمج كل tenant IDs المنتهية
     const allExpiredTenantIds = new Set<string>();
 
@@ -90,6 +105,9 @@ export class SubscriptionExpiryService {
       allExpiredTenantIds.add(sub.tenantId);
     }
     for (const row of expiredTenants) {
+      allExpiredTenantIds.add(row.id);
+    }
+    for (const row of freeTenants) {
       allExpiredTenantIds.add(row.id);
     }
 
