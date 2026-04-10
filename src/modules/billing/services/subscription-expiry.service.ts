@@ -225,6 +225,8 @@ export class SubscriptionExpiryService {
   async checkTenantSubscriptionStatus(tenantId: string): Promise<{
     isExpired: boolean;
     isSuspended: boolean;
+    isExpiringSoon: boolean;
+    daysRemaining: number | null;
     expiredAt: Date | null;
     message: string | null;
     disabledFeatures: string[];
@@ -240,6 +242,8 @@ export class SubscriptionExpiryService {
       return {
         isExpired: false,
         isSuspended: false,
+        isExpiringSoon: false,
+        daysRemaining: null,
         expiredAt: null,
         message: null,
         disabledFeatures: [],
@@ -258,12 +262,39 @@ export class SubscriptionExpiryService {
       isSuspended ||
       (subscriptionEndsAt !== null && subscriptionEndsAt < now && !isFreePlan);
 
-    if (!isExpired && !isSuspended) {
+    // حساب الأيام المتبقية
+    let daysRemaining: number | null = null;
+    if (subscriptionEndsAt && !isFreePlan) {
+      daysRemaining = Math.ceil((subscriptionEndsAt.getTime() - now.getTime()) / 86400000);
+    }
+
+    // تحذير: باقي 3 أيام أو أقل على انتهاء الاشتراك
+    const isExpiringSoon = !isExpired && !isSuspended && daysRemaining !== null && daysRemaining >= 0 && daysRemaining <= 3;
+
+    if (!isExpired && !isSuspended && !isExpiringSoon) {
       return {
         isExpired: false,
         isSuspended: false,
+        isExpiringSoon: false,
+        daysRemaining,
         expiredAt: null,
         message: null,
+        disabledFeatures: [],
+      };
+    }
+
+    // حالة: اشتراك على وشك الانتهاء
+    if (isExpiringSoon) {
+      const dayWord = daysRemaining === 0 ? 'اليوم' :
+        daysRemaining === 1 ? 'غداً' :
+        `خلال ${daysRemaining} أيام`;
+      return {
+        isExpired: false,
+        isSuspended: false,
+        isExpiringSoon: true,
+        daysRemaining,
+        expiredAt: subscriptionEndsAt,
+        message: `⚠️ ينتهي اشتراكك ${dayWord}. يرجى التجديد لتجنب إيقاف الخدمات.`,
         disabledFeatures: [],
       };
     }
@@ -305,6 +336,8 @@ export class SubscriptionExpiryService {
     return {
       isExpired: true,
       isSuspended,
+      isExpiringSoon: false,
+      daysRemaining,
       expiredAt: subscriptionEndsAt,
       message:
         'انتهى اشتراكك في رفيق. تم إيقاف جميع المميزات تلقائياً. يرجى تجديد اشتراكك لاستعادة جميع الخدمات.',
