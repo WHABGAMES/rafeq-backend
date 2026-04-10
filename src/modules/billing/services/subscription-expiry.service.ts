@@ -82,12 +82,11 @@ export class SubscriptionExpiryService {
       [now.toISOString()],
     );
 
-    // 4. جلب تجار الباقة المجانية (غير تجريبي) الذين لديهم ميزات مفعلة يجب إيقافها
+    // 4. جلب تجار بدون اشتراك (free/suspended) الذين لديهم ميزات مفعلة يجب إيقافها
     const freeTenants = await this.dataSource.query(
       `SELECT t.id FROM tenants t
        WHERE (t.subscription_plan = 'free' OR t.subscription_plan IS NULL)
        AND t.status != 'trial'
-       AND t.status != 'suspended'
        AND t.deleted_at IS NULL
        AND (
          EXISTS (SELECT 1 FROM otp_configs o WHERE o.tenant_id = t.id AND o.is_active = true)
@@ -137,16 +136,6 @@ export class SubscriptionExpiryService {
    * 🔒 إيقاف جميع مميزات التاجر عند انتهاء الاشتراك
    */
   async expireTenantSubscription(tenantId: string): Promise<void> {
-    // حماية من المعالجة المزدوجة
-    const tenant = await this.dataSource.query(
-      `SELECT status FROM tenants WHERE id = $1`,
-      [tenantId],
-    );
-    if (!tenant?.[0] || tenant[0].status === 'suspended') {
-      this.logger.log(`⏭️ التاجر ${tenantId} موقوف مسبقاً — تخطي`);
-      return;
-    }
-
     this.logger.log(`🔒 إيقاف مميزات التاجر: ${tenantId}`);
 
     // 1. تحديث حالة الاشتراك → expired (أساسي — يجب أن ينجح)
