@@ -35,12 +35,16 @@ import {
   PlanTier,
 } from '../../billing/services/subscription-management.service';
 
+// ✅ Subscription expiry service
+import { SubscriptionExpiryService } from '../../billing/services/subscription-expiry.service';
+
 @Controller('admin/subscriptions')
 @UseGuards(AdminJwtGuard, AdminPermissionGuard)
 @ApiTags('Admin - Subscriptions')
 export class AdminSubscriptionsController {
   constructor(
     private readonly subscriptionService: SubscriptionManagementService,
+    private readonly expiryService: SubscriptionExpiryService,
     private readonly auditService: AuditService,
   ) {}
 
@@ -186,5 +190,54 @@ export class AdminSubscriptionsController {
       success,
       message: success ? 'تم إعادة تعيين الاستخدام' : 'لا يوجد اشتراك نشط',
     };
+  }
+
+  // ─── POST /admin/subscriptions/process-expired ──────────────────────────
+  // تشغيل فحص الاشتراكات المنتهية يدوياً (بدل انتظار الكرون)
+
+  @Post('process-expired')
+  @RequirePermissions(PERMISSIONS.USERS_SUSPEND)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'تشغيل فحص وإيقاف الاشتراكات المنتهية يدوياً' })
+  async processExpired(
+    @CurrentAdmin() admin: AdminUser,
+    @AdminIp() ip: string,
+  ) {
+    await this.expiryService.handleExpiredSubscriptions();
+
+    await this.auditService.log({
+      actor: admin,
+      action: 'subscription.process_expired',
+      targetType: 'system',
+      targetId: 'all',
+      ipAddress: ip,
+    });
+
+    return { success: true, message: 'تم فحص ومعالجة الاشتراكات المنتهية' };
+  }
+
+  // ─── POST /admin/subscriptions/expire/:tenantId ─────────────────────────
+  // إيقاف مميزات تاجر معين فوراً
+
+  @Post('expire/:tenantId')
+  @RequirePermissions(PERMISSIONS.USERS_SUSPEND)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'إيقاف مميزات تاجر معين فوراً بسبب انتهاء الاشتراك' })
+  async expireTenant(
+    @Param('tenantId', ParseUUIDPipe) tenantId: string,
+    @CurrentAdmin() admin: AdminUser,
+    @AdminIp() ip: string,
+  ) {
+    await this.expiryService.expireTenantSubscription(tenantId);
+
+    await this.auditService.log({
+      actor: admin,
+      action: 'subscription.manual_expire',
+      targetType: 'tenant',
+      targetId: tenantId,
+      ipAddress: ip,
+    });
+
+    return { success: true, message: `تم إيقاف مميزات التاجر ${tenantId}` };
   }
 }
