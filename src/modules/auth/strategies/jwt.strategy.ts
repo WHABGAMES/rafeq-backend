@@ -145,8 +145,9 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     }
 
     // التحقق من حالة المتجر
-    // ⚠️ suspended = اشتراك منتهي — يسمح بالدخول لعرض رسالة التجديد
-    if (user.tenant && !['active', 'trial', 'suspended'].includes(user.tenant.status)) {
+    // ⚠️ نسمح لكل الحالات بالدخول (suspended/inactive/pending) لعرض رسالة التجديد
+    // نمنع فقط إذا التاجر محذوف أو غير موجود
+    if (user.tenant && !['active', 'trial', 'suspended', 'inactive', 'pending'].includes(user.tenant.status)) {
       throw new UnauthorizedException('المتجر موقوف أو ملغي');
     }
 
