@@ -45,6 +45,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
+import { ActiveSubscriptionGuard } from '@modules/auth/guards/active-subscription.guard';
 
 // ملفات الإعداد
 import configuration from '@config/configuration';
@@ -501,6 +502,14 @@ import { OtpRelayModule } from './modules/otp-relay/otp-relay.module';
     {
       provide: APP_GUARD,
       useClass: ThrottlerGuard,
+    },
+    /**
+     * ActiveSubscriptionGuard - يمنع الإنشاء/التعديل إذا الاشتراك منتهي
+     * GET مسموح دائماً (التصفح مفتوح)
+     */
+    {
+      provide: APP_GUARD,
+      useClass: ActiveSubscriptionGuard,
     },
   ],
 })
