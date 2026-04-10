@@ -10,7 +10,7 @@
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
@@ -24,7 +24,7 @@ import {
 } from '@database/entities/subscription.entity';
 
 @Injectable()
-export class SubscriptionExpiryService {
+export class SubscriptionExpiryService implements OnModuleInit {
   private readonly logger = new Logger(SubscriptionExpiryService.name);
 
   constructor(
@@ -36,6 +36,19 @@ export class SubscriptionExpiryService {
 
     private readonly eventEmitter: EventEmitter2,
   ) {}
+
+  /**
+   * 🚀 يعمل تلقائياً عند تشغيل السيرفر
+   * يفحص ويعالج كل الاشتراكات المنتهية فوراً بدون انتظار الكرون
+   */
+  async onModuleInit(): Promise<void> {
+    // تأخير 10 ثواني لضمان جاهزية قاعدة البيانات
+    setTimeout(() => {
+      this.handleExpiredSubscriptions().catch(err => {
+        this.logger.error(`❌ فشل فحص الاشتراكات عند بدء التشغيل: ${err}`);
+      });
+    }, 10000);
+  }
 
   /**
    * ⏰ فحص الاشتراكات المنتهية - يعمل كل ساعة
@@ -82,11 +95,12 @@ export class SubscriptionExpiryService {
       [now.toISOString()],
     );
 
-    // 4. جلب تجار بدون اشتراك (free/suspended) الذين لديهم ميزات مفعلة يجب إيقافها
+    // 4. جلب تجار الباقة المجانية (غير تجريبي) الذين لديهم ميزات مفعلة يجب إيقافها
     const freeTenants = await this.dataSource.query(
       `SELECT t.id FROM tenants t
        WHERE (t.subscription_plan = 'free' OR t.subscription_plan IS NULL)
        AND t.status != 'trial'
+       AND t.status != 'suspended'
        AND t.deleted_at IS NULL
        AND (
          EXISTS (SELECT 1 FROM otp_configs o WHERE o.tenant_id = t.id AND o.is_active = true)
@@ -136,6 +150,16 @@ export class SubscriptionExpiryService {
    * 🔒 إيقاف جميع مميزات التاجر عند انتهاء الاشتراك
    */
   async expireTenantSubscription(tenantId: string): Promise<void> {
+    // حماية من المعالجة المزدوجة
+    const tenant = await this.dataSource.query(
+      `SELECT status FROM tenants WHERE id = $1`,
+      [tenantId],
+    );
+    if (!tenant?.[0] || tenant[0].status === 'suspended') {
+      this.logger.log(`⏭️ التاجر ${tenantId} موقوف مسبقاً — تخطي`);
+      return;
+    }
+
     this.logger.log(`🔒 إيقاف مميزات التاجر: ${tenantId}`);
 
     // 1. تحديث حالة الاشتراك → expired (أساسي — يجب أن ينجح)
@@ -166,6 +190,10 @@ export class SubscriptionExpiryService {
     // 3–12: إيقاف كل ميزة بشكل مستقل — فشل أي واحدة لا يوقف البقية
     // ⚠️ القنوات (WhatsApp) لا تُفصل — الاتصال يبقى لكن الإرسال محظور عبر subscription guard
     const deactivations: { name: string; sql: string }[] = [
+      {
+        name: 'القوالب',
+        sql: `UPDATE message_templates SET status = 'disabled', updated_at = NOW() WHERE tenant_id = $1 AND status IN ('active', 'approved', 'draft')`,
+      },
       {
         name: 'الأتمتة',
         sql: `UPDATE automations SET status = 'inactive', updated_at = NOW() WHERE tenant_id = $1 AND status = 'active'`,
@@ -201,10 +229,6 @@ export class SubscriptionExpiryService {
       {
         name: 'عناصر التحويل',
         sql: `UPDATE conversion_elements SET status = 'paused', updated_at = NOW() WHERE tenant_id = $1 AND status = 'active'`,
-      },
-      {
-        name: 'قوالب الرسائل',
-        sql: `UPDATE message_templates SET status = 'disabled', updated_at = NOW() WHERE tenant_id = $1 AND status = 'active'`,
       },
     ];
 
