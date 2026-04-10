@@ -44,8 +44,8 @@ import { BullModule } from '@nestjs/bullmq';
 import { ScheduleModule } from '@nestjs/schedule';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
-import { APP_GUARD } from '@nestjs/core';
-import { ActiveSubscriptionGuard } from '@modules/auth/guards/active-subscription.guard';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
+import { ActiveSubscriptionInterceptor } from '@common/interceptors/active-subscription.interceptor';
 
 // ملفات الإعداد
 import configuration from '@config/configuration';
@@ -504,12 +504,12 @@ import { OtpRelayModule } from './modules/otp-relay/otp-relay.module';
       useClass: ThrottlerGuard,
     },
     /**
-     * ActiveSubscriptionGuard - يمنع الإنشاء/التعديل إذا الاشتراك منتهي
-     * GET مسموح دائماً (التصفح مفتوح)
+     * ActiveSubscriptionInterceptor — يمنع الإنشاء/التعديل إذا بدون اشتراك
+     * يعمل بعد التوثيق (Interceptor) — يضمن توفر user.tenant
      */
     {
-      provide: APP_GUARD,
-      useClass: ActiveSubscriptionGuard,
+      provide: APP_INTERCEPTOR,
+      useClass: ActiveSubscriptionInterceptor,
     },
   ],
 })
