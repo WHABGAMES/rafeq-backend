@@ -2,32 +2,31 @@
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║              RAFIQ PLATFORM - Template Dispatcher Service                      ║
  * ║                                                                                ║
- * ║  ✅ v22: RADICAL FIX COMPLETE — Communication Webhooks Production-Ready        ║
+ * ║  ✅ v23: Communication Trigger Mapping Fix + Multi-Template Support            ║
  * ║                                                                                ║
  * ║  ══ قاعدة رفيق الصارمة (غير قابلة للخرق) ══                                  ║
  * ║  • يُرسَل قالب التاجر المفعَّل دائماً — لا محتوى سلة الافتراضي أبداً          ║
  * ║  • إذا لا يوجد قالب → skip تام (تحذير للمطور فقط)                             ║
  * ║  • كل businessType = trigger مستقل = قالب مستقل = ZERO تداخل                 ║
  * ║                                                                                ║
- * ║  ══ الإصلاحات الجذرية v22 ══                                                   ║
- * ║  #1 resolveTemplateForCommunication → يُعيد { content, templateId } | null    ║
- * ║     → templateId يُمكّن تحديث إحصائيات الاستخدام (incrementUsage)            ║
- * ║  #2 incrementUsage في communication relay بعد كل إرسال ناجح                   ║
- * ║  #3 buildTemplateVariables مُعاد كتابته بالكامل:                               ║
- * ║     • customer lookup عبر DB لكل entity type (بـ meta.customer_id)            ║
- * ║     • order → DB كامل (customer, tracking, payment_link, ...)                 ║
- * ║     • shipment/cart/product/feedback → entityId + customer من DB              ║
- * ║     • null entity → customer من DB + نص سلة                                  ║
- * ║  #4 auth.otp.verification → bypass مباشر (سلة تبني OTP، لا قالب يعرف الرمز)  ║
- * ║  #5 dedup prefix 'comm:' في communication relay (منفصل عن regular webhook)    ║
- * ║  #6 no fallback chains — EXACT MATCH فقط لكل businessType                     ║
+ * ║  ══ إصلاحات v23 ══                                                             ║
+ * ║  #1 TRIGGER_ALIAS_MAP: 7 mappings بين أسماء سلة وأسماء قوالب رفيق            ║
+ * ║     order.notification.create → order.created                                  ║
+ * ║     order.refund.processed → order.refunded                                    ║
+ * ║     order.shipment.created → shipment.created                                  ║
+ * ║     order.invoice.issued → invoice.created                                     ║
+ * ║     customer.cart.abandoned → abandoned.cart                                    ║
+ * ║     product.availability.alert → product.available                             ║
+ * ║  #2 Multi-Template: relayCommunicationMessage يدعم قوالب متعددة لنفس trigger  ║
+ * ║     فوري (instant) + مؤجل (delayed) + يدوي (manual skip) في نفس الوقت        ║
+ * ║  #3 resolveTemplateForCommunication حُذف — نُقلت وظيفته إلى relay مباشرة     ║
+ * ║  #4 OTP bypass يعمل داخل relayCommunicationMessage مباشرة                     ║
  * ║                                                                                ║
  * ║  ══ المسارين المستقلين ══                                                      ║
  * ║  ① Regular Webhook  → OnEvent → dispatch() → قالب بـ trigger = eventName      ║
  * ║  ② Communication    → OnEvent → relayCommunicationMessage                     ║
- * ║                      → resolveTemplateForCommunication                        ║
- * ║                      → قالب بـ trigger = businessType (EXACT)                 ║
- * ║                      → لا يوجد → skip (لا double-send ممكن)                  ║
+ * ║                      → TRIGGER_ALIAS_MAP → find ALL templates                 ║
+ * ║                      → instant: إرسال فوري | delayed: جدولة | manual: skip   ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -480,213 +479,221 @@ export class TemplateDispatcherService {
     );
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // 🎯 الخطوة 1: البحث عن قالب التاجر المفعَّل وتصييره
+    // 🎯 v23: Multi-Template Communication Relay
     //
-    // ✅ القاعدة الصارمة:
+    // ✅ قاعدة رفيق الصارمة:
     // • قالب التاجر = المصدر الوحيد للرسالة
     // • لا محتوى سلة كـ fallback
     // • OTP استثناء: سلة تبني الرسالة مع الرمز الحقيقي
+    //
+    // ✅ v23: دعم قوالب متعددة لنفس الـ trigger
+    // مثال: order.created يطلق "طلب جديد" (فوري) + "طلب تقييم" (مؤجل 3 أيام)
+    // كل قالب يُعالَج حسب sendSettings الخاصة به
     // ═══════════════════════════════════════════════════════════════════════════
-    const resolved = await this.resolveTemplateForCommunication(
-      tenantId,
-      storeId,
-      businessType,
-      entity,
-      sallaContent,
-      customerId,
-    );
 
-    if (resolved === null) {
-      // لا قالب مفعَّل للتاجر → لا إرسال
-      // الـ log التحذيري يحدث داخل resolveTemplateForCommunication
+    try {
+
+    // ─── استثناء OTP: إرسال محتوى سلة مباشرة ─────────────────────────────
+    if (businessType === CommunicationEventType.AUTH_OTP_VERIFICATION) {
+      this.logger.log(`🔑 OTP: sending Salla content directly (time-sensitive code)`);
+      this.recentDispatches.set(commDedupKey, now);
+
+      switch (channelType) {
+        case 'whatsapp':
+          await this.relayWhatsApp(tenantId, storeId, notifiable, sallaContent, businessType, entity, customerId);
+          break;
+        case 'sms':
+          await this.relaySms(tenantId, storeId, notifiable, sallaContent, businessType, otpCode);
+          break;
+        case 'email':
+          await this.relayEmail(notifiable, sallaContent, businessType, entity, customerId);
+          break;
+      }
       return;
     }
 
-    const { content: finalContent, templateId } = resolved;
+    // ─── تحديد triggers المطلوب البحث بها ────────────────────────────────
+    const triggerCandidates = await this.resolveCommunicationTrigger(
+      businessType, entity, storeId, sallaContent,
+    );
 
-    // ─── تسجيل DEDUP بعد تأكيد وجود القالب ────────────────────────────────
-    this.recentDispatches.set(commDedupKey, now);
-
-    // ─── الخطوة 2: الإرسال عبر القناة المناسبة ─────────────────────────────
-    let sendSuccess = false;
-
-    switch (channelType) {
-      case 'whatsapp':
-        await this.relayWhatsApp(tenantId, storeId, notifiable, finalContent, businessType, entity, customerId);
-        sendSuccess = true;
-        break;
-      case 'sms':
-        await this.relaySms(tenantId, storeId, notifiable, finalContent, businessType, otpCode);
-        sendSuccess = true;
-        break;
-      case 'email':
-        await this.relayEmail(notifiable, finalContent, businessType, entity, customerId);
-        sendSuccess = true;
-        break;
+    if (!triggerCandidates.length) {
+      this.logger.warn(`⚠️ No trigger candidates for "${businessType}"`);
+      return;
     }
 
-    // ─── الخطوة 3: تحديث إحصائيات استخدام القالب ──────────────────────────
-    // OTP لا يملك templateId حقيقي → لا نحدث إحصائيات
-    if (sendSuccess && templateId && templateId !== 'otp-direct') {
-      await this.incrementUsage(templateId);
-    }
-  }
+    // ─── البحث عن كل القوالب المفعَّلة (ليس واحداً فقط) ─────────────────
+    const allTemplates = await this.templateRepository.find({
+      where: triggerCandidates.flatMap(t =>
+        this.ACTIVE_STATUSES.map(s => ({ tenantId, triggerEvent: t, status: s as any })),
+      ),
+      order: { updatedAt: 'DESC' },
+    });
 
-  /**
-   * ╔══════════════════════════════════════════════════════════════════════════════╗
-   * ║  resolveTemplateForCommunication — v22 RADICAL FIX                           ║
-   * ║                                                                              ║
-   * ║  قاعدة رفيق الصارمة:                                                        ║
-   * ║  • يُرسَل دائماً قالب التاجر المفعَّل — لا محتوى سلة الافتراضي أبداً        ║
-   * ║  • إذا لا يوجد قالب → null → لا إرسال (skip + تحذير للتاجر)                ║
-   * ║  • كل businessType يبحث بـ trigger = businessType نفسه فقط (EXACT MATCH)    ║
-   * ║  • لا fallback chains إطلاقاً                                               ║
-   * ║                                                                              ║
-   * ║  استثناء auth.otp.verification:                                              ║
-   * ║  → سلة تبني رسالة OTP كاملة في data.content                                ║
-   * ║  → يُرسَل محتوى سلة مباشرة — ليس قالباً (رمز OTP حساس ومتغير)             ║
-   * ║  → هذا الاستثناء الوحيد المسموح به في رفيق                                  ║
-   * ║                                                                              ║
-   * ║  استثناء order.status.updated:                                               ║
-   * ║  → يجلب الحالة الفعلية من DB → يبحث بـ trigger = 'order.status.<slug>'      ║
-   * ║                                                                              ║
-   * ║  يُعيد: { content: string; templateId: string } → نجح، القالب وُجد          ║
-   * ║          null → لا قالب مفعَّل (أو OTP bypass مُدار خارجاً)                 ║
-   * ╚══════════════════════════════════════════════════════════════════════════════╝
-   */
-  private async resolveTemplateForCommunication(
-    tenantId: string,
-    storeId: string | undefined,
-    businessType: string,
-    entity: { id: number; type: string } | null,
-    sallaContent: string,
-    customerId?: number,
-  ): Promise<{ content: string; templateId: string } | null> {
-
-    try {
-      // ─── استثناء #1: auth.otp.verification ──────────────────────────────────
-      // سلة تبني رسالة OTP كاملة في data.content (مع الرمز الحقيقي)
-      // رفيق يُرسلها مباشرة — لا نبحث عن قالب لأن الرمز يتغير مع كل طلب
-      // ⚠️ لا يمكن لأي قالب أن يعرف الرمز الفعلي مسبقاً
-      if (businessType === CommunicationEventType.AUTH_OTP_VERIFICATION) {
-        this.logger.log(`🔑 OTP: sending Salla content directly (time-sensitive code)`);
-        return { content: sallaContent, templateId: 'otp-direct' };
-      }
-
-      // ─── تحديد trigger المطلوب البحث به ─────────────────────────────────────
-      const triggerCandidates = await this.resolveCommunicationTrigger(
-        businessType,
-        entity,
-        storeId,
-        sallaContent,
-      );
-
-      if (!triggerCandidates.length) {
-        this.logger.warn(`⚠️ No trigger candidates for "${businessType}"`);
-        return null;
-      }
-
-      // ─── البحث عن قالب التاجر المفعَّل — EXACT MATCH بـ businessType ────────
-      // ⚠️ كل نوع حدث له قالب مستقل تماماً:
-      // • order.status.confirmation   ← قالب خاص بالتأكيد
-      // • order.status.in_transit     ← قالب خاص بالشحن
-      // • payment.reminder.due        ← قالب خاص بالتذكير
-      // لا يوجد أي تداخل أو استعارة قوالب بين الأنواع
-      const template = await this.templateRepository.findOne({
-        where: triggerCandidates.flatMap(t =>
-          this.ACTIVE_STATUSES.map(s => ({ tenantId, triggerEvent: t, status: s as any }))
-        ),
-        order: { updatedAt: 'DESC' },
+    if (!allTemplates.length) {
+      const tenantTemplates = await this.templateRepository.find({
+        where: { tenantId },
+        select: ['id', 'name', 'triggerEvent', 'status'] as any,
+        order: { updatedAt: 'DESC' } as any,
+        take: 20,
       });
 
-      if (!template) {
-        // اعرض كل قوالب التاجر المفعّلة لتشخيص المشكلة فوراً
-        const allTemplates = await this.templateRepository.find({
-          where: { tenantId },
-          select: ['id', 'name', 'triggerEvent', 'status'] as any,
-          order: { updatedAt: 'DESC' } as any,
-          take: 20,
-        });
+      this.logger.warn(
+        `⏭️  [${businessType}] SKIPPED — no active template`,
+        {
+          tenantId,
+          searched_triggers: triggerCandidates,
+          hint: `Create & activate a template with triggerEvent="${triggerCandidates[0]}"`,
+          tenant_templates: tenantTemplates.map((t: any) => ({
+            name: t.name, trigger: t.triggerEvent, status: t.status,
+          })),
+        },
+      );
+      return;
+    }
 
-        this.logger.warn(
-          `⏭️  [${businessType}] SKIPPED — no active template`,
-          {
-            tenantId,
-            searched_triggers: triggerCandidates,
-            hint: `Create & activate a template with triggerEvent="${triggerCandidates[0]}"`,
-            tenant_templates: allTemplates.map((t: any) => ({
-              name:    t.name,
-              trigger: t.triggerEvent,
-              status:  t.status,
-            })),
-          },
-        );
-        return null;
+    // ─── تسجيل DEDUP بعد تأكيد وجود قوالب ────────────────────────────────
+    this.recentDispatches.set(commDedupKey, now);
+
+    // ─── جلب بيانات الكيان (مرة واحدة — مشتركة بين كل القوالب) ──────────
+    const entityData = await this.buildTemplateVariables(
+      entity, storeId, sallaContent, businessType, customerId,
+    );
+
+    this.logger.log(
+      `📋 Communication relay: ${allTemplates.length} template(s) matched for [${businessType}]`,
+      { templates: allTemplates.map(t => ({ name: t.name, mode: t.sendSettings?.sendingMode || 'instant' })) },
+    );
+
+    // ─── معالجة كل قالب حسب إعداداته ─────────────────────────────────────
+    for (const template of allTemplates) {
+      const sendSettings = template.sendSettings;
+      const mode = sendSettings?.sendingMode || SendingMode.INSTANT;
+
+      // ⏭️ قالب يدوي → تخطي
+      if (mode === SendingMode.MANUAL) {
+        this.logger.log(`⏭️ Skipping MANUAL template: "${template.name}"`);
+        continue;
       }
 
-      this.logger.log(
-        `✅ Template matched: "${template.name}" | trigger="${template.triggerEvent}" | type="${businessType}"`,
-        { templateId: template.id },
-      );
+      // ⏰ قالب مؤجل → جدولة عبر TemplateSchedulerService
+      const delayMinutes = sendSettings?.delayMinutes;
+      if (delayMinutes && delayMinutes > 0 && (mode === SendingMode.DELAYED || mode === SendingMode.CONDITIONAL)) {
+        const customerPhone = notifiable[0] ? this.normalizePhone(notifiable[0]) : '';
+        if (!customerPhone) {
+          this.logger.warn(`⚠️ Delayed template "${template.name}" skipped — no valid phone in notifiable`);
+          continue;
+        }
 
-      // ─── جلب بيانات الكيان لاستبدال متغيرات القالب ──────────────────────────
-      const entityData = await this.buildTemplateVariables(
-        entity,
-        storeId,
-        sallaContent,
-        businessType,
-        customerId,
-      );
+        const customerName = String(
+          entityData.customer_name || entityData.customer_first_name || 'عميلنا الكريم',
+        );
+        const referenceId = String(entityData.reference_id || entityData.order_id || entity?.id || '');
 
-      // ─── استبدال المتغيرات في قالب التاجر ───────────────────────────────────
+        try {
+          this.logger.log(
+            `⏰ Scheduling delayed template: "${template.name}" → ${customerPhone} (delay: ${delayMinutes}min)`,
+            { templateId: template.id, mode, delayMinutes },
+          );
+
+          await this.templateSchedulerService.scheduleDelayedSend({
+            template,
+            tenantId,
+            storeId,
+            customerPhone,
+            customerName,
+            referenceId: referenceId || undefined,
+            referenceType: businessType.split('.')[0] || undefined,
+            triggerEvent: template.triggerEvent || businessType,
+            payload: entityData as Record<string, unknown>,
+            delayMinutes,
+            sequenceGroupKey: sendSettings?.sequence?.groupKey,
+            sequenceOrder: sendSettings?.sequence?.order,
+          });
+
+          await this.incrementUsage(template.id);
+        } catch (error) {
+          this.logger.error(
+            `❌ Failed to schedule "${template.name}" [${businessType}]: ${error instanceof Error ? error.message : 'Unknown'}`,
+          );
+        }
+        continue;
+      }
+
+      // ⚡ قالب فوري → تصيير وإرسال
       const rendered = this.replaceVariables(template.body, entityData);
 
       this.logger.log(
-        `📝 Rendered: "${template.name}" → "${rendered.substring(0, 80)}${rendered.length > 80 ? '...' : ''}"`,
-        { businessType, entityId: entity?.id, vars: Object.keys(entityData) },
+        `📤 Sending "${template.name}" [${businessType}] → ${notifiable.length} recipient(s)`,
+        { templateId: template.id, preview: rendered.substring(0, 80) },
       );
 
-      return { content: rendered, templateId: template.id };
+      try {
+        switch (channelType) {
+          case 'whatsapp':
+            await this.relayWhatsApp(tenantId, storeId, notifiable, rendered, businessType, entity, customerId);
+            break;
+          case 'sms':
+            await this.relaySms(tenantId, storeId, notifiable, rendered, businessType, otpCode);
+            break;
+          case 'email':
+            await this.relayEmail(notifiable, rendered, businessType, entity, customerId);
+            break;
+        }
+        await this.incrementUsage(template.id);
+      } catch (error) {
+        this.logger.error(
+          `❌ Failed to send "${template.name}" [${businessType}]: ${error instanceof Error ? error.message : 'Unknown'}`,
+        );
+      }
+    }
 
     } catch (error) {
+      // ✅ v23: Top-level catch — يمنع crash الخادم عند أخطاء غير متوقعة
+      // بدون هذا: خطأ في DB/Redis → unhandledRejection → process.exit(1)
+      const msg = error instanceof Error ? error.message : 'Unknown';
       this.logger.error(
-        `❌ resolveTemplateForCommunication [${businessType}]: ${error instanceof Error ? error.message : 'Unknown'}`,
-        { stack: error instanceof Error ? error.stack : undefined },
+        `❌ Communication relay [${channelType}] [${businessType}] FAILED: ${msg}`,
+        { tenantId, storeId, stack: error instanceof Error ? error.stack : undefined },
       );
-      return null;  // خطأ = لا إرسال، لا fallback
     }
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // v23: resolveTemplateForCommunication حُذف — نُقلت وظيفته إلى
+  // relayCommunicationMessage الذي يدعم الآن قوالب متعددة per trigger
+  // (فوري + مؤجل + شرطي في نفس الوقت)
+  // ═══════════════════════════════════════════════════════════════════════════════
+
   /**
-   * 🗺️ تحديد trigger المناسب لكل businessType
-   *
-   * ┌─────────────────────────────────┬──────────────────────────────────────────────┐
-   * │ businessType (Communication)    │ triggerEvent للبحث عن القالب                 │
-   * ├─────────────────────────────────┼──────────────────────────────────────────────┤
-   * │ auth.otp.verification           │ auth.otp.verification                        │
-   * │ order.status.confirmation       │ order.status.confirmation OR order.created   │
-   * │ order.status.updated            │ DB lookup → order.status.<actual_slug>       │
-   * │ order.invoice.issued            │ order.invoice.issued                         │
-   * │ order.shipment.created          │ order.shipment.created                       │
-   * │ order.refund.processed          │ order.refund.processed                       │
-   * │ order.gift.placed               │ order.gift.placed                            │
-   * │ payment.reminder.due            │ payment.reminder.due                         │
-   * │ product.availability.alert      │ product.availability.alert                   │
-   * │ product.digital.code            │ product.digital.code                         │
-   * │ customer.cart.abandoned         │ customer.cart.abandoned                      │
-   * │ customer.loyalty.earned         │ customer.loyalty.earned                      │
-   * │ customer.feedback.reply         │ customer.feedback.reply                      │
-   * │ customer.rating.request         │ customer.rating.request                      │
-   * │ marketing.campaign.broadcast    │ marketing.campaign.broadcast                 │
-   * │ system.alert.general            │ system.alert.general                         │
-   * │ system.message.custom           │ system.message.custom                        │
-   * └─────────────────────────────────┴──────────────────────────────────────────────┘
-   *
-   * ⚠️ ZERO fallback chains:
-   * كل businessType يبحث بـ trigger نفسه فقط
-   * لا يستخدم trigger نوع آخر أبداً
-   * هذا يضمن عزل كامل: قالب order.status.confirmation
-   * لن يُستخدَم أبداً لـ payment.reminder.due
+   * ╔══════════════════════════════════════════════════════════════════════════════╗
+   * ║  resolveCommunicationTrigger — v23 COMPLETE MAPPING FIX                     ║
+   * ║                                                                              ║
+   * ║  المشكلة الجذرية:                                                           ║
+   * ║  سلة ترسل أسماء أحداث في Communication Webhooks (data.type) مختلفة          ║
+   * ║  عن أسماء الـ triggers المستخدمة في قوالب رفيق (presets).                   ║
+   * ║  مثال: سلة ترسل customer.cart.abandoned لكن القالب يستخدم abandoned.cart    ║
+   * ║                                                                              ║
+   * ║  الحل: TRIGGER_ALIAS_MAP — نبحث بكلا الاسمين:                              ║
+   * ║  [اسم سلة الأصلي, اسم القالب في رفيق]                                      ║
+   * ║                                                                              ║
+   * ║  ┌──────────────────────────────┬─────────────────────────────────┐          ║
+   * ║  │ Salla Communication type     │ Rafeq template trigger(s)      │          ║
+   * ║  ├──────────────────────────────┼─────────────────────────────────┤          ║
+   * ║  │ order.notification.create    │ + order.created                 │          ║
+   * ║  │ order.status.confirmation    │ + order.created                 │          ║
+   * ║  │ order.status.updated         │ DB lookup → order.status.{slug} │          ║
+   * ║  │ order.refund.processed       │ + order.refunded                │          ║
+   * ║  │ order.shipment.created       │ + shipment.created              │          ║
+   * ║  │ order.invoice.issued         │ + invoice.created               │          ║
+   * ║  │ payment.reminder.due         │ + order.status.pending_payment  │          ║
+   * ║  │ customer.cart.abandoned      │ + abandoned.cart                 │          ║
+   * ║  │ product.availability.alert   │ + product.available             │          ║
+   * ║  │ customer.rating.request      │ (exact — no alias needed)       │          ║
+   * ║  │ auth.otp.verification        │ bypass (OTP direct)             │          ║
+   * ║  │ others                       │ (exact — businessType نفسه)     │          ║
+   * ║  └──────────────────────────────┴─────────────────────────────────┘          ║
+   * ╚══════════════════════════════════════════════════════════════════════════════╝
    */
   private async resolveCommunicationTrigger(
     businessType: string,
@@ -707,12 +714,9 @@ export class TemplateDispatcherService {
           { entityId: entity.id, storeId },
         );
 
-        // نُعيد triggers الحالة الفعلية فقط (لا businessType 'order.status.updated')
-        // لأن التاجر ينشئ قوالب لكل حالة باسمها المحدد
         return statusTriggers;
       }
 
-      // entity غير موجود أو غير صحيح → fallback للـ businessType نفسه
       this.logger.warn(
         `⚠️ order.status.updated: entity missing or wrong type — using businessType as trigger`,
         { entity },
@@ -720,22 +724,55 @@ export class TemplateDispatcherService {
       return ['order.status.updated'];
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // خريطة: اسم سلة → اسم سلة + الـ alias المستخدم في قوالب رفيق
+    // الترتيب مهم: الاسم الأصلي أولاً ثم الـ alias
+    // إذا التاجر أنشأ قالبه بأي من الاسمين → يشتغل
+    // ═══════════════════════════════════════════════════════════════════════════
+    const TRIGGER_ALIAS_MAP: Record<string, string[]> = {
+      // ─── طلب جديد ────────────────────────────────────────────────────────
+      // سلة ترسل هذين النوعين عند إنشاء طلب جديد
+      // التاجر يُنشئ قالبه بـ order.created (الاسم الشائع)
+      'order.status.confirmation':  ['order.status.confirmation', 'order.created'],
+      'order.notification.create':  ['order.notification.create', 'order.created'],
 
-    // ─── order.status.confirmation: طلب جديد ──────────────────────────────
-    // سلة ترسل هذا لكل طلب جديد
-    // التاجر قد يُنشئ قالبه بـ order.status.confirmation أو order.created
-    if (businessType === 'order.status.confirmation') {
-      return ['order.status.confirmation', 'order.created'];
-    }
+      // ─── استرجاع ─────────────────────────────────────────────────────────
+      // سلة: order.refund.processed | رفيق preset: order.refunded
+      'order.refund.processed':     ['order.refund.processed', 'order.refunded'],
 
-    // ─── payment.reminder.due: بانتظار الدفع ──────────────────────────────
-    // سلة ترسل 'payment.reminder.due' لطلبات الدفع المعلقة
-    // التاجر يُنشئ قالبه بـ 'order.status.pending_payment' (الاسم المنطقي)
-    if (businessType === 'payment.reminder.due') {
-      return ['payment.reminder.due', 'order.status.pending_payment'];
+      // ─── شحن ─────────────────────────────────────────────────────────────
+      // سلة: order.shipment.created | رفيق preset: shipment.created
+      'order.shipment.created':     ['order.shipment.created', 'shipment.created'],
+
+      // ─── فاتورة ──────────────────────────────────────────────────────────
+      // سلة: order.invoice.issued | رفيق preset: invoice.created
+      'order.invoice.issued':       ['order.invoice.issued', 'invoice.created'],
+
+      // ─── بانتظار الدفع ───────────────────────────────────────────────────
+      // سلة: payment.reminder.due | رفيق preset: order.status.pending_payment
+      'payment.reminder.due':       ['payment.reminder.due', 'order.status.pending_payment'],
+
+      // ─── سلة متروكة ──────────────────────────────────────────────────────
+      // سلة: customer.cart.abandoned | رفيق preset: abandoned.cart
+      'customer.cart.abandoned':    ['customer.cart.abandoned', 'abandoned.cart'],
+
+      // ─── إعادة توفر منتج ─────────────────────────────────────────────────
+      // سلة: product.availability.alert | رفيق preset: product.available
+      'product.availability.alert': ['product.availability.alert', 'product.available'],
+    };
+
+    // ─── بحث في الخريطة ──────────────────────────────────────────────────────
+    const aliases = TRIGGER_ALIAS_MAP[businessType];
+    if (aliases) {
+      this.logger.log(
+        `🗺️ Communication trigger mapped: "${businessType}" → [${aliases.join(', ')}]`,
+      );
+      return aliases;
     }
 
     // ─── باقي الأنواع: trigger = businessType نفسه ────────────────────────
+    // customer.rating.request, customer.loyalty.earned, product.digital.code,
+    // order.gift.placed, marketing.campaign.broadcast, system.*, etc.
     return [businessType];
   }
 
