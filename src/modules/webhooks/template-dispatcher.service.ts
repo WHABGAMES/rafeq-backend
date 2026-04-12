@@ -431,6 +431,7 @@ export class TemplateDispatcherService {
       : null;
     const customerId   = payload.customerId as number | undefined;
     const otpCode      = payload.otpCode    as string | undefined;
+    const rawData      = (payload.raw || {}) as Record<string, unknown>;
 
     // ─── تحقق أساسي: يجب أن يكون هناك مستلمون ────────────────────────────────
     if (!notifiable.length) {
@@ -477,6 +478,12 @@ export class TemplateDispatcherService {
         customerId: customerId   ?? 'N/A',
       },
     );
+
+    // ─── Debug: log raw meta for cart/product events (مؤقت — لتشخيص المتغيرات) ──
+    if (entity?.type === 'cart' || entity?.type === 'product') {
+      const meta = (rawData?.meta || {}) as Record<string, unknown>;
+      this.logger.log(`🔍 Raw meta for [${businessType}]:`, { meta: JSON.stringify(meta).substring(0, 500) });
+    }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // 🎯 v23: Multi-Template Communication Relay
@@ -557,7 +564,7 @@ export class TemplateDispatcherService {
 
     // ─── جلب بيانات الكيان (مرة واحدة — مشتركة بين كل القوالب) ──────────
     const entityData = await this.buildTemplateVariables(
-      entity, storeId, sallaContent, businessType, customerId,
+      entity, storeId, sallaContent, businessType, customerId, rawData,
     );
 
     this.logger.log(
@@ -793,6 +800,7 @@ export class TemplateDispatcherService {
     sallaContent: string,
     businessType: string,
     customerId?: number,
+    rawData?: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
 
     // ─── الخطوة 1: استخراج متغيرات من نص سلة (قاعدة للجميع) ─────────────────
@@ -827,6 +835,15 @@ export class TemplateDispatcherService {
       } catch (err) {
         this.logger.warn(`⚠️ Customer DB lookup failed: ${err instanceof Error ? err.message : 'Unknown'}`);
       }
+    }
+
+    // ─── الخطوة 2.5: store_name — يُستخدم في أغلب القوالب ─────────────────
+    if (!baseVars.store_name && rawData) {
+      const meta = (rawData.meta || {}) as Record<string, unknown>;
+      baseVars.store_name = meta.store_name || meta.merchant_name || meta.store || '';
+    }
+    if (!baseVars.store_name) {
+      baseVars.store_name = 'متجرنا';
     }
 
     // ─── الخطوة 3: معالجة حسب entity.type ────────────────────────────────────
@@ -937,7 +954,50 @@ export class TemplateDispatcherService {
       baseVars.cart_id      = entityIdStr;
       baseVars.entity_id    = entityIdStr;
       baseVars.entity_type  = 'cart';
-      this.logger.debug(`🛒 Cart entity [${businessType}]: id=${entityIdStr}`);
+
+      // ─── استخراج بيانات السلة من meta (Salla raw payload) ─────────────────
+      const meta = (rawData?.meta || {}) as Record<string, unknown>;
+
+      // cart_total: من meta أو من نص سلة
+      const cartTotal = meta.cart_total || meta.total || meta.amount
+        || meta.cart_amount || meta.sub_total;
+      if (cartTotal !== undefined && cartTotal !== null) {
+        baseVars.cart_total = cartTotal;
+      } else {
+        // حاول استخرج من نص سلة: "إجمالي السلة: 150 ريال" أو "بقيمة 150"
+        const totalMatch = sallaContent.match(/(?:إجمالي|بقيمة|المبلغ|total)[:\s]*(\d[\d,.]*)/i);
+        if (totalMatch) {
+          baseVars.cart_total = totalMatch[1].replace(/,/g, '');
+        }
+      }
+
+      // items_count: عدد المنتجات في السلة
+      const itemsCount = meta.items_count || meta.products_count || meta.count;
+      if (itemsCount) baseVars.cart_items_count = itemsCount;
+
+      // cart_url: رابط السلة
+      const cartUrl = meta.cart_url || meta.checkout_url || meta.url;
+      if (cartUrl) {
+        baseVars.cart_url     = cartUrl;
+        baseVars.checkout_url = cartUrl;
+      }
+
+      // store_name: من meta أو من نص سلة
+      if (!baseVars.store_name) {
+        const storeName = meta.store_name || meta.merchant_name;
+        if (storeName) {
+          baseVars.store_name = storeName;
+        } else {
+          // حاول استخرج من نص سلة: "متجر اسم المتجر" أو نهاية النص
+          const storeMatch = sallaContent.match(/(?:متجر|من\s+)([\u0600-\u06FF\w\s]+?)(?:[.!،\n]|$)/);
+          if (storeMatch) baseVars.store_name = storeMatch[1].trim();
+        }
+      }
+
+      // fallback: لو cart_total لسا فاضي
+      if (!baseVars.cart_total) baseVars.cart_total = '';
+
+      this.logger.debug(`🛒 Cart entity [${businessType}]: id=${entityIdStr}, total=${baseVars.cart_total || 'N/A'}`);
       return baseVars;
     }
 
