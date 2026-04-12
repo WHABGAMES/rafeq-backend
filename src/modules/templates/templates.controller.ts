@@ -225,22 +225,6 @@ export class TemplatesController {
           icon: '💵',
           whatsappCategory: 'UTILITY',
         },
-        {
-          id: 'payment_reminder',
-          name: 'تذكير بالدفع',
-          nameEn: 'Payment Reminder',
-          description: 'تذكير بالمدفوعات المستحقة',
-          icon: '💳',
-          whatsappCategory: 'UTILITY',
-        },
-        {
-          id: 'product_restock',
-          name: 'توفر المنتج',
-          nameEn: 'Product Restock',
-          description: 'إشعار بتوفر منتج',
-          icon: '📦',
-          whatsappCategory: 'MARKETING',
-        },
       ],
     };
   }
@@ -515,35 +499,6 @@ export class TemplatesController {
             cancelOnEvents: ['order.created'],
             maxSendsPerCustomer: { count: 1, periodDays: 7 },
           },
-        },
-        {
-          id: 'payment_reminder',
-          name: 'تذكير بالدفع',
-          language: 'ar',
-          category: 'sales_recovery',
-          triggerEvent: 'order.status.pending_payment',
-          content: 'مرحباً {{customer_name}} 💳\n\nتذكير: طلبك رقم #{{order_id}} بانتظار إتمام الدفع\n\nالمبلغ: {{order_total}} ريال\n\nسيتم إلغاء الطلب تلقائياً إذا لم يتم الدفع خلال 24 ساعة ⏰',
-          buttons: [
-            { type: 'url', text: 'ادفع الآن', url: '{{payment_link}}' },
-          ],
-          sendSettings: {
-            sendingMode: 'delayed',
-            delayMinutes: 60,
-            cancelOnEvents: ['order.payment.updated'],
-            maxSendsPerCustomer: { count: 1, periodDays: 1 },
-          },
-        },
-        {
-          id: 'product_restock',
-          name: 'إعادة توفر منتج',
-          language: 'ar',
-          category: 'sales_recovery',
-          triggerEvent: 'product.available',
-          content: 'مرحباً {{customer_name}} 🔔\n\nخبر سار! المنتج الذي كنت تنتظره عاد للمخزون ✅\n\n{{product_name}}\nالسعر: {{product_price}} ريال\n\nاطلبه الآن قبل نفاد الكمية! 🏃',
-          buttons: [
-            { type: 'url', text: 'اطلب الآن', url: '{{product_url}}' },
-          ],
-          sendSettings: { sendingMode: 'instant' },
         },
 
         // ═══════════════════════════════════════════════════════════════
