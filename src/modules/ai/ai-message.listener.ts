@@ -119,6 +119,33 @@ export class AIMessageListener {
       }
 
       // ──────────────────────────────────────────────────────────────────────
+      // 2.5 ✅ وضع الاختبار — البوت يرد فقط على أرقام الاختبار
+      // ──────────────────────────────────────────────────────────────────────
+
+      if (settings.testMode && settings.testPhones?.length) {
+        const customerPhone = conversation.customerPhone || '';
+        // تنظيف الرقم: إزالة + والمسافات
+        const normalizedPhone = customerPhone.replace(/[^0-9]/g, '');
+        const lastNine = (p: string) => p.slice(-9);
+
+        const isTestPhone = settings.testPhones.some((testPhone: string) => {
+          const cleanTest = testPhone.replace(/[^0-9]/g, '');
+          return normalizedPhone === cleanTest || lastNine(normalizedPhone) === lastNine(cleanTest);
+        });
+
+        if (!isTestPhone) {
+          this.logger.debug(
+            `🧪 Test mode: skipping non-test phone ${customerPhone.slice(-4)}**** (conv=${conversation.id})`,
+          );
+          return;
+        }
+
+        this.logger.log(
+          `🧪 Test mode: responding to test phone ${customerPhone.slice(-4)}****`,
+        );
+      }
+
+      // ──────────────────────────────────────────────────────────────────────
       // 3. التحقق من حالة المحادثة مع دعم انتهاء مدة السكوت
       // ──────────────────────────────────────────────────────────────────────
 
