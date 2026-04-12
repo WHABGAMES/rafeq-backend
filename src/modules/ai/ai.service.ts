@@ -136,6 +136,10 @@ export interface AISettings {
     createCoupons: boolean; // إنشاء أكواد خصم
     modifyOrders: boolean; // تعديل حالة طلبات (إلغاء/استرجاع)
   };
+
+  // ✅ وضع الاختبار — Test/Sandbox Mode
+  testMode?: boolean; // Default: false — عند التفعيل البوت يرد فقط على أرقام الاختبار
+  testPhones?: string[]; // أرقام اختبار البوت (حتى 10)
 }
 
 export interface ConversationContext {
@@ -350,6 +354,9 @@ const AI_DEFAULTS: AISettings = {
   productSearchTimeout: 10000,
   maxRetries: 2,
   retryDelay: 1000,
+  // ✅ وضع الاختبار
+  testMode: false,
+  testPhones: [],
 };
 
 
@@ -517,6 +524,14 @@ export class AIService {
         .map((p: string) => String(p || '').replace(/[^0-9]/g, '')) // أرقام فقط
         .filter((p: string) => p.length >= 9) // حد أدنى 9 أرقام
         .slice(0, 5); // حد أقصى 5 أرقام
+    }
+
+    // ✅ SECURITY: تنظيف وتحقق من testPhones
+    if (merged.testPhones) {
+      merged.testPhones = merged.testPhones
+        .map((p: string) => String(p || '').replace(/[^0-9]/g, ''))
+        .filter((p: string) => p.length >= 9)
+        .slice(0, 10); // حد أقصى 10 أرقام اختبار
     }
 
     if (row) {
