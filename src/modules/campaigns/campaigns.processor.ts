@@ -19,7 +19,6 @@ import { Repository } from 'typeorm';
 
 import { Campaign, CampaignStatus, CampaignType, Customer } from '@database/entities';
 import { Channel, ChannelType, ChannelStatus } from '@modules/channels/entities/channel.entity';
-import { Store } from '@modules/stores/entities/store.entity';
 
 // ✅ FIX 1: نستخدم الخدمتين — Official + Baileys
 import { WhatsAppService } from '@modules/channels/whatsapp/whatsapp.service';
@@ -47,8 +46,6 @@ export class CampaignsProcessor extends WorkerHost {
     private readonly customerRepo: Repository<Customer>,
     @InjectRepository(Channel)
     private readonly channelRepo: Repository<Channel>,
-    @InjectRepository(Store)
-    private readonly storeRepo: Repository<Store>,
     private readonly whatsappOfficial: WhatsAppService,
     private readonly whatsappBaileys: WhatsAppBaileysService,
   ) {
