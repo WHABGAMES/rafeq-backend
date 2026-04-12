@@ -367,16 +367,6 @@ export class TemplatesController {
           },
         },
         {
-          id: 'order_processing',
-          name: 'طلب قيد التنفيذ',
-          language: 'ar',
-          category: 'order_notifications',
-          triggerEvent: 'order.status.processing',
-          content: 'مرحباً {{customer_name}} ⚙️\n\nطلبك رقم #{{order_id}} قيد التجهيز الآن\n\nفريقنا يعمل على تجهيز طلبك بأسرع وقت ممكن ⏳\n\nسنُبلغك فور شحن الطلب 📦',
-          buttons: [],
-          sendSettings: { sendingMode: 'instant' },
-        },
-        {
           id: 'order_completed',
           name: 'طلب تم التنفيذ',
           language: 'ar',
@@ -401,16 +391,6 @@ export class TemplatesController {
           sendSettings: { sendingMode: 'instant' },
         },
         {
-          id: 'order_awaiting_review',
-          name: 'طلب بانتظار المراجعة',
-          language: 'ar',
-          category: 'order_notifications',
-          triggerEvent: 'order.status.under_review',
-          content: 'مرحباً {{customer_name}} 📋\n\nطلبك رقم #{{order_id}} قيد المراجعة من فريقنا\n\nسيتم تأكيد الطلب وإشعارك في أقرب وقت ⏳\n\nشكراً لصبرك 🙏',
-          buttons: [],
-          sendSettings: { sendingMode: 'instant' },
-        },
-        {
           id: 'order_cancelled',
           name: 'طلب ملغي',
           language: 'ar',
@@ -432,16 +412,6 @@ export class TemplatesController {
           buttons: [
             { type: 'url', text: 'تسوق مجدداً', url: '{{store_url}}' },
           ],
-          sendSettings: { sendingMode: 'instant' },
-        },
-        {
-          id: 'order_return_processing',
-          name: 'طلب قيد الاسترجاع',
-          language: 'ar',
-          category: 'order_notifications',
-          triggerEvent: 'order.status.restoring',
-          content: 'مرحباً {{customer_name}} 🔄\n\nطلب الاسترجاع للطلب رقم #{{order_id}} قيد المعالجة\n\nسنقوم بمراجعته وإشعارك بالنتيجة خلال 2-3 أيام عمل ⏳',
-          buttons: [],
           sendSettings: { sendingMode: 'instant' },
         },
 
