@@ -916,13 +916,42 @@ export class TemplateDispatcherService {
           };
 
         } else {
-          // الطلب غير موجود في DB → استخدم baseVars + entityId
+          // الطلب غير موجود في DB → استخراج البيانات من meta و sallaContent
           this.logger.warn(
             `⚠️ Order not found in DB (id=${entityIdStr}, storeId=${storeId}) [${businessType}]`,
           );
           baseVars.order_id     = entityIdStr;
           baseVars.reference_id = baseVars.reference_id || entityIdStr;
           baseVars.entity_id    = entityIdStr;
+
+          // ✅ FIX: استخراج order_total من rawData.meta أو من نص سلة
+          const meta = (rawData?.meta || {}) as Record<string, unknown>;
+          const rawTotal = meta.total || meta.amount || meta.order_total
+            || meta.grand_total || meta.sub_total
+            || rawData?.total || rawData?.amount;
+
+          if (rawTotal !== undefined && rawTotal !== null) {
+            baseVars.order_total = rawTotal;
+            this.logger.debug(`💰 order_total from meta/rawData: ${rawTotal}`);
+          } else {
+            // Fallback: استخرج المبلغ من نص سلة — "بقيمة 150 ريال" أو "إجمالي: 150"
+            const totalMatch = sallaContent.match(
+              /(?:بقيمة|إجمالي|المبلغ|المجموع|total|amount)[:\s]*([\d,]+(?:\.\d{1,2})?)/i,
+            );
+            if (totalMatch) {
+              baseVars.order_total = totalMatch[1].replace(/,/g, '');
+              this.logger.debug(`💰 order_total extracted from Salla content: ${baseVars.order_total}`);
+            } else {
+              this.logger.warn(`⚠️ Could not extract order_total for order ${entityIdStr}`);
+            }
+          }
+
+          // ✅ استخراج بيانات إضافية من meta إذا متوفرة
+          if (meta.tracking_number)  baseVars.tracking_number  = meta.tracking_number;
+          if (meta.shipping_company) baseVars.shipping_company = meta.shipping_company;
+          if (meta.tracking_url)     baseVars.order_tracking   = meta.tracking_url;
+          if (meta.payment_url)      baseVars.payment_link     = meta.payment_url;
+
           return baseVars;
         }
 
@@ -2198,11 +2227,11 @@ export class TemplateDispatcherService {
       customer_first_name: safeStr(customer.first_name || data.customerName || data.first_name, "عميلنا"),
       customer_phone: safeStr(customer.mobile || customer.phone || data.mobile || data.phone || data.telephone),
       customer_email: safeStr(customer.email || data.email),
-      order_id: safeStr(data.reference_id || orderObj.reference_id || data.order_number || orderObj.order_number || data.id || orderObj.id || data.orderId),
-      order_total: this.formatAmount(data.total || orderObj.total || (data.amounts as any)?.total || (orderObj.amounts as any)?.total),
+      order_id: safeStr(data.reference_id || orderObj.reference_id || data.order_number || orderObj.order_number || data.order_id || data.id || orderObj.id || data.orderId),
+      order_total: this.formatAmount(data.total || data.order_total || orderObj.total || (data.amounts as any)?.total || (orderObj.amounts as any)?.total),
       order_status: safeStr(data.status || data.newStatus || orderObj.status),
       order_date: new Date().toLocaleDateString('ar-SA'),
-      order_tracking: safeStr(urls.tracking || data.tracking_url || orderObj.tracking_url),
+      order_tracking: safeStr(urls.tracking || data.tracking_url || data.order_tracking || orderObj.tracking_url),
       tracking_number: safeStr(data.tracking_number || data.trackingNumber || orderObj.tracking_number),
       shipping_company: safeStr(data.shipping_company || data.shippingCompany || orderObj.shipping_company),
       store_name: safeStr(data.store_name || orderObj.store_name, 'متجرنا'),
