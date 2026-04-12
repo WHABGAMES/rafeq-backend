@@ -547,13 +547,13 @@ export class TemplatesController {
         },
 
         // ═══════════════════════════════════════════════════════════════
-        // ⭐ التفاعل والولاء (Engagement & Loyalty)
+        // ⭐ طلب تقييم (يُنقل لإشعارات الطلبات — مربوط بـ order.created)
         // ═══════════════════════════════════════════════════════════════
         {
           id: 'review_request',
           name: 'طلب تقييم',
           language: 'ar',
-          category: 'engagement',
+          category: 'order_notifications',
           triggerEvent: 'order.created',
           description: 'يُرسَل تلقائياً بعد المدة المحددة من إنشاء الطلب — يمكنك تعديل التأخير من إعدادات الإرسال',
           content: 'مرحباً {{customer_name}} ⭐\n\nنأمل أنك استمتعت بتجربتك مع {{store_name}}!\n\nرأيك يهمنا كثيراً، شاركنا تقييمك للمنتجات\n\nتقييمك يساعدنا نقدم لك الأفضل دائماً 💙',
