@@ -5,6 +5,10 @@
  * ║  🔗 الجسر بين نظام Webhooks الحالي ونظام التنبيهات                            ║
  * ║  يستمع لأحداث EventEmitter2 من SallaWebhooksService                           ║
  * ║  ويُفعّل التنبيهات التلقائية للموظفين                                        ║
+ * ║                                                                                ║
+ * ║  ✅ v2: Dedup — يمنع تكرار الإشعار عند وصول نفس الحدث من مسارين              ║
+ * ║  سلة ترسل order.created + communication.whatsapp.send معاً                    ║
+ * ║  كلاهما يُطلق webhook.processed → بدون dedup = إشعار مكرر                    ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -39,20 +43,26 @@ interface WebhookProcessedEvent {
 export class NotificationEventListener {
   private readonly logger = new Logger(NotificationEventListener.name);
 
+  /**
+   * ✅ v2: Dedup cache لمنع إشعارات الموظفين المكررة
+   * 
+   * السبب: سلة ترسل نفس الحدث عبر مسارين:
+   *   1. order.created → webhook.processed (eventType: order.created)
+   *   2. communication.whatsapp.send → maps order.notification.create → order.created
+   *      → webhook.processed (eventType: order.created) مرة ثانية
+   * 
+   * الحل: نسجل كل حدث بمفتاح (tenantId:eventType:entityId)
+   * ونتجاهل التكرار خلال 60 ثانية
+   */
+  private readonly recentEvents = new Map<string, number>();
+  private readonly DEDUP_WINDOW_MS = 60_000; // 60 ثانية
+
   constructor(
     private readonly notificationsService: EmployeeNotificationsService,
   ) {}
 
   /**
    * ✅ الاستماع لحدث webhook.processed
-   * 
-   * هذا الحدث يُطلق بعد معالجة الـ webhook بنجاح
-   * (يجب إضافته في الـ webhook processor بعد المعالجة الناجحة)
-   * 
-   * مسار التدفق:
-   * Salla → Webhook Controller → SallaWebhooksService.queueWebhook() 
-   *   → emit('webhook.received') → Queue → Processor 
-   *   → emit('webhook.processed') → ⭐ هنا يتم تفعيل التنبيهات
    */
   @OnEvent('webhook.processed')
   async handleWebhookProcessed(event: WebhookProcessedEvent): Promise<void> {
@@ -61,6 +71,38 @@ export class NotificationEventListener {
       return;
     }
 
+    // ═══════════════════════════════════════════════════════════
+    // ✅ v2: Dedup — منع التكرار
+    // ═══════════════════════════════════════════════════════════
+    const entity = (event.data?.entity || {}) as Record<string, unknown>;
+    const entityId = String(
+      entity.id || event.data?.id || event.data?.orderId || event.webhookEventId || '',
+    );
+    const dedupKey = `${event.tenantId}:${event.eventType}:${entityId}`;
+    const now = Date.now();
+
+    // تنظيف المدخلات القديمة (أكثر من 60 ثانية)
+    if (this.recentEvents.size > 500) {
+      for (const [key, ts] of this.recentEvents) {
+        if (now - ts > this.DEDUP_WINDOW_MS) this.recentEvents.delete(key);
+      }
+    }
+
+    // فحص التكرار
+    const lastSeen = this.recentEvents.get(dedupKey);
+    if (lastSeen && now - lastSeen < this.DEDUP_WINDOW_MS) {
+      this.logger.debug(
+        `🔁 Dedup: skipping duplicate employee notification [${event.eventType}] entity=${entityId}`,
+      );
+      return;
+    }
+
+    // تسجيل الحدث
+    this.recentEvents.set(dedupKey, now);
+
+    // ═══════════════════════════════════════════════════════════
+    // معالجة الإشعار
+    // ═══════════════════════════════════════════════════════════
     try {
       this.logger.debug(
         `🔔 Processing notifications for event: ${event.eventType}`,
@@ -97,13 +139,9 @@ export class NotificationEventListener {
   /**
    * يمكن أيضاً الاستماع لحدث webhook.received
    * للتنبيهات الفورية (قبل المعالجة)
-   * 
-   * مثال: تنبيه فوري عند وصول طلب جديد
    */
   @OnEvent('webhook.received')
   async handleWebhookReceived(event: WebhookReceivedEvent): Promise<void> {
-    // اختياري: يمكن استخدامه للتنبيهات الفورية
-    // حالياً مُعطّل لتجنب التنبيهات المزدوجة
     this.logger.debug(
       `📥 Webhook received: ${event.eventType} (notification deferred to processing)`,
     );
