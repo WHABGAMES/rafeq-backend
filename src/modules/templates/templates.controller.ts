@@ -326,7 +326,7 @@ export class TemplatesController {
     return {
       presets: [
         // ═══════════════════════════════════════════════════════════════
-        // 📦 إشعارات الطلبات (Order Notifications)
+        // 📦 إشعارات الطلبات (Order Notifications) — 6 قوالب
         // ═══════════════════════════════════════════════════════════════
         {
           id: 'order_new',
@@ -334,13 +334,11 @@ export class TemplatesController {
           language: 'ar',
           category: 'order_notifications',
           triggerEvent: 'order.created',
-          content: 'مرحباً {{customer_name}} 👋\n\nتم استلام طلبك رقم #{{order_id}} بنجاح ✅\n\nإجمالي الطلب: {{order_total}} ريال\n\nشكراً لتسوقك من {{store_name}} 🛍️',
+          content: 'أهلاً {{customer_name}} 👋\n\nيسعدنا إنك اخترتنا! طلبك رقم #{{order_id}} وصلنا بنجاح ✅\n\n💰 الإجمالي: {{order_total}} ريال\n\nفريقنا يجهّز طلبك الحين بكل عناية واهتمام 🎁\n\nنحب نخليك على اطلاع بكل خطوة — راح نرسلك تحديث أول ما يتحرك طلبك\n\nشكراً لثقتك في {{store_name}} 💙',
           buttons: [
             { type: 'url', text: 'تتبع الطلب', url: '{{order_tracking}}' },
           ],
-          sendSettings: {
-            sendingMode: 'instant',
-          },
+          sendSettings: { sendingMode: 'instant' },
         },
         {
           id: 'order_completed',
@@ -348,7 +346,7 @@ export class TemplatesController {
           language: 'ar',
           category: 'order_notifications',
           triggerEvent: 'order.status.completed',
-          content: 'مرحباً {{customer_name}} ✅\n\nتم تنفيذ طلبك رقم #{{order_id}} بنجاح!\n\nسيتم تسليمه لشركة الشحن قريباً 🚚\n\nشكراً لثقتك في {{store_name}} 💙',
+          content: 'أهلاً {{customer_name}} ✅\n\nخبر حلو! طلبك رقم #{{order_id}} جاهز وتم تنفيذه بنجاح 🎉\n\nالخطوة الجاية: نسلّمه لشركة الشحن ونرسلك رقم التتبع\n\nقربنا نوصّله لك، ترقّب! 📦\n\n{{store_name}} — نهتم بكل تفصيلة عشانك 💙',
           buttons: [
             { type: 'url', text: 'تتبع الطلب', url: '{{order_tracking}}' },
           ],
@@ -360,7 +358,7 @@ export class TemplatesController {
           language: 'ar',
           category: 'order_notifications',
           triggerEvent: 'order.status.pending_payment',
-          content: 'مرحباً {{customer_name}} ⏰\n\nطلبك رقم #{{order_id}} بانتظار إتمام الدفع\n\nالمبلغ المطلوب: {{order_total}} ريال\n\nأكمل الدفع الآن لتأكيد طلبك 💳',
+          content: 'أهلاً {{customer_name}} 🧡\n\nطلبك رقم #{{order_id}} محجوز وينتظرك!\n\n💳 المبلغ المطلوب: {{order_total}} ريال\n\nأكمل الدفع عشان نبدأ نجهّز طلبك على طول 🚀\n\n⏰ ملاحظة: الطلب محجوز لفترة محدودة\n\nنتطلع نخدمك! — {{store_name}}',
           buttons: [
             { type: 'url', text: 'أكمل الدفع', url: '{{payment_link}}' },
           ],
@@ -372,9 +370,9 @@ export class TemplatesController {
           language: 'ar',
           category: 'order_notifications',
           triggerEvent: 'order.cancelled',
-          content: 'مرحباً {{customer_name}} ❌\n\nتم إلغاء طلبك رقم #{{order_id}}\n\nإذا كان الإلغاء بالخطأ أو تحتاج مساعدة، لا تتردد بالتواصل معنا 📞\n\nفريق {{store_name}} في خدمتك دائماً 💙',
+          content: 'أهلاً {{customer_name}} 🙏\n\nتم إلغاء طلبك رقم #{{order_id}}\n\nإذا كان الإلغاء بالخطأ أو تحتاج أي مساعدة — فريقنا موجود لك دائماً ❤️\n\nنقدّر وقتك وثقتك فينا، ونتمنى نشوفك مرة ثانية قريب\n\n{{store_name}} — بابنا مفتوح لك دائماً 🚪',
           buttons: [
-            { type: 'url', text: 'تواصل معنا', url: '{{store_url}}/contact' },
+            { type: 'url', text: 'تواصل معنا', url: '{{store_url}}' },
           ],
           sendSettings: { sendingMode: 'instant' },
         },
@@ -384,15 +382,15 @@ export class TemplatesController {
           language: 'ar',
           category: 'order_notifications',
           triggerEvent: 'order.refunded',
-          content: 'مرحباً {{customer_name}} 💰\n\nتم قبول طلب استرجاع الطلب رقم #{{order_id}}\n\nسيتم إعادة المبلغ {{order_total}} ريال خلال 5-14 يوم عمل\n\nنأسف لأي إزعاج ونتمنى رؤيتك مجدداً 🙏',
+          content: 'أهلاً {{customer_name}} 💙\n\nتم قبول طلب الاسترجاع للطلب رقم #{{order_id}} ✅\n\n💰 مبلغ {{order_total}} ريال في طريقه إليك خلال 5-14 يوم عمل\n\nنعتذر عن أي إزعاج — رضاك أولويتنا وأهم شي عندنا\n\nنتمنى نشوفك مرة ثانية ونقدم لك تجربة أفضل 🌟\n\n{{store_name}}',
           buttons: [
-            { type: 'url', text: 'تسوق مجدداً', url: '{{store_url}}' },
+            { type: 'url', text: 'تسوّق مجدداً', url: '{{store_url}}' },
           ],
           sendSettings: { sendingMode: 'instant' },
         },
 
         // ═══════════════════════════════════════════════════════════════
-        // 🚚 إشعارات الشحن (Shipping Notifications)
+        // 🚚 إشعارات الشحن (Shipping Notifications) — 4 قوالب
         // ═══════════════════════════════════════════════════════════════
         {
           id: 'shipping_created',
@@ -400,7 +398,7 @@ export class TemplatesController {
           language: 'ar',
           category: 'shipping_notifications',
           triggerEvent: 'shipment.created',
-          content: 'مرحباً {{customer_name}} 📋\n\nتم إصدار بوليصة شحن لطلبك رقم #{{order_id}}\n\nرقم التتبع: {{tracking_number}}\nشركة الشحن: {{shipping_company}}\n\nسنُبلغك فور تحرك الشحنة 🚚',
+          content: 'أهلاً {{customer_name}} 📋\n\nطلبك رقم #{{order_id}} تم تجهيزه وصار عند شركة الشحن!\n\n🚛 شركة الشحن: {{shipping_company}}\n📦 رقم التتبع: {{tracking_number}}\n\nراح نرسلك تحديث أول ما تتحرك الشحنة\n\n{{store_name}} — طلبك في أيدٍ أمينة 💙',
           buttons: [
             { type: 'url', text: 'تتبع الشحنة', url: '{{order_tracking}}' },
           ],
@@ -412,7 +410,7 @@ export class TemplatesController {
           language: 'ar',
           category: 'shipping_notifications',
           triggerEvent: 'order.shipped',
-          content: 'مرحباً {{customer_name}} 📦\n\nتم شحن طلبك رقم #{{order_id}} 🎉\n\nشركة الشحن: {{shipping_company}}\nرقم التتبع: {{tracking_number}}\nالتوصيل المتوقع: {{delivery_date}}\n\nتتبع شحنتك من الرابط أدناه 👇',
+          content: 'أهلاً {{customer_name}} 🎉\n\nطلبك رقم #{{order_id}} انطلق! في الطريق إليك الحين 🚚💨\n\n📦 شركة الشحن: {{shipping_company}}\n🔢 رقم التتبع: {{tracking_number}}\n\nتقدر تتابع شحنتك لحظة بلحظة من الرابط 👇\n\n{{store_name}} — قربنا نوصّلها لك! ✨',
           buttons: [
             { type: 'url', text: 'تتبع الشحنة', url: '{{order_tracking}}' },
           ],
@@ -424,7 +422,7 @@ export class TemplatesController {
           language: 'ar',
           category: 'shipping_notifications',
           triggerEvent: 'order.status.in_transit',
-          content: 'مرحباً {{customer_name}} 🚚💨\n\nطلبك رقم #{{order_id}} في الطريق إليك الآن!\n\nالمندوب سيصلك اليوم، يرجى التأكد من توفرك لاستلام الطلب 📱\n\nفي حال عدم التواجد، يرجى التواصل مع شركة الشحن',
+          content: 'أهلاً {{customer_name}} 🚚💨\n\nطلبك رقم #{{order_id}} وصل لمدينتك وفي الطريق إليك الآن!\n\n📱 تأكد من توفرك لاستلام الطلب اليوم\n\nلو ما كنت متواجد، تقدر تتواصل مع المندوب عبر رابط التتبع\n\nما بقى شي! — {{store_name}} 🎁',
           buttons: [
             { type: 'url', text: 'تتبع المندوب', url: '{{order_tracking}}' },
           ],
@@ -436,15 +434,15 @@ export class TemplatesController {
           language: 'ar',
           category: 'shipping_notifications',
           triggerEvent: 'order.delivered',
-          content: 'مرحباً {{customer_name}} 🎉\n\nتم توصيل طلبك رقم #{{order_id}} بنجاح ✅\n\nنتمنى أن تنال المنتجات إعجابك!\n\nشاركنا رأيك وقيّم تجربتك ⭐',
+          content: 'أهلاً {{customer_name}} 🎊\n\nطلبك رقم #{{order_id}} وصلك بنجاح! نتمنى يعجبك ✅\n\n⭐ رأيك يهمنا كثير — لو عندك دقيقة، شاركنا تقييمك\n\nتقييمك يساعدنا نخدمك أحسن وأحسن\n\nشكراً إنك جزء من عائلة {{store_name}} 💙',
           buttons: [
-            { type: 'url', text: 'قيّم تجربتك', url: '{{store_url}}/reviews' },
+            { type: 'url', text: 'قيّم تجربتك ⭐', url: '{{store_url}}' },
           ],
           sendSettings: { sendingMode: 'instant' },
         },
 
         // ═══════════════════════════════════════════════════════════════
-        // 🛒 استرداد المبيعات (Sales Recovery)
+        // 🛒 استرداد السلات المتروكة (Sales Recovery) — 3 قوالب
         // ═══════════════════════════════════════════════════════════════
         {
           id: 'cart_abandoned_1',
@@ -452,7 +450,7 @@ export class TemplatesController {
           language: 'ar',
           category: 'sales_recovery',
           triggerEvent: 'abandoned.cart',
-          content: 'مرحباً {{customer_name}} 👋\n\nلاحظنا أنك تركت بعض المنتجات في سلتك 🛒\n\nلا تفوت الفرصة! أكمل طلبك الآن واستمتع بمنتجاتك المفضلة\n\nإجمالي السلة: {{cart_total}} ريال',
+          content: 'أهلاً {{customer_name}} 👋\n\nاخترت منتجات حلوة بس ما كملت الطلب! 🛒\n\n💰 إجمالي السلة: {{cart_total}} ريال\n\nمنتجاتك لسه محفوظة وتنتظرك — أكمل طلبك قبل لا تخلص الكميات 🏃‍♂️\n\n{{store_name}} — محفوظة عشانك 💛',
           buttons: [
             { type: 'url', text: 'أكمل الطلب', url: '{{cart_link}}' },
           ],
@@ -466,13 +464,13 @@ export class TemplatesController {
         },
         {
           id: 'cart_abandoned_2',
-          name: 'سلة متروكة - مع كوبون خصم',
+          name: 'سلة متروكة - مع حافز',
           language: 'ar',
           category: 'sales_recovery',
           triggerEvent: 'abandoned.cart',
-          content: 'مرحباً {{customer_name}} 🎁\n\nسلتك لا زالت بانتظارك! لأنك مميز، جهزنا لك خصم حصري 🎉\n\nاستخدم كود: {{coupon_code}}\nواحصل على خصم {{discount_percent}}% على سلتك\n\nالعرض لفترة محدودة ⏰',
+          content: 'أهلاً {{customer_name}} 🎁\n\nسلتك لسه بانتظارك!\n\nلأنك مهم عندنا، جهّزنا لك مفاجأة بسيطة 🎉\n\n💰 إجمالي السلة: {{cart_total}} ريال\n\nأكمل طلبك الحين واستمتع بتجربة تسوق مميزة ✨\n\nالعرض لفترة محدودة ⏰\n\n{{store_name}}',
           buttons: [
-            { type: 'url', text: 'استفد من الخصم', url: '{{cart_link}}' },
+            { type: 'url', text: 'استفد من العرض', url: '{{cart_link}}' },
           ],
           sendSettings: {
             sendingMode: 'delayed',
@@ -488,9 +486,9 @@ export class TemplatesController {
           language: 'ar',
           category: 'sales_recovery',
           triggerEvent: 'abandoned.cart',
-          content: 'مرحباً {{customer_name}} ⏰\n\nآخر فرصة! منتجاتك في السلة قد تنفد قريباً\n\nإجمالي السلة: {{cart_total}} ريال\n\nلا تفوّت العرض، الكمية محدودة! 🔥',
+          content: '{{customer_name}} — تذكير أخير 🔔\n\nمنتجاتك في السلة قد تنفد قريباً!\n\n💰 إجمالي السلة: {{cart_total}} ريال\n\nالكمية محدودة والطلب عليها عالي — لا تفوّت الفرصة 🔥\n\nبعد كذا ما نقدر نضمن توفرها\n\n{{store_name}} — آخر فرصة! ⏰',
           buttons: [
-            { type: 'url', text: 'اطلب الآن', url: '{{cart_link}}' },
+            { type: 'url', text: 'اطلب الآن 🛒', url: '{{cart_link}}' },
           ],
           sendSettings: {
             sendingMode: 'delayed',
@@ -502,7 +500,7 @@ export class TemplatesController {
         },
 
         // ═══════════════════════════════════════════════════════════════
-        // ⭐ طلب تقييم (يُنقل لإشعارات الطلبات — مربوط بـ order.created)
+        // ⭐ طلب تقييم (مؤجل بعد الطلب)
         // ═══════════════════════════════════════════════════════════════
         {
           id: 'review_request',
@@ -510,10 +508,10 @@ export class TemplatesController {
           language: 'ar',
           category: 'order_notifications',
           triggerEvent: 'order.created',
-          description: 'يُرسَل تلقائياً بعد المدة المحددة من إنشاء الطلب — يمكنك تعديل التأخير من إعدادات الإرسال',
-          content: 'مرحباً {{customer_name}} ⭐\n\nنأمل أنك استمتعت بتجربتك مع {{store_name}}!\n\nرأيك يهمنا كثيراً، شاركنا تقييمك للمنتجات\n\nتقييمك يساعدنا نقدم لك الأفضل دائماً 💙',
+          description: 'يُرسَل تلقائياً بعد 3 أيام من إنشاء الطلب',
+          content: 'أهلاً {{customer_name}} 🌟\n\nكيف كانت تجربتك مع {{store_name}}؟\n\nرأيك الصادق يساعدنا نتطور ونقدم لك الأفضل دائماً\n\n⭐ شاركنا تقييمك — يأخذ أقل من دقيقة\n\nكل تقييم يفرق معنا كثير ويساعد عملاء ثانيين يختارون الأفضل\n\nشكراً لوقتك 💙',
           buttons: [
-            { type: 'url', text: 'قيّم الآن', url: '{{store_url}}/reviews' },
+            { type: 'url', text: 'قيّم الآن ⭐', url: '{{store_url}}' },
           ],
           sendSettings: {
             sendingMode: 'delayed',
@@ -524,7 +522,7 @@ export class TemplatesController {
         },
 
         // ═══════════════════════════════════════════════════════════════
-        // 🔧 رسائل الخدمة (Service & Utility)
+        // 🔧 رسائل الخدمة (Service Messages) — 2 قوالب
         // ═══════════════════════════════════════════════════════════════
         {
           id: 'digital_product_delivery',
@@ -532,9 +530,9 @@ export class TemplatesController {
           language: 'ar',
           category: 'service',
           triggerEvent: 'product.digital.code',
-          content: 'مرحباً {{customer_name}} 📱\n\nتم تأكيد دفعك بنجاح! إليك منتجك الرقمي:\n\nطلب رقم: #{{order_id}}\n\nيمكنك تحميل المنتج من الرابط أدناه 👇\n\nشكراً لتسوقك من {{store_name}} 💙',
+          content: 'أهلاً {{customer_name}} 🎮\n\nتم تأكيد الدفع بنجاح! منتجك الرقمي جاهز ✅\n\n📦 طلب رقم: #{{order_id}}\n\nحمّل منتجك من الرابط أدناه — الرابط خاص فيك فقط 🔐\n\nلو واجهت أي مشكلة، فريقنا موجود لمساعدتك\n\nاستمتع! — {{store_name}} 💙',
           buttons: [
-            { type: 'url', text: 'تحميل المنتج', url: '{{download_link}}' },
+            { type: 'url', text: 'تحميل المنتج 📥', url: '{{download_link}}' },
           ],
           sendSettings: { sendingMode: 'instant' },
         },
@@ -544,9 +542,9 @@ export class TemplatesController {
           language: 'ar',
           category: 'service',
           triggerEvent: 'invoice.created',
-          content: 'مرحباً {{customer_name}} 🧾\n\nتم إصدار فاتورة جديدة لطلبك رقم #{{order_id}}\n\nالمبلغ: {{order_total}} ريال\n\nيمكنك تحميل الفاتورة من الرابط أدناه 👇',
+          content: 'أهلاً {{customer_name}} 🧾\n\nتم إصدار فاتورة لطلبك رقم #{{order_id}}\n\n💰 المبلغ: {{order_total}} ريال\n📅 التاريخ: {{order_date}}\n\nتقدر تحمّل الفاتورة من الرابط أدناه وتحتفظ فيها لسجلاتك\n\n{{store_name}}',
           buttons: [
-            { type: 'url', text: 'تحميل الفاتورة', url: '{{invoice_link}}' },
+            { type: 'url', text: 'تحميل الفاتورة 📄', url: '{{invoice_link}}' },
           ],
           sendSettings: { sendingMode: 'instant' },
         },
