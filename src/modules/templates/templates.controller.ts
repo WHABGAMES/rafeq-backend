@@ -567,30 +567,6 @@ export class TemplatesController {
             maxSendsPerCustomer: { count: 1, periodDays: 30 },
           },
         },
-        {
-          id: 'loyalty_points',
-          name: 'نقاط الولاء',
-          language: 'ar',
-          category: 'engagement',
-          triggerEvent: null,
-          content: 'مرحباً {{customer_name}} 🏆\n\nرصيد نقاطك في {{store_name}}: {{loyalty_points}} نقطة\n\nاستبدل نقاطك بخصومات حصرية على مشترياتك القادمة!\n\nاستمر بالتسوق واجمع المزيد من النقاط ✨',
-          buttons: [
-            { type: 'url', text: 'استبدل نقاطك', url: '{{store_url}}/loyalty' },
-          ],
-          sendSettings: { sendingMode: 'manual' },
-        },
-        {
-          id: 'referral_invite',
-          name: 'دعوة إحالة صديق',
-          language: 'ar',
-          category: 'engagement',
-          triggerEvent: null,
-          content: 'مرحباً {{customer_name}} 🤝\n\nشارك تجربتك مع أصدقائك واحصل على مكافأة!\n\nرابط الإحالة الخاص بك:\n{{referral_link}}\n\nعن كل صديق يسجل ويشتري، تحصل على {{referral_reward}} ريال رصيد 🎉',
-          buttons: [
-            { type: 'url', text: 'شارك الرابط', url: '{{referral_link}}' },
-          ],
-          sendSettings: { sendingMode: 'manual' },
-        },
 
         // ═══════════════════════════════════════════════════════════════
         // 🔧 رسائل الخدمة (Service & Utility)
@@ -600,22 +576,12 @@ export class TemplatesController {
           name: 'تسليم منتج رقمي',
           language: 'ar',
           category: 'service',
-          triggerEvent: 'order.status.completed',
+          triggerEvent: 'product.digital.code',
           content: 'مرحباً {{customer_name}} 📱\n\nتم تأكيد دفعك بنجاح! إليك منتجك الرقمي:\n\nطلب رقم: #{{order_id}}\n\nيمكنك تحميل المنتج من الرابط أدناه 👇\n\nشكراً لتسوقك من {{store_name}} 💙',
           buttons: [
             { type: 'url', text: 'تحميل المنتج', url: '{{download_link}}' },
           ],
           sendSettings: { sendingMode: 'instant' },
-        },
-        {
-          id: 'after_hours_reply',
-          name: 'رد خارج أوقات العمل',
-          language: 'ar',
-          category: 'service',
-          triggerEvent: null,
-          content: 'مرحباً {{customer_name}} 🌙\n\nشكراً لتواصلك مع {{store_name}}\n\nنحن خارج أوقات العمل حالياً\nساعات العمل: {{working_hours}}\n\nسنرد على رسالتك في أقرب وقت ممكن ⏰\n\nشكراً لصبرك 🙏',
-          buttons: [],
-          sendSettings: { sendingMode: 'manual' },
         },
         {
           id: 'invoice_created',
