@@ -2212,6 +2212,11 @@ export class TemplateDispatcherService {
       product_name: safeStr(data.name || data.productName),
       product_price: this.formatAmount(data.price || orderObj.price),
       payment_link: safeStr(data.payment_url || data.checkout_url || orderObj.payment_url),
+
+      // ✅ v19: متغيرات إضافية للقوالب الجاهزة
+      delivery_date: safeStr(data.delivery_date || data.deliveryDate || orderObj.delivery_date || (data.shipment as any)?.delivery_date),
+      download_link: safeStr(data.download_url || data.downloadLink || orderObj.download_url || (data.digital as any)?.url),
+      invoice_link: safeStr(urls.invoice || data.invoice_url || data.invoiceLink || orderObj.invoice_url),
     };
 
     for (const [key, value] of Object.entries(variables)) {
