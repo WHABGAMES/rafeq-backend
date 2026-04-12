@@ -611,7 +611,7 @@ export class CampaignsService {
       .where('c.tenantId = :tenantId', { tenantId })
       .andWhere('c.type = :type', { type: CampaignType.AUTOMATED })
       .andWhere('c.status = :status', { status: CampaignStatus.ACTIVE })
-      .andWhere("c.triggerConfig->>'type' = :triggerType", { triggerType: event })
+      .andWhere("c.trigger_config->>'type' = :triggerType", { triggerType: event })
       .andWhere('c.deletedAt IS NULL')
       .getMany();
 
