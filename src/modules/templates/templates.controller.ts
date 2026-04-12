@@ -154,14 +154,6 @@ export class TemplatesController {
     return {
       categories: [
         {
-          id: 'marketing',
-          name: 'تسويقية',
-          nameEn: 'Marketing',
-          description: 'حملات ترويجية وعروض',
-          icon: '📢',
-          whatsappCategory: 'MARKETING',
-        },
-        {
           id: 'utility',
           name: 'خدمية',
           nameEn: 'Utility',
@@ -552,63 +544,6 @@ export class TemplatesController {
             { type: 'url', text: 'اطلب الآن', url: '{{product_url}}' },
           ],
           sendSettings: { sendingMode: 'instant' },
-        },
-
-        // ═══════════════════════════════════════════════════════════════
-        // 📢 التسويق والحملات (Marketing & Campaigns)
-        // ═══════════════════════════════════════════════════════════════
-        {
-          id: 'promotion_offer',
-          name: 'عرض وتخفيض',
-          language: 'ar',
-          category: 'marketing',
-          triggerEvent: null,
-          content: 'مرحباً {{customer_name}} 🔥\n\nعرض حصري من {{store_name}}!\n\nخصم يصل إلى {{discount_percent}}% على منتجات مختارة 🎉\n\nالعرض ساري حتى {{offer_end_date}}\n\nلا تفوّت الفرصة! ⏰',
-          buttons: [
-            { type: 'url', text: 'تسوق العروض', url: '{{store_url}}/offers' },
-          ],
-          sendSettings: { sendingMode: 'manual' },
-        },
-        {
-          id: 'coupon_exclusive',
-          name: 'كوبون خصم حصري',
-          language: 'ar',
-          category: 'marketing',
-          triggerEvent: null,
-          content: 'مرحباً {{customer_name}} 🎁\n\nلأنك من عملائنا المميزين، جهزنا لك كوبون خصم حصري!\n\nالكود: {{coupon_code}}\nالخصم: {{discount_percent}}%\nصالح حتى: {{offer_end_date}}\n\nاستخدمه الآن! 🛍️',
-          buttons: [
-            { type: 'url', text: 'استخدم الكوبون', url: '{{store_url}}' },
-          ],
-          sendSettings: { sendingMode: 'manual' },
-        },
-        {
-          id: 'winback_inactive',
-          name: 'استرداد عميل غير نشط',
-          language: 'ar',
-          category: 'marketing',
-          triggerEvent: null,
-          content: 'مرحباً {{customer_name}} 💙\n\nاشتقنا لك في {{store_name}}! 🥺\n\nمر وقت من آخر زيارة لك، ووددنا نطمن عليك\n\nجهزنا لك خصم خاص: {{coupon_code}} بقيمة {{discount_percent}}%\n\nعود لنا! 🙏',
-          buttons: [
-            { type: 'url', text: 'تسوق الآن', url: '{{store_url}}' },
-          ],
-          sendSettings: { sendingMode: 'manual' },
-        },
-        {
-          id: 'post_purchase_upsell',
-          name: 'توصيات بعد الشراء',
-          language: 'ar',
-          category: 'marketing',
-          triggerEvent: 'order.delivered',
-          content: 'مرحباً {{customer_name}} 🌟\n\nنأمل أنك استمتعت بمشترياتك من {{store_name}}!\n\nبناءً على طلبك السابق، نعتقد أنك ستحب هذه المنتجات أيضاً 👇\n\nاكتشف المزيد واستمتع بتجربة تسوق مميزة ✨',
-          buttons: [
-            { type: 'url', text: 'منتجات مقترحة', url: '{{store_url}}/recommended' },
-          ],
-          sendSettings: {
-            sendingMode: 'conditional',
-            delayMinutes: 4320,
-            triggerCondition: { orderStatus: 'delivered' },
-            maxSendsPerCustomer: { count: 1, periodDays: 30 },
-          },
         },
 
         // ═══════════════════════════════════════════════════════════════
