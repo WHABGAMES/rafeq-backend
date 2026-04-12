@@ -243,6 +243,13 @@ class UpdateAISettingsDto {
 
   @IsOptional() @IsArray()
   ownerLids?: string[];
+
+  // ✅ Test Mode Settings
+  @IsOptional() @IsBoolean()
+  testMode?: boolean;
+
+  @IsOptional() @IsArray()
+  testPhones?: string[];
 }
 
 class AddKnowledgeDto {
