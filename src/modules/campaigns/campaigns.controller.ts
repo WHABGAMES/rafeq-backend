@@ -55,7 +55,7 @@ export class CampaignsController {
   ) {
     const tenantId = user.tenantId;
     // ✅ FIX: storeId من header أو body
-    const storeId = dto.storeId || (req.headers['x-store-id'] as string) || null;
+    const storeId = dto.storeId || (req.headers['x-store-id'] as string) || undefined;
 
     return this.campaignsService.create({
       ...dto,
