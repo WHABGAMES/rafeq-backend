@@ -3,7 +3,6 @@
  * ║              RAFIQ PLATFORM - Campaigns Module v2                              ║
  * ║                                                                                ║
  * ║  ✅ FIX: إضافة ChannelsModule لدعم WhatsApp QR (Baileys)                     ║
- * ║  ✅ FIX: إضافة Store entity للـ Processor                                    ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -12,7 +11,6 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { BullModule } from '@nestjs/bullmq';
 
 import { Campaign, Customer, Channel } from '@database/entities';
-import { Store } from '@modules/stores/entities/store.entity';
 
 import { CampaignsService } from './campaigns.service';
 import { CampaignsController } from './campaigns.controller';
@@ -26,7 +24,7 @@ import { ChannelsModule } from '@modules/channels/channels.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Campaign, Customer, Channel, Store]),
+    TypeOrmModule.forFeature([Campaign, Customer, Channel]),
 
     // ✅ WhatsApp Official API
     WhatsAppModule,
