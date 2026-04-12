@@ -37,6 +37,9 @@ import { Repository } from 'typeorm';
 import { MessageTemplate, Order, Customer } from '@database/entities';
 import { SendingMode } from '@database/entities/message-template.entity';
 import { Channel, ChannelType, ChannelStatus } from '../channels/entities/channel.entity';
+import { Store } from '../stores/entities/store.entity';
+import { SallaApiService } from '../stores/salla-api.service';
+import { decrypt } from '@common/utils/encryption.util';
 import { ChannelsService } from '../channels/channels.service';
 import { TemplateSchedulerService } from './template-scheduler.service';
 import { SmsService } from '../channels/sms/sms.service';
@@ -75,6 +78,11 @@ export class TemplateDispatcherService {
 
     @InjectRepository(Customer)
     private readonly customerRepository: Repository<Customer>,
+
+    @InjectRepository(Store)
+    private readonly storeRepository: Repository<Store>,
+
+    private readonly sallaApiService: SallaApiService,
 
     private readonly channelsService: ChannelsService,
 
@@ -916,7 +924,7 @@ export class TemplateDispatcherService {
           };
 
         } else {
-          // الطلب غير موجود في DB → استخراج البيانات من meta و sallaContent
+          // الطلب غير موجود في DB → Salla API fallback
           this.logger.warn(
             `⚠️ Order not found in DB (id=${entityIdStr}, storeId=${storeId}) [${businessType}]`,
           );
@@ -924,33 +932,76 @@ export class TemplateDispatcherService {
           baseVars.reference_id = baseVars.reference_id || entityIdStr;
           baseVars.entity_id    = entityIdStr;
 
-          // ✅ FIX: استخراج order_total من rawData.meta أو من نص سلة
-          const meta = (rawData?.meta || {}) as Record<string, unknown>;
-          const rawTotal = meta.total || meta.amount || meta.order_total
-            || meta.grand_total || meta.sub_total
-            || rawData?.total || rawData?.amount;
+          // ✅ FIX v20: جلب بيانات الطلب من Salla API مباشرة
+          // نفس النمط المُثبت في EmployeeNotificationsService.enrichOrder
+          try {
+            const store = await this.storeRepository
+              .createQueryBuilder('store')
+              .addSelect('store.accessToken')
+              .where('store.id = :storeId', { storeId })
+              .getOne();
 
-          if (rawTotal !== undefined && rawTotal !== null) {
-            baseVars.order_total = rawTotal;
-            this.logger.debug(`💰 order_total from meta/rawData: ${rawTotal}`);
-          } else {
-            // Fallback: استخرج المبلغ من نص سلة — "بقيمة 150 ريال" أو "إجمالي: 150"
-            const totalMatch = sallaContent.match(
-              /(?:بقيمة|إجمالي|المبلغ|المجموع|total|amount)[:\s]*([\d,]+(?:\.\d{1,2})?)/i,
-            );
-            if (totalMatch) {
-              baseVars.order_total = totalMatch[1].replace(/,/g, '');
-              this.logger.debug(`💰 order_total extracted from Salla content: ${baseVars.order_total}`);
-            } else {
-              this.logger.warn(`⚠️ Could not extract order_total for order ${entityIdStr}`);
+            if (store?.accessToken && store.platform === 'salla') {
+              const accessToken = decrypt(store.accessToken);
+              if (accessToken) {
+                this.logger.debug(`🔄 Fetching order ${entityIdStr} from Salla API...`);
+                const resp = await this.sallaApiService.getOrder(accessToken, Number(entityIdStr));
+                const sallaOrder = resp?.data;
+
+                if (sallaOrder) {
+                  // ✅ استخراج المبلغ — نفس النمط المُثبت في enrichOrder
+                  const total = (sallaOrder as any).amounts?.total?.amount
+                    ?? (sallaOrder as any).total
+                    ?? 0;
+                  if (total) {
+                    baseVars.order_total = total;
+                    baseVars.total = total;
+                    this.logger.log(`💰 order_total from Salla API: ${total}`);
+                  }
+
+                  // استخراج بيانات إضافية
+                  const so = sallaOrder as any;
+                  if (so.reference_id) baseVars.reference_id = so.reference_id;
+                  if (so.reference_id) baseVars.order_id = so.reference_id;
+                  if (so.status?.name) baseVars.order_status = so.status.name;
+                  if (so.customer?.first_name) {
+                    baseVars.customer_name = baseVars.customer_name
+                      || `${so.customer.first_name} ${so.customer.last_name || ''}`.trim();
+                  }
+                  if (so.urls?.tracking) baseVars.order_tracking = so.urls.tracking;
+
+                  // store_name
+                  baseVars.store_name = baseVars.store_name || store.name || 'متجرنا';
+                } else {
+                  this.logger.warn(`⚠️ Salla API returned empty for order ${entityIdStr}`);
+                }
+              }
             }
+          } catch (apiErr) {
+            this.logger.warn(
+              `⚠️ Salla API fallback failed for order ${entityIdStr}: ${apiErr instanceof Error ? apiErr.message : 'Unknown'}`,
+            );
           }
 
-          // ✅ استخراج بيانات إضافية من meta إذا متوفرة
-          if (meta.tracking_number)  baseVars.tracking_number  = meta.tracking_number;
-          if (meta.shipping_company) baseVars.shipping_company = meta.shipping_company;
-          if (meta.tracking_url)     baseVars.order_tracking   = meta.tracking_url;
-          if (meta.payment_url)      baseVars.payment_link     = meta.payment_url;
+          // ── Fallback الأخير: regex من نص سلة (لو Salla API فشل) ──
+          if (!baseVars.order_total) {
+            const meta = (rawData?.meta || {}) as Record<string, unknown>;
+            const rawTotal = meta.total || meta.amount || meta.order_total
+              || meta.grand_total || rawData?.total || rawData?.amount;
+
+            if (rawTotal !== undefined && rawTotal !== null) {
+              baseVars.order_total = rawTotal;
+            } else {
+              const totalMatch = sallaContent.match(
+                /(?:بقيمة|إجمالي|المبلغ|المجموع|total|amount)[:\s]*([\d,]+(?:\.\d{1,2})?)/i,
+              );
+              if (totalMatch) {
+                baseVars.order_total = totalMatch[1].replace(/,/g, '');
+              } else {
+                this.logger.warn(`⚠️ Could not extract order_total for order ${entityIdStr} from any source`);
+              }
+            }
+          }
 
           return baseVars;
         }
