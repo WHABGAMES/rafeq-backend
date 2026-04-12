@@ -367,37 +367,6 @@ export class TemplatesController {
           },
         },
         {
-          id: 'order_cod_confirmation',
-          // ✅ FIX CRITICAL: triggerEvent مُصلَح ليطابق emit في handleOrderCreated
-          // handleOrderCreated يُصدر 'order.cod.created' للـ COD
-          // القديم: 'order.created' → يتعارض مع قالب "طلب جديد" ❌
-          // الجديد: 'order.cod.created' → dispatch مستقل تماماً ✅
-          name: 'تأكيد الدفع عند الاستلام',
-          language: 'ar',
-          category: 'order_notifications',
-          triggerEvent: 'order.cod.created',
-          content: 'مرحباً {{customer_name}} 👋\n\nلديك طلب جديد رقم #{{order_id}} بقيمة {{order_total}} ريال\n\nطريقة الدفع: الدفع عند الاستلام 💵\n\nشكراً لطلبك من {{store_name}} 🛍️',
-          buttons: [
-            { type: 'url', text: 'تتبع الطلب', url: '{{order_tracking}}' },
-          ],
-          sendSettings: {
-            sendingMode: 'instant',
-            maxSendsPerCustomer: { count: 1, periodDays: 1 },
-          },
-        },
-        {
-          id: 'order_payment_confirmed',
-          name: 'تأكيد الدفع',
-          language: 'ar',
-          category: 'order_notifications',
-          triggerEvent: 'order.payment.updated',
-          content: 'مرحباً {{customer_name}} 💳\n\nتم تأكيد الدفع لطلبك رقم #{{order_id}} بنجاح ✅\n\nالمبلغ المدفوع: {{order_total}} ريال\n\nجاري تجهيز طلبك الآن 📦',
-          buttons: [
-            { type: 'url', text: 'تفاصيل الطلب', url: '{{order_tracking}}' },
-          ],
-          sendSettings: { sendingMode: 'instant' },
-        },
-        {
           id: 'order_processing',
           name: 'طلب قيد التنفيذ',
           language: 'ar',
@@ -619,35 +588,6 @@ export class TemplatesController {
         // 📢 التسويق والحملات (Marketing & Campaigns)
         // ═══════════════════════════════════════════════════════════════
         {
-          id: 'welcome_new_customer',
-          name: 'ترحيب بعميل جديد',
-          language: 'ar',
-          category: 'marketing',
-          triggerEvent: 'customer.created',
-          content: 'أهلاً وسهلاً {{customer_name}} 🎉\n\nمرحباً بك في {{store_name}}!\n\nنحن سعداء بانضمامك إلينا. استمتع بتجربة تسوق مميزة واكتشف أحدث المنتجات\n\nاستخدم كود {{coupon_code}} واحصل على خصم {{discount_percent}}% على أول طلب 🎁',
-          buttons: [
-            { type: 'url', text: 'تسوق الآن', url: '{{store_url}}' },
-          ],
-          sendSettings: { sendingMode: 'instant' },
-        },
-        {
-          id: 'welcome_series_2',
-          name: 'سلسلة الترحيب - تعرف علينا',
-          language: 'ar',
-          category: 'marketing',
-          triggerEvent: 'customer.created',
-          content: 'مرحباً {{customer_name}} 💙\n\nهل تعلم أن {{store_name}} يوفر لك:\n\n✨ منتجات أصلية 100%\n🚚 توصيل سريع\n🔄 إرجاع مجاني خلال 14 يوم\n💬 دعم فوري على واتساب\n\nاكتشف الأكثر مبيعاً لدينا 🔥',
-          buttons: [
-            { type: 'url', text: 'الأكثر مبيعاً', url: '{{store_url}}/best-sellers' },
-          ],
-          sendSettings: {
-            sendingMode: 'delayed',
-            delayMinutes: 1440,
-            sequence: { order: 2, groupKey: 'welcome_series' },
-            maxSendsPerCustomer: { count: 1, periodDays: 30 },
-          },
-        },
-        {
           id: 'promotion_offer',
           name: 'عرض وتخفيض',
           language: 'ar',
@@ -670,18 +610,6 @@ export class TemplatesController {
             { type: 'url', text: 'استخدم الكوبون', url: '{{store_url}}' },
           ],
           sendSettings: { sendingMode: 'manual' },
-        },
-        {
-          id: 'new_product_launch',
-          name: 'منتج جديد',
-          language: 'ar',
-          category: 'marketing',
-          triggerEvent: 'product.created',
-          content: 'مرحباً {{customer_name}} ✨\n\nوصل جديد لمتجر {{store_name}}!\n\n{{product_name}}\nالسعر: {{product_price}} ريال\n\nكن من أوائل المقتنين 🏆',
-          buttons: [
-            { type: 'url', text: 'اطلع على المنتج', url: '{{product_url}}' },
-          ],
-          sendSettings: { sendingMode: 'instant' },
         },
         {
           id: 'winback_inactive',
@@ -735,18 +663,6 @@ export class TemplatesController {
           },
         },
         {
-          id: 'review_reward',
-          name: 'مكافأة التقييم',
-          language: 'ar',
-          category: 'engagement',
-          triggerEvent: 'review.added',
-          content: 'شكراً {{customer_name}} على تقييمك! ⭐\n\nنقدّر وقتك ورأيك القيّم 🙏\n\nكمكافأة لك، استخدم كود: {{coupon_code}}\nواحصل على خصم {{discount_percent}}% على طلبك القادم 🎁\n\nشكراً لثقتك في {{store_name}} 💙',
-          buttons: [
-            { type: 'url', text: 'تسوق بالخصم', url: '{{store_url}}' },
-          ],
-          sendSettings: { sendingMode: 'instant' },
-        },
-        {
           id: 'loyalty_points',
           name: 'نقاط الولاء',
           language: 'ar',
@@ -775,16 +691,6 @@ export class TemplatesController {
         // 🔧 رسائل الخدمة (Service & Utility)
         // ═══════════════════════════════════════════════════════════════
         {
-          id: 'otp_verification',
-          name: 'رمز التحقق OTP',
-          language: 'ar',
-          category: 'service',
-          triggerEvent: 'customer.otp.request',
-          content: 'رمز التحقق الخاص بك: {{otp_code}} 🔐\n\nصالح لمدة 5 دقائق\n\nإذا لم تطلب هذا الرمز، يرجى تجاهل هذه الرسالة',
-          buttons: [],
-          sendSettings: { sendingMode: 'instant' },
-        },
-        {
           id: 'digital_product_delivery',
           name: 'تسليم منتج رقمي',
           language: 'ar',
@@ -805,16 +711,6 @@ export class TemplatesController {
           content: 'مرحباً {{customer_name}} 🌙\n\nشكراً لتواصلك مع {{store_name}}\n\nنحن خارج أوقات العمل حالياً\nساعات العمل: {{working_hours}}\n\nسنرد على رسالتك في أقرب وقت ممكن ⏰\n\nشكراً لصبرك 🙏',
           buttons: [],
           sendSettings: { sendingMode: 'manual' },
-        },
-        {
-          id: 'low_stock_alert',
-          name: 'تنبيه نفاد المخزون',
-          language: 'ar',
-          category: 'service',
-          triggerEvent: 'product.quantity.low',
-          content: '⚠️ تنبيه مخزون - {{store_name}}\n\nالمنتج: {{product_name}}\nالكمية المتبقية: {{product_quantity}} قطعة\n\nيرجى إعادة تعبئة المخزون لتجنب نفاد المنتج 📦',
-          buttons: [],
-          sendSettings: { sendingMode: 'instant' },
         },
         {
           id: 'invoice_created',
