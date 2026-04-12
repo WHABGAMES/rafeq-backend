@@ -355,18 +355,6 @@ export class TemplatesController {
           sendSettings: { sendingMode: 'instant' },
         },
         {
-          id: 'order_awaiting_payment',
-          name: 'طلب بانتظار الدفع',
-          language: 'ar',
-          category: 'order_notifications',
-          triggerEvent: 'order.status.pending_payment',
-          content: 'مرحباً {{customer_name}} ⏰\n\nطلبك رقم #{{order_id}} بانتظار إتمام الدفع\n\nالمبلغ المطلوب: {{order_total}} ريال\n\nأكمل الدفع الآن لتأكيد طلبك 💳',
-          buttons: [
-            { type: 'url', text: 'أكمل الدفع', url: '{{payment_link}}' },
-          ],
-          sendSettings: { sendingMode: 'instant' },
-        },
-        {
           id: 'order_cancelled',
           name: 'طلب ملغي',
           language: 'ar',
