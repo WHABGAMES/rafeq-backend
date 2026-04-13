@@ -317,9 +317,14 @@ export class AIMessageListener implements OnModuleDestroy {
       `🚀 Flushing ${messageCount} batched message(s) for ${conversationId} (collected over ${waitTime}s)`,
     );
 
-    // ✅ دمج كل الرسائل في نص واحد
-    // GPT يقرأها كمحادثة متسلسلة ويفهم السياق
-    const combinedMessage = buf.messages.join('\n');
+    // ✅ دمج كل الرسائل — إذا أكثر من رسالة نوضّح لـ GPT
+    let combinedMessage: string;
+    if (buf.messages.length === 1) {
+      combinedMessage = buf.messages[0];
+    } else {
+      // GPT يفهم إنها رسائل متتالية ويجاوب على كلها في رد واحد
+      combinedMessage = `[العميل أرسل ${buf.messages.length} رسائل متتالية — أجب على كلها في رد واحد شامل]:\n${buf.messages.map((m, i) => `${i + 1}. ${m}`).join('\n')}`;
+    }
 
     await this.processAndRespond(buf.conversation, combinedMessage);
   }
