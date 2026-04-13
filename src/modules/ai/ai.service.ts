@@ -797,21 +797,35 @@ export class AIService {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // 3. ✅ Level 2: ENHANCED ORCHESTRATOR — Intent Routing → Dynamic Strategy → Unified Confidence
+    // 3. ✅ v5: OPTIMIZED ORCHESTRATOR — Pattern-only Intent + Single GPT Call
+    // كان: GPT-4o-mini (intent) → GPT-4o (response) = 2 API calls
+    // الآن: Pattern matching (مجاني) → GPT-4o (response + intent) = 1 API call
+    // التوفير: ~50% أقل تكلفة + أسرع بـ 1-3 ثواني
     // ═══════════════════════════════════════════════════════════════════════════
 
     const lang = settings.language !== 'en' ? 'ar' : 'en';
 
-    // 3a. ✅ Level 2: Enhanced Intent Routing with strategy determination
-    const intentResult = await this.routeIntent(message, settings);
-    this.logger.log(`🧠 Intent: ${intentResult.intent} (confidence: ${intentResult.confidence}, strategy: ${intentResult.strategy || 'none'})`);
+    // 3a. ✅ v5: Pattern-only intent detection (مجاني — بدون API call)
+    // يكشف: تحيات، كلام اجتماعي، طلب موظف، استفسار طلب
+    // كل شي ثاني → يروح لـ GPT الرئيسي يقرر (مع tools + system prompt)
+    const intentResult = this.detectSimpleIntentPattern(message, settings) || {
+      intent: IntentType.UNKNOWN,
+      confidence: 0.5,
+      strategy: settings.searchPriority,
+      allowedSources: ['library', 'products'] as ('library' | 'products')[],
+    };
+    this.logger.log(`🧠 Intent (pattern): ${intentResult.intent} (confidence: ${intentResult.confidence})`);
+
+    // ✅ FIX: كشف الرسائل المجمّعة — تروح لـ Smart RAG بدل الاختصارات
+    // لأن العميل ممكن يسلّم + يسأل عن طلب = GPT يجاوب على الكل
+    const isBatchedMessage = message.includes('[العميل أرسل') && message.includes('رسائل متتالية');
 
     // ──────────────────────────────────────────────────────────────────────────
     // 3b. ✅ SMALLTALK/GREETING → رد اجتماعي بدون بحث
     //     ⚠️ حماية: إذا LLM قال SMALLTALK بس ما فيه أي pattern اجتماعي حقيقي
     //     → يروح لـ Smart RAG بدل ما يرد رد عشوائي
     // ──────────────────────────────────────────────────────────────────────────
-    if (intentResult.intent === IntentType.SMALLTALK || intentResult.intent === IntentType.GREETING) {
+    if ((intentResult.intent === IntentType.SMALLTALK || intentResult.intent === IntentType.GREETING) && !isBatchedMessage) {
       const lowerMsg = message.trim().toLowerCase();
       
       // ✅ تحقق: هل الرسالة فيها pattern اجتماعي/تحية حقيقي؟
@@ -929,8 +943,10 @@ export class AIService {
 
     // ──────────────────────────────────────────────────────────────────────────
     // 3f. ✅ ORDER_QUERY → أدوات مباشرة (مع Smart RAG)
+    //     ⚠️ FIX: رسائل مجمّعة (batched) تروح لـ Smart RAG بدل الاختصار
+    //     لأن العميل ممكن يرسل تحية + سؤال طلب = GPT يجاوب على الكل
     // ──────────────────────────────────────────────────────────────────────────
-    if (intentResult.intent === IntentType.ORDER_QUERY) {
+    if (intentResult.intent === IntentType.ORDER_QUERY && !isBatchedMessage) {
       return this.handleOrderQuery(message, context, settings);
     }
 
@@ -1065,16 +1081,13 @@ export class AIService {
         return this.handleNoMatch(context, settings, lang, intentResult.intent);
       }
 
-      // ✅ Step 5: Trust GPT — الذكاء الاصطناعي هو المحرك الأساسي
-      // GPT استلم كل المعلومات (مكتبة + منتجات + إعدادات) وفهم السياق
-      // إذا أجاب → نثق فيه (لأنه فهم المعنى مش الكلمات)
-      // الفحص الحرفي القديم كان يقتل ردود صحيحة لأن GPT يصيغ بأسلوبه
-      
-      // ✅ مراقبة فقط (log بدون block) — للتعلم المستقبلي
+      // ✅ v5: Active Grounding — حجب الأرقام/الأسعار المُهلوَسة
+      // - أرقام/أسعار غير موجودة في المكتبة → يُحجب الرد ← خطير على التاجر
+      // - overlap كلمات منخفض → يُسجّل فقط ← GPT يصيغ بأسلوبه (طبيعي)
       const groundingCheck = this.lightweightGroundingCheck(finalReply, knowledgeChunks);
       if (!groundingCheck.passed) {
-        // نسجل للمراقبة فقط — لا نمنع الرد
-        this.logger.log(`📊 Grounding monitor (NOT blocking): ${groundingCheck.reason}`);
+        const isNumberHallucination = groundingCheck.reason?.includes('numbers not found');
+        
         this.eventEmitter.emit('ai.grounding_monitor', {
           tenantId: context.tenantId,
           storeId: context.storeId,
@@ -1084,16 +1097,55 @@ export class AIService {
           reason: groundingCheck.reason,
           intent: intentResult.intent,
           timestamp: new Date(),
-          blocked: false, // ✅ لم يُمنع — للمراقبة فقط
+          blocked: isNumberHallucination,
         });
+
+        if (isNumberHallucination) {
+          // ✅ حجب فعلي — أرقام/أسعار مختلقة = خطر على التاجر
+          this.logger.warn(`🚫 Grounding BLOCKED: ${groundingCheck.reason}`);
+          const safeReply = lang === 'ar'
+            ? 'شكراً لسؤالك! للتأكد من دقة المعلومة، أنصحك بالتواصل مع فريقنا مباشرة للحصول على التفاصيل الصحيحة. 🙏'
+            : 'Thanks for your question! To ensure accuracy, I recommend contacting our team directly for the correct details. 🙏';
+          
+          await this.resetFailedAttempts(context);
+          return {
+            reply: safeReply,
+            confidence: 0.3,
+            intent: intentResult.intent,
+            shouldHandoff: false,
+            ragAudit: {
+              answer_source: 'grounding_blocked',
+              similarity_score: 0,
+              verifier_result: 'BLOCKED',
+              final_decision: 'SAFE_REPLY',
+              retrieved_chunks: knowledgeChunks.length,
+              gate_a_passed: true,
+              gate_b_passed: false,
+              rejection_reason: groundingCheck.reason,
+              detected_intent: intentResult.intent,
+            },
+          };
+        } else {
+          // مراقبة فقط — overlap كلمات (GPT يصيغ بأسلوبه)
+          this.logger.log(`📊 Grounding monitor (NOT blocking): ${groundingCheck.reason}`);
+        }
       }
+
+      // ✅ v5: Real Confidence Score — مبني على عوامل حقيقية
+      const topScore = knowledgeChunks.length > 0 ? Math.max(...knowledgeChunks.map(c => c.score)) : 0;
+      const realConfidence = this.calculateRealConfidence(
+        topScore,
+        knowledgeChunks.length,
+        intentResult.confidence,
+        groundingCheck.passed,
+      );
 
       // ✅ نجح الرد
       await this.resetFailedAttempts(context);
 
       return {
         reply: finalReply,
-        confidence: knowledgeChunks.length > 0 ? 0.85 : 0.7,
+        confidence: realConfidence,
         intent: intentResult.intent,
         shouldHandoff: false,
         toolsUsed,
@@ -1578,11 +1630,18 @@ export class AIService {
       .join(' ')
       .toLowerCase();
 
-    // ✅ فحص 1: استخراج الأرقام والأسعار من الرد
+    // ✅ v5: فحص 1: استخراج الأرقام والأسعار من الرد
+    // مع استثناء الأرقام الطبيعية (تواريخ، أشهر، سنوات، أرقام طلبات)
     const numbersInAnswer = answer.match(/\d+/g) || [];
     const suspiciousNumbers = numbersInAnswer.filter((n) => {
       const num = parseInt(n);
-      if (num <= 2) return false;
+      // أرقام صغيرة (0-31) = تواريخ/أيام/كميات عادية
+      if (num <= 31) return false;
+      // سنوات (2020-2030)
+      if (num >= 2020 && num <= 2030) return false;
+      // أرقام طلبات (أكثر من 6 خانات) = context-specific
+      if (n.length >= 6) return false;
+      // هل الرقم موجود في المكتبة؟
       return !allKBContent.includes(n);
     });
 
@@ -1681,39 +1740,125 @@ export class AIService {
 
           this.logger.log(`📚 Loaded ALL ${chunks.length} entries (small KB mode)`);
         } else {
-          // ✅ مكتبة كبيرة: بحث كلمات مفتاحية أولاً
-          this.logger.log(`📚 Large KB (${totalEntries}) — using keyword search`);
+          // ✅ v5: VECTOR SEMANTIC SEARCH — بحث دلالي بدل كلمات حرفية
+          // يولّد embedding للسؤال ويقارنه مع embeddings المخزنة
+          // "متى يوصل الطلب" يتطابق مع "مدة التوصيل" حتى لو الكلمات مختلفة 100%
+          this.logger.log(`📚 Large KB (${totalEntries}) — using vector semantic search`);
           
-          const words = message.split(/\s+/).filter((w) => w.length > 2);
-          
-          if (words.length > 0) {
-            const qb = this.knowledgeRepo
-              .createQueryBuilder('kb')
-              .where('kb.tenantId = :tenantId', { tenantId: context.tenantId })
-              .andWhere('kb.isActive = true');
-
-            // بحث في كل الحقول
-            const conditions = words.map((_, i) => 
-              `(kb.title ILIKE :w${i} OR kb.content ILIKE :w${i} OR kb.answer ILIKE :w${i} OR kb.keywords::text ILIKE :w${i})`
-            );
-            const params: Record<string, string> = {};
-            words.forEach((w, i) => { params[`w${i}`] = `%${w}%`; });
-            qb.andWhere(`(${conditions.join(' OR ')})`, params);
-            qb.orderBy('kb.priority', 'ASC').take(20);
-
-            const entries = await qb.getMany();
+          try {
+            // Step 1: توليد embedding للسؤال
+            const queryEmbedding = await this.generateEmbedding(message);
             
-            chunks = entries.map((e) => ({
-              title: e.title,
-              content: e.content,
-              answer: e.answer || undefined,
-              score: 0.8,
-            }));
+            if (queryEmbedding) {
+              // Step 2: جلب كل المقالات اللي عندها embeddings
+              const allEntries = await this.knowledgeRepo.find({
+                where: { tenantId: context.tenantId, isActive: true },
+              });
 
-            this.logger.log(`📚 Keyword search found ${chunks.length} entries`);
+              // Step 3: حساب cosine similarity لكل مقال
+              const scoredEntries = allEntries
+                .filter((e) => e.embedding && Array.isArray(e.embedding) && e.embedding.length > 0)
+                .map((e) => ({
+                  entry: e,
+                  similarity: this.cosineSimilarity(queryEmbedding, e.embedding!),
+                }))
+                .sort((a, b) => b.similarity - a.similarity);
+
+              // Step 4: أفضل 10 نتائج فوق حد أدنى 0.3
+              const topResults = scoredEntries
+                .filter((r) => r.similarity > 0.3)
+                .slice(0, 10);
+
+              if (topResults.length > 0) {
+                chunks = topResults.map((r) => ({
+                  title: r.entry.title,
+                  content: r.entry.content,
+                  answer: r.entry.answer || undefined,
+                  score: r.similarity,
+                }));
+
+                this.logger.log(
+                  `📚 Vector search: ${topResults.length} results (top: ${topResults[0].similarity.toFixed(3)}, entries with embeddings: ${scoredEntries.length}/${allEntries.length})`,
+                );
+              } else {
+                this.logger.log(`📚 Vector search: no results above 0.3 threshold`);
+              }
+
+              // Step 5: إذا فيه مقالات بدون embeddings → ضمّها بـ ILIKE كـ fallback
+              const noEmbeddingCount = allEntries.filter((e) => !e.embedding || !Array.isArray(e.embedding) || e.embedding.length === 0).length;
+              if (noEmbeddingCount > 0 && chunks.length < 10) {
+                this.logger.log(`📚 ${noEmbeddingCount} entries missing embeddings — adding ILIKE fallback`);
+                const words = message.split(/\s+/).filter((w) => w.length > 2);
+                if (words.length > 0) {
+                  const existingIds = chunks.map((c) => c.title);
+                  const qb = this.knowledgeRepo
+                    .createQueryBuilder('kb')
+                    .where('kb.tenantId = :tenantId', { tenantId: context.tenantId })
+                    .andWhere('kb.isActive = true')
+                    .andWhere('(kb.embedding IS NULL OR kb.embedding = \'null\'::jsonb OR kb.embedding = \'[]\'::jsonb)');
+                  const conditions = words.map((_, i) =>
+                    `(kb.title ILIKE :w${i} OR kb.content ILIKE :w${i} OR kb.answer ILIKE :w${i})`,
+                  );
+                  const params: Record<string, string> = {};
+                  words.forEach((w, i) => { params[`w${i}`] = `%${w}%`; });
+                  qb.andWhere(`(${conditions.join(' OR ')})`, params);
+                  qb.take(5);
+                  const fallbackEntries = await qb.getMany();
+                  for (const e of fallbackEntries) {
+                    if (!existingIds.includes(e.title)) {
+                      chunks.push({ title: e.title, content: e.content, answer: e.answer || undefined, score: 0.5 });
+                    }
+                  }
+                }
+              }
+            } else {
+              // Embedding generation failed → fallback to ILIKE
+              this.logger.warn(`📚 Embedding generation failed — falling back to keyword search`);
+              const words = message.split(/\s+/).filter((w) => w.length > 2);
+              if (words.length > 0) {
+                const qb = this.knowledgeRepo
+                  .createQueryBuilder('kb')
+                  .where('kb.tenantId = :tenantId', { tenantId: context.tenantId })
+                  .andWhere('kb.isActive = true');
+                const conditions = words.map((_, i) =>
+                  `(kb.title ILIKE :w${i} OR kb.content ILIKE :w${i} OR kb.answer ILIKE :w${i} OR kb.keywords::text ILIKE :w${i})`,
+                );
+                const params: Record<string, string> = {};
+                words.forEach((w, i) => { params[`w${i}`] = `%${w}%`; });
+                qb.andWhere(`(${conditions.join(' OR ')})`, params);
+                qb.orderBy('kb.priority', 'ASC').take(20);
+                const entries = await qb.getMany();
+                chunks = entries.map((e) => ({
+                  title: e.title, content: e.content, answer: e.answer || undefined, score: 0.8,
+                }));
+                this.logger.log(`📚 ILIKE fallback found ${chunks.length} entries`);
+              }
+            }
+          } catch (vecError) {
+            this.logger.error('Vector search failed — falling back to keyword', {
+              error: vecError instanceof Error ? vecError.message : 'Unknown',
+            });
+            const words = message.split(/\s+/).filter((w) => w.length > 2);
+            if (words.length > 0) {
+              const qb = this.knowledgeRepo
+                .createQueryBuilder('kb')
+                .where('kb.tenantId = :tenantId', { tenantId: context.tenantId })
+                .andWhere('kb.isActive = true');
+              const conditions = words.map((_, i) =>
+                `(kb.title ILIKE :w${i} OR kb.content ILIKE :w${i} OR kb.answer ILIKE :w${i} OR kb.keywords::text ILIKE :w${i})`,
+              );
+              const params: Record<string, string> = {};
+              words.forEach((w, i) => { params[`w${i}`] = `%${w}%`; });
+              qb.andWhere(`(${conditions.join(' OR ')})`, params);
+              qb.orderBy('kb.priority', 'ASC').take(20);
+              const entries = await qb.getMany();
+              chunks = entries.map((e) => ({
+                title: e.title, content: e.content, answer: e.answer || undefined, score: 0.8,
+              }));
+            }
           }
 
-          // إذا ما لقى الكلمات المفتاحية — جلب آخر 20 مقال (أفضل من لا شيء)
+          // إذا كل شي فشل — جلب آخر 20 مقال
           if (chunks.length === 0) {
             const recentEntries = await this.knowledgeRepo.find({
               where: { tenantId: context.tenantId, isActive: true },
@@ -1728,7 +1873,7 @@ export class AIService {
               score: 0.5,
             }));
             
-            this.logger.log(`📚 No keyword matches — loaded top ${chunks.length} by priority`);
+            this.logger.log(`📚 All search failed — loaded top ${chunks.length} by priority`);
           }
         }
       } catch (error) {
@@ -1813,10 +1958,19 @@ export class AIService {
     retrievedChunks: Array<{ title: string; content: string; score: number; answer?: string }>,
   ): string {
     const isAr = settings.language !== 'en';
+    const storeName = settings.storeName || (isAr ? 'المتجر' : 'Store');
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // ① هوية البوت — من أنت؟ (GPT يفهم دوره)
+    // ═══════════════════════════════════════════════════════════════════════
 
     let prompt = isAr
-      ? `أنت مساعد ذكي لخدمة العملاء في "${settings.storeName || 'المتجر'}".`
-      : `You are a helpful customer service assistant for "${settings.storeName || 'Store'}".`;
+      ? `أنت موظف خدمة عملاء ذكي تعمل في "${storeName}". أنت تفهم طبيعة المتجر وتخصصه ونشاطه — لست مجرد محرك بحث.`
+      : `You are an intelligent customer service agent for "${storeName}". You understand the store's nature, specialty, and business — you are NOT just a search engine.`;
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // ② النبرة
+    // ═══════════════════════════════════════════════════════════════════════
 
     const tones: Record<string, string> = {
       formal: isAr
@@ -1831,27 +1985,46 @@ export class AIService {
     };
     prompt += '\n' + (tones[settings.tone] || tones.friendly);
 
-    // ✅ المهمة 5: فرض اللغة تقنياً — قاعدة إلزامية
+    // ═══════════════════════════════════════════════════════════════════════
+    // ③ فرض اللغة
+    // ═══════════════════════════════════════════════════════════════════════
+
     prompt += isAr
       ? '\n\n⚠️ قاعدة اللغة: أجب فقط باللغة العربية. ممنوع المزج بين العربية والإنجليزية في نفس الرد.'
       : '\n\n⚠️ Language rule: Respond ONLY in English. Do NOT mix English with Arabic in the same response.';
 
-    // معلومات المتجر + RAG: كلها في قسم واحد حتى GPT يعتبرها مصدر إجابة
+    // ═══════════════════════════════════════════════════════════════════════
+    // ④ هوية المتجر — GPT يفهم "من هو التاجر وماذا يبيع"
+    //    هذا القسم يعطي GPT فهم عميق للنشاط التجاري
+    //    فيقدر يقول "أنا مختص بالألعاب الرقمية" بدل "خارج النطاق"
+    // ═══════════════════════════════════════════════════════════════════════
+
+    // بناء ملخص هوية المتجر من كل المعلومات المتوفرة
+    const identityParts: string[] = [];
+    if (settings.storeIntroduction) identityParts.push(settings.storeIntroduction);
+    if (settings.storeDescription) identityParts.push(settings.storeDescription);
+    const storeIdentity = identityParts.join(' ').trim();
+
+    if (storeIdentity) {
+      prompt += isAr
+        ? `\n\n=== هوية المتجر (افهمها جيداً — هذا تخصصك) ===\n${storeIdentity}`
+        : `\n\n=== Store Identity (understand this deeply — this is your specialty) ===\n${storeIdentity}`;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // ⑤ معلومات المتجر + المكتبة + المنتجات
+    // ═══════════════════════════════════════════════════════════════════════
+
     prompt += isAr
       ? '\n\n=== معلومات متوفرة (مصدرك الوحيد للإجابة) ==='
       : '\n\n=== Available Information (your ONLY source for answers) ===';
 
-    // معلومات المتجر الأساسية — داخل قسم المعلومات المتوفرة
-    if (settings.storeIntroduction)
-      prompt += `\n[${isAr ? 'نبذة تعريفية عن المتجر' : 'Store Introduction'}]: ${settings.storeIntroduction}`;
-    if (settings.storeDescription)
-      prompt += `\n[${isAr ? 'وصف المتجر' : 'About'}]: ${settings.storeDescription}`;
     if (settings.workingHours) {
       let hoursText = settings.workingHours;
       try {
         const parsed = JSON.parse(settings.workingHours);
         if (parsed.readableText) hoursText = parsed.readableText;
-      } catch { /* plain text — use as-is */ }
+      } catch { /* plain text */ }
       prompt += `\n[${isAr ? 'أوقات العمل' : 'Hours'}]: ${hoursText}`;
     }
     if (settings.returnPolicy)
@@ -1861,7 +2034,7 @@ export class AIService {
     if (settings.cancellationPolicy)
       prompt += `\n[${isAr ? 'سياسة الإلغاء والتعديل' : 'Cancellation & Modification'}]: ${settings.cancellationPolicy}`;
 
-    // ✅ RAG: المقاطع المسترجعة — في نفس القسم
+    // RAG chunks
     if (retrievedChunks.length > 0) {
       let charsUsed = 0;
       for (const chunk of retrievedChunks) {
@@ -1878,52 +2051,108 @@ export class AIService {
       prompt += `\n\n${isAr ? 'اسم العميل' : 'Customer'}: ${context.customerName}`;
     }
 
-    // ✅ القواعد الصارمة — منع الهلوسة مع ذكاء سياقي
+    // ═══════════════════════════════════════════════════════════════════════
+    // ⑥ القواعد الذكية — الفهم العميق بدل المقارنة الحرفية
+    // ═══════════════════════════════════════════════════════════════════════
+
     prompt += isAr
       ? `\n\n=== قواعد ذكية (إلزامية) ===
-1. أنت تفهم المعنى والسياق — لست محرك بحث كلمات. إذا فهمت أن سؤال العميل يتعلق بمعلومة متوفرة أعلاه (حتى لو بصياغة مختلفة تماماً) → أجب منها مباشرة.
-2. ✅ أولوية مصادر الإجابة (بالترتيب):
-   أ) المكتبة (الأسئلة والأجوبة أعلاه) — أعلى أولوية
-   ب) معلومات المتجر (النبذة، الوصف، الشحن، الإرجاع، الإلغاء، أوقات العمل)
-   ج) المنتجات (إن وُجدت أعلاه)
-   إذا الجواب في أي مصدر من هذه المصادر → أجب فوراً.
-3. ✅ افهم نية العميل وليس كلماته الحرفية:
-   - "عندكم X" = "متوفر X" = "فيه X" = "يوجد X" = "تقدرون توفرون X" = "أبي X" → كلها سؤال واحد: هل X متوفر؟
-   - "كم سعره" = "بكم" = "السعر" = "أسعاركم" → سؤال عن السعر
-   - "وين طلبي" = "طلبي تأخر" = "متى يوصل" = "حالة الطلب" → استفسار طلب
-   - "ارجاع" = "استرداد" = "أبي أرجع" = "استبدال" → سياسة الإرجاع
-   - "إلغاء" = "ألغي" = "تعديل" = "غيّر" → سياسة الإلغاء
-   - أي صياغة أخرى بنفس المعنى → افهمها بذكاء وأجب
-4. ✅ قاعدة ذهبية: إذا سؤال العميل عن نفس الموضوع الموجود في المكتبة (حتى بكلمات مختلفة 100%) → هذا تطابق ويجب أن تجيب. لا تطلب توضيح أبداً إذا الجواب متوفر.
-5. ❌ لا تختلق معلومات جديدة. لا تذكر أسعاراً أو منتجات غير مذكورة أعلاه.
-6. ❌ لا تستخدم معرفتك العامة أبداً. لا تقدم نصائح طبية أو صحية.
-7. إذا فعلاً لا يوجد أي معلومة متعلقة بسؤال العميل في جميع المصادر أعلاه، أجب حرفياً:
+
+🧠 كيف تفهم:
+أنت لا تقارن كلمات — أنت تفهم المعنى. إذا فهمت أن سؤال العميل يتعلق بمعلومة متوفرة أعلاه (حتى لو بصياغة مختلفة تماماً) → أجب منها مباشرة.
+
+📋 أولوية الإجابة:
+1. المكتبة (الأسئلة والأجوبة أعلاه) — أعلى أولوية
+2. معلومات المتجر (النبذة، الوصف، الشحن، الإرجاع، الإلغاء، أوقات العمل)
+3. المنتجات (إن وُجدت أعلاه)
+إذا الجواب في أي مصدر → أجب فوراً.
+
+🎯 افهم نية العميل:
+- "عندكم X" = "متوفر X" = "فيه X" = "أبي X" → هل X متوفر؟
+- "كم سعره" = "بكم" = "السعر" → سؤال عن السعر
+- "وين طلبي" = "طلبي تأخر" = "متى يوصل" → استفسار طلب
+- "ارجاع" = "استرداد" = "أبي أرجع" → سياسة الإرجاع
+- "إلغاء" = "ألغي" = "تعديل" → سياسة الإلغاء
+- أي صياغة بنفس المعنى → افهمها وأجب
+
+🏪 قاعدة الهوية (مهمة جداً):
+أنت تفهم هوية المتجر وتخصصه من قسم "هوية المتجر" أعلاه.
+- إذا سأل العميل سؤالاً لا علاقة له بتخصص المتجر نهائياً (مثل: نصيحة طبية، وصفة طبخ، رياضة، سياسة):
+  → لا تجيب على السؤال
+  → عرّف العميل بتخصص المتجر بأسلوب ودود ولطيف
+  → واعرض مساعدته فيما يخص نشاط المتجر
+  مثال: "ودي أساعدك بس تخصصي هو [نشاط المتجر] 😊 أقدر أساعدك بأي شي يخص [أمثلة من نشاط المتجر]!"
+
+- إذا سأل سؤالاً متعلقاً بنشاط المتجر لكن ما لقيت الجواب في المعلومات:
+  → اعتذر بلطف
+  → أخبره إن الفريق يقدر يساعده
+  مثال: "سؤال حلو! للأسف ما عندي المعلومة الدقيقة حالياً. تبي أحوّلك لفريقنا يساعدك؟"
+
+🔒 قاعدة ذهبية: 
+إذا سؤال العميل عن نفس الموضوع الموجود في المكتبة (حتى بكلمات مختلفة 100%) → هذا تطابق ويجب أن تجيب. لا تطلب توضيح إذا الجواب متوفر.
+
+❌ ممنوع:
+- لا تختلق معلومات. لا تذكر أسعاراً أو منتجات غير مذكورة أعلاه.
+- لا تستخدم معرفتك العامة أبداً. لا تقدم نصائح طبية أو صحية أو قانونية.
+
+🛠️ أدوات:
+- إذا طلب العميل شخصاً بشرياً → استخدم أداة request_human_agent
+- عند استعلام الطلب → استخدم أداة get_order_status ثم اشرح الحالة بأسلوبك. إذا كان الطلب رقمي ووجدت digital_content → أرسل الأكواد. إذا وجدت digital_note → اتبع تعليماتها.
+- إذا ذكر العميل طلبه بدون رقم → اطلب رقم الطلب.
+
+⚠️ الملاذ الأخير:
+إذا لم تجد أي هوية للمتجر أعلاه ولا أي معلومة تتعلق بسؤال العميل → أجب حرفياً:
 "${NO_MATCH_MESSAGE}"
-8. إذا طلب العميل شخصاً بشرياً، استخدم أداة request_human_agent.
-9. عند استعلام الطلب: استخدم أداة get_order_status ثم اشرح الحالة بأسلوبك الطبيعي. إذا كان الطلب رقمي ووجدت digital_content → أرسل الأكواد للعميل. إذا وجدت digital_note → اتبع التعليمات فيها بالضبط.
-10. إذا ذكر العميل طلبه بدون رقم → اطلب رقم الطلب.
-11. كن موجزاً ومفيداً.`
+
+✅ كن موجزاً ومفيداً. رد كأنك موظف حقيقي يفهم شغله.`
+
       : `\n\n=== Smart Rules (mandatory) ===
-1. You understand meaning and context — you are NOT a keyword search engine. If you understand the customer's question relates to available information above (even with completely different wording) → answer directly.
-2. ✅ Answer source priority (in order):
-   a) Knowledge base (Q&A above) — highest priority
-   b) Store info (description, shipping, returns, cancellation, hours)
-   c) Products (if listed above)
-   If the answer exists in any source → answer immediately.
-3. ✅ Understand customer intent, not literal words:
-   - "do you have X" = "is X available" = "can I get X" = "I want X" → all mean: is X available?
-   - "how much" = "price" = "cost" → price question
-   - "where is my order" = "order is late" = "when will it arrive" → order inquiry
-   - Any other phrasing with same meaning → understand intelligently and answer
-4. ✅ Golden rule: If the customer's question is about the same topic in the knowledge base (even with 100% different words) → this IS a match and you MUST answer. NEVER ask for clarification if the answer is available.
-5. ❌ Do NOT fabricate information. Do NOT mention prices or products not listed above.
-6. ❌ NEVER use general knowledge. No medical, health, or cultural advice.
-7. If truly NO information relates to the customer's question in ALL sources above, respond EXACTLY with:
+
+🧠 How you understand:
+You don't compare words — you understand meaning. If you understand the customer's question relates to available information above (even with completely different wording) → answer directly.
+
+📋 Answer priority:
+1. Knowledge base (Q&A above) — highest priority
+2. Store info (description, shipping, returns, cancellation, hours)
+3. Products (if listed above)
+If the answer exists in any source → answer immediately.
+
+🎯 Understand intent:
+- "do you have X" = "is X available" = "I want X" → is X available?
+- "how much" = "price" = "cost" → price question
+- "where is my order" = "order is late" → order inquiry
+- Any other phrasing with same meaning → understand and answer
+
+🏪 Identity Rule (very important):
+You understand the store's identity and specialty from the "Store Identity" section above.
+- If the customer asks a question completely unrelated to the store's specialty (e.g., medical advice, recipes, sports, politics):
+  → Do NOT answer the question
+  → Introduce the store's specialty in a friendly way
+  → Offer to help with store-related topics
+  Example: "I'd love to help but my specialty is [store activity] 😊 I can help you with anything related to [examples]!"
+
+- If the question IS related to the store but you can't find the answer in the information:
+  → Apologize politely
+  → Offer to connect them with the team
+  Example: "Great question! Unfortunately I don't have that exact info right now. Would you like me to connect you with our team?"
+
+🔒 Golden Rule:
+If the customer's question is about the same topic in the knowledge base (even with 100% different words) → this IS a match and you MUST answer. NEVER ask for clarification if the answer is available.
+
+❌ Forbidden:
+- Do NOT fabricate information. Do NOT mention prices or products not listed above.
+- NEVER use general knowledge. No medical, health, legal, or cultural advice.
+
+🛠️ Tools:
+- If customer asks for a human → use request_human_agent tool
+- For order queries → use get_order_status tool. For digital orders with digital_content → send codes. If digital_note exists → follow its instructions.
+- If customer mentions order without number → ask for order number.
+
+⚠️ Last resort:
+If there is no store identity above AND no information relates to the customer's question → respond EXACTLY with:
 "${NO_MATCH_MESSAGE}"
-8. If customer asks for a human, use request_human_agent tool.
-9. For order queries: use get_order_status tool. For digital orders with digital_content → send codes. If digital_note exists → follow its instructions.
-10. If customer mentions order without number → ask for order number.
-11. Be concise and helpful.`;
+
+✅ Be concise and helpful. Respond like a real employee who knows their job.`;
 
     return prompt;
   }
@@ -1937,6 +2166,58 @@ export class AIService {
    * يستخدم text-embedding-3-small (1536 dims)
    * ✅ Level 2: Applies timeout to embedding generation
    */
+  /**
+   * ✅ v5: Cosine Similarity — مقارنة دلالية بين embedding السؤال والمكتبة
+   */
+  private cosineSimilarity(a: number[], b: number[]): number {
+    if (!a || !b || a.length !== b.length || a.length === 0) return 0;
+    let dotProduct = 0;
+    let normA = 0;
+    let normB = 0;
+    for (let i = 0; i < a.length; i++) {
+      dotProduct += a[i] * b[i];
+      normA += a[i] * a[i];
+      normB += b[i] * b[i];
+    }
+    const denominator = Math.sqrt(normA) * Math.sqrt(normB);
+    if (denominator === 0) return 0;
+    return dotProduct / denominator;
+  }
+
+  /**
+   * ✅ v5: Real Confidence Score — مبني على عوامل حقيقية بدل 0.85 ثابت
+   */
+  private calculateRealConfidence(
+    topChunkScore: number,
+    chunkCount: number,
+    intentConfidence: number,
+    groundingPassed: boolean,
+  ): number {
+    if (chunkCount === 0) return 0.3; // لا معلومات = ثقة منخفضة
+
+    // الثقة النهائية = متوسط مرجّح
+    const weights = {
+      similarity: 0.4,   // أهم عامل — هل المعلومة مطابقة؟
+      intent: 0.2,       // هل فهم النية بشكل صحيح؟
+      grounding: 0.2,    // هل الرد مبني على معلومات حقيقية؟
+      coverage: 0.2,     // هل فيه معلومات كافية؟
+    };
+
+    const similarityScore = Math.min(topChunkScore, 1.0);
+    const intentScore = Math.min(intentConfidence, 1.0);
+    const groundingScore = groundingPassed ? 1.0 : 0.5;
+    const coverageScore = Math.min(chunkCount / 5, 1.0); // 5+ chunks = full coverage
+
+    const rawConfidence =
+      similarityScore * weights.similarity +
+      intentScore * weights.intent +
+      groundingScore * weights.grounding +
+      coverageScore * weights.coverage;
+
+    // Clamp بين 0.3 و 0.98 (لا نوصل 1.0 أبداً — فقط GPT مع tool call يوصل 1.0)
+    return Math.max(0.3, Math.min(0.98, rawConfidence));
+  }
+
   private async generateEmbedding(text: string, timeout: number = 15000): Promise<number[] | null> {
     try {
       const response = await this.withTimeout(
@@ -2403,7 +2684,17 @@ Types:
       return { intent: IntentType.ORDER_QUERY, confidence: 0.90 };
     }
 
-    return null; // لا يمكن التحديد بـ pattern → يحتاج LLM
+    // ✅ v5: شكوى واضحة (كانت تحتاج GPT call — الآن pattern مجاني)
+    const COMPLAINT_PATTERNS = [
+      'شكوى', 'اشتكي', 'أشتكي', 'غير راضي', 'مش راضي', 'ما راضي', 'مستاء',
+      'زعلان', 'complaint', 'not happy', 'unacceptable', 'terrible', 'worst',
+      'أبي أشتكي', 'ابي اشتكي', 'تصعيد', 'مدير', 'مسؤول', 'رفع شكوى',
+    ];
+    if (COMPLAINT_PATTERNS.some((p) => lower.includes(p.toLowerCase()))) {
+      return { intent: IntentType.COMPLAINT_ESCALATION, confidence: 0.90 };
+    }
+
+    return null; // لا يمكن التحديد بـ pattern → Smart RAG يتولى
   }
 
   /**
