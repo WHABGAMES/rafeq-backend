@@ -140,6 +140,10 @@ export interface AISettings {
   // ✅ وضع الاختبار — Test/Sandbox Mode
   testMode?: boolean; // Default: false — عند التفعيل البوت يرد فقط على أرقام الاختبار
   testPhones?: string[]; // أرقام اختبار البوت (حتى 10)
+
+  // ✅ تجميع الرسائل — Message Batching
+  messageBatchingEnabled?: boolean; // Default: true — ينتظر قبل الرد
+  messageBatchingSeconds?: number; // Default: 30 ثانية | المدى: 30-300
 }
 
 export interface ConversationContext {
@@ -357,6 +361,9 @@ const AI_DEFAULTS: AISettings = {
   // ✅ وضع الاختبار
   testMode: false,
   testPhones: [],
+  // ✅ تجميع الرسائل
+  messageBatchingEnabled: true,
+  messageBatchingSeconds: 30, // 30 ثانية
 };
 
 
@@ -532,6 +539,11 @@ export class AIService {
         .map((p: string) => String(p || '').replace(/[^0-9]/g, ''))
         .filter((p: string) => p.length >= 9)
         .slice(0, 10); // حد أقصى 10 أرقام اختبار
+    }
+
+    // ✅ VALIDATION: تجميع الرسائل — clamp بين 30 و 300 ثانية
+    if (merged.messageBatchingSeconds !== undefined) {
+      merged.messageBatchingSeconds = Math.max(30, Math.min(300, Number(merged.messageBatchingSeconds) || 30));
     }
 
     if (row) {
