@@ -592,7 +592,6 @@ export class AiController {
   @ApiOperation({ summary: 'قائمة الأسئلة بدون إجابة — مرتبة بالتكرار' })
   async getUnanswered(
     @Req() req: any,
-    @Headers('x-store-id') storeIdHeader?: string,
   ) {
     const tenantId = req.user?.tenantId;
     if (!tenantId) return { items: [] };
