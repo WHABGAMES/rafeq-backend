@@ -1,10 +1,10 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║              RAFIQ PLATFORM - AI Module (v5 — Platform-Agnostic)              ║
+ * ║              RAFIQ PLATFORM - AI Module (v6 — Self-Learning)                   ║
  * ║                                                                                ║
- * ║  ✅ FIX #7: AI Platform Isolation — لا يستورد SallaApiService مباشرة          ║
- * ║  ✅ FIX BUG1: inject token صحيح getRepositoryToken(Store)                    ║
- * ║  ✅ FIX BUG6: useFactory signature متسقة مع constructor                       ║
+ * ║  ✅ v6: إضافة نظام التعلم الذاتي                                             ║
+ * ║  - UnansweredQuestion entity                                                   ║
+ * ║  - AILearningService (listener + API)                                          ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -18,9 +18,11 @@ import { Message, Conversation, Order } from '@database/entities';
 import { StoreSettings } from '../settings/entities/store-settings.entity';
 import { Store } from '../stores/entities/store.entity';
 import { KnowledgeBase } from './entities/knowledge-base.entity';
+import { UnansweredQuestion } from './entities/unanswered-question.entity';
 
 // Service, Controller & Listeners
 import { AIService } from './ai.service';
+import { AILearningService } from './ai-learning.service';
 import { AiController } from './ai.controller';
 import { AIMessageListener } from './ai-message.listener';
 import { AIHandoffListener } from './ai-handoff.listener';
@@ -30,7 +32,7 @@ import { ChannelsModule } from '../channels/channels.module';
 import { GatewayModule } from '../gateway/gateway.module';
 import { MailModule } from '../mail/mail.module';
 
-// ✅ FIX #7: Platform-Agnostic Product Search
+// ✅ Platform-Agnostic Product Search
 import { ProductSearchFactory } from '../../core/ports/product-search.factory';
 import { SallaProductSearchAdapter } from '../../integrations/salla/salla-product-search.adapter';
 import { ZidProductSearchAdapter } from '../../integrations/zid/zid-product-search.adapter';
@@ -40,6 +42,7 @@ import { StoresModule } from '../stores/stores.module';
   imports: [
     TypeOrmModule.forFeature([
       KnowledgeBase,
+      UnansweredQuestion,  // ✅ v6: جدول الأسئلة بدون إجابة
       StoreSettings,
       Conversation,
       Message,
@@ -59,6 +62,7 @@ import { StoresModule } from '../stores/stores.module';
 
   providers: [
     AIService,
+    AILearningService,  // ✅ v6: نظام التعلم الذاتي
     AIMessageListener,
     AIHandoffListener,
 
@@ -67,9 +71,6 @@ import { StoresModule } from '../stores/stores.module';
     ZidProductSearchAdapter,
 
     {
-      // ✅ FIX BUG1 + BUG6:
-      // - inject token صحيح: getRepositoryToken(Store) بدل string literal
-      // - useFactory signature: (repo, salla, zid) → new ProductSearchFactory(repo, [...])
       provide: ProductSearchFactory,
       useFactory: (
         storeRepo: Repository<Store>,
@@ -77,13 +78,13 @@ import { StoresModule } from '../stores/stores.module';
         zidAdapter: ZidProductSearchAdapter,
       ) => new ProductSearchFactory(storeRepo, [sallaAdapter, zidAdapter]),
       inject: [
-        getRepositoryToken(Store),   // ✅ TypeORM token الصحيح
+        getRepositoryToken(Store),
         SallaProductSearchAdapter,
         ZidProductSearchAdapter,
       ],
     },
   ],
 
-  exports: [AIService, ProductSearchFactory],
+  exports: [AIService, AILearningService, ProductSearchFactory],
 })
 export class AiModule {}
