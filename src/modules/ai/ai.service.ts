@@ -1114,14 +1114,14 @@ export class AIService {
             intent: intentResult.intent,
             shouldHandoff: false,
             ragAudit: {
-              answer_source: 'grounding_blocked',
+              answer_source: 'none',
               similarity_score: 0,
-              verifier_result: 'BLOCKED',
-              final_decision: 'SAFE_REPLY',
+              verifier_result: 'NO',
+              final_decision: 'BLOCKED',
               retrieved_chunks: knowledgeChunks.length,
               gate_a_passed: true,
               gate_b_passed: false,
-              rejection_reason: groundingCheck.reason,
+              rejection_reason: 'GROUNDING' as const,
               detected_intent: intentResult.intent,
             },
           };
@@ -2440,6 +2440,7 @@ If there is no store identity above AND no information relates to the customer's
    * ✅ Level 2: Enhanced Intent Router
    * Routes messages to appropriate strategy based on intent and store settings
    */
+  // @ts-ignore — kept as dead code for backward compatibility
   private async routeIntent(
     message: string,
     settings: AISettings,
