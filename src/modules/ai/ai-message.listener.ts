@@ -1,27 +1,26 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║              RAFIQ PLATFORM - AI Message Listener                              ║
+ * ║              RAFIQ PLATFORM - AI Message Listener v3                           ║
  * ║                                                                                ║
- * ║  🔧 FIX BUG-1: الـ AI لا يرد تلقائياً على الرسائل الواردة                     ║
+ * ║  ✅ v3: Message Batching — تجميع رسائل العميل والرد مرة واحدة                 ║
  * ║                                                                                ║
- * ║  يستمع لحدث 'message.received' من MessageService                              ║
- * ║  ويستدعي AIService.generateResponse() لإنشاء رد تلقائي                        ║
- * ║  ثم يرسل الرد عبر MessageService.createOutgoingMessage()                      ║
+ * ║  المشكلة: العميل يرسل "سلام" ثم "كيف حالكم" ثم "وين طلبي"                  ║
+ * ║           البوت يرد 3 مرات منفصلة = مزعج + يستهلك رصيد GPT                   ║
  * ║                                                                                ║
- * ║  الشروط:                                                                       ║
- * ║  1. المحادثة تحت إدارة الـ AI (handler = 'ai')                                 ║
- * ║  2. الرسالة واردة من العميل (INBOUND)                                          ║
- * ║  3. الرسالة نصية (TEXT)                                                        ║
- * ║  4. إعدادات الـ AI مفعّلة للمتجر                                               ║
+ * ║  الحل: البوت ينتظر حتى يسكت العميل (30 ثانية - 5 دقائق)                     ║
+ * ║        ثم يقرأ كل الرسائل معاً ويرد رد واحد شامل                             ║
+ * ║                                                                                ║
+ * ║  النمط: Debounced Response — كل رسالة جديدة تعيد العداد                       ║
+ * ║  الافتراضي: 30 ثانية | المدى: 30 ثانية → 5 دقائق                              ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
-// ✅ Entities — مطابقة لـ @database/entities/index.ts
+// ✅ Entities
 import {
   Message,
   MessageDirection,
@@ -30,9 +29,7 @@ import {
   ConversationHandler,
 } from '@database/entities';
 
-// ✅ MessageSender غير مُصدّر من @database/entities/index.ts — نستورده من ملف الـ entity مباشرة
 import { MessageSender } from '@database/entities/message.entity';
-
 import { Channel } from '@database/entities';
 
 // Services
@@ -50,15 +47,31 @@ interface MessageReceivedPayload {
   isNewConversation: boolean;
 }
 
+interface BufferedConversation {
+  messages: string[];
+  conversation: Conversation;
+  channel: Channel;
+  timer: ReturnType<typeof setTimeout>;
+  firstMessageAt: number;
+  lastMessageAt: number;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
-// 🤖 AI MESSAGE LISTENER
+// 🤖 AI MESSAGE LISTENER v3
 // ═══════════════════════════════════════════════════════════════════════════════
 
 @Injectable()
-export class AIMessageListener {
+export class AIMessageListener implements OnModuleDestroy {
   private readonly logger = new Logger(AIMessageListener.name);
-  // ✅ In-memory lock: prevents duplicate AI processing when safety net re-emits
+
+  // ✅ Dedup: prevents duplicate AI processing
   private readonly processingMessages = new Set<string>();
+
+  // ✅ v3: Message buffer — one per conversation
+  private readonly messageBuffer = new Map<string, BufferedConversation>();
+
+  // Safety: maximum buffer age (5 min) — even if messages keep coming
+  private readonly MAX_BUFFER_AGE_MS = 5 * 60 * 1000;
 
   constructor(
     private readonly aiService: AIService,
@@ -68,63 +81,57 @@ export class AIMessageListener {
   ) {}
 
   /**
-   * يستمع لكل رسالة واردة ويقرر إذا يجب الرد تلقائياً
-   *
-   * التدفق:
-   * 1. فلترة: هل المحادثة تحت الـ AI؟ هل الرسالة نصية؟
-   * 2. جلب إعدادات الـ AI للتأكد أنه مفعّل
-   * 3. استدعاء generateResponse() لإنشاء الرد
-   * 4. إذا الرد ناجح → إرسال كرسالة صادرة
-   * 5. إذا shouldHandoff → لا نرسل رد (handleHandoff يتولى)
+   * ✅ Cleanup on shutdown — clear all timers
    */
+  onModuleDestroy(): void {
+    for (const [, buf] of this.messageBuffer) {
+      clearTimeout(buf.timer);
+    }
+    this.messageBuffer.clear();
+    this.logger.log('🧹 Message buffer cleared on shutdown');
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 📥 MESSAGE RECEIVED — Entry point
+  // ═══════════════════════════════════════════════════════════════════════════
+
   @OnEvent('message.received', { async: true })
   async handleIncomingMessage(payload: MessageReceivedPayload): Promise<void> {
     const { message, conversation } = payload;
-    const startTime = Date.now();
 
-    // ✅ Dedup: prevent duplicate processing (safety net re-emit protection)
+    // ✅ Dedup
     if (this.processingMessages.has(message.id)) {
-      this.logger.log(`⏭️ Skipping duplicate: message ${message.id} is already being processed`);
       return;
     }
     this.processingMessages.add(message.id);
-    // Auto-cleanup after 30s to prevent memory leak
     setTimeout(() => this.processingMessages.delete(message.id), 30000);
 
     try {
-      // ──────────────────────────────────────────────────────────────────────
+      // ──────────────────────────────────────────────────────────────────
       // 1. فلترة أساسية
-      // ──────────────────────────────────────────────────────────────────────
+      // ──────────────────────────────────────────────────────────────────
 
-      // تجاهل الرسائل الصادرة (حماية من loop)
-      if (message.direction !== MessageDirection.INBOUND) {
-        return;
-      }
+      if (message.direction !== MessageDirection.INBOUND) return;
+      if (message.type !== MessageType.TEXT || !message.content?.trim()) return;
 
-      // تجاهل الرسائل غير النصية
-      if (message.type !== MessageType.TEXT || !message.content?.trim()) {
-        return;
-      }
-
-      // ──────────────────────────────────────────────────────────────────────
-      // 2. جلب إعدادات الـ AI مرة واحدة
-      // ──────────────────────────────────────────────────────────────────────
+      // ──────────────────────────────────────────────────────────────────
+      // 2. جلب إعدادات الـ AI
+      // ──────────────────────────────────────────────────────────────────
 
       const storeId = payload.channel?.storeId;
       const settings = await this.aiService.getSettings(conversation.tenantId, storeId);
 
       if (!settings.enabled) {
-        this.logger.log(`⏭️ Skipping AI: bot is DISABLED for tenant ${conversation.tenantId}`);
+        this.logger.log(`⏭️ AI DISABLED for tenant ${conversation.tenantId}`);
         return;
       }
 
-      // ──────────────────────────────────────────────────────────────────────
-      // 2.5 ✅ وضع الاختبار — البوت يرد فقط على أرقام الاختبار
-      // ──────────────────────────────────────────────────────────────────────
+      // ──────────────────────────────────────────────────────────────────
+      // 2.5 وضع الاختبار
+      // ──────────────────────────────────────────────────────────────────
 
       if (settings.testMode && settings.testPhones?.length) {
         const customerPhone = conversation.customerPhone || '';
-        // تنظيف الرقم: إزالة + والمسافات
         const normalizedPhone = customerPhone.replace(/[^0-9]/g, '');
         const lastNine = (p: string) => p.slice(-9);
 
@@ -134,20 +141,15 @@ export class AIMessageListener {
         });
 
         if (!isTestPhone) {
-          this.logger.debug(
-            `🧪 Test mode: skipping non-test phone ${customerPhone.slice(-4)}**** (conv=${conversation.id})`,
-          );
+          this.logger.debug(`🧪 Test mode: skipping ${customerPhone.slice(-4)}****`);
           return;
         }
-
-        this.logger.log(
-          `🧪 Test mode: responding to test phone ${customerPhone.slice(-4)}****`,
-        );
+        this.logger.log(`🧪 Test mode: responding to ${customerPhone.slice(-4)}****`);
       }
 
-      // ──────────────────────────────────────────────────────────────────────
-      // 3. التحقق من حالة المحادثة مع دعم انتهاء مدة السكوت
-      // ──────────────────────────────────────────────────────────────────────
+      // ──────────────────────────────────────────────────────────────────
+      // 3. التحقق من حالة المحادثة
+      // ──────────────────────────────────────────────────────────────────
 
       if (conversation.handler !== ConversationHandler.AI) {
         if (settings.silenceOnHandoff && conversation.handler === ConversationHandler.HUMAN) {
@@ -164,42 +166,147 @@ export class AIMessageListener {
           }
 
           if (silenceExpired) {
-            this.logger.log(`⏰ Silence expired for conversation ${conversation.id} — re-enabling AI (was ${silenceMinutes}min)`);
+            this.logger.log(`⏰ Silence expired for ${conversation.id} — re-enabling AI`);
             await this.conversationRepo.update({ id: conversation.id }, { handler: ConversationHandler.AI });
             conversation.handler = ConversationHandler.AI;
           } else {
-            this.logger.log(`⏭️ Skipping AI: conversation ${conversation.id} handler=human, silence NOT expired yet`);
             return;
           }
         } else {
-          this.logger.log(`⏭️ Skipping AI: conversation ${conversation.id} handler=${conversation.handler} (not AI)`);
           return;
         }
       }
 
-      // ──────────────────────────────────────────────────────────────────────
-      // 4. إنشاء رد الـ AI
-      // ──────────────────────────────────────────────────────────────────────
+      // ──────────────────────────────────────────────────────────────────
+      // 4. ✅ v3: Message Batching — تجميع الرسائل
+      // ──────────────────────────────────────────────────────────────────
+
+      const batchingEnabled = settings.messageBatchingEnabled ?? true;
+      const batchingSeconds = settings.messageBatchingSeconds ?? 30; // الافتراضي: 30 ثانية
+
+      if (batchingEnabled && batchingSeconds > 0) {
+        this.bufferMessage(conversation.id, message.content, conversation, payload.channel, batchingSeconds);
+        return; // لا نرد الآن — ننتظر
+      }
+
+      // ──────────────────────────────────────────────────────────────────
+      // 5. رد فوري (إذا Batching مطفي)
+      // ──────────────────────────────────────────────────────────────────
+
+      await this.processAndRespond(conversation, message.content);
+
+    } catch (error) {
+      this.logger.error(
+        `❌ AI listener error for conv ${conversation?.id}`,
+        { error: error instanceof Error ? error.message : 'Unknown' },
+      );
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 📦 BUFFER MESSAGE — تخزين الرسالة وإعادة ضبط المؤقت
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  private bufferMessage(
+    conversationId: string,
+    content: string,
+    conversation: Conversation,
+    channel: Channel,
+    batchingSeconds: number,
+  ): void {
+    const existing = this.messageBuffer.get(conversationId);
+    const now = Date.now();
+
+    if (existing) {
+      // ✅ مسح المؤقت القديم
+      clearTimeout(existing.timer);
+
+      // ✅ إضافة الرسالة للمجموعة
+      existing.messages.push(content);
+      existing.lastMessageAt = now;
+
+      // ✅ Safety: إذا مرّ أكثر من 5 دقائق من أول رسالة → نرد الآن
+      if (now - existing.firstMessageAt > this.MAX_BUFFER_AGE_MS) {
+        this.logger.log(
+          `⏰ Buffer max age reached for ${conversationId} — flushing ${existing.messages.length} messages`,
+        );
+        this.flushBuffer(conversationId);
+        return;
+      }
+
+      // ✅ إعادة ضبط المؤقت
+      existing.timer = setTimeout(() => this.flushBuffer(conversationId), batchingSeconds * 1000);
+
+      this.logger.debug(
+        `📦 Buffered message #${existing.messages.length} for ${conversationId} (waiting ${batchingSeconds}s)`,
+      );
+    } else {
+      // ✅ أول رسالة — إنشاء buffer جديد
+      const timer = setTimeout(() => this.flushBuffer(conversationId), batchingSeconds * 1000);
+
+      this.messageBuffer.set(conversationId, {
+        messages: [content],
+        conversation,
+        channel,
+        timer,
+        firstMessageAt: now,
+        lastMessageAt: now,
+      });
 
       this.logger.log(
-        `🤖 Generating AI response for conversation ${conversation.id}`,
+        `📦 Buffer started for ${conversationId} (waiting ${batchingSeconds}s for more messages)`,
       );
+    }
+  }
 
-      // ✅ لا نرسل رسالة ترحيب ثابتة — GPT يتعامل مع التحيات حسب النبرة تلقائياً
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🚀 FLUSH BUFFER — تفريغ المجموعة وإرسال رد واحد
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  private async flushBuffer(conversationId: string): Promise<void> {
+    const buf = this.messageBuffer.get(conversationId);
+    if (!buf) return;
+
+    // ✅ مسح البافر فوراً (قبل المعالجة) لمنع التكرار
+    this.messageBuffer.delete(conversationId);
+    clearTimeout(buf.timer);
+
+    const messageCount = buf.messages.length;
+    const waitTime = Math.round((buf.lastMessageAt - buf.firstMessageAt) / 1000);
+
+    this.logger.log(
+      `🚀 Flushing ${messageCount} batched message(s) for ${conversationId} (collected over ${waitTime}s)`,
+    );
+
+    // ✅ دمج كل الرسائل في نص واحد
+    // GPT يقرأها كمحادثة متسلسلة ويفهم السياق
+    const combinedMessage = buf.messages.join('\n');
+
+    await this.processAndRespond(buf.conversation, combinedMessage);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🤖 PROCESS AND RESPOND — معالجة وإرسال الرد
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  private async processAndRespond(
+    conversation: Conversation,
+    messageContent: string,
+  ): Promise<void> {
+    const startTime = Date.now();
+
+    try {
+      this.logger.log(`🤖 Generating AI response for ${conversation.id}`);
 
       const aiResponse = await this.aiService.generateResponse({
         tenantId: conversation.tenantId,
         conversationId: conversation.id,
-        message: message.content,
+        message: messageContent,
       });
 
       const processingTime = Date.now() - startTime;
 
-      // ──────────────────────────────────────────────────────────────────────
-      // 4. إرسال الرد
-      // ──────────────────────────────────────────────────────────────────────
-
-      // إذا تم التحويل للبشري
+      // ── Handoff response ──
       if (aiResponse.shouldHandoff) {
         if (aiResponse.reply) {
           await this.messageService.createOutgoingMessage({
@@ -216,14 +323,11 @@ export class AIMessageListener {
             },
           });
         }
-
-        this.logger.log(
-          `🔄 AI handoff for conversation ${conversation.id}: ${aiResponse.handoffReason}`,
-        );
+        this.logger.log(`🔄 AI handoff for ${conversation.id}: ${aiResponse.handoffReason}`);
         return;
       }
 
-      // رد عادي
+      // ── Normal response ──
       if (aiResponse.reply) {
         await this.messageService.createOutgoingMessage({
           conversationId: conversation.id,
@@ -240,24 +344,16 @@ export class AIMessageListener {
         });
 
         this.logger.log(
-          `✅ AI response sent for conversation ${conversation.id} ` +
-            `(confidence: ${aiResponse.confidence}, time: ${processingTime}ms)`,
+          `✅ AI response sent for ${conversation.id} (confidence: ${aiResponse.confidence}, time: ${processingTime}ms)`,
         );
       } else {
-        this.logger.warn(
-          `⚠️ AI returned empty reply for conversation ${conversation.id}`,
-        );
+        this.logger.warn(`⚠️ AI empty reply for ${conversation.id}`);
       }
     } catch (error) {
       this.logger.error(
-        `❌ AI auto-response failed for conversation ${conversation?.id}`,
-        {
-          error: error instanceof Error ? error.message : 'Unknown error',
-          stack: error instanceof Error ? error.stack : undefined,
-          messageId: message?.id,
-        },
+        `❌ AI response failed for ${conversation.id}`,
+        { error: error instanceof Error ? error.message : 'Unknown' },
       );
-      // لا نعيد الخطأ — لا نريد أن يؤثر فشل الـ AI على حفظ الرسالة
     }
   }
 }
