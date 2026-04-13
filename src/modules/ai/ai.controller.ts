@@ -50,6 +50,8 @@ import {
 
 import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
 import { AIService, SearchPriority } from './ai.service';
+import { AILearningService } from './ai-learning.service';
+import { UnansweredStatus } from './entities/unanswered-question.entity';
 import {
   IsString,
   IsBoolean,
@@ -341,7 +343,10 @@ class TrainBotDto {
 })
 @UseGuards(JwtAuthGuard)
 export class AiController {
-  constructor(private readonly aiService: AIService) {}
+  constructor(
+    private readonly aiService: AIService,
+    private readonly learningService: AILearningService,
+  ) {}
 
   /**
    * ✅ نفس pattern الموجود في settings.controller.ts:
@@ -577,5 +582,59 @@ export class AiController {
         { id: 'human_request', name: 'طلب موظف', examples: ['أريد التحدث مع موظف', 'حوّلني لشخص'] },
       ],
     };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 📚 SELF-LEARNING — أسئلة بدون إجابة
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  @Get('learning/unanswered')
+  @ApiOperation({ summary: 'قائمة الأسئلة بدون إجابة — مرتبة بالتكرار' })
+  async getUnanswered(
+    @Req() req: any,
+    @Headers('x-store-id') storeIdHeader?: string,
+  ) {
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) return { items: [] };
+    return {
+      items: await this.learningService.getUnanswered(tenantId),
+    };
+  }
+
+  @Get('learning/stats')
+  @ApiOperation({ summary: 'إحصائيات الأسئلة بدون إجابة' })
+  async getLearningStats(@Req() req: any) {
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) return { pendingCount: 0, totalHits: 0, topQuestion: null };
+    return this.learningService.getStats(tenantId);
+  }
+
+  @Put('learning/unanswered/:id/resolve')
+  @ApiOperation({ summary: 'تحديث حالة سؤال — resolved (تم إضافة الجواب)' })
+  async resolveQuestion(
+    @Req() req: any,
+    @Param('id') questionId: string,
+    @Body() body: { knowledgeId?: string },
+  ) {
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) return null;
+    return this.learningService.updateStatus(
+      tenantId,
+      questionId,
+      UnansweredStatus.RESOLVED,
+      body.knowledgeId,
+    );
+  }
+
+  @Put('learning/unanswered/:id/dismiss')
+  @ApiOperation({ summary: 'تجاهل سؤال — غير مهم' })
+  async dismissQuestion(
+    @Req() req: any,
+    @Param('id') questionId: string,
+  ) {
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) return { success: false };
+    const result = await this.learningService.dismiss(tenantId, questionId);
+    return { success: result };
   }
 }
