@@ -250,6 +250,13 @@ class UpdateAISettingsDto {
 
   @IsOptional() @IsArray()
   testPhones?: string[];
+
+  // ✅ Message Batching Settings
+  @IsOptional() @IsBoolean()
+  messageBatchingEnabled?: boolean;
+
+  @IsOptional() @IsNumber()
+  messageBatchingSeconds?: number;
 }
 
 class AddKnowledgeDto {
