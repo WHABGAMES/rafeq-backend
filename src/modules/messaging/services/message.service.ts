@@ -464,7 +464,7 @@ export class MessageService implements OnModuleInit {
         tenantId: data.tenantId,
         isNewConversation,
       }, {
-        delay: 15000, // ✅ 15 ثانية — شبكة أمان: يتحقق إذا AI رد (AI + API يأخذ 6-10 ثوانٍ)
+        delay: 45000, // ✅ 45 ثانية — شبكة أمان: Batching (30s) + GPT response (15s)
         attempts: 3,
         backoff: { type: 'exponential', delay: 3000 },
       });
