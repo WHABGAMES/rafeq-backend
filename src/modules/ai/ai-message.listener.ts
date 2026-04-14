@@ -185,33 +185,70 @@ export class AIMessageListener implements OnModuleDestroy {
       }
 
       // ──────────────────────────────────────────────────────────────────
-      // 3. التحقق من حالة المحادثة
+      // 3. التحقق من حالة المحادثة — مع Auto-Recovery
       // ──────────────────────────────────────────────────────────────────
 
       if (conversation.handler !== ConversationHandler.AI) {
-        if (settings.silenceOnHandoff && conversation.handler === ConversationHandler.HUMAN) {
+        if (conversation.handler === ConversationHandler.HUMAN) {
           const aiContext = (conversation.aiContext || {}) as Record<string, unknown>;
           const handoffAt = aiContext.handoffAt as string | undefined;
+          const handoffReason = aiContext.handoffReason as string | undefined;
           const silenceMinutes = settings.silenceDurationMinutes || 60;
 
-          let silenceExpired = false;
-          if (handoffAt) {
-            const elapsed = (Date.now() - new Date(handoffAt).getTime()) / 60000;
-            silenceExpired = elapsed >= silenceMinutes;
-          } else {
-            silenceExpired = true;
-          }
-
-          if (silenceExpired) {
-            this.logger.log(`⏰ Silence expired for ${conversation.id} — re-enabling AI`);
-            await this.conversationRepo.update({ id: conversation.id }, { handler: ConversationHandler.AI });
+          // ✅ FIX: AI_ERROR handoffs → auto-recover فوراً (الخطأ تقني مش من العميل)
+          if (handoffReason === 'AI_ERROR') {
+            this.logger.log(`⏰ Auto-recovering from AI_ERROR for ${conversation.id}`);
+            await this.conversationRepo.update(
+              { id: conversation.id },
+              { handler: ConversationHandler.AI, aiContext: { ...aiContext, failedAttempts: 0 } },
+            );
             conversation.handler = ConversationHandler.AI;
-          } else {
-            this.logger.log(`⏭️ Skipping AI: conversation ${conversation.id} handler=HUMAN, silence NOT expired`);
-            return;
+          }
+          // ✅ Silence: انتظر المدة المحددة ثم أعِد تفعيل AI
+          else if (settings.silenceOnHandoff) {
+            let silenceExpired = false;
+            if (handoffAt) {
+              const elapsed = (Date.now() - new Date(handoffAt).getTime()) / 60000;
+              silenceExpired = elapsed >= silenceMinutes;
+            } else {
+              silenceExpired = true; // ما فيه handoffAt = خطأ قديم → أعِد فوراً
+            }
+
+            if (silenceExpired) {
+              this.logger.log(`⏰ Silence expired for ${conversation.id} — re-enabling AI (reason: ${handoffReason || 'unknown'})`);
+              await this.conversationRepo.update(
+                { id: conversation.id },
+                { handler: ConversationHandler.AI, aiContext: { ...aiContext, failedAttempts: 0 } },
+              );
+              conversation.handler = ConversationHandler.AI;
+            } else {
+              this.logger.log(`⏭️ Skipping: conversation ${conversation.id} handler=HUMAN, silence NOT expired (${handoffReason || 'unknown'})`);
+              return;
+            }
+          }
+          // ✅ FIX: حتى لو silenceOnHandoff مطفي → auto-recover بعد 24 ساعة (ما يبقى stuck أبداً)
+          else {
+            const MAX_STUCK_HOURS = 24;
+            let shouldRecover = true;
+            if (handoffAt) {
+              const elapsedHours = (Date.now() - new Date(handoffAt).getTime()) / 3600000;
+              shouldRecover = elapsedHours >= MAX_STUCK_HOURS;
+            }
+
+            if (shouldRecover) {
+              this.logger.log(`⏰ Auto-recovering stuck conversation ${conversation.id} (>24h or no handoffAt)`);
+              await this.conversationRepo.update(
+                { id: conversation.id },
+                { handler: ConversationHandler.AI, aiContext: { ...aiContext, failedAttempts: 0 } },
+              );
+              conversation.handler = ConversationHandler.AI;
+            } else {
+              this.logger.log(`⏭️ Skipping: conversation ${conversation.id} handler=HUMAN, silenceOnHandoff=false`);
+              return;
+            }
           }
         } else {
-          this.logger.log(`⏭️ Skipping AI: conversation ${conversation.id} handler=${conversation.handler} (not AI)`);
+          this.logger.log(`⏭️ Skipping: conversation ${conversation.id} handler=${conversation.handler} (not AI)`);
           return;
         }
       }
