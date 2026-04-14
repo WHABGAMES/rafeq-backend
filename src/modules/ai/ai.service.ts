@@ -1140,6 +1140,21 @@ export class AIService {
         groundingCheck.passed,
       );
 
+      // ✅ FIX: إذا الثقة منخفضة → سجّل السؤال للتعلم حتى لو GPT رد
+      // مثال: "عندي حساب مارفل" → GPT يقول "ما نبيع مارفل" = رد لكن خارج النطاق
+      // التاجر يحتاج يشوف هالأسئلة عشان يحسّن المكتبة
+      if (realConfidence < 0.5 && knowledgeChunks.length === 0) {
+        this.eventEmitter.emit('ai.unanswered_question', {
+          tenantId: context.tenantId,
+          storeId: context.storeId,
+          conversationId: context.conversationId,
+          message: this.extractRealMessage(message),
+          intent: intentResult.intent,
+          knowledgeEntriesChecked: 0,
+          timestamp: new Date(),
+        });
+      }
+
       // ✅ نجح الرد
       await this.resetFailedAttempts(context);
 
