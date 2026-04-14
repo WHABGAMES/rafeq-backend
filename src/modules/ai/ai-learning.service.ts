@@ -1,16 +1,16 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
- * ║          RAFIQ PLATFORM - AI Learning Service                                  ║
+ * ║          RAFIQ PLATFORM - AI Learning Service v2                               ║
  * ║                                                                                ║
- * ║  ✅ التعلم الذاتي — يسجّل الأسئلة بدون إجابة ويجمّعها بالمعنى               ║
+ * ║  ✅ v2: رصد شامل — يسجّل كل رسائل العملاء + ردود البوت                      ║
  * ║                                                                                ║
  * ║  التدفق:                                                                      ║
- * ║  1. ai.unanswered_question event → recordUnanswered()                         ║
- * ║  2. يولّد embedding للسؤال                                                    ║
- * ║  3. يبحث عن أسئلة مشابهة (cosine > 0.85)                                     ║
- * ║  4. إذا موجود → يزيد العداد + يضيف الصياغة                                   ║
- * ║  5. إذا جديد → يسجّله كسؤال جديد                                             ║
- * ║  6. التاجر يشوف القائمة → يضيف الجواب → البوت يتعلم                          ║
+ * ║  1. ai.message_processed event → كل رسالة معالجة                             ║
+ * ║  2. يفلتر (يتجاهل تحيات قصيرة)                                               ║
+ * ║  3. يولّد embedding + يبحث عن مشابه                                           ║
+ * ║  4. إذا موجود → يزيد العداد + يحدّث رد البوت                                ║
+ * ║  5. إذا جديد → يسجّله                                                        ║
+ * ║  6. التاجر يراجع → يعدّل الرد → يضيف للمكتبة                               ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -21,21 +21,34 @@ import { Repository } from 'typeorm';
 import OpenAI from 'openai';
 import { ConfigService } from '@nestjs/config';
 
-import { UnansweredQuestion, UnansweredStatus } from './entities/unanswered-question.entity';
+import {
+  UnansweredQuestion,
+  UnansweredStatus,
+  CaptureSource,
+} from './entities/unanswered-question.entity';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Constants
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const SIMILARITY_MERGE_THRESHOLD = 0.85; // أسئلة أعلى من 85% تشابه = نفس السؤال
-const MAX_SAMPLE_VARIATIONS = 5;         // أقصى عدد صياغات محفوظة
+const SIMILARITY_MERGE_THRESHOLD = 0.85;
+const MAX_SAMPLE_VARIATIONS = 5;
 const EMBEDDING_MODEL = 'text-embedding-3-small';
-const MIN_QUESTION_LENGTH = 5;           // أقل طول سؤال يُسجّل
+const MIN_QUESTION_LENGTH = 5;
+
+/** كلمات قصيرة نتجاهلها — تحيات/شكر لا تحتاج تعلم */
+const SKIP_PATTERNS = [
+  /^(سلام|هلا|هاي|مرحبا|أهلا|الو|هلو)$/,
+  /^(شكرا|شكراً|مشكور|تسلم|يعطيك العافية)$/,
+  /^(hi|hey|hello|thanks|thank you|ok|okay)$/i,
+  /^(صباح الخير|مساء الخير|السلام عليكم)$/,
+];
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Event Interface
+// Event Interfaces
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/** حدث قديم — أسئلة بدون إجابة فقط */
 interface UnansweredEvent {
   tenantId: string;
   storeId?: string;
@@ -45,6 +58,19 @@ interface UnansweredEvent {
   attempt?: number;
   maxAttempts?: number;
   knowledgeEntriesChecked?: number;
+  timestamp: Date;
+}
+
+/** ✅ v2: حدث جديد — كل رسالة معالجة مع رد البوت */
+interface MessageProcessedEvent {
+  tenantId: string;
+  storeId?: string;
+  conversationId?: string;
+  message: string;
+  botResponse: string;
+  intent?: string;
+  confidence: number;
+  knowledgeEntriesUsed: number;
   timestamp: Date;
 }
 
@@ -58,6 +84,10 @@ export class AILearningService {
   private openai: OpenAI;
   private readonly isApiKeyConfigured: boolean;
 
+  /** ✅ Dedup: منع تسجيل نفس الرسالة مرتين (ai.message_processed + ai.unanswered_question) */
+  private readonly recentMessages = new Map<string, number>();
+  private readonly DEDUP_WINDOW_MS = 60_000; // 60 ثانية
+
   constructor(
     private readonly configService: ConfigService,
     @InjectRepository(UnansweredQuestion)
@@ -66,10 +96,68 @@ export class AILearningService {
     const apiKey = this.configService.get<string>('OPENAI_API_KEY');
     this.isApiKeyConfigured = !!apiKey && apiKey.length > 10;
     this.openai = new OpenAI({ apiKey: apiKey || 'not-configured' });
+
+    // Cleanup dedup map every 5 minutes
+    setInterval(() => {
+      const now = Date.now();
+      for (const [key, ts] of this.recentMessages) {
+        if (now - ts > this.DEDUP_WINDOW_MS) this.recentMessages.delete(key);
+      }
+    }, 300_000);
+  }
+
+  /** ✅ Dedup: check if message was already processed recently */
+  private isDuplicate(tenantId: string, message: string): boolean {
+    const key = `${tenantId}:${message.trim().slice(0, 100)}`;
+    if (this.recentMessages.has(key)) return true;
+    this.recentMessages.set(key, Date.now());
+    return false;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // 📥 EVENT LISTENER — يستلم أسئلة بدون إجابة
+  // 📥 EVENT: ai.message_processed — كل رسالة معالجة (v2)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  @OnEvent('ai.message_processed', { async: true })
+  async handleMessageProcessed(event: MessageProcessedEvent): Promise<void> {
+    try {
+      if (!event.tenantId || !event.message || !event.botResponse) return;
+
+      const question = event.message.trim();
+
+      // تجاهل الرسائل القصيرة جداً
+      if (question.length < MIN_QUESTION_LENGTH) return;
+
+      // ✅ Dedup: نفس الرسالة ممكن تطلق ai.message_processed + ai.unanswered_question
+      if (this.isDuplicate(event.tenantId, question)) return;
+
+      // تجاهل التحيات والشكر البسيطة — ما تحتاج تعلم
+      if (SKIP_PATTERNS.some(p => p.test(question.trim()))) return;
+
+      // تحديد مصدر الرصد
+      let captureSource = CaptureSource.ALL;
+      if (event.confidence < 0.5 && event.knowledgeEntriesUsed === 0) {
+        captureSource = CaptureSource.LOW_CONFIDENCE;
+      }
+
+      await this.recordMessage(
+        event.tenantId,
+        question,
+        event.botResponse,
+        captureSource,
+        event.storeId,
+        event.intent,
+      );
+    } catch (error) {
+      this.logger.error('Failed to record processed message', {
+        error: error instanceof Error ? error.message : 'Unknown',
+        tenantId: event.tenantId,
+      });
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 📥 EVENT: ai.unanswered_question — أسئلة بدون إجابة (backward compat)
   // ═══════════════════════════════════════════════════════════════════════════
 
   @OnEvent('ai.unanswered_question', { async: true })
@@ -77,13 +165,17 @@ export class AILearningService {
     try {
       if (!event.tenantId || !event.message) return;
 
-      // تجاهل الأسئلة القصيرة جداً
       const question = event.message.trim();
       if (question.length < MIN_QUESTION_LENGTH) return;
 
-      await this.recordUnanswered(
+      // ✅ Dedup: skip if ai.message_processed already recorded this
+      if (this.isDuplicate(event.tenantId, question)) return;
+
+      await this.recordMessage(
         event.tenantId,
         question,
+        undefined, // ما فيه رد بوت
+        CaptureSource.NO_MATCH,
         event.storeId,
         event.intent,
       );
@@ -96,43 +188,55 @@ export class AILearningService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // 📝 RECORD — تسجيل أو دمج سؤال بدون إجابة
+  // 📝 RECORD — تسجيل أو دمج رسالة
   // ═══════════════════════════════════════════════════════════════════════════
 
-  private async recordUnanswered(
+  private async recordMessage(
     tenantId: string,
     question: string,
+    botResponse?: string,
+    captureSource: CaptureSource = CaptureSource.ALL,
     storeId?: string,
     intent?: string,
   ): Promise<void> {
-    // ✅ Step 1: توليد embedding للسؤال الجديد
+    // ✅ Step 1: توليد embedding
     const embedding = await this.generateEmbedding(question);
 
-    // ✅ Step 2: جلب كل الأسئلة المعلّقة لهذا التاجر
+    // ✅ Step 2: جلب الأسئلة المعلّقة
     const existing = await this.unansweredRepo.find({
       where: { tenantId, status: UnansweredStatus.PENDING },
     });
 
-    // ✅ Step 3: البحث عن سؤال مشابه (تجميع ذكي)
+    // ✅ Step 3: بحث عن مشابه
     if (embedding && existing.length > 0) {
       const match = this.findSimilarQuestion(embedding, existing);
 
       if (match) {
-        // ✅ MERGE: نفس الموضوع — زيادة العداد + إضافة الصياغة
+        // ✅ MERGE: نفس الموضوع
         match.hitCount += 1;
         match.lastAskedAt = new Date();
 
-        // إضافة الصياغة الجديدة (إذا مختلفة) — نحتفظ بآخر 5
+        // إضافة صياغة جديدة
         const variations = match.sampleVariations || [];
         if (!variations.includes(question) && question !== match.representativeQuestion) {
           variations.push(question);
-          if (variations.length > MAX_SAMPLE_VARIATIONS) {
-            variations.shift(); // حذف الأقدم
-          }
+          if (variations.length > MAX_SAMPLE_VARIATIONS) variations.shift();
           match.sampleVariations = variations;
         }
 
-        // تحديث intent إذا أدق
+        // ✅ v2: تحديث رد البوت (آخر رد)
+        if (botResponse) {
+          match.botResponse = botResponse;
+        }
+
+        // ترقية مصدر الرصد (no_match أهم من all)
+        if (captureSource === CaptureSource.NO_MATCH) {
+          match.captureSource = CaptureSource.NO_MATCH;
+        } else if (captureSource === CaptureSource.LOW_CONFIDENCE &&
+                   match.captureSource === CaptureSource.ALL) {
+          match.captureSource = CaptureSource.LOW_CONFIDENCE;
+        }
+
         if (intent && !match.detectedIntent) {
           match.detectedIntent = intent;
         }
@@ -140,13 +244,13 @@ export class AILearningService {
         await this.unansweredRepo.save(match);
 
         this.logger.log(
-          `📝 Learning: merged question (hits: ${match.hitCount}) — "${question.slice(0, 50)}..."`,
+          `📝 Learning: merged (hits: ${match.hitCount}) — "${question.slice(0, 40)}..."`,
         );
         return;
       }
     }
 
-    // ✅ Step 4: سؤال جديد — إنشاء سجل
+    // ✅ Step 4: سؤال جديد
     const newEntry = this.unansweredRepo.create({
       tenantId,
       storeId,
@@ -157,17 +261,19 @@ export class AILearningService {
       detectedIntent: intent,
       status: UnansweredStatus.PENDING,
       embedding: embedding || undefined,
+      botResponse: botResponse || undefined,
+      captureSource,
     });
 
     await this.unansweredRepo.save(newEntry);
 
     this.logger.log(
-      `📝 Learning: new unanswered question recorded — "${question.slice(0, 50)}..."`,
+      `📝 Learning: new message recorded — "${question.slice(0, 40)}..." [${captureSource}]`,
     );
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // 🔍 FIND SIMILAR — بحث عن سؤال مشابه بالمعنى
+  // 🔍 FIND SIMILAR
   // ═══════════════════════════════════════════════════════════════════════════
 
   private findSimilarQuestion(
@@ -195,7 +301,7 @@ export class AILearningService {
   // ═══════════════════════════════════════════════════════════════════════════
 
   /**
-   * جلب الأسئلة بدون إجابة — مرتبة بالتكرار (الأكثر أولاً)
+   * جلب الأسئلة — مرتبة بالتكرار (الأكثر أولاً)
    */
   async getUnanswered(
     tenantId: string,
@@ -232,7 +338,24 @@ export class AILearningService {
   }
 
   /**
-   * تحديث حالة سؤال (resolved أو dismissed)
+   * ✅ v2: تحديث جواب التاجر (المعدّل)
+   */
+  async setMerchantAnswer(
+    tenantId: string,
+    questionId: string,
+    answer: string,
+  ): Promise<UnansweredQuestion | null> {
+    const question = await this.unansweredRepo.findOne({
+      where: { id: questionId, tenantId },
+    });
+    if (!question) return null;
+
+    question.merchantAnswer = answer;
+    return this.unansweredRepo.save(question);
+  }
+
+  /**
+   * تحديث حالة سؤال
    */
   async updateStatus(
     tenantId: string,
@@ -243,7 +366,6 @@ export class AILearningService {
     const question = await this.unansweredRepo.findOne({
       where: { id: questionId, tenantId },
     });
-
     if (!question) return null;
 
     question.status = status;
