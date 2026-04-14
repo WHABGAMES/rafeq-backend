@@ -17,6 +17,7 @@
 
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
@@ -76,6 +77,7 @@ export class AIMessageListener implements OnModuleDestroy {
   constructor(
     private readonly aiService: AIService,
     private readonly messageService: MessageService,
+    private readonly eventEmitter: EventEmitter2,
     @InjectRepository(Conversation)
     private readonly conversationRepo: Repository<Conversation>,
   ) {}
@@ -375,6 +377,19 @@ export class AIMessageListener implements OnModuleDestroy {
         this.logger.log(
           `✅ AI response sent for ${conversation.id} (confidence: ${aiResponse.confidence}, time: ${processingTime}ms)`,
         );
+
+        // ✅ v2: رصد شامل — تسجيل كل رسالة مع رد البوت للتعلم
+        this.eventEmitter.emit('ai.message_processed', {
+          tenantId: conversation.tenantId,
+          storeId: conversation.channel?.storeId,
+          conversationId: conversation.id,
+          message: messageContent,
+          botResponse: aiResponse.reply,
+          intent: aiResponse.intent,
+          confidence: aiResponse.confidence,
+          knowledgeEntriesUsed: aiResponse.ragAudit?.retrieved_chunks || 0,
+          timestamp: new Date(),
+        });
       } else {
         this.logger.warn(`⚠️ AI empty reply for ${conversation.id}`);
       }
