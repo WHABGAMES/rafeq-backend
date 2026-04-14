@@ -172,13 +172,13 @@ export class AIMessageListener implements OnModuleDestroy {
         });
 
         if (!isTestPhone) {
-          // ✅ FIX: @lid بدون رقم حقيقي → نسمح بالمرور (أفضل من حجب الكل)
+          // ✅ FIX: @lid بدون رقم حقيقي → يُحجب في وضع الاختبار
           if (!normalizedPhone && externalId.includes('@lid')) {
-            this.logger.log(`🧪 Test mode: @lid without resolved phone — allowing through for ${externalId.slice(0, 8)}...`);
+            this.logger.debug(`🧪 Test mode: @lid without resolved phone — blocking ${externalId.slice(0, 8)}...`);
           } else {
             this.logger.debug(`🧪 Test mode: skipping ${customerPhone.slice(-4)}****`);
-            return;
           }
+          return;
         } else {
           this.logger.log(`🧪 Test mode: responding to ${customerPhone.slice(-4)}****`);
         }
