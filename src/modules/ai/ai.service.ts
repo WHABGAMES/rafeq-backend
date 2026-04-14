@@ -1164,11 +1164,15 @@ export class AIService {
       this.logger.error('Smart RAG failed', {
         error: error instanceof Error ? error.message : 'Unknown',
       });
+      // ✅ FIX: أخطاء تقنية (GPT timeout, model error, rate limit)
+      // لا تسوي handoff — العميل ما له ذنب. ترد رسالة خطأ وتبقي handler = AI
+      // المرة الجاية لمّا العميل يرسل → يحاول مرة ثانية تلقائياً
       return {
         reply: settings.fallbackMessage || AI_DEFAULTS.fallbackMessage,
         confidence: 0,
-        shouldHandoff: true,
+        shouldHandoff: false, // ✅ لا تحوّل — أبقِ handler = AI للمحاولة مرة ثانية
         handoffReason: 'AI_ERROR',
+        intent: 'AI_ERROR',
       };
     }
   }
@@ -2247,6 +2251,22 @@ If there is no store identity above AND no information relates to the customer's
    * يستخدم Salla API للبحث عن المنتجات بالكلمات المفتاحية
    * يرجع نتائج منسقة كـ chunks للـ RAG
    */
+  /**
+   * ✅ FIX: استخراج الكلمات الحقيقية من رسائل مجمّعة (batched)
+   * يحذف prefix التجميع ويرجّع الرسالة الأخيرة (الأهم للبحث)
+   */
+  private extractRealMessage(message: string): string {
+    if (message.includes('[العميل أرسل') && message.includes('رسائل متتالية')) {
+      // Extract the numbered messages
+      const lines = message.split('\n').filter(l => /^\d+\./.test(l.trim()));
+      if (lines.length > 0) {
+        // Return the last message (usually the actual question)
+        return lines[lines.length - 1].replace(/^\d+\.\s*/, '').trim();
+      }
+    }
+    return message;
+  }
+
   private async searchProducts(
     message: string,
     storeId: string,
@@ -2256,6 +2276,9 @@ If there is no store identity above AND no information relates to the customer's
     topScore: number;
     gateAPassed: boolean;
   }> {
+    // ✅ FIX: استخراج الرسالة الحقيقية من batched messages
+    message = this.extractRealMessage(message);
+
     // ✅ FIX: Skip product search if the message is purely numeric (likely order number)
     // Salla API returns 422 for numeric-only keywords
     const cleanMsg = message.replace(/\s+/g, '');
