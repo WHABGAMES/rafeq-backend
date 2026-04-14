@@ -127,62 +127,10 @@ export class AIMessageListener implements OnModuleDestroy {
       }
 
       // ──────────────────────────────────────────────────────────────────
-      // 2.5 وضع الاختبار — مع دعم @lid
+      // 2.5 وضع الاختبار — مُنقل إلى ai.service.ts (generateResponse)
+      //     يستخدم نفس آلية كشف @lid من وضع المالك (3 طبقات)
+      //     Service يرجع reply='' إذا الرقم مش في قائمة الاختبار
       // ──────────────────────────────────────────────────────────────────
-
-      if (settings.testMode && settings.testPhones?.length) {
-        // ✅ FIX: @lid ما يحتوي على رقم هاتف حقيقي
-        // نحاول نجيب الرقم من عدة مصادر
-        let customerPhone = conversation.customerPhone || '';
-        const externalId = conversation.customerExternalId || '';
-
-        // Source 1: customerPhone (works for @s.whatsapp.net)
-        // Source 2: extract from @s.whatsapp.net external ID
-        if (!customerPhone && externalId.includes('@s.whatsapp.net')) {
-          customerPhone = externalId.replace('@s.whatsapp.net', '');
-        }
-
-        // Source 3: @lid — search previous conversations for same customer name with a real phone
-        if (!customerPhone && externalId.includes('@lid') && conversation.customerName) {
-          try {
-            const prevConv = await this.conversationRepo
-              .createQueryBuilder('c')
-              .select(['c.customerPhone'])
-              .where('c.channelId = :channelId', { channelId: payload.channel?.id || conversation.channelId })
-              .andWhere('c.customerName = :name', { name: conversation.customerName })
-              .andWhere('c.customerPhone IS NOT NULL')
-              .andWhere("LENGTH(c.customerPhone) >= 9")
-              .andWhere('c.id != :currentId', { currentId: conversation.id })
-              .orderBy('c.updatedAt', 'DESC')
-              .limit(1)
-              .getOne();
-            if (prevConv?.customerPhone) {
-              customerPhone = prevConv.customerPhone;
-              this.logger.log(`🧪 Test mode: resolved @lid phone via name match: ${customerPhone.slice(-4)}****`);
-            }
-          } catch { /* silent — can't resolve */ }
-        }
-
-        const normalizedPhone = customerPhone.replace(/[^0-9]/g, '');
-        const lastNine = (p: string) => p.slice(-9);
-
-        const isTestPhone = normalizedPhone.length >= 9 && settings.testPhones.some((testPhone: string) => {
-          const cleanTest = testPhone.replace(/[^0-9]/g, '');
-          return normalizedPhone === cleanTest || lastNine(normalizedPhone) === lastNine(cleanTest);
-        });
-
-        if (!isTestPhone) {
-          // ✅ FIX: @lid بدون رقم حقيقي → يُحجب في وضع الاختبار
-          if (!normalizedPhone && externalId.includes('@lid')) {
-            this.logger.debug(`🧪 Test mode: @lid without resolved phone — blocking ${externalId.slice(0, 8)}...`);
-          } else {
-            this.logger.debug(`🧪 Test mode: skipping ${customerPhone.slice(-4)}****`);
-          }
-          return;
-        } else {
-          this.logger.log(`🧪 Test mode: responding to ${customerPhone.slice(-4)}****`);
-        }
-      }
 
       // ──────────────────────────────────────────────────────────────────
       // 3. التحقق من حالة المحادثة — مع Auto-Recovery
