@@ -123,8 +123,21 @@ export class AIMessageListener implements OnModuleDestroy {
       const storeId = payload.channel?.storeId;
       const settings = await this.aiService.getSettings(conversation.tenantId, storeId);
 
+      // ──────────────────────────────────────────────────────────────────
+      // 2.1 رصد التعلم — يشتغل حتى لو البوت مطفي (يحتاج تفعيل من التاجر)
+      // ──────────────────────────────────────────────────────────────────
+      if (settings.learningCaptureEnabled) {
+        this.eventEmitter.emit('ai.learning_capture', {
+          tenantId: conversation.tenantId,
+          storeId,
+          conversationId: conversation.id,
+          message: message.content.trim(),
+          aiEnabled: settings.enabled,
+          timestamp: new Date(),
+        });
+      }
+
       if (!settings.enabled) {
-        this.logger.log(`⏭️ AI DISABLED for tenant ${conversation.tenantId}`);
         return;
       }
 
