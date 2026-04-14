@@ -3754,14 +3754,16 @@ Types:
       previousMessages: [],
     };
 
-    // ✅ وضع المالك — كشف أرقام التاجر المعتمدة
-    // FIX: دعم @lid — نفس الرقم أحياناً يوصل كـ @lid بدل @s.whatsapp.net
+    // ✅ وضع المالك + وضع الاختبار — كشف أرقام التاجر المعتمدة
+    // FIX: دعم @lid — نفس آلية الكشف تُستخدم لوضع المالك ووضع الاختبار معاً
     let ownerCheckPhone = context.customerPhone;
     const currentExternalId = conv?.customerExternalId || '';
     const isLidConversation = currentExternalId.includes('@lid');
+    const needsPhoneResolution = settings.ownerModeEnabled || settings.testMode;
 
     // ═══ LAYER 1: @lid → phone resolution (3 طرق) ═══
-    if (!ownerCheckPhone && isLidConversation && conv?.channelId && settings.ownerModeEnabled) {
+    // يشتغل لوضع المالك ووضع الاختبار — نفس الآلية
+    if (!ownerCheckPhone && isLidConversation && conv?.channelId && needsPhoneResolution) {
       try {
         // طريقة 1: ownerLids — LIDs محفوظة مسبقاً (أسرع)
         const knownLids = (settings as any).ownerLids as string[] | undefined;
@@ -3856,6 +3858,31 @@ Types:
             this.logger.warn(`🔑 Failed to save owner LID: ${(e as Error).message}`);
           }
         }
+      }
+    }
+
+    // ═══ وضع الاختبار — نفس آلية كشف @lid من وضع المالك ═══
+    // يشتغل بعد كشف الرقم الحقيقي → يقارن مع أرقام الاختبار
+    // إذا تطابق → يكمل كعميل عادي (بدون صلاحيات مالك)
+    // إذا ما تطابق → يتجاهل الرسالة بالكامل
+    if (settings.testMode && settings.testPhones?.length) {
+      const testCheckPhone = ownerCheckPhone || context.customerPhone || '';
+      const normalizedTestPhone = testCheckPhone.replace(/[^0-9]/g, '');
+      const lastNine = (n: string) => n.slice(-9);
+
+      const isTestPhone = normalizedTestPhone.length >= 9 && settings.testPhones.some((tp: string) => {
+        const cleanTp = tp.replace(/[^0-9]/g, '');
+        return normalizedTestPhone === cleanTp || lastNine(normalizedTestPhone) === lastNine(cleanTp);
+      });
+
+      if (isTestPhone) {
+        // ✅ رقم اختبار → يكمل كعميل عادي (يلغي وضع المالك لو كان مفعّل)
+        context.isOwnerMode = false;
+        this.logger.log(`🧪 Test mode: ALLOWED — responding as customer to ****${normalizedTestPhone.slice(-4)}${isLidConversation ? ' (from @lid)' : ''}`);
+      } else {
+        // ❌ مش رقم اختبار → تجاهل تام
+        this.logger.log(`🧪 Test mode: BLOCKED — phone="${normalizedTestPhone || '@lid-unresolved'}" not in testPhones`);
+        return { reply: '', confidence: 0, shouldHandoff: false };
       }
     }
 
