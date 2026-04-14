@@ -140,6 +140,7 @@ export interface AISettings {
   // ✅ وضع الاختبار — Test/Sandbox Mode
   testMode?: boolean; // Default: false — عند التفعيل البوت يرد فقط على أرقام الاختبار
   testPhones?: string[]; // أرقام اختبار البوت (حتى 10)
+  learningCaptureEnabled?: boolean; // Default: false — رصد رسائل العملاء للتعلم (يشتغل حتى لو البوت مطفي)
 
   // ✅ تجميع الرسائل — Message Batching
   messageBatchingEnabled?: boolean; // Default: true — ينتظر قبل الرد
@@ -361,6 +362,8 @@ const AI_DEFAULTS: AISettings = {
   // ✅ وضع الاختبار
   testMode: false,
   testPhones: [],
+  // ✅ رصد التعلم
+  learningCaptureEnabled: false,
   // ✅ تجميع الرسائل
   messageBatchingEnabled: true,
   messageBatchingSeconds: 30, // 30 ثانية
