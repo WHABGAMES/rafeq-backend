@@ -636,4 +636,57 @@ export class AiController {
     const result = await this.learningService.dismiss(tenantId, questionId);
     return { success: result };
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 📚 LEARNING v2 — تعديل رد البوت + إضافة للمكتبة
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  @Put('learning/unanswered/:id/answer')
+  @ApiOperation({ summary: 'تعديل جواب التاجر على سؤال' })
+  async setMerchantAnswer(
+    @Req() req: any,
+    @Param('id') questionId: string,
+    @Body() body: { answer: string },
+  ) {
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) return null;
+    return this.learningService.setMerchantAnswer(tenantId, questionId, body.answer);
+  }
+
+  @Post('learning/unanswered/:id/add-to-library')
+  @ApiOperation({ summary: 'إضافة سؤال + جواب التاجر للمكتبة مباشرة' })
+  async addToLibraryFromLearning(
+    @Req() req: any,
+    @Param('id') questionId: string,
+    @Body() body: { answer?: string },
+  ) {
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) return { success: false };
+
+    // 1. جلب السؤال
+    const questions = await this.learningService.getUnanswered(tenantId);
+    const question = questions.find(q => q.id === questionId);
+    if (!question) return { success: false, error: 'not_found' };
+
+    // 2. الجواب = body.answer أو merchantAnswer أو botResponse
+    const answer = body.answer || question.merchantAnswer || question.botResponse;
+    if (!answer) return { success: false, error: 'no_answer' };
+
+    // 3. إضافة للمكتبة
+    const knowledge = await this.aiService.addKnowledge(tenantId, {
+      title: question.representativeQuestion.slice(0, 100),
+      content: `سؤال: ${question.representativeQuestion}\nجواب: ${answer}`,
+      category: 'تعلم ذاتي',
+    });
+
+    // 4. تحديث حالة السؤال
+    await this.learningService.updateStatus(
+      tenantId,
+      questionId,
+      UnansweredStatus.RESOLVED,
+      knowledge?.id,
+    );
+
+    return { success: true, knowledgeId: knowledge?.id };
+  }
 }
