@@ -641,6 +641,16 @@ export class AiController {
     return { success: result };
   }
 
+  @Get('learning/resolved')
+  @ApiOperation({ summary: 'الأسئلة اللي تم الرد عليها' })
+  async getResolved(@Req() req: any) {
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) return { items: [] };
+    return {
+      items: await this.learningService.getUnanswered(tenantId, 'resolved' as any, 50),
+    };
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   // 📚 LEARNING v2 — تعديل رد البوت + إضافة للمكتبة
   // ═══════════════════════════════════════════════════════════════════════════
