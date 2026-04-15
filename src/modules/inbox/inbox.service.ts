@@ -231,14 +231,17 @@ export class InboxService {
       throw new NotFoundException('المحادثة غير موجودة');
     }
 
+    // ✅ FIX: جلب أحدث الرسائل (DESC) ثم عكس الترتيب للعرض (ASC)
+    // بدون هذا: المحادثات اللي فيها 50+ رسالة تعرض القديمة فقط
     const [items, total] = await this.messageRepository.findAndCount({
       where: { conversationId },
-      order: { createdAt: 'ASC' },
+      order: { createdAt: 'DESC' },
       skip: (pagination.page - 1) * pagination.limit,
       take: pagination.limit,
     });
 
-    const messages: MessageDto[] = items.map(msg => this.mapMessage(msg));
+    // عكس → الأقدم فوق والأحدث تحت (زي أي شات)
+    const messages: MessageDto[] = items.reverse().map(msg => this.mapMessage(msg));
 
     return { messages, total };
   }
