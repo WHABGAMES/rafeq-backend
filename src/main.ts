@@ -70,6 +70,10 @@ async function bootstrap() {
 
     logger.log('✅ Body parser configured with rawBody preservation (FIX WH-01)');
 
+    // ✅ FIX: Disable ETag — prevents 304 Not Modified on inbox/messages
+    // API responses change frequently; ETags cause stale data in inbox
+    app.getHttpAdapter().getInstance().set('etag', false);
+
     const configService = app.get(ConfigService);
     const port = parseInt(process.env.PORT || '3000', 10);
     const isProduction = process.env.NODE_ENV === 'production';
