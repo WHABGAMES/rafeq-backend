@@ -693,7 +693,10 @@ export class AiController {
       category: 'general',
     });
 
-    // 4. تحديث حالة السؤال
+    // 4. حفظ رد التاجر على السؤال (عشان يظهر في تبويب "تم الرد")
+    await this.learningService.setMerchantAnswer(tenantId, questionId, answer);
+
+    // 5. تحديث حالة السؤال
     await this.learningService.updateStatus(
       tenantId,
       questionId,
