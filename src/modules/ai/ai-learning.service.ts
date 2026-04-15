@@ -179,9 +179,9 @@ export class AILearningService {
       // تجاهل التحيات والشكر البسيطة — ما تحتاج تعلم
       if (SKIP_PATTERNS.some(p => p.test(question.trim()))) return;
 
-      // تحديد مصدر الرصد
+      // تحديد مصدر الرصد — أوسع كشف للردود الضعيفة
       let captureSource = CaptureSource.ALL;
-      if (event.confidence < 0.5 && event.knowledgeEntriesUsed === 0) {
+      if (event.confidence < 0.5 || event.knowledgeEntriesUsed === 0) {
         captureSource = CaptureSource.LOW_CONFIDENCE;
       }
 
@@ -247,9 +247,13 @@ export class AILearningService {
     // ✅ Step 1: توليد embedding
     const embedding = await this.generateEmbedding(question);
 
-    // ✅ Step 2: جلب الأسئلة المعلّقة
+    // ✅ Step 2: جلب كل الأسئلة (معلّقة + محلولة + متجاهَلة) — نتجاهل اللي تم الرد عليها أو تجاهلها
     const existing = await this.unansweredRepo.find({
-      where: { tenantId, status: UnansweredStatus.PENDING },
+      where: [
+        { tenantId, status: UnansweredStatus.PENDING },
+        { tenantId, status: UnansweredStatus.RESOLVED },
+        { tenantId, status: UnansweredStatus.DISMISSED },
+      ],
     });
 
     // ✅ Step 3: بحث عن مشابه
@@ -257,7 +261,19 @@ export class AILearningService {
       const match = this.findSimilarQuestion(embedding, existing);
 
       if (match) {
-        // ✅ MERGE: نفس الموضوع
+        // ✅ إذا السؤال محلول أو متجاهَل → تحديث العدد فقط بدون إنشاء جديد
+        if (match.status === UnansweredStatus.RESOLVED || match.status === UnansweredStatus.DISMISSED) {
+          match.hitCount += 1;
+          match.lastAskedAt = new Date();
+          if (botResponse) match.botResponse = botResponse;
+          await this.unansweredRepo.save(match);
+          this.logger.log(
+            `📝 Learning: skipped (${match.status}, hits: ${match.hitCount}) — "${question.slice(0, 40)}..."`,
+          );
+          return;
+        }
+
+        // ✅ MERGE: نفس الموضوع (pending)
         match.hitCount += 1;
         match.lastAskedAt = new Date();
 
