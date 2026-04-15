@@ -365,6 +365,7 @@ export class AILearningService {
    */
   async getStats(tenantId: string): Promise<{
     pendingCount: number;
+    resolvedCount: number;
     totalHits: number;
     topQuestion: string | null;
   }> {
@@ -373,10 +374,15 @@ export class AILearningService {
       order: { hitCount: 'DESC' },
     });
 
+    const resolvedCount = await this.unansweredRepo.count({
+      where: { tenantId, status: UnansweredStatus.RESOLVED },
+    });
+
     const totalHits = pending.reduce((sum, q) => sum + q.hitCount, 0);
 
     return {
       pendingCount: pending.length,
+      resolvedCount,
       totalHits,
       topQuestion: pending[0]?.representativeQuestion || null,
     };
