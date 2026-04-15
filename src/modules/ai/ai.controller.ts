@@ -253,6 +253,10 @@ class UpdateAISettingsDto {
   @IsOptional() @IsArray()
   testPhones?: string[];
 
+  // ✅ Learning Capture
+  @IsOptional() @IsBoolean()
+  learningCaptureEnabled?: boolean;
+
   // ✅ Message Batching Settings
   @IsOptional() @IsBoolean()
   messageBatchingEnabled?: boolean;
@@ -676,7 +680,7 @@ export class AiController {
     const knowledge = await this.aiService.addKnowledge(tenantId, {
       title: question.representativeQuestion.slice(0, 100),
       content: `سؤال: ${question.representativeQuestion}\nجواب: ${answer}`,
-      category: 'تعلم ذاتي',
+      category: 'general',
     });
 
     // 4. تحديث حالة السؤال
