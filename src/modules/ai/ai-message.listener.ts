@@ -74,6 +74,9 @@ export class AIMessageListener implements OnModuleDestroy {
   // Safety: maximum buffer age (5 min) — even if messages keep coming
   private readonly MAX_BUFFER_AGE_MS = 5 * 60 * 1000;
 
+  /** ✅ Throttle: لا نرد على الرسائل الغير نصية أكثر من مرة كل 5 دقائق */
+  private nonTextReplies = new Map<string, number>();
+
   constructor(
     private readonly aiService: AIService,
     private readonly messageService: MessageService,
@@ -114,7 +117,40 @@ export class AIMessageListener implements OnModuleDestroy {
       // ──────────────────────────────────────────────────────────────────
 
       if (message.direction !== MessageDirection.INBOUND) return;
-      if (message.type !== MessageType.TEXT || !message.content?.trim()) return;
+
+      // ──────────────────────────────────────────────────────────────────
+      // 1.5 رسائل غير نصية (صور، صوت، فيديو، ملفات...)
+      //     البوت يرد برسالة مهذبة يطلب من العميل يكتب سؤاله
+      // ──────────────────────────────────────────────────────────────────
+      if (message.type !== MessageType.TEXT) {
+        const storeId = payload.channel?.storeId;
+        const settings = await this.aiService.getSettings(conversation.tenantId, storeId);
+        if (!settings.enabled) return;
+
+        // لا نرد على نفس المحادثة أكثر من مرة كل 5 دقائق
+        const nonTextKey = `non_text_reply:${conversation.id}`;
+        const alreadyReplied = this.nonTextReplies.get(nonTextKey);
+        if (alreadyReplied && Date.now() - alreadyReplied < 300_000) return;
+        this.nonTextReplies.set(nonTextKey, Date.now());
+
+        const typeNames: Record<string, string> = {
+          image: 'صورة', audio: 'رسالة صوتية', video: 'فيديو',
+          document: 'ملف', sticker: 'ملصق', location: 'موقع', contact: 'جهة اتصال',
+        };
+        const typeName = typeNames[message.type] || 'رسالة';
+
+        await this.messageService.createOutgoingMessage({
+          conversationId: conversation.id,
+          content: `عذراً، حالياً أقدر أساعدك بالرسائل النصية فقط 📝\nلو تقدر تكتب لي سؤالك أو استفسارك — بخدمك بأسرع وقت! 😊`,
+          type: MessageType.TEXT,
+          sender: MessageSender.AI,
+        });
+
+        this.logger.log(`📎 Non-text (${typeName}) from ${conversation.id} — polite reply sent`);
+        return;
+      }
+
+      if (!message.content?.trim()) return;
 
       // ──────────────────────────────────────────────────────────────────
       // 2. جلب إعدادات الـ AI
