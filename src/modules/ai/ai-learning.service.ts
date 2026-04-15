@@ -115,6 +115,51 @@ export class AILearningService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // 📥 EVENT: ai.learning_capture — رصد كل رسالة (حتى لو البوت مطفي)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  @OnEvent('ai.learning_capture', { async: true })
+  async handleLearningCapture(event: {
+    tenantId: string;
+    storeId?: string;
+    conversationId?: string;
+    message: string;
+    aiEnabled: boolean;
+    timestamp: Date;
+  }): Promise<void> {
+    try {
+      if (!event.tenantId || !event.message) return;
+
+      const question = event.message.trim();
+      if (question.length < MIN_QUESTION_LENGTH) return;
+
+      // ✅ Dedup
+      if (this.isDuplicate(event.tenantId, question)) return;
+
+      // ✅ لا نتجاهل أي رسالة — التاجر يبي يشوف كل شي (حتى التحيات)
+
+      // ✅ إذا البوت شغّال → ai.message_processed سيتكفّل بالتسجيل (مع رد البوت)
+      // نسجّل هنا فقط إذا البوت مطفي — عشان التاجر يشوف الرسائل ويجهّز المكتبة
+      if (event.aiEnabled) return;
+
+      await this.recordMessage(
+        event.tenantId,
+        question,
+        undefined, // لا رد بوت — البوت مطفي
+        CaptureSource.ALL,
+        event.storeId,
+        undefined,
+      );
+
+      this.logger.log(`📝 Learning (AI off): captured "${question.slice(0, 40)}..."`);
+    } catch (error) {
+      this.logger.error('Failed to capture learning message', {
+        error: error instanceof Error ? error.message : 'Unknown',
+      });
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // 📥 EVENT: ai.message_processed — كل رسالة معالجة (v2)
   // ═══════════════════════════════════════════════════════════════════════════
 
