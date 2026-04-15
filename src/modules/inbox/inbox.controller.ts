@@ -19,6 +19,7 @@ import {
   Body,
   Param,
   Query,
+  Header,
   HttpCode,
   HttpStatus,
   UseGuards,
@@ -55,6 +56,7 @@ export class InboxController {
   // ═══════════════════════════════════════════════════════════════════════════
 
   @Get()
+  @Header('Cache-Control', 'no-store')
   @ApiOperation({
     summary: 'قائمة المحادثات',
     description: 'جلب جميع المحادثات مع الفلترة والتصفح',
@@ -156,6 +158,7 @@ export class InboxController {
    * ✅ BUG-INB2 FIX: كان مفقود — الواجهة تستدعيه لتحميل الرسائل
    */
   @Get(':id/messages')
+  @Header('Cache-Control', 'no-store')
   @ApiOperation({
     summary: 'رسائل المحادثة',
     description: 'جلب رسائل محادثة معينة مع التصفح',
