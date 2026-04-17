@@ -16,6 +16,7 @@ import { ConfigModule } from '@nestjs/config';
 // Entities
 import { Message, Conversation, Customer, Channel } from '@database/entities';
 import { Store } from '../stores/entities/store.entity';
+import { StoreSettings } from '../settings/entities/store-settings.entity';
 
 // Services
 import { MessageService } from './services/message.service';
@@ -38,6 +39,7 @@ import { ChannelsModule } from '../channels/channels.module';
       Customer,
       Channel,
       Store,
+      StoreSettings,
     ]),
 
     BullModule.registerQueue({
