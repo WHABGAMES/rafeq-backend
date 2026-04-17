@@ -17,6 +17,7 @@ import { Job } from 'bullmq';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, MoreThan } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { StoreSettings } from '../../settings/entities/store-settings.entity';
 
 // Entities
 import {
@@ -68,6 +69,9 @@ export class MessagingProcessor extends WorkerHost {
 
     @InjectRepository(Channel)
     private readonly channelRepo: Repository<Channel>,
+
+    @InjectRepository(StoreSettings)
+    private readonly settingsRepo: Repository<StoreSettings>,
 
     private readonly eventEmitter: EventEmitter2,
 
@@ -265,6 +269,22 @@ export class MessagingProcessor extends WorkerHost {
       if (aiResponse) {
         // AI already responded — EventEmitter worked fine
         return { status: 'ai_already_responded' };
+      }
+
+      // 5.5 ✅ FIX: تحقق إذا البوت شغّال — لا نعيد إذا البوت مطفي (يوفّر processing)
+      const storeId = conversation.channelId
+        ? (await this.channelRepo.findOne({ where: { id: conversation.channelId }, select: ['storeId'] }))?.storeId
+        : undefined;
+
+      if (storeId) {
+        const settingsRow = await this.settingsRepo.findOne({
+          where: { tenantId: conversation.tenantId, storeId, settingsKey: 'ai' },
+        });
+        const aiEnabled = settingsRow?.settingsValue?.['enabled'] ?? false;
+        if (!aiEnabled) {
+          this.logger.log(`⏭️ [SAFETY NET] Skipped — AI disabled for tenant ${conversation.tenantId}`);
+          return { status: 'ai_disabled' };
+        }
       }
 
       // 6. ⚠️ AI did NOT respond — re-emit the event
