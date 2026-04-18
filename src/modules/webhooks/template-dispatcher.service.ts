@@ -1061,12 +1061,17 @@ export class TemplateDispatcherService {
         || (Array.isArray(rawData?.items) ? (rawData.items as unknown[]).length : undefined);
       if (itemsCount) baseVars.cart_items_count = itemsCount;
 
-      // cart_url: رابط السلة
-      const cartUrl = rawData?.cart_url || rawData?.checkout_url || rawData?.url
+      // cart_url: رابط السلة — Salla يرسله في checkout_url أو urls.checkout
+      const urls = (rawData?.urls || {}) as Record<string, unknown>;
+      const cartUrl = rawData?.cart_url || rawData?.checkout_url || rawData?.recovery_url
+        || rawData?.url || urls.checkout || urls.customer
         || meta.cart_url || meta.checkout_url || meta.url;
       if (cartUrl) {
         baseVars.cart_url     = cartUrl;
+        baseVars.cart_link    = cartUrl;  // ✅ القوالب تستخدم {{cart_link}}
         baseVars.checkout_url = cartUrl;
+      } else {
+        this.logger.warn(`⚠️ cart_link empty for cart ${entityIdStr} — rawData keys: ${Object.keys(rawData || {}).join(', ')}`);
       }
 
       // store_name: من rawData أو meta أو نص سلة
@@ -2308,6 +2313,7 @@ export class TemplateDispatcherService {
       delivery_date: safeStr(data.delivery_date || data.deliveryDate || orderObj.delivery_date || (data.shipment as any)?.delivery_date),
       download_link: safeStr(data.download_url || data.downloadLink || orderObj.download_url || (data.digital as any)?.url),
       invoice_link: safeStr(urls.invoice || data.invoice_url || data.invoiceLink || orderObj.invoice_url),
+      rating_url: safeStr(urls.customer || urls.rating || data.rating_url || data.review_url || data.store_url),
     };
 
     for (const [key, value] of Object.entries(variables)) {
