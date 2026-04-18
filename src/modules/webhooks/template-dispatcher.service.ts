@@ -1035,14 +1035,18 @@ export class TemplateDispatcherService {
       baseVars.entity_id    = entityIdStr;
       baseVars.entity_type  = 'cart';
 
-      // ─── استخراج بيانات السلة من meta (Salla raw payload) ─────────────────
+      // ─── استخراج بيانات السلة من rawData (Salla raw payload) ─────────────────
       const meta = (rawData?.meta || {}) as Record<string, unknown>;
 
-      // cart_total: من meta أو من نص سلة
-      const cartTotal = meta.cart_total || meta.total || meta.amount
+      // cart_total: من rawData مباشرة → meta → نص سلة
+      // ✅ FIX: Salla يرسل total في جذر البيانات مش في meta
+      const cartTotal = rawData?.total || rawData?.amount || rawData?.cart_total
+        || rawData?.sub_total || rawData?.grand_total
+        || meta.cart_total || meta.total || meta.amount
         || meta.cart_amount || meta.sub_total;
       if (cartTotal !== undefined && cartTotal !== null) {
-        baseVars.cart_total = cartTotal;
+        // ✅ formatAmount يحمي من [object Object] لو total كان كائن
+        baseVars.cart_total = this.formatAmount(cartTotal);
       } else {
         // حاول استخرج من نص سلة: "إجمالي السلة: 150 ريال" أو "بقيمة 150"
         const totalMatch = sallaContent.match(/(?:إجمالي|بقيمة|المبلغ|total)[:\s]*(\d[\d,.]*)/i);
@@ -1052,19 +1056,23 @@ export class TemplateDispatcherService {
       }
 
       // items_count: عدد المنتجات في السلة
-      const itemsCount = meta.items_count || meta.products_count || meta.count;
+      const itemsCount = rawData?.items_count || rawData?.products_count
+        || meta.items_count || meta.products_count || meta.count
+        || (Array.isArray(rawData?.items) ? (rawData.items as unknown[]).length : undefined);
       if (itemsCount) baseVars.cart_items_count = itemsCount;
 
       // cart_url: رابط السلة
-      const cartUrl = meta.cart_url || meta.checkout_url || meta.url;
+      const cartUrl = rawData?.cart_url || rawData?.checkout_url || rawData?.url
+        || meta.cart_url || meta.checkout_url || meta.url;
       if (cartUrl) {
         baseVars.cart_url     = cartUrl;
         baseVars.checkout_url = cartUrl;
       }
 
-      // store_name: من meta أو من نص سلة
+      // store_name: من rawData أو meta أو نص سلة
       if (!baseVars.store_name) {
-        const storeName = meta.store_name || meta.merchant_name;
+        const storeName = rawData?.store_name || rawData?.merchant_name
+          || meta.store_name || meta.merchant_name;
         if (storeName) {
           baseVars.store_name = storeName;
         } else {
@@ -1075,7 +1083,10 @@ export class TemplateDispatcherService {
       }
 
       // fallback: لو cart_total لسا فاضي
-      if (!baseVars.cart_total) baseVars.cart_total = '';
+      if (!baseVars.cart_total) {
+        this.logger.warn(`⚠️ cart_total empty for cart ${entityIdStr} — rawData keys: ${Object.keys(rawData || {}).join(', ')}`);
+        baseVars.cart_total = '';
+      }
 
       this.logger.debug(`🛒 Cart entity [${businessType}]: id=${entityIdStr}, total=${baseVars.cart_total || 'N/A'}`);
       return baseVars;
