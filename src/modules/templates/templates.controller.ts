@@ -277,6 +277,7 @@ export class TemplatesController {
         { key: '{{product_name}}', label: 'اسم المنتج', category: 'product' },
         { key: '{{product_price}}', label: 'سعر المنتج', category: 'product' },
         { key: '{{product_link}}', label: 'رابط المنتج', category: 'product' },
+        { key: '{{rating_url}}', label: 'رابط التقييم', category: 'order' },
         { key: '{{product_image}}', label: 'صورة المنتج', category: 'product' },
         
         // OTP Variables
@@ -511,7 +512,7 @@ export class TemplatesController {
           description: 'يُرسَل تلقائياً بعد 3 أيام من إنشاء الطلب',
           content: 'أهلاً {{customer_name}} 🌟\n\nكيف كانت تجربتك مع {{store_name}}؟\n\nرأيك الصادق يساعدنا نتطور ونقدم لك الأفضل دائماً\n\n⭐ شاركنا تقييمك — يأخذ أقل من دقيقة\n\nكل تقييم يفرق معنا كثير ويساعد عملاء ثانيين يختارون الأفضل\n\nشكراً لوقتك 💙',
           buttons: [
-            { type: 'url', text: 'قيّم الآن ⭐', url: '{{store_url}}' },
+            { type: 'url', text: 'قيّم الآن ⭐', url: '{{rating_url}}' },
           ],
           sendSettings: {
             sendingMode: 'delayed',
