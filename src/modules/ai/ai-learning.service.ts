@@ -180,9 +180,11 @@ export class AILearningService {
       // تجاهل التحيات والشكر البسيطة — ما تحتاج تعلم
       if (SKIP_PATTERNS.some(p => p.test(question.trim()))) return;
 
-      // تحديد مصدر الرصد — أوسع كشف للردود الضعيفة
+      // تحديد مصدر الرصد — ثقة منخفضة فقط
+      // ✅ FIX: لا نستخدم knowledgeEntriesUsed === 0 لأن المتاجر الجديدة مكتبتها فاضية
+      // → كل الرسائل تطلع "البوت ما عرف" حتى لو جاوب صح من GPT
       let captureSource = CaptureSource.ALL;
-      if (event.confidence < 0.5 || event.knowledgeEntriesUsed === 0) {
+      if (event.confidence < 0.5) {
         captureSource = CaptureSource.LOW_CONFIDENCE;
       }
 
