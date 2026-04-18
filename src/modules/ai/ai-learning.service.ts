@@ -380,11 +380,33 @@ export class AILearningService {
     tenantId: string,
     status: UnansweredStatus = UnansweredStatus.PENDING,
     limit: number = 50,
-  ): Promise<UnansweredQuestion[]> {
-    return this.unansweredRepo.find({
-      where: { tenantId, status },
+    page: number = 1,
+    captureSource?: string,
+  ): Promise<{ items: UnansweredQuestion[]; total: number; page: number; limit: number }> {
+    const where: Record<string, unknown> = { tenantId, status };
+    if (captureSource) where.captureSource = captureSource;
+
+    const [items, total] = await this.unansweredRepo.findAndCount({
+      where,
       order: { hitCount: 'DESC', lastAskedAt: 'DESC' },
       take: limit,
+      skip: (page - 1) * limit,
+    });
+    return { items, total, page, limit };
+  }
+
+  /**
+   * حذف جميع الأسئلة المعلّقة (أو بحسب captureSource)
+   */
+  async clearAll(
+    tenantId: string,
+    captureSource?: string,
+  ): Promise<number> {
+    const where: Record<string, unknown> = { tenantId, status: UnansweredStatus.PENDING };
+    if (captureSource) where.captureSource = captureSource;
+    const result = await this.unansweredRepo.delete(where);
+    return result.affected || 0;
+  }
     });
   }
 
