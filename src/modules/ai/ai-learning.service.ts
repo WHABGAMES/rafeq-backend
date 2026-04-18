@@ -149,6 +149,7 @@ export class AILearningService {
         CaptureSource.ALL,
         event.storeId,
         undefined,
+        event.conversationId,
       );
 
       this.logger.log(`📝 Learning (AI off): captured "${question.slice(0, 40)}..."`);
@@ -192,6 +193,7 @@ export class AILearningService {
         captureSource,
         event.storeId,
         event.intent,
+        event.conversationId,
       );
     } catch (error) {
       this.logger.error('Failed to record processed message', {
@@ -223,6 +225,7 @@ export class AILearningService {
         CaptureSource.NO_MATCH,
         event.storeId,
         event.intent,
+        event.conversationId,
       );
     } catch (error) {
       this.logger.error('Failed to record unanswered question', {
@@ -243,6 +246,7 @@ export class AILearningService {
     captureSource: CaptureSource = CaptureSource.ALL,
     storeId?: string,
     intent?: string,
+    conversationId?: string,
   ): Promise<void> {
     // ✅ Step 1: توليد embedding
     const embedding = await this.generateEmbedding(question);
@@ -290,6 +294,11 @@ export class AILearningService {
           match.botResponse = botResponse;
         }
 
+        // ✅ تحديث المحادثة (آخر محادثة فيها السؤال)
+        if (conversationId) {
+          match.conversationId = conversationId;
+        }
+
         // ترقية مصدر الرصد (no_match أهم من all)
         if (captureSource === CaptureSource.NO_MATCH) {
           match.captureSource = CaptureSource.NO_MATCH;
@@ -315,6 +324,7 @@ export class AILearningService {
     const newEntry = this.unansweredRepo.create({
       tenantId,
       storeId,
+      conversationId,
       representativeQuestion: question,
       sampleVariations: [],
       hitCount: 1,
