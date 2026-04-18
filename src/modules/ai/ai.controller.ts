@@ -596,12 +596,19 @@ export class AiController {
   @ApiOperation({ summary: 'قائمة الأسئلة بدون إجابة — مرتبة بالتكرار' })
   async getUnanswered(
     @Req() req: any,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('source') source?: string,
   ) {
     const tenantId = req.user?.tenantId;
-    if (!tenantId) return { items: [] };
-    return {
-      items: await this.learningService.getUnanswered(tenantId),
-    };
+    if (!tenantId) return { items: [], total: 0, page: 1, limit: 50 };
+    return this.learningService.getUnanswered(
+      tenantId,
+      UnansweredStatus.PENDING,
+      parseInt(limit || '50', 10),
+      parseInt(page || '1', 10),
+      source || undefined,
+    );
   }
 
   @Get('learning/stats')
@@ -641,14 +648,24 @@ export class AiController {
     return { success: result };
   }
 
+  @Delete('learning/unanswered/clear')
+  @ApiOperation({ summary: 'حذف جميع الأسئلة المعلّقة' })
+  async clearAllUnanswered(
+    @Req() req: any,
+    @Query('source') source?: string,
+  ) {
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) return { deleted: 0 };
+    const deleted = await this.learningService.clearAll(tenantId, source || undefined);
+    return { deleted };
+  }
+
   @Get('learning/resolved')
   @ApiOperation({ summary: 'الأسئلة اللي تم الرد عليها' })
   async getResolved(@Req() req: any) {
     const tenantId = req.user?.tenantId;
-    if (!tenantId) return { items: [] };
-    return {
-      items: await this.learningService.getUnanswered(tenantId, 'resolved' as any, 50),
-    };
+    if (!tenantId) return { items: [], total: 0, page: 1, limit: 50 };
+    return this.learningService.getUnanswered(tenantId, UnansweredStatus.RESOLVED, 50);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -678,7 +695,7 @@ export class AiController {
     if (!tenantId) return { success: false };
 
     // 1. جلب السؤال
-    const questions = await this.learningService.getUnanswered(tenantId);
+    const { items: questions } = await this.learningService.getUnanswered(tenantId);
     const question = questions.find(q => q.id === questionId);
     if (!question) return { success: false, error: 'not_found' };
 
