@@ -407,8 +407,6 @@ export class AILearningService {
     const result = await this.unansweredRepo.delete(where);
     return result.affected || 0;
   }
-    });
-  }
 
   /**
    * جلب إحصائيات سريعة
