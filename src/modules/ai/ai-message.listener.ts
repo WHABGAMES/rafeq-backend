@@ -76,6 +76,18 @@ export class AIMessageListener implements OnModuleDestroy {
 
   /** ✅ Throttle: لا نرد على الرسائل الغير نصية أكثر من مرة كل 5 دقائق */
   private nonTextReplies = new Map<string, number>();
+  private readonly NON_TEXT_THROTTLE_MS = 300_000; // 5 minutes
+  private readonly NON_TEXT_CLEANUP_MS = 600_000;  // 10 minutes — cleanup stale entries
+
+  /** ✅ Self-cleaning: حذف entries أقدم من 10 دقائق لمنع memory leak */
+  private cleanupNonTextReplies(): void {
+    const now = Date.now();
+    for (const [key, timestamp] of this.nonTextReplies) {
+      if (now - timestamp > this.NON_TEXT_CLEANUP_MS) {
+        this.nonTextReplies.delete(key);
+      }
+    }
+  }
 
   constructor(
     private readonly aiService: AIService,
@@ -93,7 +105,8 @@ export class AIMessageListener implements OnModuleDestroy {
       clearTimeout(buf.timer);
     }
     this.messageBuffer.clear();
-    this.logger.log('🧹 Message buffer cleared on shutdown');
+    this.nonTextReplies.clear();
+    this.logger.log('🧹 Message buffer + non-text throttle cleared on shutdown');
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -130,8 +143,9 @@ export class AIMessageListener implements OnModuleDestroy {
         // لا نرد على نفس المحادثة أكثر من مرة كل 5 دقائق
         const nonTextKey = `non_text_reply:${conversation.id}`;
         const alreadyReplied = this.nonTextReplies.get(nonTextKey);
-        if (alreadyReplied && Date.now() - alreadyReplied < 300_000) return;
+        if (alreadyReplied && Date.now() - alreadyReplied < this.NON_TEXT_THROTTLE_MS) return;
         this.nonTextReplies.set(nonTextKey, Date.now());
+        this.cleanupNonTextReplies(); // ✅ حذف entries قديمة — منع memory leak
 
         const typeNames: Record<string, string> = {
           image: 'صورة', audio: 'رسالة صوتية', video: 'فيديو',
