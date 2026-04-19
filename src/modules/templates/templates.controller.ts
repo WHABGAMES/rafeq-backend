@@ -435,7 +435,7 @@ export class TemplatesController {
           language: 'ar',
           category: 'shipping_notifications',
           triggerEvent: 'order.delivered',
-          content: 'أهلاً {{customer_name}} 🎊\n\nطلبك رقم #{{order_id}} وصلك بنجاح! نتمنى يعجبك ✅\n\n⭐ رأيك يهمنا كثير — لو عندك دقيقة، شاركنا تقييمك\n\nتقييمك يساعدنا نخدمك أحسن وأحسن\n\nشكراً إنك جزء من عائلة {{store_name}} 💙',
+          content: 'أهلاً {{customer_name}} 🎊\n\nطلبك رقم #{{order_id}} وصلك بنجاح! نتمنى يعجبك ✅\n\n⭐ رأيك يهمنا كثير — لو عندك دقيقة، شاركنا تقييمك\n\n🔗 قيّم من هنا:\n{{rating_url}}\n\nتقييمك يساعدنا نخدمك أحسن وأحسن\n\nشكراً إنك جزء من عائلة {{store_name}} 💙',
           buttons: [
             { type: 'url', text: 'قيّم تجربتك ⭐', url: '{{rating_url}}' },
           ],
@@ -451,7 +451,7 @@ export class TemplatesController {
           language: 'ar',
           category: 'sales_recovery',
           triggerEvent: 'abandoned.cart',
-          content: 'أهلاً {{customer_name}} 👋\n\nاخترت منتجات حلوة بس ما كملت الطلب! 🛒\n\n💰 إجمالي السلة: {{cart_total}} ريال\n\nمنتجاتك لسه محفوظة وتنتظرك — أكمل طلبك قبل لا تخلص الكميات 🏃‍♂️\n\n{{store_name}} — محفوظة عشانك 💛',
+          content: 'أهلاً {{customer_name}} 👋\n\nاخترت منتجات حلوة بس ما كملت الطلب! 🛒\n\n💰 إجمالي السلة: {{cart_total}} ريال\n\nمنتجاتك لسه محفوظة وتنتظرك — أكمل طلبك قبل لا تخلص الكميات 🏃‍♂️\n\n🔗 أكمل طلبك من هنا:\n{{cart_link}}\n\n{{store_name}} — محفوظة عشانك 💛',
           buttons: [
             { type: 'url', text: 'أكمل الطلب', url: '{{cart_link}}' },
           ],
@@ -469,7 +469,7 @@ export class TemplatesController {
           language: 'ar',
           category: 'sales_recovery',
           triggerEvent: 'abandoned.cart',
-          content: 'أهلاً {{customer_name}} 🎁\n\nسلتك لسه بانتظارك!\n\nلأنك مهم عندنا، جهّزنا لك مفاجأة بسيطة 🎉\n\n💰 إجمالي السلة: {{cart_total}} ريال\n\nأكمل طلبك الحين واستمتع بتجربة تسوق مميزة ✨\n\nالعرض لفترة محدودة ⏰\n\n{{store_name}}',
+          content: 'أهلاً {{customer_name}} 🎁\n\nسلتك لسه بانتظارك!\n\nلأنك مهم عندنا، جهّزنا لك مفاجأة بسيطة 🎉\n\n💰 إجمالي السلة: {{cart_total}} ريال\n\nأكمل طلبك الحين واستمتع بتجربة تسوق مميزة ✨\n\n🔗 أكمل طلبك:\n{{cart_link}}\n\nالعرض لفترة محدودة ⏰\n\n{{store_name}}',
           buttons: [
             { type: 'url', text: 'استفد من العرض', url: '{{cart_link}}' },
           ],
@@ -487,7 +487,7 @@ export class TemplatesController {
           language: 'ar',
           category: 'sales_recovery',
           triggerEvent: 'abandoned.cart',
-          content: '{{customer_name}} — تذكير أخير 🔔\n\nمنتجاتك في السلة قد تنفد قريباً!\n\n💰 إجمالي السلة: {{cart_total}} ريال\n\nالكمية محدودة والطلب عليها عالي — لا تفوّت الفرصة 🔥\n\nبعد كذا ما نقدر نضمن توفرها\n\n{{store_name}} — آخر فرصة! ⏰',
+          content: '{{customer_name}} — تذكير أخير 🔔\n\nمنتجاتك في السلة قد تنفد قريباً!\n\n💰 إجمالي السلة: {{cart_total}} ريال\n\nالكمية محدودة والطلب عليها عالي — لا تفوّت الفرصة 🔥\n\n🔗 اطلب الآن:\n{{cart_link}}\n\nبعد كذا ما نقدر نضمن توفرها\n\n{{store_name}} — آخر فرصة! ⏰',
           buttons: [
             { type: 'url', text: 'اطلب الآن 🛒', url: '{{cart_link}}' },
           ],
@@ -510,7 +510,7 @@ export class TemplatesController {
           category: 'order_notifications',
           triggerEvent: 'order.created',
           description: 'يُرسَل تلقائياً بعد 3 أيام من إنشاء الطلب',
-          content: 'أهلاً {{customer_name}} 🌟\n\nكيف كانت تجربتك مع {{store_name}}؟\n\nرأيك الصادق يساعدنا نتطور ونقدم لك الأفضل دائماً\n\n⭐ شاركنا تقييمك — يأخذ أقل من دقيقة\n\nكل تقييم يفرق معنا كثير ويساعد عملاء ثانيين يختارون الأفضل\n\nشكراً لوقتك 💙',
+          content: 'أهلاً {{customer_name}} 🌟\n\nكيف كانت تجربتك مع {{store_name}}؟\n\nرأيك الصادق يساعدنا نتطور ونقدم لك الأفضل دائماً\n\n⭐ شاركنا تقييمك — يأخذ أقل من دقيقة\n\n🔗 قيّم من هنا:\n{{rating_url}}\n\nكل تقييم يفرق معنا كثير ويساعد عملاء ثانيين يختارون الأفضل\n\nشكراً لوقتك 💙',
           buttons: [
             { type: 'url', text: 'قيّم الآن ⭐', url: '{{rating_url}}' },
           ],
