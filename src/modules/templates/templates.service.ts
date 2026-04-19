@@ -5,7 +5,7 @@
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
-import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { MessageTemplate, TemplateStatus, TemplateChannel } from '@database/entities';
@@ -22,13 +22,92 @@ interface PaginationOptions {
 }
 
 @Injectable()
-export class TemplatesService {
+export class TemplatesService implements OnModuleInit {
   private readonly logger = new Logger(TemplatesService.name);
 
   constructor(
     @InjectRepository(MessageTemplate)
     private readonly templateRepository: Repository<MessageTemplate>,
   ) {}
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ✅ Auto-migration: تحديث القوالب الموجودة عند بدء السيرفر
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  async onModuleInit() {
+    await this.migratePresetButtons();
+  }
+
+  /**
+   * تحديث أزرار القوالب الموجودة في الداتابيس لتطابق الـ presets الجديدة
+   * يشتغل مرة واحدة عند بدء السيرفر — آمن ولا يعدّل قوالب مخصصة
+   */
+  private async migratePresetButtons(): Promise<void> {
+    const migrations = [
+      // ── سلة متروكة: أضف زر cart_link لو مافيه ──
+      {
+        where: `trigger_event = 'abandoned.cart' AND (buttons IS NULL OR buttons::text = '[]' OR buttons::text = 'null' OR buttons::text NOT LIKE '%cart_link%')`,
+        updates: [
+          { nameMatch: 'cart_abandoned_1', displayMatch: '%التذكير الأول%', button: { type: 'url', text: 'أكمل الطلب 🛒', url: '{{cart_link}}' } },
+          { nameMatch: 'cart_abandoned_2', displayMatch: '%حافز%',           button: { type: 'url', text: 'استفد من العرض 🎁', url: '{{cart_link}}' } },
+          { nameMatch: 'cart_abandoned_3', displayMatch: '%الأخير%',         button: { type: 'url', text: 'اطلب الآن 🛒', url: '{{cart_link}}' } },
+        ],
+        fallbackButton: { type: 'url', text: 'أكمل طلبك 🛒', url: '{{cart_link}}' },
+      },
+      // ── طلب تقييم: حدّث store_url → rating_url ──
+      {
+        where: `(name = 'review_request' OR name = 'shipping_delivered' OR display_name LIKE '%تقييم%' OR display_name LIKE '%التوصيل%') AND buttons::text LIKE '%store_url%' AND buttons::text NOT LIKE '%rating_url%'`,
+        updates: [],
+        replaceInButtons: { from: '{{store_url}}', to: '{{rating_url}}' },
+      },
+    ];
+
+    let totalUpdated = 0;
+
+    for (const migration of migrations) {
+      try {
+        if (migration.replaceInButtons) {
+          // استبدال نص داخل الأزرار
+          const result = await this.templateRepository.query(
+            `UPDATE message_templates SET buttons = REPLACE(buttons::text, $1, $2)::jsonb WHERE ${migration.where}`,
+            [migration.replaceInButtons.from, migration.replaceInButtons.to],
+          );
+          const count = result?.[1] || 0;
+          if (count > 0) {
+            this.logger.log(`🔄 Migrated ${count} template(s): ${migration.replaceInButtons.from} → ${migration.replaceInButtons.to}`);
+            totalUpdated += count;
+          }
+        } else if (migration.updates.length > 0) {
+          // إضافة أزرار للقوالب اللي ما عندها
+          const templates = await this.templateRepository.query(
+            `SELECT id, name, display_name FROM message_templates WHERE ${migration.where}`,
+          );
+
+          for (const tpl of templates) {
+            const match = migration.updates.find(
+              u => tpl.name === u.nameMatch || (tpl.display_name && tpl.display_name.includes(u.displayMatch.replace(/%/g, ''))),
+            );
+            const button = match?.button || migration.fallbackButton;
+            if (button) {
+              await this.templateRepository.query(
+                `UPDATE message_templates SET buttons = $1::jsonb WHERE id = $2`,
+                [JSON.stringify([button]), tpl.id],
+              );
+              totalUpdated++;
+            }
+          }
+        }
+      } catch (err) {
+        this.logger.warn(`⚠️ Template migration skipped: ${err.message}`);
+      }
+    }
+
+    if (totalUpdated > 0) {
+      this.logger.log(`✅ Template auto-migration: ${totalUpdated} template(s) updated`);
+    } else {
+      this.logger.log(`✅ Template auto-migration: all templates up-to-date`);
+    }
+  }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // ✅ Helper: تحويل Entity → Response DTO
