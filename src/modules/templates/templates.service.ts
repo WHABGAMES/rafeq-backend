@@ -68,9 +68,9 @@ export class TemplatesService implements OnModuleInit {
       },
       // ── طلب تقييم + تم التوصيل: أضف {{rating_url}} في نص الرسالة ──
       {
-        where: `(name = 'review_request' OR name = 'shipping_delivered' OR display_name LIKE '%تقييم%' OR display_name LIKE '%التوصيل%') AND body NOT LIKE '%rating_url%' AND body LIKE '%تقييم%'`,
+        where: `(name = 'review_request' OR name = 'shipping_delivered' OR display_name LIKE '%تقييم%' OR display_name LIKE '%التوصيل%') AND body NOT LIKE '%rating_url%' AND body LIKE '%store_name%'`,
         updates: [],
-        replaceInBody: { from: 'شاركنا تقييمك', to: 'شاركنا تقييمك\n\n🔗 قيّم من هنا:\n{{rating_url}}' },
+        replaceInBody: { from: '{{store_name}}', to: '⭐ {{rating_url}}\n\n{{store_name}}' },
       },
     ];
 
