@@ -27,6 +27,7 @@ import {
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
@@ -202,6 +203,8 @@ export class AuthService implements OnModuleInit {
 
     @InjectRepository(TrustedDevice)
     private readonly deviceRepository: Repository<TrustedDevice>,
+
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -308,6 +311,17 @@ export class AuthService implements OnModuleInit {
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
       const attempts = await this.recordFailedAttempt(email);
+
+      // ✅ NEW: emit dedicated event for super-admin alerts (on 3+ attempts)
+      if (attempts >= 3) {
+        this.eventEmitter.emit('auth.login.multiple_failures', {
+          email,
+          attempts,
+          ipAddress: deviceInfo?.ip || '',
+          userAgent: deviceInfo?.ua || '',
+        });
+      }
+
       const remaining = this.MAX_LOGIN_ATTEMPTS - attempts;
       if (remaining > 0 && remaining <= 2) {
         throw new UnauthorizedException(`رمز الدخول غير صحيح. متبقي ${remaining} محاولة قبل قفل الحساب`);
@@ -317,6 +331,15 @@ export class AuthService implements OnModuleInit {
 
     await this.clearLoginAttempts(email);
     await this.userRepository.update(user.id, { lastLoginAt: new Date() });
+
+    // ✅ NEW: detect new device BEFORE trackDevice (which creates the record)
+    let isNewDevice = false;
+    if (deviceInfo?.ip) {
+      const knownDevice = await this.deviceRepository.findOne({
+        where: { userId: user.id, ipAddress: deviceInfo.ip, isActive: true },
+      });
+      isNewDevice = !knownDevice;
+    }
 
     // تتبع الجهاز وربط توكنه بالـ JWT
     let deviceToken: string | undefined;
@@ -330,6 +353,19 @@ export class AuthService implements OnModuleInit {
     const tokens = await this.generateTokens(user, deviceToken || undefined);
 
     this.logger.log(`✅ Login successful: ${this.maskEmail(email)}`);
+
+    // ✅ NEW: emit event for super-admin alerts (only on new device to avoid spam)
+    if (isNewDevice && deviceInfo?.ip) {
+      this.eventEmitter.emit('auth.login.new_device', {
+        userId: user.id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        ipAddress: deviceInfo.ip,
+        userAgent: deviceInfo.ua || '',
+        tenantId: user.tenantId,
+      });
+    }
 
     return {
       ...tokens,
@@ -1127,6 +1163,15 @@ export class AuthService implements OnModuleInit {
       authProvider: AuthProvider.LOCAL,
     });
     const savedUser = await this.userRepository.save(user);
+
+    // ✅ NEW: emit event for super-admin alerts
+    this.eventEmitter.emit('user.created', {
+      userId: savedUser.id,
+      email: savedUser.email,
+      firstName: savedUser.firstName,
+      lastName: savedUser.lastName,
+      tenantId: savedTenant.id,
+    });
 
     const tokens = await this.generateTokens(savedUser);
 
