@@ -27,6 +27,7 @@ import { WhatsappSettings } from './entities/whatsapp-settings.entity';
 import { MessageTemplate } from './entities/message-template.entity';
 import { MessageLog } from './entities/message-log.entity';
 import { MaintenancePage } from './entities/maintenance-page.entity';
+import { AdminAlertRecipient } from './entities/admin-alert-recipient.entity';
 import { Conversation, Message, Channel } from '@database/entities';
 
 // Services
@@ -35,6 +36,7 @@ import { AdminUsersService } from './services/admin-users.service';
 import { WhatsappSettingsService } from './services/whatsapp-settings.service';
 import { NotificationService } from './services/notification.service';
 import { MaintenanceService } from './services/maintenance.service';
+import { AdminAlertsService } from './services/admin-alerts.service';
 
 // Controllers
 import { AdminAuthController } from './controllers/admin-auth.controller';
@@ -46,6 +48,7 @@ import {
   AuditLogsController,
 } from './controllers/admin.controllers';
 import { SystemHealthController } from './controllers/system-health.controller';
+import { AdminAlertsController } from './controllers/admin-alerts.controller';
 
 // ✅ NEW: Admin Subscriptions Controller
 import { AdminSubscriptionsController } from './controllers/admin-subscriptions.controller';
@@ -56,6 +59,7 @@ import { AdminJwtGuard, AdminPermissionGuard } from './guards/admin.guards';
 // Processor & Listeners
 import { NotificationProcessor } from './processors/notification.processor';
 import { NotificationEventListener } from './listeners/notification-event.listener';
+import { AdminAlertsListener } from './listeners/admin-alerts.listener';
 
 // ✅ NEW: BillingModule — مطلوب لـ SubscriptionManagementService في AdminSubscriptionsController
 import { BillingModule } from '../billing/billing.module';
@@ -110,6 +114,7 @@ if (!jwtSecret) {
       Message,       // ✅ مطلوب لـ AdminInboxController
       Channel,       // ✅ مطلوب لـ AdminInboxController — فلترة بالرقم الإداري
       MaintenancePage, // ✅ مطلوب لنظام الصيانة الجزئي
+      AdminAlertRecipient, // ✅ NEW: جدول مستقبلي تنبيهات الإدارة
     ]),
 
     // ✅ JwtModule يستخدم نفس الـ secret المُتحقَّق منه أعلاه
@@ -174,6 +179,8 @@ if (!jwtSecret) {
     MaintenanceAdminController,
     // ✅ NEW: إعدادات Telegram OTP
     AdminTelegramController,
+    // ✅ NEW: تنبيهات الإدارة العليا (WhatsApp alerts on platform events)
+    AdminAlertsController,
   ],
 
   providers: [
@@ -199,6 +206,8 @@ if (!jwtSecret) {
 
     // Event Listeners
     NotificationEventListener,
+    AdminAlertsListener,  // ✅ NEW
+    AdminAlertsService,   // ✅ NEW
   ],
 
   // Exported for use in other modules (e.g., stores module, webhooks module)
@@ -206,6 +215,7 @@ if (!jwtSecret) {
     AuditService,
     NotificationService,
     WhatsappSettingsService,
+    AdminAlertsService,   // ✅ NEW — لو نحتاجها خارج الـ module
   ],
 })
 export class AdminModule {}
