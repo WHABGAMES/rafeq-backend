@@ -71,7 +71,7 @@ export interface VariableMeta {
   key: string;
   label: string;
   labelEn: string;
-  category: 'merchant' | 'auth' | 'subscription' | 'support' | 'dates';
+  category: 'merchant' | 'auth' | 'subscription' | 'support' | 'dates' | 'channel';
   sample: string;
 }
 
@@ -132,6 +132,15 @@ const TRIGGER_EVENTS: TriggerEventMeta[] = [
     suggestedVariables: ['merchant_name', 'support_phone', 'support_email'],
   },
   {
+    value: TriggerEvent.WHATSAPP_DISCONNECTED,
+    label: 'انفصال الواتساب',
+    labelEn: 'WhatsApp Disconnected',
+    icon: '🔌',
+    description: 'إشعار عند انفصال الواتساب المربوط بمتجر التاجر (logout من الجوال / استبدال الجلسة)',
+    category: 'account',
+    suggestedVariables: ['merchant_name', 'channel_name', 'reason_label', 'login_url', 'support_phone'],
+  },
+  {
     value: TriggerEvent.CUSTOM_MANUAL_SEND,
     label: 'إرسال يدوي مخصّص',
     labelEn: 'Custom Manual Send',
@@ -158,6 +167,9 @@ const AVAILABLE_VARIABLES: VariableMeta[] = [
   // Support
   { key: 'support_phone',      label: 'رقم الدعم',                labelEn: 'Support Phone',      category: 'support',     sample: '+966500000000' },
   { key: 'support_email',      label: 'بريد الدعم',               labelEn: 'Support Email',      category: 'support',     sample: 'support@rafeq.ai' },
+  // WhatsApp channel
+  { key: 'channel_name',       label: 'اسم القناة',               labelEn: 'Channel Name',       category: 'channel',     sample: 'واتساب المتجر الرئيسي' },
+  { key: 'reason_label',       label: 'سبب الانفصال',             labelEn: 'Disconnect Reason',  category: 'channel',     sample: 'تم تسجيل الخروج من الجوال' },
   // Dates
   { key: 'current_date',       label: 'التاريخ الحالي',           labelEn: 'Current Date',       category: 'dates',       sample: '2026-04-19' },
   { key: 'current_year',       label: 'السنة الحالية',            labelEn: 'Current Year',       category: 'dates',       sample: '2026' },
@@ -496,6 +508,56 @@ For inquiries or suspension details, please contact our support team:
 Your data is fully preserved.
 
 Rafeq AI Team`,
+  },
+
+  // ─── WHATSAPP_DISCONNECTED ─────────────────────────────────────────────
+  {
+    name: 'تنبيه انفصال الواتساب',
+    trigger_event: TriggerEvent.WHATSAPP_DISCONNECTED,
+    channel: MessageChannel.WHATSAPP,
+    language: MessageLanguage.AR,
+    content: `مرحباً {{merchant_name}} 🔌
+
+⚠️ *تم فصل الواتساب المربوط بمتجرك*
+
+📱 القناة: {{channel_name}}
+📌 السبب: {{reason_label}}
+
+*ماذا يعني هذا؟*
+لن يتمكّن عملاؤك من التواصل معك عبر واتساب المتجر حالياً، والرسائل الواردة لن تصل.
+
+*الحل سريع ✅*
+ادخل لوحة التحكم وأعد ربط الواتساب بمسح رمز QR من جوالك:
+{{login_url}}
+
+لو تواجه صعوبة، تواصل مع الدعم:
+☎️ {{support_phone}}
+
+— فريق رفيق AI`,
+  },
+  {
+    name: 'WhatsApp Disconnected Alert',
+    trigger_event: TriggerEvent.WHATSAPP_DISCONNECTED,
+    channel: MessageChannel.WHATSAPP,
+    language: MessageLanguage.EN,
+    content: `Hello {{merchant_name}} 🔌
+
+⚠️ *Your store's WhatsApp connection was disconnected*
+
+📱 Channel: {{channel_name}}
+📌 Reason: {{reason_label}}
+
+*What does this mean?*
+Your customers can't currently reach you via your store's WhatsApp, and incoming messages won't arrive.
+
+*Quick fix ✅*
+Log in to your dashboard and re-link WhatsApp by scanning the QR code from your phone:
+{{login_url}}
+
+If you need help, contact support:
+☎️ {{support_phone}}
+
+— Rafeq AI Team`,
   },
 
   // ─── CUSTOM_MANUAL_SEND (ready-to-use promotional templates) ────────────
