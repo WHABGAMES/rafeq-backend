@@ -4,26 +4,30 @@ import {
   PrimaryGeneratedColumn,
   CreateDateColumn,
   UpdateDateColumn,
+  DeleteDateColumn,
   Index,
 } from 'typeorm';
 
 /**
  * ╔══════════════════════════════════════════════════════════════════╗
- * ║  Admin Notification Template Entity                              ║
+ * ║  Admin Notification Template Entity (v3 — 2026-04)              ║
  * ║                                                                  ║
- * ║  FIX: Table renamed from 'message_templates' to                 ║
- * ║       'admin_notification_templates'                             ║
+ * ║  Table:  admin_notification_templates                            ║
+ * ║  Scope:  Super Admin system notifications ONLY                   ║
+ * ║          (separate from merchant 'message_templates' — different ║
+ * ║           schema which uses body/status/tenantId)                ║
  * ║                                                                  ║
- * ║  WHY: 'message_templates' is already used by the merchant       ║
- * ║       platform (different schema: body, status, tenantId...)    ║
- * ║       Sharing the same table caused: column "content" does      ║
- * ║       not exist                                                  ║
+ * ║  Use cases:                                                      ║
+ * ║   • New merchant welcome messages                                ║
+ * ║   • Subscription expiry / expired alerts                         ║
+ * ║   • Account suspension notices                                   ║
+ * ║   • Payment received confirmations                               ║
+ * ║   • Manual promotional / maintenance announcements               ║
  * ║                                                                  ║
- * ║  This table is EXCLUSIVELY for Super Admin system notifications: ║
- * ║  - New merchant welcome messages                                  ║
- * ║  - Subscription expiry alerts                                    ║
- * ║  - Account suspension notices                                    ║
- * ║  - Payment received confirmations                                ║
+ * ║  v3 additions:                                                   ║
+ * ║   • deletedAt    — soft delete (recoverable)                     ║
+ * ║   • sentCount    — total successful sends                        ║
+ * ║   • lastSentAt   — last successful send timestamp                ║
  * ╚══════════════════════════════════════════════════════════════════╝
  */
 
@@ -48,9 +52,9 @@ export enum MessageLanguage {
   EN = 'en',
 }
 
-// ─── FIX: Use 'admin_notification_templates' — separate from merchant 'message_templates' ───
 @Entity('admin_notification_templates')
 @Index(['triggerEvent', 'channel', 'language', 'isActive'])
+@Index(['deletedAt'])
 export class MessageTemplate {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -58,7 +62,6 @@ export class MessageTemplate {
   @Column({ type: 'varchar', length: 255 })
   name: string;
 
-  // FIX: Use varchar instead of enum to avoid enum name conflicts with merchant table
   @Column({ name: 'trigger_event', type: 'varchar', length: 100 })
   triggerEvent: TriggerEvent;
 
@@ -97,6 +100,22 @@ export class MessageTemplate {
 
   @Column({ name: 'updated_by', type: 'uuid', nullable: true })
   updatedBy?: string;
+
+  // ─── v3 additions ───────────────────────────────────────────────
+
+  /** عدد مرات الإرسال الناجحة لهذا القالب */
+  @Column({ name: 'sent_count', type: 'int', default: 0 })
+  sentCount: number;
+
+  /** وقت آخر إرسال ناجح */
+  @Column({ name: 'last_sent_at', type: 'timestamptz', nullable: true })
+  lastSentAt?: Date;
+
+  /** Soft delete — يُحدَّث عند الحذف بدل الحذف النهائي */
+  @DeleteDateColumn({ name: 'deleted_at', type: 'timestamptz', nullable: true })
+  deletedAt?: Date | null;
+
+  // ─── Timestamps ─────────────────────────────────────────────────
 
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
