@@ -4,7 +4,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { NotificationService } from '../services/notification.service';
-import { TriggerEvent } from '../entities/message-template.entity';
+import { TriggerEvent, MessageLanguage } from '../entities/message-template.entity';
 
 // ─── Event Payloads ───────────────────────────────────────────────────────────
 
@@ -169,6 +169,121 @@ export class NotificationEventListener {
           expiry_date: new Date(sub.end_date).toLocaleDateString('ar-SA'),
         },
         { recipientUserId: sub.user_id, tenantId: sub.tenant_id },
+      );
+    }
+  }
+
+  // ─── WhatsApp Disconnect notifications ────────────────────────────────────
+  // Triggered by Baileys when:
+  //   • whatsapp.logged_out: user unlinked from their phone
+  //   • whatsapp.session_replaced: another device took over the session
+  //
+  // Flow: channelId → store → tenant → OWNER user → user.phone
+  // We use the merchant's personal phone (not the disconnected channel itself)
+  // because the channel session is already gone.
+
+  @OnEvent('whatsapp.logged_out', { async: true })
+  async handleWhatsappLoggedOut(payload: { channelId: string }) {
+    await this.notifyMerchantOfDisconnect(
+      payload.channelId,
+      'تم تسجيل الخروج من الجوال',
+    );
+  }
+
+  @OnEvent('whatsapp.session_replaced', { async: true })
+  async handleWhatsappSessionReplaced(payload: { channelId: string; message?: string }) {
+    await this.notifyMerchantOfDisconnect(
+      payload.channelId,
+      'تم استبدال الجلسة بجهاز آخر',
+    );
+  }
+
+  /**
+   * Looks up the channel owner and sends a WhatsApp disconnect notification
+   * to their personal phone (from users.phone).
+   *
+   * Defensive behaviour:
+   *   • If channel not found → log + return (channel may have been deleted)
+   *   • If tenant has no OWNER user → log + return
+   *   • If owner has no phone → log + return (can't notify)
+   *   • Any error → log + return (never propagate; must not break Baileys flow)
+   */
+  private async notifyMerchantOfDisconnect(
+    channelId: string,
+    reasonLabelAr: string,
+  ): Promise<void> {
+    try {
+      // Look up channel → store → tenant owner in ONE query for efficiency
+      const rows: Array<{
+        channel_name: string;
+        tenant_id: string;
+        user_id: string;
+        email: string;
+        phone: string | null;
+        first_name: string;
+      }> = await this.dataSource.query(
+        `SELECT
+           ch.name                AS channel_name,
+           s.tenant_id            AS tenant_id,
+           u.id                   AS user_id,
+           u.email                AS email,
+           u.phone                AS phone,
+           u.first_name           AS first_name
+         FROM channels ch
+         JOIN stores  s ON s.id = ch.store_id
+         JOIN users   u ON u.tenant_id = s.tenant_id AND u.role = 'owner'
+         WHERE ch.id = $1::uuid
+         LIMIT 1`,
+        [channelId],
+      );
+
+      if (rows.length === 0) {
+        this.logger.warn(
+          `[whatsapp.disconnect] No channel/owner found for channelId=${channelId} — skipping notification`,
+        );
+        return;
+      }
+
+      const row = rows[0];
+
+      if (!row.phone) {
+        this.logger.warn(
+          `[whatsapp.disconnect] Owner of channel ${channelId} (tenant=${row.tenant_id}) has no phone — skipping notification`,
+        );
+        return;
+      }
+
+      // Default to Arabic — primary market (Saudi). Admin can create EN template
+      // and manually toggle it per-merchant if needed (via merchant's profile in future).
+      const lang = MessageLanguage.AR;
+      const reasonLabel = reasonLabelAr;
+
+      this.logger.log(
+        `[whatsapp.disconnect] Notifying owner of channel ${channelId} (tenant=${row.tenant_id})`,
+      );
+
+      await this.notificationService.sendByTriggerEvent(
+        TriggerEvent.WHATSAPP_DISCONNECTED,
+        row.phone,
+        {
+          merchant_name: row.first_name || row.email.split('@')[0],
+          email: row.email,
+          channel_name: row.channel_name,
+          reason_label: reasonLabel,
+        },
+        {
+          recipientUserId: row.user_id,
+          recipientEmail: row.email,
+          tenantId: row.tenant_id,
+          language: lang,
+        },
+      );
+    } catch (err) {
+      // NEVER propagate — Baileys flow must not break from a notification failure
+      this.logger.error(
+        `[whatsapp.disconnect] Failed to notify owner of channel ${channelId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
       );
     }
   }
