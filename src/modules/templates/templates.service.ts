@@ -60,6 +60,18 @@ export class TemplatesService implements OnModuleInit {
         updates: [],
         replaceInButtons: { from: '{{store_url}}', to: '{{rating_url}}' },
       },
+      // ── سلة متروكة: أضف {{cart_link}} في نص الرسالة لو مافيه ──
+      {
+        where: `trigger_event = 'abandoned.cart' AND body NOT LIKE '%cart_link%' AND body LIKE '%store_name%'`,
+        updates: [],
+        replaceInBody: { from: '{{store_name}}', to: '🔗 أكمل طلبك:\n{{cart_link}}\n\n{{store_name}}' },
+      },
+      // ── طلب تقييم + تم التوصيل: أضف {{rating_url}} في نص الرسالة ──
+      {
+        where: `(name = 'review_request' OR name = 'shipping_delivered' OR display_name LIKE '%تقييم%' OR display_name LIKE '%التوصيل%') AND body NOT LIKE '%rating_url%' AND body LIKE '%تقييم%'`,
+        updates: [],
+        replaceInBody: { from: 'شاركنا تقييمك', to: 'شاركنا تقييمك\n\n🔗 قيّم من هنا:\n{{rating_url}}' },
+      },
     ];
 
     let totalUpdated = 0;
@@ -75,6 +87,18 @@ export class TemplatesService implements OnModuleInit {
           const count = result?.[1] || 0;
           if (count > 0) {
             this.logger.log(`🔄 Migrated ${count} template(s): ${migration.replaceInButtons.from} → ${migration.replaceInButtons.to}`);
+            totalUpdated += count;
+          }
+        } else if ((migration as any).replaceInBody) {
+          // إضافة رابط في نص الرسالة
+          const rep = (migration as any).replaceInBody;
+          const result = await this.templateRepository.query(
+            `UPDATE message_templates SET body = REPLACE(body, $1, $2) WHERE ${migration.where}`,
+            [rep.from, rep.to],
+          );
+          const count = result?.[1] || 0;
+          if (count > 0) {
+            this.logger.log(`🔄 Migrated ${count} template body(s): added cart_link`);
             totalUpdated += count;
           }
         } else if (migration.updates.length > 0) {
