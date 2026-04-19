@@ -613,11 +613,12 @@ export class NotificationService implements OnModuleInit {
         const result: Array<{ id: string }> = await this.dataSource.query(
           `
           INSERT INTO admin_notification_templates
-            (name, trigger_event, channel, language, content, subject, created_by)
-          SELECT $1::varchar, $2::varchar, $3::varchar, $4::varchar, $5::text, $6::varchar, $7::UUID
+            (name, trigger_event, channel, language, content, subject, created_by, is_active)
+          SELECT $1::varchar, $2::varchar, $3::varchar, $4::varchar, $5::text, $6::varchar, $7::UUID, false
           WHERE NOT EXISTS (
             SELECT 1 FROM admin_notification_templates
-            WHERE trigger_event = $2::varchar
+            WHERE name = $1::varchar
+              AND trigger_event = $2::varchar
               AND channel = $3::varchar
               AND language = $4::varchar
               AND deleted_at IS NULL
