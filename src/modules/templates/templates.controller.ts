@@ -435,7 +435,7 @@ export class TemplatesController {
           language: 'ar',
           category: 'shipping_notifications',
           triggerEvent: 'order.delivered',
-          content: 'أهلاً {{customer_name}} 🎊\n\nطلبك رقم #{{order_id}} وصلك بنجاح! نتمنى يعجبك ✅\n\n⭐ رأيك يهمنا كثير — لو عندك دقيقة، شاركنا تقييمك\n\n🔗 قيّم من هنا:\n{{rating_url}}\n\nتقييمك يساعدنا نخدمك أحسن وأحسن\n\nشكراً إنك جزء من عائلة {{store_name}} 💙',
+          content: 'أهلاً {{customer_name}} 🎊\n\nيسعدنا إن طلبك #{{order_id}} وصلك بنجاح! ✅\n\nنتمنى يكون على ذوقك — اشتغلنا عليه بحب عشانك 💛\n\nلو عجبك، كلمة تقييم منك تسعدنا وتساعد غيرك يختار الأفضل:\n\n⭐ {{rating_url}}\n\nشكراً لثقتك بـ {{store_name}} 🙏',
           buttons: [
             { type: 'url', text: 'قيّم تجربتك ⭐', url: '{{rating_url}}' },
           ],
@@ -510,7 +510,7 @@ export class TemplatesController {
           category: 'order_notifications',
           triggerEvent: 'order.created',
           description: 'يُرسَل تلقائياً بعد 3 أيام من إنشاء الطلب',
-          content: 'أهلاً {{customer_name}} 🌟\n\nكيف كانت تجربتك مع {{store_name}}؟\n\nرأيك الصادق يساعدنا نتطور ونقدم لك الأفضل دائماً\n\n⭐ شاركنا تقييمك — يأخذ أقل من دقيقة\n\n🔗 قيّم من هنا:\n{{rating_url}}\n\nكل تقييم يفرق معنا كثير ويساعد عملاء ثانيين يختارون الأفضل\n\nشكراً لوقتك 💙',
+          content: 'أهلاً {{customer_name}} 🌟\n\nنتمنى إن طلبك من {{store_name}} نال إعجابك!\n\nنشتغل بكل حب عشان نقدم لك أفضل تجربة — ورأيك هو اللي يوجّهنا نكون أحسن 💛\n\nلو تكرّمت بدقيقة من وقتك، قيّم تجربتك — كلمة منك تسوي فرق كبير:\n\n⭐ {{rating_url}}\n\nنقدّر وقتك وثقتك فينا 🙏',
           buttons: [
             { type: 'url', text: 'قيّم الآن ⭐', url: '{{rating_url}}' },
           ],
