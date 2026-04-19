@@ -437,7 +437,7 @@ export class TemplatesController {
           triggerEvent: 'order.delivered',
           content: 'أهلاً {{customer_name}} 🎊\n\nطلبك رقم #{{order_id}} وصلك بنجاح! نتمنى يعجبك ✅\n\n⭐ رأيك يهمنا كثير — لو عندك دقيقة، شاركنا تقييمك\n\nتقييمك يساعدنا نخدمك أحسن وأحسن\n\nشكراً إنك جزء من عائلة {{store_name}} 💙',
           buttons: [
-            { type: 'url', text: 'قيّم تجربتك ⭐', url: '{{store_url}}' },
+            { type: 'url', text: 'قيّم تجربتك ⭐', url: '{{rating_url}}' },
           ],
           sendSettings: { sendingMode: 'instant' },
         },
