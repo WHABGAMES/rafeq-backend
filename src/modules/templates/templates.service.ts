@@ -98,7 +98,7 @@ export class TemplatesService implements OnModuleInit {
           }
         }
       } catch (err) {
-        this.logger.warn(`⚠️ Template migration skipped: ${err.message}`);
+        this.logger.warn(`⚠️ Template migration skipped: ${(err as Error).message}`);
       }
     }
 
