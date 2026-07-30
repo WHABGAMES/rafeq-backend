@@ -19,7 +19,7 @@ import {
   ManyToOne,
   JoinColumn,
 } from 'typeorm';
-import * as bcrypt from 'bcryptjs';
+import { verifyPassword } from '../../common/utils/password.util';
 import { BaseEntity } from './base.entity';
 import { Tenant } from './tenant.entity';
 
@@ -255,7 +255,8 @@ export class User extends BaseEntity {
    */
   async validatePassword(password: string): Promise<boolean> {
     if (!this.password) return false;
-    return bcrypt.compare(password, this.password);
+    // 🔒 FIX F-21: يكتشف argon2/bcrypt تلقائياً (يدعم الهجرة الشفافة)
+    return verifyPassword(password, this.password);
   }
 
   /**
@@ -264,4 +265,21 @@ export class User extends BaseEntity {
   get fullName(): string {
     return `${this.firstName} ${this.lastName}`;
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🔒 حقول عابرة (transient) — لا تُخزَّن في قاعدة البيانات
+  // ───────────────────────────────────────────────────────────────────────────
+  // تُضبَط في JwtStrategy.validate() فقط أثناء جلسات انتحال الهوية،
+  // ويقرؤها ImpersonationReadOnlyInterceptor لفرض وضع القراءة فقط (FIX F-01).
+  // ليست @Column لأنها معلومات وقت التشغيل مشتقة من التوكن، لا بيانات مُخزَّنة.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /** true إذا كانت الجلسة الحالية جلسة انتحال هوية من أدمن */
+  _impersonation?: boolean;
+
+  /** معرّف الأدمن الذي بدأ جلسة الانتحال */
+  _impersonatedBy?: string;
+
+  /** true = يُمنع أي تعديل في هذه الجلسة (قراءة فقط) */
+  _viewOnly?: boolean;
 }
