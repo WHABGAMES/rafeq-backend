@@ -30,7 +30,7 @@ import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import * as bcrypt from 'bcryptjs';
+import { hashPassword, verifyPassword, needsRehash } from '@common/utils/password.util';
 import { v4 as uuidv4 } from 'uuid';
 import * as crypto from 'crypto';
 import Redis from 'ioredis';
@@ -308,7 +308,7 @@ export class AuthService implements OnModuleInit {
       );
     }
 
-    const isPasswordValid = await bcrypt.compare(password, user.password);
+    const isPasswordValid = await verifyPassword(password, user.password);
     if (!isPasswordValid) {
       const attempts = await this.recordFailedAttempt(email);
 
@@ -331,6 +331,19 @@ export class AuthService implements OnModuleInit {
 
     await this.clearLoginAttempts(email);
     await this.userRepository.update(user.id, { lastLoginAt: new Date() });
+
+    // 🔒 FIX F-21: هجرة شفافة — لو كانت كلمة المرور مجزّأة بـ bcrypt قديماً،
+    // نعيد تجزئتها بـ argon2id ونحفظها (best-effort، لا يعطّل الدخول لو فشل).
+    if (needsRehash(user.password)) {
+      try {
+        const upgraded = await hashPassword(password);
+        await this.userRepository.update(user.id, { password: upgraded });
+      } catch (err) {
+        this.logger.warn(`تعذّرت ترقية تجزئة كلمة المرور (${this.maskEmail(email)}): ${
+          err instanceof Error ? err.message : String(err)
+        }`);
+      }
+    }
 
     // ✅ NEW: detect new device BEFORE trackDevice (which creates the record)
     let isNewDevice = false;
@@ -688,8 +701,8 @@ export class AuthService implements OnModuleInit {
           password = `Ra${Date.now().toString().slice(-8)}`;
         }
 
-        // تحديث كلمة المرور في قاعدة البيانات (bcrypt مستورد في أعلى الملف)
-        const hashedPassword = await bcrypt.hash(password, 12);
+        // تحديث كلمة المرور في قاعدة البيانات (argon2id عبر hashPassword)
+        const hashedPassword = await hashPassword(password);
         await this.userRepository.update(loginResult.user.id, { password: hashedPassword });
 
         // ✅ FIX: تحديث needsPassword لأننا قمنا بتعيين كلمة مرور للمستخدم الجديد
@@ -925,8 +938,7 @@ export class AuthService implements OnModuleInit {
   async refreshTokens(refreshToken: string): Promise<{ accessToken: string; refreshToken: string }> {
     try {
       const payload = this.jwtService.verify(refreshToken, {
-        secret: this.configService.get('JWT_REFRESH_SECRET')
-          || this.configService.get('JWT_SECRET'),
+        secret: this.resolveRefreshSecret(),
       });
 
       if (payload.jti) {
@@ -1034,7 +1046,7 @@ export class AuthService implements OnModuleInit {
     if (!user) throw new UnauthorizedException('المستخدم غير موجود');
 
     if (user.password) {
-      const isPasswordValid = await bcrypt.compare(currentPassword, user.password);
+      const isPasswordValid = await verifyPassword(currentPassword, user.password);
       if (!isPasswordValid) {
         throw new BadRequestException('رمز الدخول الحالي غير صحيح');
       }
@@ -1044,7 +1056,7 @@ export class AuthService implements OnModuleInit {
       throw new BadRequestException('رمز الدخول الجديد يجب أن يكون 8 أحرف على الأقل');
     }
 
-    const hashedPassword = await bcrypt.hash(newPassword, 12);
+    const hashedPassword = await hashPassword(newPassword);
     await this.userRepository.update(userId, {
       password: hashedPassword,
       preferences: {
@@ -1102,7 +1114,7 @@ export class AuthService implements OnModuleInit {
       throw new BadRequestException('كلمة المرور موجودة بالفعل. استخدم "تغيير كلمة المرور" بدلاً من ذلك.');
     }
 
-    const hashedPassword = await bcrypt.hash(newPassword, 12);
+    const hashedPassword = await hashPassword(newPassword);
     await this.userRepository.update(userId, {
       password: hashedPassword,
       authProvider: AuthProvider.LOCAL,
@@ -1148,7 +1160,7 @@ export class AuthService implements OnModuleInit {
     });
     const savedTenant = await this.tenantRepository.save(tenant);
 
-    const hashedPassword = await bcrypt.hash(input.password, 12);
+    const hashedPassword = await hashPassword(input.password);
     const nameParts = input.name.split(' ');
 
     const user = this.userRepository.create({
@@ -1378,14 +1390,14 @@ export class AuthService implements OnModuleInit {
 
     // ✅ التأكد أن كلمة المرور الجديدة ليست نفس القديمة
     if (user.password) {
-      const isSamePassword = await bcrypt.compare(newPassword, user.password);
+      const isSamePassword = await verifyPassword(newPassword, user.password);
       if (isSamePassword) {
         throw new BadRequestException('كلمة المرور الجديدة يجب أن تكون مختلفة عن الحالية');
       }
     }
 
     // ✅ تشفير وحفظ كلمة المرور الجديدة (مع دمج التفضيلات القديمة)
-    const hashedPassword = await bcrypt.hash(newPassword, 12);
+    const hashedPassword = await hashPassword(newPassword);
     await this.userRepository.update(user.id, {
       password: hashedPassword,
       authProvider: AuthProvider.LOCAL,
@@ -1433,6 +1445,44 @@ export class AuthService implements OnModuleInit {
    * 🔧 FIX C-02: Access token max 30m, default 15m
    * 🔧 FIX C-03: Refresh secret validated at startup via onModuleInit
    */
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * 🔒 FIX F-10: مصدر واحد موثوق لسرّ توكن التجديد
+   * ───────────────────────────────────────────────────────────────────────────
+   * المشكلة السابقة: مواضع توقيع/تحقّق توكن التجديد كانت تستخدم
+   *   JWT_REFRESH_SECRET || JWT_SECRET
+   * فلو غاب سرّ التجديد لتشارك توكنا الوصول والتجديد نفس السرّ — وتسريب سرّ
+   * الوصول يُعرّض توكنات التجديد طويلة العمر. حارس الإقلاع يمنع هذا في الإنتاج،
+   * لكن الـ fallback يبقى فخاً كامناً لو خُفِّف الحارس مستقبلاً.
+   *
+   * هذا المُحلّل يزيل الفخ من نقطة الاستخدام نفسها:
+   *   • JWT_REFRESH_SECRET موجود → نستخدمه (الوضع الصحيح).
+   *   • الإنتاج بلا سرّ تجديد → نرمي (لا هبوط صامت إلى JWT_SECRET).
+   *   • التطوير فقط → نسمح بالهبوط إلى JWT_SECRET (بيئة غير إنتاجية).
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+  private resolveRefreshSecret(): string {
+    const refreshSecret = this.configService.get<string>('JWT_REFRESH_SECRET');
+    if (refreshSecret) {
+      return refreshSecret;
+    }
+
+    const isProduction = this.configService.get('NODE_ENV') === 'production';
+    if (isProduction) {
+      // مطابق لحارس الإقلاع — دفاع في العمق عند نقطة الاستخدام
+      throw new Error(
+        '🚨 FATAL: JWT_REFRESH_SECRET غير مضبوط في الإنتاج — يُمنع استخدام JWT_SECRET للتجديد.',
+      );
+    }
+
+    // التطوير فقط: الهبوط إلى JWT_SECRET مقبول (بيئة غير إنتاجية)
+    const jwtSecret = this.configService.get<string>('JWT_SECRET');
+    if (!jwtSecret) {
+      throw new Error('🚨 FATAL: لا JWT_REFRESH_SECRET ولا JWT_SECRET مضبوط.');
+    }
+    return jwtSecret;
+  }
+
   private async generateTokens(
     user: Pick<User, 'id' | 'email' | 'tenantId' | 'role'>,
     deviceToken?: string,
@@ -1456,9 +1506,8 @@ export class AuthService implements OnModuleInit {
       || this.configService.get('JWT_EXPIRES_IN', '15m');
     const accessExpiresIn = this.sanitizeAccessTokenExpiry(requestedAccessExp);
 
-    // 🔧 FIX C-03: Use separate refresh secret if available, otherwise fallback to JWT_SECRET
-    const refreshSecret = this.configService.get<string>('JWT_REFRESH_SECRET')
-      || this.configService.get<string>('JWT_SECRET');
+    // 🔒 FIX F-10: مصدر واحد موثوق — لا هبوط صامت إلى JWT_SECRET في الإنتاج
+    const refreshSecret = this.resolveRefreshSecret();
 
     const [accessToken, refreshToken] = await Promise.all([
       this.jwtService.signAsync(
