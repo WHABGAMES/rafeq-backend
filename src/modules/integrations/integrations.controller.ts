@@ -17,6 +17,7 @@ import {
   HttpStatus,
   UseGuards,
   Res,
+  ParseIntPipe,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -207,8 +208,8 @@ export class IntegrationsController {
   async getSallaOrders(
     @CurrentUser() user: any,
     @Query('status') status?: string,
-    @Query('page') page = 1,
-    @Query('limit') limit = 20,
+    @Query('page', new ParseIntPipe({ optional: true })) page = 1,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit = 20,
   ) {
     const tenantId = user.tenantId;
     return this.integrationsService.getSallaOrders(tenantId, { status, page, limit });
@@ -220,8 +221,8 @@ export class IntegrationsController {
   @ApiOperation({ summary: 'منتجات سلة' })
   async getSallaProducts(
     @CurrentUser() user: any,
-    @Query('page') page = 1,
-    @Query('limit') limit = 20,
+    @Query('page', new ParseIntPipe({ optional: true })) page = 1,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit = 20,
   ) {
     const tenantId = user.tenantId;
     return this.integrationsService.getSallaProducts(tenantId, { page, limit });
@@ -233,8 +234,8 @@ export class IntegrationsController {
   @ApiOperation({ summary: 'عملاء سلة' })
   async getSallaCustomers(
     @CurrentUser() user: any,
-    @Query('page') page = 1,
-    @Query('limit') limit = 20,
+    @Query('page', new ParseIntPipe({ optional: true })) page = 1,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit = 20,
   ) {
     const tenantId = user.tenantId;
     return this.integrationsService.getSallaCustomers(tenantId, { page, limit });
@@ -246,8 +247,8 @@ export class IntegrationsController {
   @ApiOperation({ summary: 'السلات المتروكة في سلة' })
   async getSallaAbandonedCarts(
     @CurrentUser() user: any,
-    @Query('page') page = 1,
-    @Query('limit') limit = 20,
+    @Query('page', new ParseIntPipe({ optional: true })) page = 1,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit = 20,
   ) {
     const tenantId = user.tenantId;
     return this.integrationsService.getSallaAbandonedCarts(tenantId, { page, limit });
@@ -300,8 +301,8 @@ export class IntegrationsController {
   async getZidOrders(
     @CurrentUser() user: any,
     @Query('status') status?: string,
-    @Query('page') page = 1,
-    @Query('limit') limit = 20,
+    @Query('page', new ParseIntPipe({ optional: true })) page = 1,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit = 20,
   ) {
     const tenantId = user.tenantId;
     return this.integrationsService.getZidOrders(tenantId, { status, page, limit });
@@ -313,8 +314,8 @@ export class IntegrationsController {
   @ApiOperation({ summary: 'منتجات زد' })
   async getZidProducts(
     @CurrentUser() user: any,
-    @Query('page') page = 1,
-    @Query('limit') limit = 20,
+    @Query('page', new ParseIntPipe({ optional: true })) page = 1,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit = 20,
   ) {
     const tenantId = user.tenantId;
     return this.integrationsService.getZidProducts(tenantId, { page, limit });
@@ -326,8 +327,8 @@ export class IntegrationsController {
   @ApiOperation({ summary: 'عملاء زد' })
   async getZidCustomers(
     @CurrentUser() user: any,
-    @Query('page') page = 1,
-    @Query('limit') limit = 20,
+    @Query('page', new ParseIntPipe({ optional: true })) page = 1,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit = 20,
   ) {
     const tenantId = user.tenantId;
     return this.integrationsService.getZidCustomers(tenantId, { page, limit });
@@ -356,8 +357,8 @@ export class IntegrationsController {
   @ApiOperation({ summary: 'طلبات شوبيفاي' })
   async getShopifyOrders(
     @CurrentUser() user: any,
-    @Query('page') page = 1,
-    @Query('limit') limit = 20,
+    @Query('page', new ParseIntPipe({ optional: true })) page = 1,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit = 20,
   ) {
     const tenantId = user.tenantId;
     return this.integrationsService.getShopifyOrders(tenantId, { page, limit });
@@ -386,8 +387,8 @@ export class IntegrationsController {
   @ApiOperation({ summary: 'طلبات ووكومرس' })
   async getWooCommerceOrders(
     @CurrentUser() user: any,
-    @Query('page') page = 1,
-    @Query('limit') limit = 20,
+    @Query('page', new ParseIntPipe({ optional: true })) page = 1,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit = 20,
   ) {
     const tenantId = user.tenantId;
     return this.integrationsService.getWooCommerceOrders(tenantId, { page, limit });
