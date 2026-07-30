@@ -32,6 +32,7 @@ import {
   HttpCode,
   HttpStatus,
   UseGuards,
+  ParseIntPipe,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -125,8 +126,8 @@ export class TemplatesController {
     @Query('status') status?: TemplateStatus,
     @Query('channel') channel?: string,
     @Query('search') search?: string,
-    @Query('page') page = 1,
-    @Query('limit') limit = 100,
+    @Query('page', new ParseIntPipe({ optional: true })) page = 1,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit = 100,
   ) {
     const tenantId = user.tenantId;
     
