@@ -24,6 +24,7 @@ import {
   NotFoundException,
   BadRequestException,
   Logger,
+  ParseIntPipe,
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -100,8 +101,8 @@ export class AdminInboxController {
   async getConversations(
     @Query('status') status?: string,
     @Query('search') search?: string,
-    @Query('page') page = 1,
-    @Query('limit') limit = 30,
+    @Query('page', new ParseIntPipe({ optional: true })) page = 1,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit = 30,
   ) {
     // Get admin's channel IDs
     const adminChannelIds = await this.getAdminChannelIds();
@@ -209,8 +210,8 @@ export class AdminInboxController {
   @ApiOperation({ summary: 'رسائل محادثة' })
   async getMessages(
     @Param('id') id: string,
-    @Query('page') page = 1,
-    @Query('limit') limit = 50,
+    @Query('page', new ParseIntPipe({ optional: true })) page = 1,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit = 50,
   ) {
     const conv = await this.conversationRepo.findOne({ where: { id } });
     if (!conv) throw new NotFoundException('المحادثة غير موجودة');
