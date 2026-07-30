@@ -88,22 +88,45 @@ const buildConfig = (configService: ConfigService): TypeOrmModuleOptions => {
     console.error('🚨 SECURITY: DB_SYNCHRONIZE=true is IGNORED in production. Use TypeORM migrations.');
   }
 
-  // 🔧 FIX M-01: SSL with CA certificate verification when explicitly provided
-  // Default: rejectUnauthorized=false (required for DigitalOcean Managed Database self-signed certs)
-  // Upgraded: rejectUnauthorized=true when DB_CA_CERT or DB_CA_CERT_PATH is configured
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🔒 FIX F-04: TLS مُتحقَّق منه لقاعدة البيانات في الإنتاج
+  // ───────────────────────────────────────────────────────────────────────────
+  // المشكلة السابقة: عند غياب شهادة CA في الإنتاج كان الاتصال يهبط صامتاً إلى
+  // rejectUnauthorized=false — أي TLS دون التحقق من هوية الخادم (خطر MITM على
+  // أخطر وصلة في النظام: كلمات المرور، البيانات الشخصية، محتوى الرسائل).
+  //
+  // السياسة الجديدة (fail closed):
+  //   • CA موجودة → تحقق كامل (rejectUnauthorized=true) — الوضع الصحيح.
+  //   • الإنتاج بلا CA وبلا سماح صريح → إيقاف الإقلاع بخطأ واضح (لا هبوط صامت).
+  //   • مهرب واعٍ فقط: DB_ALLOW_INSECURE_SSL=true — قرار صريح مسجَّل بتحذير عالٍ،
+  //     ليكون الوضع غير الآمن اختياراً مقصوداً لا سلوكاً افتراضياً.
+  // ═══════════════════════════════════════════════════════════════════════════
   let sslConfig: boolean | Record<string, unknown> = false;
   if (isProduction || configService.get<boolean>('database.ssl', false)) {
     const ca = loadCACertificate(configService);
     if (ca) {
-      // Explicit CA provided → full verification
+      // ✅ CA صريحة → تحقق كامل
       sslConfig = { rejectUnauthorized: true, ca };
       console.log('✅ SSL: Using provided CA certificate with full verification');
-    } else {
-      // No explicit CA → accept self-signed (DigitalOcean default)
-      sslConfig = { rejectUnauthorized: false };
-      if (isProduction) {
-        console.warn('⚠️ SSL: rejectUnauthorized=false. Set DB_CA_CERT for full certificate verification.');
+    } else if (isProduction) {
+      // 🚨 إنتاج بلا CA: نتحقق من وجود سماح صريح، وإلا نوقف الإقلاع
+      const allowInsecure = configService.get<string>('DB_ALLOW_INSECURE_SSL') === 'true';
+      if (!allowInsecure) {
+        throw new Error(
+          'SSL: لا توجد شهادة CA لقاعدة البيانات في الإنتاج. ' +
+          'وفّر DB_CA_CERT (base64) أو DB_CA_CERT_PATH للتحقق الكامل من الشهادة. ' +
+          'للسماح مؤقتاً باتصال غير مُتحقَّق منه (غير موصى به) اضبط DB_ALLOW_INSECURE_SSL=true صراحةً.',
+        );
       }
+      // مهرب واعٍ مُفعَّل صراحةً
+      sslConfig = { rejectUnauthorized: false };
+      console.warn(
+        '🚨 SSL: DB_ALLOW_INSECURE_SSL=true — الاتصال بقاعدة البيانات دون التحقق من الشهادة (عرضة لهجوم MITM). ' +
+        'هذا وضع مؤقت فقط — وفّر DB_CA_CERT في أقرب فرصة.',
+      );
+    } else {
+      // بيئة غير إنتاجية (تطوير/اختبار) بلا CA → مقبول (self-signed محلي)
+      sslConfig = { rejectUnauthorized: false };
     }
   }
 
