@@ -20,7 +20,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { InjectDataSource } from '@nestjs/typeorm';
 // ✅ FIX [TS2305]: IsolationLevel removed — use string literal directly
 import { Repository, DataSource, QueryRunner } from 'typeorm';
-import * as bcrypt from 'bcryptjs';
+import { hashPassword } from '@common/utils/password.util';
 import { randomBytes } from 'crypto';
 import { AuditService } from './audit.service';
 import { AuditAction } from '../entities/audit-log.entity';
@@ -310,8 +310,8 @@ export class AdminUsersService {
 
     // كلمة مرور مؤقتة آمنة — 16 حرف base64url
     const tempPassword = randomBytes(12).toString('base64url');
-    // ✅ FIX: استخدام bcrypt (نفس خوارزمية Login) بدل argon2
-    const hash = await bcrypt.hash(tempPassword, 12);
+    // 🔒 FIX F-21: argon2id عبر hashPassword (موحّد مع باقي النظام)
+    const hash = await hashPassword(tempPassword);
 
     await this.dataSource.query(
       `UPDATE users SET password = $1, refresh_token = NULL, updated_at = NOW() WHERE id = $2`,
