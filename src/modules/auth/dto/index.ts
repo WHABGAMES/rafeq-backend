@@ -169,9 +169,10 @@ export class SetPasswordDto {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export class RefreshTokenDto {
-  @ApiProperty({ description: 'Refresh Token' })
-  @IsString() @IsNotEmpty({ message: 'Refresh token مطلوب' })
-  refreshToken: string;
+  // 🔒 FIX F-07: اختياري — الكوكي httpOnly (rafeq_rt) يوفّره؛ الجسم للتوافق فقط
+  @ApiProperty({ description: 'Refresh Token (اختياري إذا كان في الكوكي)', required: false })
+  @IsOptional() @IsString()
+  refreshToken?: string;
 }
 
 export class RefreshTokenResponseDto {
