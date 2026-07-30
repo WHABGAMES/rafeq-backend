@@ -231,7 +231,8 @@ export class TelegramService {
       .find((c) => c.botToken === token);
 
     if (!connection) {
-      this.logger.warn('Update received for unknown bot', { token: token.substring(0, 10) + '...' });
+      // 🔒 FIX F-12: لا نُسجّل مقطع توكن البوت (يمنح تحكماً كاملاً بالبوت)
+      this.logger.warn('Update received for unknown bot', { tokenLength: token?.length ?? 0 });
       return;
     }
 
