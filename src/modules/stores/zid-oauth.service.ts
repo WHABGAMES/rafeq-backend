@@ -228,10 +228,9 @@ export class ZidOAuthService {
         hasRefreshToken: !!tokenData.refresh_token,
         tokenType: tokenData.token_type,
         expiresIn: tokenData.expires_in,
-        accessTokenPrefix: tokenData.access_token?.substring(0, 30) + '...',
-        authorizationPrefix: tokenData.authorization
-          ? tokenData.authorization.substring(0, 30) + '...'
-          : '(not present)',
+        // 🔒 FIX F-12: لا نُسجّل أي مقطع من التوكن — الطول والوجود يكفيان للتشخيص
+        accessTokenLength: tokenData.access_token?.length ?? 0,
+        authorizationLength: tokenData.authorization?.length ?? 0,
       });
 
       const tokens: ZidTokenResponse = {
