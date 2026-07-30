@@ -26,6 +26,7 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
+  ParseIntPipe,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -165,8 +166,8 @@ export class SuggestionsController {
   @ApiQuery({ name: 'limit', required: false })
   async getComments(
     @Param('id', ParseUUIDPipe) id: string,
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
+    @Query('page', new ParseIntPipe({ optional: true })) page?: number,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit?: number,
   ) {
     return this.suggestionsService.getComments(id, Number(page) || 1, Number(limit) || 30);
   }
