@@ -28,6 +28,7 @@ import {
   HttpCode,
   HttpStatus,
   UseGuards,
+  ParseIntPipe,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -103,8 +104,8 @@ export class QuickRepliesController {
     @CurrentUser() user: any,
     @Query('category') category?: string,
     @Query('search') search?: string,
-    @Query('page') page = 1,
-    @Query('limit') limit = 50,
+    @Query('page', new ParseIntPipe({ optional: true })) page = 1,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit = 50,
   ) {
     const tenantId = user.tenantId;
     return this.quickRepliesService.findAll(tenantId, { category, search, page, limit });
@@ -185,7 +186,7 @@ export class QuickRepliesController {
     description: 'قائمة الردود السريعة الأكثر استخداماً',
   })
   async getPopular(@CurrentUser() user: any,
-    @Query('limit') limit = 10) {
+    @Query('limit', new ParseIntPipe({ optional: true })) limit = 10) {
     const tenantId = user.tenantId;
     return this.quickRepliesService.getPopular(tenantId, limit);
   }
