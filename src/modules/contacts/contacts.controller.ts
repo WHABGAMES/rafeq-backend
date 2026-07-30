@@ -36,6 +36,8 @@ import {
   UseGuards,
   UploadedFile,
   UseInterceptors,
+  ParseBoolPipe,
+  ParseIntPipe,
 } from '@nestjs/common';
 import { Response } from 'express';
 import {
@@ -94,11 +96,11 @@ export class ContactsController {
     @Query('segment') segment?: string,
     @Query('tags') tags?: string,
     @Query('channel') channel?: string,
-    @Query('hasOrders') hasOrders?: boolean,
+    @Query('hasOrders', new ParseBoolPipe({ optional: true })) hasOrders?: boolean,
     @Query('sortBy') sortBy = 'createdAt',
     @Query('sortOrder') sortOrder: 'asc' | 'desc' = 'desc',
-    @Query('page') page = 1,
-    @Query('limit') limit = 20,
+    @Query('page', new ParseIntPipe({ optional: true })) page = 1,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit = 20,
   ) {
     const tenantId = user.tenantId;
 
@@ -315,8 +317,8 @@ export class ContactsController {
   async getConversations(
     @CurrentUser() user: any,
     @Param('id', ParseUUIDPipe) id: string,
-    @Query('page') page = 1,
-    @Query('limit') limit = 20,
+    @Query('page', new ParseIntPipe({ optional: true })) page = 1,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit = 20,
   ) {
     const tenantId = user.tenantId;
     return this.contactsService.getConversations(id, tenantId, { page, limit });
@@ -336,8 +338,8 @@ export class ContactsController {
   async getOrders(
     @CurrentUser() user: any,
     @Param('id', ParseUUIDPipe) id: string,
-    @Query('page') page = 1,
-    @Query('limit') limit = 20,
+    @Query('page', new ParseIntPipe({ optional: true })) page = 1,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit = 20,
   ) {
     const tenantId = user.tenantId;
     return this.contactsService.getOrders(id, tenantId, { page, limit });
@@ -355,8 +357,8 @@ export class ContactsController {
   async getTimeline(
     @CurrentUser() user: any,
     @Param('id', ParseUUIDPipe) id: string,
-    @Query('page') page = 1,
-    @Query('limit') limit = 50,
+    @Query('page', new ParseIntPipe({ optional: true })) page = 1,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit = 50,
   ) {
     const tenantId = user.tenantId;
     return this.contactsService.getTimeline(id, tenantId, { page, limit });
