@@ -46,6 +46,8 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ActiveSubscriptionInterceptor } from '@common/interceptors/active-subscription.interceptor';
+import { ImpersonationReadOnlyInterceptor } from '@common/interceptors/impersonation-readonly.interceptor';
+import { RedisModule } from '@common/redis/redis.module';
 
 // ملفات الإعداد
 import configuration from '@config/configuration';
@@ -152,6 +154,9 @@ import { OtpRelayModule } from './modules/otp-relay/otp-relay.module';
       cache: true,
       expandVariables: true,
     }),
+
+    // 🔗 RedisModule — مزوّد REDIS_CLIENT عالمي مشترك (FIX F-06)
+    RedisModule,
 
     // ═══════════════════════════════════════════════════════════════════════════
     // 2️⃣ TypeOrmModule - قاعدة البيانات
@@ -502,6 +507,15 @@ import { OtpRelayModule } from './modules/otp-relay/otp-relay.module';
     {
       provide: APP_GUARD,
       useClass: ThrottlerGuard,
+    },
+    /**
+     * 🔒 ImpersonationReadOnlyInterceptor — يفرض «القراءة فقط» على جلسات انتحال الهوية (FIX F-01)
+     * يعمل بعد التوثيق — يضمن توفّر request.user._viewOnly
+     * مُسجَّل قبل فحص الاشتراك: منع الكتابة أثناء الانتحال له الأولوية.
+     */
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: ImpersonationReadOnlyInterceptor,
     },
     /**
      * ActiveSubscriptionInterceptor — يمنع الإنشاء/التعديل إذا بدون اشتراك
