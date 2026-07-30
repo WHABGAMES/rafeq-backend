@@ -282,6 +282,36 @@ export class ZidWebhooksService {
     }
   }
 
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * 🔒 FIX F-09: ضابط تعويضي — هل store_id ينتمي لمتجر Zid متصل فعلاً؟
+   * ───────────────────────────────────────────────────────────────────────────
+   * Zid لا ترسل توقيع HMAC، فالحماية الأساسية هي allowlist عناوين IP. هذا فحص
+   * إضافي: نرفض أحداثاً مزوّرة لمتاجر لا نعرفها (store_id غير مرتبط بأي متجر Zid
+   * لدينا). يعيد استخدام نفس منطق البحث المفهرس — استعلام واحد رخيص.
+   * fail-open عند خطأ البحث (لا نُسقط أحداثاً صحيحة بسبب عطل مؤقت في القراءة).
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+  async isKnownZidStore(zidStoreId: string, storeUuid?: string): Promise<boolean> {
+    try {
+      const store = await this.storesService.findByZidStoreId(zidStoreId);
+      if (store) return true;
+      if (storeUuid) {
+        const byUuid = await this.storesService.findByZidStoreUuid(storeUuid);
+        if (byUuid) return true;
+      }
+      return false;
+    } catch (error) {
+      // fail-open: خطأ قراءة لا يجب أن يُسقط أحداثاً مشروعة
+      this.logger.warn(
+        `⚠️ تعذّر التحقق من متجر Zid (${zidStoreId}) — سُمح بالمرور مؤقتاً: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return true;
+    }
+  }
+
   private extractEntityId(data: Record<string, unknown>): string | undefined {
     const id = data.id || data.order_id || data.customer_id || data.product_id;
     return id ? String(id) : undefined;
