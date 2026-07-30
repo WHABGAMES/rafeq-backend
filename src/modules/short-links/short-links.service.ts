@@ -6,7 +6,7 @@
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as crypto from 'crypto';
@@ -72,7 +72,31 @@ export class ShortLinksService {
   // ✨ Create short link
   // ═══════════════════════════════════════════════════════════════
 
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * 🔒 FIX F-05: التحقق من مخطط عنوان الرابط (choke point واحد)
+   * ───────────────────────────────────────────────────────────────────────────
+   * new URL() وحدها تقبل javascript: و data: و ftp: — والرابط يُقدَّم لاحقاً عبر
+   * res.redirect(302, originalUrl)، ما يفتح إعادة توجيه مفتوحة / ناقل data:.
+   * نسمح بـ http/https فقط. يُستدعى من create و update معاً فلا يمكن تجاوزه.
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+  private validateHttpUrl(rawUrl: string): void {
+    let parsed: URL;
+    try {
+      parsed = new URL(rawUrl);
+    } catch {
+      throw new BadRequestException('الرابط غير صالح');
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new BadRequestException('يجب أن يبدأ الرابط بـ http أو https فقط');
+    }
+  }
+
   async create(tenantId: string, dto: { url: string; title?: string; customCode?: string; expiresAt?: string }): Promise<ShortLink> {
+    // 🔒 FIX F-05: تحقق من المخطط قبل أي إنشاء
+    this.validateHttpUrl(dto.url);
+
     let shortCode: string;
 
     if (dto.customCode) {
@@ -285,7 +309,11 @@ export class ShortLinksService {
     if (!link) throw new NotFoundException('الرابط غير موجود');
 
     if (dto.title !== undefined) link.title = dto.title;
-    if (dto.originalUrl !== undefined) link.originalUrl = dto.originalUrl;
+    if (dto.originalUrl !== undefined) {
+      // 🔒 FIX F-05: مسار التحديث كان بلا أي تحقق — نطبّق نفس القيد
+      this.validateHttpUrl(dto.originalUrl);
+      link.originalUrl = dto.originalUrl;
+    }
     if (dto.isActive !== undefined) link.isActive = dto.isActive;
 
     return this.linkRepo.save(link);
