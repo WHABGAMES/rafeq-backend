@@ -21,6 +21,7 @@ import {
   HttpCode,
   HttpStatus,
   UseGuards,
+  ParseIntPipe,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -79,8 +80,8 @@ export class CampaignsController {
     @CurrentUser() user: any,
     @Query('status') status?: CampaignStatus,
     @Query('type') type?: CampaignType,
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
+    @Query('page', new ParseIntPipe({ optional: true })) page?: number,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit?: number,
   ) {
     return this.campaignsService.findAll(user.tenantId, { status, type, page, limit });
   }
