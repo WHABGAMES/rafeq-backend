@@ -10,6 +10,7 @@ import {
   HttpStatus,
   ParseUUIDPipe,
   BadRequestException,
+  ParseIntPipe,
 } from '@nestjs/common';
 import { AdminJwtGuard, AdminPermissionGuard, RequirePermissions } from '../guards/admin.guards';
 import { CurrentAdmin, AdminIp } from '../decorators/current-admin.decorator';
@@ -29,8 +30,8 @@ export class AdminUsersController {
   @Get()
   @RequirePermissions(PERMISSIONS.USERS_READ)
   getUsers(
-    @Query('page') page = 1,
-    @Query('limit') limit = 50,
+    @Query('page', new ParseIntPipe({ optional: true })) page = 1,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit = 50,
     @Query('search') search?: string,
     @Query('status') status?: string,
     @Query('role') role?: string,
