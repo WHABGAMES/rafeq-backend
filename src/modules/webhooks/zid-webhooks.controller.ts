@@ -142,6 +142,26 @@ export class ZidWebhooksController {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // 🔒 FIX F-09: ضابط تعويضي — تحقق أن store_id لمتجر Zid متصل فعلاً
+    // ───────────────────────────────────────────────────────────────────────────
+    // Zid لا ترسل توقيع HMAC، والحماية الأساسية هي allowlist عناوين IP. هذا فحص
+    // إضافي يرفض أحداثاً مزوّرة لمتاجر لا نعرفها.
+    //
+    // ⚠️ استثناء مهم: أحداث App Market (event_name) — مثل تثبيت التطبيق — تصل
+    // *قبل* ربط المتجر (هي نفسها ما يُنشئ الربط)، فلا نطبّق الفحص عليها وإلا
+    // لكسرنا تدفّق تثبيت تطبيق Zid. الفحص يقتصر على أحداث الطلبات/العملاء/المنتجات.
+    // ═══════════════════════════════════════════════════════════════════════════
+    const isAppMarketEvent = typeof body.event_name === 'string' && body.event_name.trim().length > 0;
+    if (!isAppMarketEvent) {
+      const storeUuid = typeof body.store_uuid === 'string' ? body.store_uuid : undefined;
+      const known = await this.webhooksService.isKnownZidStore(storeId, storeUuid);
+      if (!known) {
+        this.logger.warn(`⛔ Zid webhook rejected: unknown/unconnected store_id=${storeId} (event: ${detectedEvent})`);
+        return { success: false, message: 'Unknown store' };
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // 🔐 التحقق من التوقيع (اختياري — زد لا يرسل توقيعات HMAC)
     // ⚠️ Zid does NOT send HMAC signatures unlike Salla/Shopify.
     // Primary security is provided by WebhookIpGuard (IP allowlisting).
