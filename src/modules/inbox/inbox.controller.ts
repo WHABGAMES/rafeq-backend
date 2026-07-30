@@ -23,6 +23,8 @@ import {
   HttpCode,
   HttpStatus,
   UseGuards,
+  ParseBoolPipe,
+  ParseIntPipe,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -76,9 +78,9 @@ export class InboxController {
     @Query('assignedTo') assignedTo?: string,
     @Query('priority') priority?: ConversationPriority,
     @Query('search') search?: string,
-    @Query('unreadOnly') unreadOnly?: boolean,
-    @Query('page') page = 1,
-    @Query('limit') limit = 20,
+    @Query('unreadOnly', new ParseBoolPipe({ optional: true })) unreadOnly?: boolean,
+    @Query('page', new ParseIntPipe({ optional: true })) page = 1,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit = 20,
   ) {
     const tenantId = user.tenantId;
     
@@ -168,8 +170,8 @@ export class InboxController {
   async getMessages(
     @CurrentUser() user: any,
     @Param('id') id: string,
-    @Query('page') page = 1,
-    @Query('limit') limit = 50,
+    @Query('page', new ParseIntPipe({ optional: true })) page = 1,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit = 50,
   ) {
     const tenantId = user.tenantId;
     return this.inboxService.getMessages(id, tenantId, { page, limit });
