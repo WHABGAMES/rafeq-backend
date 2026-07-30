@@ -13,6 +13,7 @@ import {
   ParseUUIDPipe,
   UseGuards,
   Request,
+  ParseIntPipe,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiQuery, ApiBearerAuth } from '@nestjs/swagger';
 
@@ -39,7 +40,7 @@ export class WebhooksController {
   @ApiQuery({ name: 'days', required: false, type: Number, description: 'عدد الأيام' })
   async getStatistics(
     @Request() req: RequestWithUser,
-    @Query('days') days?: number,
+    @Query('days', new ParseIntPipe({ optional: true })) days?: number,
   ) {
     return this.webhooksService.getStatistics(req.user.tenantId, days || 7);
   }
@@ -54,8 +55,8 @@ export class WebhooksController {
     @Request() req: RequestWithUser,
     @Query('status') status?: string,
     @Query('eventType') eventType?: string,
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
+    @Query('page', new ParseIntPipe({ optional: true })) page?: number,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit?: number,
   ) {
     return this.webhooksService.listWebhooks(req.user.tenantId, {
       status,
@@ -110,7 +111,7 @@ export class WebhooksController {
   @ApiQuery({ name: 'limit', required: false, type: Number })
   async getFailedWebhooks(
     @Request() req: RequestWithUser,
-    @Query('limit') limit?: number,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit?: number,
   ) {
     return this.webhooksService.getFailedWebhooks(req.user.tenantId, limit || 50);
   }
