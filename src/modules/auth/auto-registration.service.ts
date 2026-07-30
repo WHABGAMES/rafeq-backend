@@ -13,7 +13,7 @@
  * ║  4. إذا جديد: إنشاء حساب + باسورد + إرسال بيانات الدخول                        ║
  * ║  5. إذا موجود: ربط المتجر الجديد على نفس الحساب + إرسال تنبيه فقط             ║
  * ║     ❌ لا نغيّر tenantId — المتجر الجديد يُربط على tenant التاجر الموجود        ║
- * ║     ❌ لا نولّد باسورد — الباسورد محفوظ مشفر bcrypt ولا يُسترجع                 ║
+ * ║     ❌ لا نولّد باسورد — الباسورد محفوظ مجزّأ (argon2id) ولا يُسترجع            ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -23,7 +23,7 @@ import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
-import * as bcrypt from 'bcryptjs';
+import { hashPassword } from '@common/utils/password.util';
 
 import { User, UserStatus, UserRole } from '@database/entities/user.entity';
 import { Store } from '@modules/stores/entities/store.entity';
@@ -265,7 +265,7 @@ export class AutoRegistrationService {
       throw new Error('Store must have a tenantId for user creation');
     }
 
-    const hashedPassword = await bcrypt.hash(password, 12);
+    const hashedPassword = await hashPassword(password);
     const nameParts = (name || storeName || 'مستخدم رفيق').split(' ');
 
     const user = this.userRepository.create({
