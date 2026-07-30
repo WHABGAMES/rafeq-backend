@@ -212,7 +212,7 @@ export class CsatService {
       type: (dto.type as CsatSurveyType) ?? survey.type,
     });
 
-    this.logger.log(`CSAT survey submitted: token=${token.slice(0, 8)}... rating=${dto.rating}`);
+    this.logger.log(`CSAT survey submitted: surveyId=${survey.id} rating=${dto.rating}`);
 
     return {
       success: true,
