@@ -25,9 +25,13 @@ import {
   UnauthorizedException,
   ForbiddenException,
   BadRequestException,
+  Inject,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { v4 as uuidv4 } from 'uuid';
+import type { Redis } from 'ioredis';
 import { JwtService } from '@nestjs/jwt';
 // ✅ Requires: npm install argon2 speakeasy qrcode
 // ✅ Requires: npm install --save-dev @types/speakeasy @types/qrcode
@@ -59,6 +63,7 @@ export class AdminAuthController {
 
     private readonly jwtService: JwtService,
     private readonly auditService: AuditService,
+    @Optional() @Inject('REDIS_CLIENT') private readonly redis?: Redis,
   ) {}
 
   // ─── Login ────────────────────────────────────────────────────────────────
@@ -328,21 +333,45 @@ export class AdminAuthController {
     @CurrentAdmin() admin: AdminUser,
     @AdminIp() ip: string,
   ) {
-    // ✅ Impersonation token يستخدم JWT_SECRET (platform secret)
-    // وليس ADMIN_JWT_SECRET — مفصول عن admin auth chain
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 🔒 FIX F-23: تصليب توكن الانتحال
+    // ───────────────────────────────────────────────────────────────────────────
+    //  • jti فريد → يسمح بالإبطال قبل انتهاء العمر عبر token_blacklist (يفحصه
+    //    JwtStrategy.validate أصلاً من إصلاح F-02).
+    //  • عمر أقصر (30 دقيقة بدل ساعتين) → نافذة أصغر لو تسرّب التوكن.
+    //  • تسجيل الجلسة في Redis → تتبّع + إمكانية إنهائها مبكراً.
+    // ═══════════════════════════════════════════════════════════════════════════
+    const impersonationTtlSeconds = 30 * 60; // 30 دقيقة
+    const jti = uuidv4();
+
     const impersonationToken = this.jwtService.sign(
       {
         sub: userId,
         type: 'impersonation',
+        jti,
         impersonatedBy: admin.id,
         impersonatedByEmail: admin.email,
-        viewOnly: true, // يمنع العمليات الحساسة
+        viewOnly: true, // يمنع العمليات الحساسة (يفرضه ImpersonationReadOnlyInterceptor)
       },
       {
-        expiresIn: '2h',
+        expiresIn: impersonationTtlSeconds,
         secret: process.env.JWT_SECRET,
       },
     );
+
+    // تسجيل الجلسة النشطة في Redis (للتتبّع والإنهاء المبكر) — best-effort
+    try {
+      if (this.redis) {
+        await this.redis.set(
+          `impersonation_session:${jti}`,
+          JSON.stringify({ userId, adminId: admin.id, startedAt: Date.now() }),
+          'EX',
+          impersonationTtlSeconds,
+        );
+      }
+    } catch {
+      // فشل التسجيل لا يمنع الجلسة — الإبطال يبقى ممكناً عبر القائمة السوداء
+    }
 
     await this.auditService.log({
       actor: admin,
@@ -350,14 +379,57 @@ export class AdminAuthController {
       targetType: 'user',
       targetId: userId,
       ipAddress: ip,
-      metadata: { purpose: 'admin-support' },
+      metadata: { purpose: 'admin-support', jti },
     });
 
     return {
       impersonationToken,
-      message: 'Impersonation session started (view-only, 2h)',
-      expiresIn: '2h',
+      jti,
+      message: 'Impersonation session started (view-only, 30m)',
+      expiresIn: '30m',
     };
+  }
+
+  /**
+   * POST /admin/auth/impersonate/:userId/end
+   * إنهاء جلسة انتحال مبكراً بإبطال jti التوكن (قبل انتهاء عمره).
+   * يُبطَل عبر token_blacklist الذي يفحصه JwtStrategy.validate (FIX F-02).
+   */
+  @Post('impersonate/:jti/end')
+  @UseGuards(AdminJwtGuard, AdminPermissionGuard)
+  @RequirePermissions(PERMISSIONS.IMPERSONATE_ACCESS)
+  @HttpCode(HttpStatus.OK)
+  async endImpersonation(
+    @Param('jti', ParseUUIDPipe) jti: string,
+    @CurrentAdmin() admin: AdminUser,
+    @AdminIp() ip: string,
+  ) {
+    // إبطال التوكن عبر القائمة السوداء (TTL يغطي أقصى عمر متبقٍّ)
+    const remainingTtl = 30 * 60;
+
+    // 🔒 الإبطال يعتمد كلياً على Redis — لو غاب، نفشل بوضوح ولا نزعم النجاح
+    if (!this.redis) {
+      throw new BadRequestException('خدمة الإبطال غير متاحة حالياً — تعذّر إنهاء الجلسة');
+    }
+
+    try {
+      await this.redis.set(`token_blacklist:${jti}`, '1', 'EX', remainingTtl);
+      await this.redis.del(`impersonation_session:${jti}`);
+    } catch {
+      // لو تعذّر Redis، لا نُخفي الخطأ صامتاً في هذه العملية الأمنية
+      throw new BadRequestException('تعذّر إنهاء الجلسة حالياً — حاول مجدداً');
+    }
+
+    await this.auditService.log({
+      actor: admin,
+      action: AuditAction.IMPERSONATION_STARTED, // نفس فئة التدقيق مع تمييز في metadata
+      targetType: 'user',
+      targetId: jti,
+      ipAddress: ip,
+      metadata: { purpose: 'admin-support', event: 'impersonation-ended', jti },
+    });
+
+    return { success: true, message: 'Impersonation session ended' };
   }
 
   // ─── Private Helpers ──────────────────────────────────────────────────────
