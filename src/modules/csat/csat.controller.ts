@@ -29,6 +29,7 @@ import {
   HttpCode,
   HttpStatus,
   UseGuards,
+  ParseIntPipe,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -143,8 +144,8 @@ export class CsatController {
     @Query('agentId') agentId?: string,
     @Query('from')    from?: string,
     @Query('to')      to?: string,
-    @Query('page')    page = 1,
-    @Query('limit')   limit = 20,
+    @Query('page', new ParseIntPipe({ optional: true }))    page = 1,
+    @Query('limit', new ParseIntPipe({ optional: true }))   limit = 20,
   ) {
     // ✅ FIX NaN: Query params تصل دائماً كـ string من HTTP
     // Number("") = NaN, Number("null") = NaN → يكسر PostgreSQL smallint
