@@ -1,6 +1,7 @@
-import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, Inject, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, MoreThan } from 'typeorm';
+import Redis from 'ioredis';
 import { OtpConfig } from './entities/otp-config.entity';
 import { OtpInventoryItem, OtpCompensation, InventoryStatus } from './entities/otp-inventory.entity';
 import { Store } from '../stores/entities/store.entity';
@@ -23,6 +24,7 @@ export class OtpInventoryService {
     @InjectRepository(Channel) private readonly channelRepo: Repository<Channel>,
     private readonly whatsapp: WhatsAppBaileysService,
     private readonly sallaApi: SallaApiService,
+    @Optional() @Inject('REDIS_CLIENT') private readonly redis?: Redis,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -115,7 +117,7 @@ export class OtpInventoryService {
     if (!config.compensationEnabled) throw new BadRequestException('خدمة التعويضات غير مفعلة');
 
     // ── Rate Limit ──
-    this.checkRate(clientIp, config.rateLimit || 3);
+    await this.checkRate(clientIp, slug, config.rateLimit || 3);
 
     if (config.verifyOrder && orderNumber) {
       await this.verifyOrderExists(config.storeId, orderNumber);
@@ -364,15 +366,53 @@ export class OtpInventoryService {
   // 🔧 HELPERS
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  private checkRate(ip: string, limit: number): void {
+  /**
+   * 🔒 FIX F-06: حد معدل التعويضات عبر Redis (مشترك بين النسخ) مع احتياطي بالذاكرة.
+   * يحافظ على BadRequestException كما كان (عقد الـ API لم يتغيّر).
+   */
+  // سكربت Lua ذرّي: INCR + EXPIRE في عملية واحدة — يمنع «المفتاح الأبدي».
+  private static readonly RATE_LUA =
+    "local c = redis.call('INCR', KEYS[1]) " +
+    "if c == 1 or redis.call('TTL', KEYS[1]) == -1 then " +
+    "redis.call('EXPIRE', KEYS[1], ARGV[1]) end " +
+    "return c";
+
+  private async checkRate(ip: string, slug: string, limit: number): Promise<void> {
+    const safeIp = (ip || 'unknown').slice(0, 64);
+    const windowSeconds = 60;
+
+    if (this.redis && this.redis.status === 'ready') {
+      try {
+        const key = `otp_comp_rate:${slug}:${safeIp}`;
+        const count = Number(
+          await this.redis.eval(OtpInventoryService.RATE_LUA, 1, key, String(windowSeconds)),
+        );
+        if (count > limit) {
+          throw new BadRequestException('تجاوزت الحد المسموح. انتظر دقيقة.');
+        }
+        return;
+      } catch (err) {
+        if (err instanceof BadRequestException) throw err;
+        this.logger.warn(
+          `⚠️ فشل حد المعدل عبر Redis — هبوط إلى الذاكرة: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+
+    this.checkRateInMemory(`${slug}:${safeIp}`, limit);
+  }
+
+  private checkRateInMemory(key: string, limit: number): void {
     const now = Date.now();
     if (now - this.lastRateCleanup > 300_000) {
       this.lastRateCleanup = now;
       for (const [k, v] of this.rateMap.entries()) { if (v.every(t => now - t > 60000)) this.rateMap.delete(k); }
     }
-    const ts = (this.rateMap.get(ip) || []).filter(t => now - t < 60000);
+    const ts = (this.rateMap.get(key) || []).filter(t => now - t < 60000);
     if (ts.length >= limit) throw new BadRequestException('تجاوزت الحد المسموح. انتظر دقيقة.');
-    ts.push(now); this.rateMap.set(ip, ts);
+    ts.push(now); this.rateMap.set(key, ts);
   }
 
   private async getConfigSafe(id: string, tenantId: string): Promise<OtpConfig> {
