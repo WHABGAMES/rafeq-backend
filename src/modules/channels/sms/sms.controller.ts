@@ -25,6 +25,7 @@ import {
   HttpCode,
   HttpStatus,
   UseGuards,
+  ParseIntPipe,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -240,8 +241,8 @@ export class SmsController {
     @CurrentUser() user: any,
     @Query('from') from?: string,
     @Query('to') to?: string,
-    @Query('page') page = 1,
-    @Query('limit') limit = 50,
+    @Query('page', new ParseIntPipe({ optional: true })) page = 1,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit = 50,
   ) {
     const tenantId = user.tenantId;
     return this.smsService.getReports(tenantId, { from, to, page, limit });
