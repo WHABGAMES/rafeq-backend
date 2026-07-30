@@ -16,6 +16,7 @@ import {
   HttpStatus,
   ParseUUIDPipe,
   BadRequestException,
+  ParseIntPipe,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 
@@ -54,8 +55,8 @@ export class AdminSubscriptionsController {
   @RequirePermissions(PERMISSIONS.USERS_READ)
   @ApiOperation({ summary: 'قائمة اشتراكات جميع التجار' })
   async listSubscriptions(
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
+    @Query('page', new ParseIntPipe({ optional: true })) page?: number,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit?: number,
     @Query('plan') plan?: PlanTier,
     @Query('search') search?: string,
   ) {
