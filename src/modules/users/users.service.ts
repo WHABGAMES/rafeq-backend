@@ -23,7 +23,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, MoreThan } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
-import * as bcrypt from 'bcryptjs';
+import { hashPassword } from '@common/utils/password.util';
 import * as crypto from 'crypto';
 
 import { User, UserStatus, UserRole, AuthProvider } from '@database/entities';
@@ -330,7 +330,7 @@ export class UsersService {
       throw new BadRequestException('رابط الدعوة منتهي الصلاحية. اطلب دعوة جديدة.');
     }
 
-    const hashedPassword = await bcrypt.hash(password, 12);
+    const hashedPassword = await hashPassword(password);
     const nameParts = name.split(' ');
 
     pendingUser.password = hashedPassword;
@@ -475,7 +475,7 @@ export class UsersService {
     }
 
     const tempPassword = crypto.randomBytes(8).toString('hex');
-    const hashedPassword = await bcrypt.hash(tempPassword, 12);
+    const hashedPassword = await hashPassword(tempPassword);
 
     const user = this.userRepository.create({
       tenantId,
