@@ -35,6 +35,7 @@ import {
   HttpStatus,
   ParseUUIDPipe,
   BadRequestException,
+  ParseIntPipe,
 } from '@nestjs/common';
 import { AdminJwtGuard, AdminPermissionGuard, RequirePermissions } from '../guards/admin.guards';
 import { CurrentAdmin, AdminIp } from '../decorators/current-admin.decorator';
@@ -57,8 +58,8 @@ export class AdminStoresController {
   @Get()
   @RequirePermissions(PERMISSIONS.USERS_READ)
   getStores(
-    @Query('page') page = 1,
-    @Query('limit') limit = 30,
+    @Query('page', new ParseIntPipe({ optional: true })) page = 1,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit = 30,
     @Query('search') search?: string,
     @Query('status') status?: string,
   ) {
@@ -130,8 +131,8 @@ export class WhatsappController {
   @Get('messages')
   @RequirePermissions(PERMISSIONS.WHATSAPP_MANAGE)
   getMessages(
-    @Query('page') page = 1,
-    @Query('limit') limit = 20,
+    @Query('page', new ParseIntPipe({ optional: true })) page = 1,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit = 20,
     @Query('status') status?: string,
     @Query('phone') phone?: string,
   ) {
@@ -381,8 +382,8 @@ export class AuditLogsController {
     @Query('actionPrefix') actionPrefix?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
-    @Query('page') page = 1,
-    @Query('limit') limit = 50,
+    @Query('page', new ParseIntPipe({ optional: true })) page = 1,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit = 50,
   ) {
     return this.auditService.getAuditLogs({
       actorId,
