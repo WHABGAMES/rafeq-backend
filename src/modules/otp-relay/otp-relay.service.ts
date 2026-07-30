@@ -1,7 +1,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-var-requires */
-import { Injectable, Logger, NotFoundException, BadRequestException, ForbiddenException, Optional } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, ForbiddenException, Optional, Inject } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, MoreThan, Raw } from 'typeorm';
+import Redis from 'ioredis';
 import { OtpConfig, OtpRequestLog, PLATFORM_PRESETS } from './entities/otp-config.entity';
 import { encrypt, decrypt } from '@common/utils/encryption.util';
 import { SallaApiService } from '../stores/salla-api.service';
@@ -93,6 +94,7 @@ export class OtpRelayService {
     private readonly sallaApi: SallaApiService,
     private readonly whatsapp: WhatsAppBaileysService,
     @Optional() private readonly telegramOtp: TelegramOtpClientService,
+    @Optional() @Inject('REDIS_CLIENT') private readonly redis?: Redis,
   ) {}
 
   // ═══ ADMIN ═══════════════════════════════════════════════
@@ -251,7 +253,7 @@ export class OtpRelayService {
       .where('c.slug = :slug AND c.isActive = true', { slug }).getOne();
     if (!c) throw new NotFoundException('الخدمة غير متوفرة');
 
-    this.checkRate(clientIp, c.rateLimit);
+    await this.checkRate(clientIp, slug, c.rateLimit);
     await this.configRepo.increment({ id: c.id } as any, 'totalRequests', 1);
 
     const log: Partial<OtpRequestLog> = {
@@ -625,15 +627,70 @@ export class OtpRelayService {
     return null;
   }
 
-  private checkRate(ip: string, limit: number): void {
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * 🔒 FIX F-06: حد معدل OTP عبر Redis (مشترك بين كل النسخ، ذرّي)
+   * ───────────────────────────────────────────────────────────────────────────
+   * المشكلة السابقة: rateMap في ذاكرة العملية الواحدة — يُعاد ضبطه عند إعادة
+   * التشغيل، وغير مشترك بين النسخ (التوسّع الأفقي يضاعف الحد الفعّال).
+   *
+   * الحل: عدّاد ذرّي في Redis (INCR + EXPIRE) لنافذة 60 ثانية، مفتاحه slug+ip
+   * فيُحسب الحد لكل خدمة ولكل عميل معاً عبر كل النسخ.
+   *
+   * التوافر: لو Redis غير متاح (تطوير/عطل)، نهبط بأمان إلى العدّاد في الذاكرة —
+   * fail-open لا يُسقط الخدمة، والحد يظل مطبَّقاً لكن لكل عملية.
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+  // سكربت Lua ذرّي: INCR + ضبط EXPIRE في عملية واحدة لا تنقسم.
+  // يمنع «المفتاح الأبدي»: لو انقطعت العملية بين INCR وEXPIRE منفصلين، لبقي
+  // المفتاح بلا TTL فيحظر العميل للأبد. الذرّية تُلغي هذه الفجوة تماماً.
+  // يُعيد العدّاد بعد الزيادة. نضبط EXPIRE عند أول طلب أو إن فُقد الـ TTL (‎-1).
+  private static readonly RATE_LUA =
+    "local c = redis.call('INCR', KEYS[1]) " +
+    "if c == 1 or redis.call('TTL', KEYS[1]) == -1 then " +
+    "redis.call('EXPIRE', KEYS[1], ARGV[1]) end " +
+    "return c";
+
+  private async checkRate(ip: string, slug: string, limit: number): Promise<void> {
+    const safeIp = (ip || 'unknown').slice(0, 64);
+    const windowSeconds = 60;
+
+    // المسار الأساسي: Redis (ذرّي ومشترك عبر النسخ)
+    if (this.redis && this.redis.status === 'ready') {
+      try {
+        const key = `otp_rate:${slug}:${safeIp}`;
+        const count = Number(
+          await this.redis.eval(OtpRelayService.RATE_LUA, 1, key, String(windowSeconds)),
+        );
+        if (count > limit) {
+          throw new ForbiddenException('تجاوزت الحد المسموح. انتظر دقيقة.');
+        }
+        return;
+      } catch (err) {
+        if (err instanceof ForbiddenException) throw err;
+        // خطأ Redis (لا تجاوز حد) → نهبط للذاكرة، لا نُسقط الطلب
+        this.logger.warn(
+          `⚠️ فشل حد المعدل عبر Redis — هبوط إلى الذاكرة: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+
+    // الاحتياطي: عدّاد في الذاكرة (لكل عملية) — fail-open
+    this.checkRateInMemory(`${slug}:${safeIp}`, limit);
+  }
+
+  /** احتياطي في الذاكرة يُستخدم فقط عند تعذّر Redis */
+  private checkRateInMemory(key: string, limit: number): void {
     const now = Date.now();
     if (now - this.lastRateCleanup > 300_000) {
       this.lastRateCleanup = now;
       for (const [k, v] of this.rateMap.entries()) { if (v.every(t => now - t > 60000)) this.rateMap.delete(k); }
     }
-    const ts = (this.rateMap.get(ip) || []).filter(t => now - t < 60000);
+    const ts = (this.rateMap.get(key) || []).filter(t => now - t < 60000);
     if (ts.length >= limit) throw new ForbiddenException('تجاوزت الحد المسموح. انتظر دقيقة.');
-    ts.push(now); this.rateMap.set(ip, ts);
+    ts.push(now); this.rateMap.set(key, ts);
   }
 
   getPlatforms(): any[] { return Object.entries(PLATFORM_PRESETS).map(([value, p]) => ({ value, ...p })); }
