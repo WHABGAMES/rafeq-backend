@@ -33,6 +33,7 @@ import {
   Param,
   UseGuards,
   Request,
+  Res,
   HttpCode,
   HttpStatus,
   Logger,
@@ -44,6 +45,8 @@ import {
   ApiResponse,
   ApiBearerAuth,
 } from '@nestjs/swagger';
+import { Response } from 'express';
+import { ConfigService } from '@nestjs/config';
 
 import { AuthService } from './auth.service';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
@@ -82,7 +85,32 @@ export class AuthController {
     private readonly authService: AuthService,
     private readonly auditService: AuditService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly configService: ConfigService,
   ) {}
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 🔒 FIX F-07: توكن التجديد في كوكي httpOnly (بدل تخزينه في localStorage)
+  // ───────────────────────────────────────────────────────────────────────────────
+  //  الهدف: منع سرقة توكن التجديد عبر XSS (JS لا يستطيع قراءة كوكي httpOnly).
+  //  التوافق: نُبقي refreshToken في جسم الاستجابة أيضاً خلال فترة الانتقال، فلا
+  //  تنكسر الجلسات النشطة؛ الواجهة الجديدة تعتمد على الكوكي وتتوقف عن تخزينه.
+  // ═══════════════════════════════════════════════════════════════════════════════
+  private static readonly REFRESH_COOKIE = 'rafeq_rt';
+
+  private setRefreshCookie(res: Response, refreshToken: string): void {
+    const isProduction = this.configService.get('NODE_ENV') === 'production';
+    res.cookie(AuthController.REFRESH_COOKIE, refreshToken, {
+      httpOnly: true,
+      secure: isProduction,          // Secure في الإنتاج فقط (يسمح http محلياً)
+      sameSite: 'strict',
+      path: '/api/auth',             // يُرسَل فقط لمسارات المصادقة
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 أيام (يطابق عمر توكن التجديد)
+    });
+  }
+
+  private clearRefreshCookie(res: Response): void {
+    res.clearCookie(AuthController.REFRESH_COOKIE, { path: '/api/auth' });
+  }
 
   private maskEmail(email: string): string {
     const [local, domain] = email.split('@');
@@ -113,13 +141,14 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'تسجيل الدخول بالإيميل وكلمة المرور' })
   @ApiResponse({ status: 200, type: LoginResponseDto })
-  async login(@Body() dto: LoginDto, @Request() req: any): Promise<LoginResponseDto> {
+  async login(@Body() dto: LoginDto, @Request() req: any, @Res({ passthrough: true }) res: Response): Promise<LoginResponseDto> {
     this.logger.log(`Login attempt: ${this.maskEmail(dto.email)}`);
     const ip = (req.headers?.['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || '';
     const ua = req.headers?.['user-agent'] || '';
     try {
       const result = await this.authService.login(dto.email, dto.password, { ip, ua });
       this._auditAsync(AuditAction.TENANT_LOGIN, req, result.user?.id, result.user?.email, (result as any).user?.tenantId, { method: 'email' });
+      if (result?.refreshToken) this.setRefreshCookie(res, result.refreshToken);
       return result;
     } catch (error: any) {
       // 🔐 تسجيل محاولات الدخول الفاشلة
@@ -145,7 +174,7 @@ export class AuthController {
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'تسجيل حساب جديد' })
   @ApiResponse({ status: 201 })
-  async register(@Body() dto: RegisterDto, @Request() req: any): Promise<LoginResponseDto> {
+  async register(@Body() dto: RegisterDto, @Request() req: any, @Res({ passthrough: true }) res: Response): Promise<LoginResponseDto> {
     this.logger.log(`Register attempt: ${this.maskEmail(dto.email)}`);
     const result = await this.authService.register({
       email: dto.email,
@@ -155,6 +184,7 @@ export class AuthController {
     });
     this._trackDeviceAsync(result?.user?.id, result, req);
     this._auditAsync(AuditAction.TENANT_REGISTER, req, result.user?.id, result.user?.email, (result as any).user?.tenantId, { storeName: dto.storeName });
+    if (result?.refreshToken) this.setRefreshCookie(res, result.refreshToken);
     return result;
   }
 
@@ -173,9 +203,10 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'التحقق من رمز الإيميل وتسجيل الدخول' })
   @ApiResponse({ status: 200, type: LoginResponseDto })
-  async verifyEmailOtp(@Body() dto: VerifyEmailOtpDto, @Request() req: any): Promise<LoginResponseDto> {
+  async verifyEmailOtp(@Body() dto: VerifyEmailOtpDto, @Request() req: any, @Res({ passthrough: true }) res: Response): Promise<LoginResponseDto> {
     const result = await this.authService.verifyEmailOtp(dto.email, dto.otp);
     this._trackDeviceAsync(result?.user?.id, result, req);
+    if (result?.refreshToken) this.setRefreshCookie(res, result.refreshToken);
     return result;
   }
 
@@ -187,9 +218,10 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'تسجيل الدخول عبر Google' })
   @ApiResponse({ status: 200, type: LoginResponseDto })
-  async googleAuth(@Body() dto: GoogleAuthDto, @Request() req: any): Promise<LoginResponseDto> {
+  async googleAuth(@Body() dto: GoogleAuthDto, @Request() req: any, @Res({ passthrough: true }) res: Response): Promise<LoginResponseDto> {
     const result = await this.authService.googleAuth(dto.idToken);
     this._trackDeviceAsync(result?.user?.id, result, req);
+    if (result?.refreshToken) this.setRefreshCookie(res, result.refreshToken);
     return result;
   }
 
@@ -207,10 +239,11 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'معالجة callback من سلة' })
   @ApiResponse({ status: 200, type: LoginResponseDto })
-  async sallaCallback(@Body() dto: SallaAuthDto, @Request() req: any): Promise<LoginResponseDto> {
+  async sallaCallback(@Body() dto: SallaAuthDto, @Request() req: any, @Res({ passthrough: true }) res: Response): Promise<LoginResponseDto> {
     const result = await this.authService.sallaAuth(dto.code, dto.state);
     this._trackDeviceAsync(result?.user?.id, result, req);
     this._auditAsync(AuditAction.TENANT_SALLA_LOGIN, req, result.user?.id, result.user?.email, (result as any).user?.tenantId, { method: 'salla_oauth' });
+    if (result?.refreshToken) this.setRefreshCookie(res, result.refreshToken);
     return result;
   }
 
@@ -228,10 +261,11 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'معالجة callback من زد' })
   @ApiResponse({ status: 200, type: LoginResponseDto })
-  async zidCallback(@Body() dto: ZidAuthDto, @Request() req: any): Promise<LoginResponseDto> {
+  async zidCallback(@Body() dto: ZidAuthDto, @Request() req: any, @Res({ passthrough: true }) res: Response): Promise<LoginResponseDto> {
     const result = await this.authService.zidAuth(dto.code, dto.state);
     this._trackDeviceAsync(result?.user?.id, result, req);
     this._auditAsync(AuditAction.TENANT_ZID_LOGIN, req, result.user?.id, result.user?.email, (result as any).user?.tenantId, { method: 'zid_oauth' });
+    if (result?.refreshToken) this.setRefreshCookie(res, result.refreshToken);
     return result;
   }
 
@@ -261,8 +295,29 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'تجديد التوكن' })
   @ApiResponse({ status: 200, type: RefreshTokenResponseDto })
-  async refreshToken(@Body() dto: RefreshTokenDto): Promise<RefreshTokenResponseDto> {
-    return this.authService.refreshTokens(dto.refreshToken);
+  async refreshToken(
+    @Body() dto: RefreshTokenDto,
+    @Request() req: any,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<RefreshTokenResponseDto> {
+    // 🔒 FIX F-07: الكوكي أولاً (httpOnly، لا يقرؤه JS)، مع الرجوع للجسم للتوافق
+    const cookieToken = req.cookies?.[AuthController.REFRESH_COOKIE];
+    const refreshToken = cookieToken || dto?.refreshToken;
+    if (!refreshToken) {
+      this.clearRefreshCookie(res);
+      throw new NotFoundException('توكن التجديد غير موجود');
+    }
+    let result: RefreshTokenResponseDto;
+    try {
+      result = await this.authService.refreshTokens(refreshToken);
+    } catch (err) {
+      // فشل التجديد (توكن مُبطَل/منتهٍ) → امسح الكوكي الميّت فلا يبقى في المتصفح
+      this.clearRefreshCookie(res);
+      throw err;
+    }
+    // تدوير الكوكي بالتوكن الجديد
+    if (result?.refreshToken) this.setRefreshCookie(res, result.refreshToken);
+    return result;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -274,7 +329,7 @@ export class AuthController {
   @ApiBearerAuth('JWT-auth')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'تسجيل الخروج' })
-  async logout(@Request() req: any): Promise<MessageResponseDto> {
+  async logout(@Request() req: any, @Res({ passthrough: true }) res: Response): Promise<MessageResponseDto> {
     const userId = req.user.sub || req.user.id;
     // حساب مدة الجلسة من JWT iat
     let sessionMinutes: number | undefined;
@@ -290,6 +345,8 @@ export class AuthController {
       ...(sessionMinutes !== undefined && { sessionMinutes }),
     });
     await this.authService.logout(userId, req.user.jti, req.body?.refreshJti);
+    // 🔒 FIX F-07: امسح كوكي التجديد عند الخروج
+    this.clearRefreshCookie(res);
     return { message: 'تم تسجيل الخروج بنجاح' };
   }
 
