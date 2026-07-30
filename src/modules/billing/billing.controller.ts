@@ -27,6 +27,7 @@ import {
   HttpCode,
   HttpStatus,
   Request,
+  ParseIntPipe,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -357,7 +358,7 @@ export class BillingController {
   async checkQuota(
     @Request() req: AuthenticatedRequest,
     @Param('resource') resource: string,
-    @Query('amount') amount?: number,
+    @Query('amount', new ParseIntPipe({ optional: true })) amount?: number,
   ) {
     // Map resource name to UsageStats key
     const resourceMap: Record<string, string> = {
@@ -410,8 +411,8 @@ export class BillingController {
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'limit', required: false, type: Number })
   async getInvoices(
-    @Query('page') page: number = 1,
-    @Query('limit') limit: number = 20,
+    @Query('page', new ParseIntPipe({ optional: true })) page: number = 1,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit: number = 20,
   ) {
     // TODO: Implement invoices retrieval from payment provider
     return {
