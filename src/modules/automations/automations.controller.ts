@@ -40,6 +40,7 @@ import {
   HttpCode,
   HttpStatus,
   UseGuards,
+  ParseIntPipe,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -463,8 +464,8 @@ export class AutomationsController {
     @CurrentUser() user: any,
     @Query('status') status?: string,
     @Query('trigger') trigger?: string,
-    @Query('page') page = 1,
-    @Query('limit') limit = 20,
+    @Query('page', new ParseIntPipe({ optional: true })) page = 1,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit = 20,
   ) {
     const tenantId = user.tenantId;
     return this.automationsService.findAll(tenantId, { status, trigger }, { page, limit });
@@ -530,8 +531,8 @@ export class AutomationsController {
   async getLogs(
     @CurrentUser() user: any,
     @Param('id', ParseUUIDPipe) id: string,
-    @Query('page') page = 1,
-    @Query('limit') limit = 50,
+    @Query('page', new ParseIntPipe({ optional: true })) page = 1,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit = 50,
   ) {
     const tenantId = user.tenantId;
     return this.automationsService.getLogs(id, tenantId, { page, limit });
@@ -556,8 +557,8 @@ export class AutomationsController {
   })
   async getWorkflows(
     @CurrentUser() user: any,
-    @Query('page') page = 1,
-    @Query('limit') limit = 20,
+    @Query('page', new ParseIntPipe({ optional: true })) page = 1,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit = 20,
   ) {
     const tenantId = user.tenantId;
     return this.automationsService.getWorkflows(tenantId, { page, limit });
