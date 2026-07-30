@@ -29,6 +29,7 @@ import {
   HttpStatus,
   UseGuards,
   BadRequestException,
+  ParseIntPipe,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
@@ -91,8 +92,8 @@ export class ShortLinksController {
   @ApiOperation({ summary: 'List all short links' })
   async list(
     @CurrentUser() user: any,
-    @Query('page') page = 1,
-    @Query('limit') limit = 20,
+    @Query('page', new ParseIntPipe({ optional: true })) page = 1,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit = 20,
   ) {
     return this.service.findAll(
       user.tenantId,
@@ -113,12 +114,8 @@ export class ShortLinksController {
   ) {
     if (!body.url) throw new BadRequestException('الرابط مطلوب');
 
-    // Validate URL
-    try {
-      new URL(body.url);
-    } catch {
-      throw new BadRequestException('الرابط غير صالح');
-    }
+    // ملاحظة: التحقق من صحة الرابط ومخططه (http/https فقط) صار في الخدمة
+    // (choke point واحد يغطي create و update) — FIX F-05.
 
     // Validate custom code
     if (body.customCode) {
