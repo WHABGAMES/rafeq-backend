@@ -32,6 +32,7 @@ import { NestExpressApplication } from '@nestjs/platform-express';
 import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
+import cors from 'cors';
 import { DataSource } from 'typeorm';
 import { csrfCookieMiddleware } from './common/guards/csrf.guard';
 
@@ -135,49 +136,102 @@ async function bootstrap() {
       );
     }
 
-    app.enableCors({
-      origin: (origin, callback) => {
-        if (!origin) { callback(null, true); return; }
-        // Whitelisted origins (dashboard, admin)
-        if (corsOrigins.includes(origin)) {
-          callback(null, true);
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 🔒 FIX F-03: فصل سياسة CORS حسب المسار
+    // ───────────────────────────────────────────────────────────────────────────
+    // المشكلة السابقة: origin كان يعكس أي مصدر مع credentials:true — أي أن المتصفح
+    // يُرسل الكوكيز/التوثيق لأي موقع، ما يُقوّض حماية CSRF وعزل المصدر.
+    //
+    // الحل (يحافظ على تضمين الودجت على متاجر العملاء العشوائية):
+    //   • مسارات التضمين العامة (widget/elements العامة، otp، إعادة توجيه /r) =
+    //     تُحمَّل من أي متجر ولا تحوي بيانات حساسة ومحميّة بـ storeId →
+    //     نسمح بأي مصدر لكن بلا credentials.
+    //   • باقي المسارات (لوحة التاجر/الأدمن) = قائمة سماح صارمة + credentials:true.
+    //
+    // نستخدم delegate يستقبل الطلب (req) فيقرّر حسب المسار — وهو ما لا تتيحه دالة
+    // origin وحدها (لا ترى المسار). حزمة cors المدمجة في NestJS تدعم هذا الشكل.
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // مسارات التضمين/الوصول العامة (بلا مصادقة، محميّة بـ storeId أو رمز عام)
+    // ملاحظة: /api/short-links محميّ بـ JwtAuthGuard (إدارة) فلا يدخل هنا،
+    // بينما /api/r (إعادة توجيه الروابط) عام.
+    const PUBLIC_EMBED_PREFIXES = [
+      '/api/widget',
+      '/api/elements',
+      '/api/otp',
+      '/api/r',
+      '/otp',
+    ];
+
+    // مسارات فرعية محميّة بـ JwtAuthGuard رغم وقوعها تحت بادئة عامة —
+    // تأخذ السياسة الصارمة لا العامة (دقّة وليس اعتماداً على أن الحارس يكفي).
+    const GUARDED_SUBPATHS = [
+      '/api/widget/settings',
+      '/api/elements/manage',
+      '/api/elements/analytics',
+      '/api/elements/ab-tests',
+    ];
+
+    const isPublicEmbedPath = (path: string): boolean => {
+      if (GUARDED_SUBPATHS.some(p => path.startsWith(p))) return false;
+      return PUBLIC_EMBED_PREFIXES.some(p => path.startsWith(p));
+    };
+
+    // هل المصدر ضمن قائمة السماح للطلبات ذات الاعتمادات؟
+    const isAllowedCredentialedOrigin = (origin: string): boolean => {
+      if (corsOrigins.includes(origin)) return true;
+      if (origin.endsWith('.salla.sa') || origin.endsWith('.salla.dev')) return true;
+      if (origin.endsWith('.zid.store') || origin.endsWith('.zid.sa')) return true;
+      if (origin.endsWith('.myshopify.com')) return true;
+      return false;
+    };
+
+    const COMMON_ALLOWED_HEADERS = [
+      'Content-Type', 'Authorization', 'Accept', 'Origin',
+      'X-Requested-With', 'Cache-Control', 'Pragma',
+      'If-Modified-Since', 'X-CSRF-Token', 'x-store-id',
+    ];
+    const COMMON_METHODS = ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'];
+
+    app.use(
+      cors((req: import('express').Request, callback: (err: Error | null, options?: cors.CorsOptions) => void) => {
+        const path: string = req.path || req.url || '';
+        const isPublicEmbed = isPublicEmbedPath(path);
+
+        if (isPublicEmbed) {
+          // 🌐 نقاط عامة: أي مصدر، بلا اعتمادات (لا كوكيز/توثيق عبر المصدر)
+          callback(null, {
+            origin: true,
+            credentials: false,
+            methods: COMMON_METHODS,
+            allowedHeaders: COMMON_ALLOWED_HEADERS,
+            exposedHeaders: ['Content-Length', 'Content-Type'],
+            optionsSuccessStatus: 204,
+            maxAge: 86400,
+          });
           return;
         }
-        // ✅ Allow all Salla store domains (*.salla.sa, *.salla.dev)
-        if (origin.endsWith('.salla.sa') || origin.endsWith('.salla.dev')) {
-          callback(null, true);
-          return;
-        }
-        // ✅ Allow all Zid store domains (*.zid.store, *.zid.sa)
-        if (origin.endsWith('.zid.store') || origin.endsWith('.zid.sa')) {
-          callback(null, true);
-          return;
-        }
-        // ✅ Allow all Shopify store domains (*.myshopify.com)
-        if (origin.endsWith('.myshopify.com')) {
-          callback(null, true);
-          return;
-        }
-        // ✅ Allow ALL custom domains for widget/elements embed
-        // Merchants use custom domains (e.g., iwgstore.com, myshop.sa)
-        // Public embed endpoints (/api/widget/*, /api/elements/*) are designed
-        // to be loaded from any merchant's storefront — they contain no sensitive data
-        // and are protected by storeId-based access, not CORS
-        callback(null, true);
-      },
-      methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
-      allowedHeaders: [
-        'Content-Type', 'Authorization', 'Accept', 'Origin',
-        'X-Requested-With', 'Cache-Control', 'Pragma',
-        'If-Modified-Since', 'X-CSRF-Token', 'x-store-id',
-      ],
-      exposedHeaders: ['Content-Length', 'Content-Type'],
-      credentials: true,
-      preflightContinue: false,
-      optionsSuccessStatus: 204,
-      maxAge: 86400,
-    });
-    logger.log(`✅ CORS configured for: ${corsOrigins.join(', ')}`);
+
+        // 🔐 باقي المسارات: قائمة سماح صارمة + اعتمادات
+        callback(null, {
+          origin: (origin, cb) => {
+            // طلبات بلا Origin (server-to-server / curl / same-origin) مسموحة
+            if (!origin) { cb(null, true); return; }
+            if (isAllowedCredentialedOrigin(origin)) { cb(null, true); return; }
+            // مصدر غير مُصرّح لطلب يحمل اعتمادات → يُرفض (لا يُعكَس المصدر)
+            cb(null, false);
+          },
+          credentials: true,
+          methods: COMMON_METHODS,
+          allowedHeaders: COMMON_ALLOWED_HEADERS,
+          exposedHeaders: ['Content-Length', 'Content-Type'],
+          preflightContinue: false,
+          optionsSuccessStatus: 204,
+          maxAge: 86400,
+        });
+      }),
+    );
+    logger.log(`✅ CORS configured (strict+credentials for app, open+no-credentials for public embeds): ${corsOrigins.join(', ')}`);
 
     // ─── Global Prefix & Validation ───────────────────────────────────────────
     app.setGlobalPrefix('api');
@@ -186,7 +240,10 @@ async function bootstrap() {
       whitelist: true,
       transform: true,
       forbidNonWhitelisted: true,
-      transformOptions: { enableImplicitConversion: true },
+      // 🔒 FIX F-16: أوقفنا التحويل الضمني (كان يحوّل الأنواع بصمت حسب نوع TS،
+      // فقد يتجاوز نية التحقق مثل "1abc" → 1). كل معاملات query الرقمية/البوليان
+      // صارت تستخدم ParseIntPipe/ParseBoolPipe صراحةً، فلا حاجة للتحويل الضمني.
+      transformOptions: { enableImplicitConversion: false },
     }));
 
     // ─── Swagger (dev only) ───────────────────────────────────────────────────
