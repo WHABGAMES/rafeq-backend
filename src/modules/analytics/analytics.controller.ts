@@ -23,6 +23,7 @@ import {
   Param,
   Res,
   UseGuards,
+  ParseIntPipe,
 } from '@nestjs/common';
 import { Response } from 'express';
 import {
@@ -152,7 +153,7 @@ export class AnalyticsController {
   async getTrends(
     @CurrentUser() user: any,
     @Param('metric') metric: 'conversations' | 'messages' | 'customers',
-    @Query('days') days = 30,
+    @Query('days', new ParseIntPipe({ optional: true })) days = 30,
   ) {
     const tenantId = user.tenantId;
     return this.analyticsService.getTrends(tenantId, metric, days);
