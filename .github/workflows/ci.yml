@@ -1,0 +1,41 @@
+name: RAFEQ Backend CI — Security & Tests
+
+# 🔒 FIX F-19 + F-20: تدقيق أمني آلي (npm audit) + تشغيل اختبارات المصادقة/الأمان
+# لمستودع الخادم المنفصل (الملفات في جذر المستودع مباشرة).
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master, develop]
+
+jobs:
+  backend:
+    name: Backend — audit, build, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # 🔒 FIX F-19: تدقيق الثغرات — يُظهر الثغرات العالية/الحرجة.
+      # مبدئياً غير مُعطِّل (continue-on-error) كي لا يكسر الـ CI على ثغرات قائمة
+      # قبل معالجتها؛ بعد تنظيف التبعيات، أزل continue-on-error ليصبح إلزامياً.
+      - name: Security audit (npm audit)
+        run: npm audit --audit-level=high
+        continue-on-error: true
+
+      # فحص البناء — نستخدم أمر البناء الفعلي (nest build) لمطابقة الإنتاج تماماً
+      - name: Build check
+        run: npm run build
+
+      # 🔒 FIX F-20: تشغيل اختبارات الأمان/المصادقة
+      - name: Run tests
+        run: npm test
