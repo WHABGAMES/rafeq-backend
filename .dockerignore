@@ -1,0 +1,17 @@
+# Secrets and local configuration must never enter a Docker build context.
+.env
+.env.*
+!.env.example
+
+# Development-only files
+node_modules
+dist
+coverage
+.git
+.github
+logs
+*.log
+*.tsbuildinfo
+whatsapp-sessions
+.vscode
+.idea
