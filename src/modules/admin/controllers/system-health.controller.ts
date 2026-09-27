@@ -11,6 +11,7 @@ import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
+import type Redis from 'ioredis';
 import { AdminJwtGuard, AdminPermissionGuard, RequirePermissions } from '../guards/admin.guards';
 import { PERMISSIONS } from '../entities/admin-user.entity';
 
@@ -84,7 +85,10 @@ export class SystemHealthController {
   private async checkRedis() {
     const start = Date.now();
     try {
-      const client = await this.notificationQueue.client;
+      // BullMQ exposes its connection through the narrower IRedisClient type,
+      // while this application uses ioredis, whose client supports health
+      // commands such as PING and INFO.
+      const client = (await this.notificationQueue.client) as unknown as Redis;
       await client.ping();
 
       const info = await client.info('server');
