@@ -67,14 +67,14 @@ FROM base AS deps
 # إذا لم تتغير هذه الملفات، لا يُعيد تثبيت المكتبات (توفير وقت!)
 COPY package*.json ./
 
-# تثبيت جميع المكتبات
-# --legacy-peer-deps: لحل مشاكل توافق بعض المكتبات
-RUN npm install --legacy-peer-deps
+# تثبيت حتمي حسب package-lock.json فقط. لا نسمح لـ npm بتغيير شجرة
+# الاعتمادات داخل بناء الإنتاج.
+RUN npm ci --legacy-peer-deps
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# شرح npm install:
+# شرح npm ci:
 # ────────────
-# npm install (Clean Install) أفضل من npm install في Docker لأنه:
+# npm ci أفضل من npm install في Docker لأنه:
 # 1. أسرع (يتخطى بعض الفحوصات)
 # 2. أكثر موثوقية (يستخدم package-lock.json بالضبط)
 # 3. يحذف node_modules أولاً (بداية نظيفة)
@@ -173,7 +173,7 @@ USER nodejs
 # فحص الصحة
 # Docker يتحقق دورياً أن التطبيق يعمل
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:3000/health || exit 1
+    CMD curl -f http://localhost:3000/api/health/live || exit 1
 
 # أمر التشغيل
 # node dist/main = تشغيل الكود المترجم مباشرة (أفضل أداء)

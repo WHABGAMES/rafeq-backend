@@ -48,6 +48,7 @@ import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ActiveSubscriptionInterceptor } from '@common/interceptors/active-subscription.interceptor';
 import { ImpersonationReadOnlyInterceptor } from '@common/interceptors/impersonation-readonly.interceptor';
 import { RedisModule } from '@common/redis/redis.module';
+import { CsrfGuard } from '@common/guards/csrf.guard';
 
 // ملفات الإعداد
 import configuration from '@config/configuration';
@@ -507,6 +508,12 @@ import { OtpRelayModule } from './modules/otp-relay/otp-relay.module';
     {
       provide: APP_GUARD,
       useClass: ThrottlerGuard,
+    },
+    {
+      // Protect the routes that authenticate using httpOnly session cookies.
+      // Salla/Zid webhooks use signature verification, not browser cookies.
+      provide: APP_GUARD,
+      useClass: CsrfGuard,
     },
     /**
      * 🔒 ImpersonationReadOnlyInterceptor — يفرض «القراءة فقط» على جلسات انتحال الهوية (FIX F-01)
