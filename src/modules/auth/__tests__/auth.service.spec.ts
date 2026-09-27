@@ -12,11 +12,6 @@
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
-import { Test, TestingModule } from '@nestjs/testing';
-import { ConfigService } from '@nestjs/config';
-import { JwtService } from '@nestjs/jwt';
-import { getRepositoryToken } from '@nestjs/typeorm';
-
 // Mock entity — adjust import path as needed
 const mockUserRepository = {
   findOne: jest.fn(),
@@ -26,11 +21,6 @@ const mockUserRepository = {
 
 const mockConfigService = {
   get: jest.fn(),
-};
-
-const mockJwtService = {
-  signAsync: jest.fn(),
-  verify: jest.fn(),
 };
 
 describe('AuthService', () => {
@@ -166,7 +156,7 @@ describe('Encryption Utility', () => {
 
   it('should encrypt and decrypt correctly', () => {
     // Dynamic import to pick up env var
-    const { encrypt, decrypt } = require('../../common/utils/encryption.util');
+    const { encrypt, decrypt } = require('../../../common/utils/encryption.util');
 
     const plaintext = 'my-secret-token-12345';
     const encrypted = encrypt(plaintext);
@@ -179,14 +169,14 @@ describe('Encryption Utility', () => {
   });
 
   it('should NOT return plaintext on decrypt failure (M-05)', () => {
-    const { decrypt } = require('../../common/utils/encryption.util');
+    const { decrypt } = require('../../../common/utils/encryption.util');
 
     // Non-encrypted data should throw, not return as-is
     expect(() => decrypt('raw-plaintext-token')).toThrow('DECRYPT_LEGACY_DATA');
   });
 
   it('should return null for null/undefined input', () => {
-    const { encrypt, decrypt } = require('../../common/utils/encryption.util');
+    const { encrypt, decrypt } = require('../../../common/utils/encryption.util');
 
     expect(encrypt(null)).toBeNull();
     expect(encrypt(undefined)).toBeNull();

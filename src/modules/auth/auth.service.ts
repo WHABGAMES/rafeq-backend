@@ -941,11 +941,19 @@ export class AuthService implements OnModuleInit {
         secret: this.resolveRefreshSecret(),
       });
 
-      if (payload.jti) {
-        const isBlacklisted = await this.isTokenBlacklisted(payload.jti);
-        if (isBlacklisted) {
-          throw new UnauthorizedException('Token has been revoked');
-        }
+      if (payload.type !== 'refresh' || !payload.sub || !payload.jti) {
+        throw new UnauthorizedException('Invalid refresh token');
+      }
+
+      // Atomically consume the refresh token. A GET followed by SET would
+      // allow two concurrent refresh requests to both pass before either one
+      // blacklists the jti. SET NX guarantees exactly one successful rotation.
+      const claimed = await this.claimTokenJti(
+        payload.jti,
+        this.remainingTokenTtl(payload.exp, 604800),
+      );
+      if (!claimed) {
+        throw new UnauthorizedException('Token has been revoked');
       }
 
       const user = await this.userRepository.findOne({
@@ -979,10 +987,39 @@ export class AuthService implements OnModuleInit {
   // 🚪 LOGOUT
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  async logout(userId: string, accessTokenJti?: string, refreshTokenJti?: string): Promise<void> {
+  async logout(userId: string, accessToken?: string, refreshToken?: string): Promise<void> {
     this.logger.log(`User logged out: ${userId}`);
-    if (accessTokenJti) await this.blacklistToken(accessTokenJti, 900);
-    if (refreshTokenJti) await this.blacklistToken(refreshTokenJti, 604800);
+
+    // JwtStrategy returns a User entity, so the controller cannot read jti from
+    // req.user. Decode the access token that was already verified by the guard.
+    if (accessToken) {
+      const payload = this.jwtService.decode(accessToken);
+      if (payload && typeof payload !== 'string' && payload.sub === userId && payload.jti) {
+        await this.blacklistToken(payload.jti, this.remainingTokenTtl(payload.exp, 1800));
+      }
+    }
+
+    // Verify the refresh token from the httpOnly cookie before trusting its jti.
+    // A missing/expired cookie must not prevent logout or cookie cleanup.
+    if (refreshToken) {
+      let payload: any;
+      try {
+        payload = this.jwtService.verify(refreshToken, {
+          secret: this.resolveRefreshSecret(),
+        });
+      } catch {
+        this.logger.warn(`Refresh token was already invalid during logout: ${userId}`);
+        return;
+      }
+      if (payload.sub === userId && payload.type === 'refresh' && payload.jti) {
+        await this.blacklistToken(payload.jti, this.remainingTokenTtl(payload.exp, 604800));
+      }
+    }
+  }
+
+  private remainingTokenTtl(expiresAt: number | undefined, fallbackSeconds: number): number {
+    if (!expiresAt) return fallbackSeconds;
+    return Math.max(1, expiresAt - Math.floor(Date.now() / 1000));
   }
 
   private async blacklistToken(jti: string, ttlSeconds: number): Promise<void> {
@@ -990,10 +1027,10 @@ export class AuthService implements OnModuleInit {
     await this.redis.set(key, '1', 'EX', ttlSeconds);
   }
 
-  async isTokenBlacklisted(jti: string): Promise<boolean> {
+  private async claimTokenJti(jti: string, ttlSeconds: number): Promise<boolean> {
     const key = `token_blacklist:${jti}`;
-    const result = await this.redis.get(key);
-    return result === '1';
+    const result = await this.redis.set(key, '1', 'EX', ttlSeconds, 'NX');
+    return result === 'OK';
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════

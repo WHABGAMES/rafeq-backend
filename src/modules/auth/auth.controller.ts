@@ -331,12 +331,13 @@ export class AuthController {
   @ApiOperation({ summary: 'تسجيل الخروج' })
   async logout(@Request() req: any, @Res({ passthrough: true }) res: Response): Promise<MessageResponseDto> {
     const userId = req.user.sub || req.user.id;
+    const accessToken = req.headers?.authorization?.replace(/^Bearer\s+/i, '');
+    const refreshToken = req.cookies?.[AuthController.REFRESH_COOKIE];
     // حساب مدة الجلسة من JWT iat
     let sessionMinutes: number | undefined;
     try {
-      const token = req.headers?.authorization?.replace('Bearer ', '');
-      if (token) {
-        const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
+      if (accessToken) {
+        const payload = JSON.parse(Buffer.from(accessToken.split('.')[1], 'base64').toString());
         if (payload.iat) sessionMinutes = Math.round((Date.now() / 1000 - payload.iat) / 60);
       }
     } catch {}
@@ -344,9 +345,17 @@ export class AuthController {
       ...(sessionMinutes !== undefined && { sessionDuration: `${sessionMinutes} دقيقة` }),
       ...(sessionMinutes !== undefined && { sessionMinutes }),
     });
-    await this.authService.logout(userId, req.user.jti, req.body?.refreshJti);
-    // 🔒 FIX F-07: امسح كوكي التجديد عند الخروج
-    this.clearRefreshCookie(res);
+    // The guard returns the User entity, not the JWT payload, so req.user.jti is
+    // unavailable here. Pass the actual tokens and let AuthService extract and
+    // revoke their signed jti values. The refresh token comes from the httpOnly
+    // cookie and therefore cannot be supplied reliably by browser JavaScript.
+    try {
+      await this.authService.logout(userId, accessToken, refreshToken);
+    } finally {
+      // Always clear the browser cookie, even if the revocation store is
+      // temporarily unavailable. The response can still report that failure.
+      this.clearRefreshCookie(res);
+    }
     return { message: 'تم تسجيل الخروج بنجاح' };
   }
 
