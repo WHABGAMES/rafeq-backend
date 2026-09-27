@@ -33,7 +33,7 @@ export interface CreateNotificationDto {
   showOnLogin?: boolean;
   startsAt?: Date;
   endsAt?: Date;
-  repeatHours?: number;
+  repeatHours?: number | null;
   priority?: number;
   isActive?: boolean;
 }
@@ -98,7 +98,7 @@ export class PlatformNotificationsService {
       showOnLogin:   dto.showOnLogin   ?? false,
       startsAt:      dto.startsAt      ? new Date(dto.startsAt) : undefined,
       endsAt:        dto.endsAt        ? new Date(dto.endsAt)   : undefined,
-      repeatHours:   dto.repeatHours,
+      repeatHours:   dto.repeatHours ?? null,
       priority:      dto.priority      || 0,
       isActive:      dto.isActive      ?? true,
       createdBy:     adminId,
@@ -165,14 +165,17 @@ export class PlatformNotificationsService {
   }): Promise<PlatformNotification[]> {
     const now = new Date();
 
-    // ✅ FIX: جلب IDs الإشعارات اللي أغلقها هذا التاجر
-    let dismissedIds: Set<string> = new Set();
+    // حالة الإغلاق هي المصدر الموثوق، لذلك يبقى السلوك صحيحاً حتى لو غيّر
+    // التاجر متصفحه أو جهازه. الإشعار المتكرر يحتاج وقت الإغلاق كذلك.
+    const dismissalsByNotification = new Map<string, Date>();
     if (params.userId) {
       const dismissed = await this.userActionRepo.find({
         where: { userId: params.userId, action: 'dismissed' },
-        select: ['notificationId'],
+        select: ['notificationId', 'createdAt'],
       });
-      dismissedIds = new Set(dismissed.map(d => d.notificationId));
+      dismissed.forEach(dismissal => {
+        dismissalsByNotification.set(dismissal.notificationId, dismissal.createdAt);
+      });
     }
 
     const all = await this.repo.find({
@@ -181,8 +184,17 @@ export class PlatformNotificationsService {
     });
 
     return all.filter(n => {
-      // ✅ FIX: إذا التاجر أغلق هذا الإشعار → ما يظهر له ثاني
-      if (dismissedIds.has(n.id)) return false;
+      const dismissedAt = dismissalsByNotification.get(n.id);
+
+      // null/undefined = مرة واحدة لكل حساب: الإغلاق يمنع ظهوره دائماً.
+      if (dismissedAt && n.repeatHours == null) return false;
+
+      // N ساعة = لا يظهر ثانية إلا بعد مرور N ساعة من آخر إغلاق.
+      // 0 = يظهر دائماً عند الزيارة التالية، لذلك لا يطبق عليه هذا الحجب.
+      if (dismissedAt && typeof n.repeatHours === 'number' && n.repeatHours > 0) {
+        const nextVisibleAt = dismissedAt.getTime() + n.repeatHours * 60 * 60 * 1000;
+        if (nextVisibleAt > now.getTime()) return false;
+      }
 
       // تحقق من التوقيت
       if (n.startsAt && n.startsAt > now) return false;
@@ -260,6 +272,10 @@ export class PlatformNotificationsService {
     }
 
     try {
+      const notification = await this.repo.findOne({
+        where: { id },
+        select: ['id', 'repeatHours'],
+      });
       const inserted = await this.userActionRepo.query(
         `INSERT INTO platform_notification_user_actions (id, notification_id, user_id, action, created_at)
          VALUES (gen_random_uuid(), $1, $2, 'dismissed', NOW())
@@ -273,6 +289,13 @@ export class PlatformNotificationsService {
           where: { notificationId: id, action: 'dismissed' as any },
         });
         await this.repo.update(id, { dismissalsCount: uniqueDismissals });
+      } else if (notification?.repeatHours != null) {
+        // للإشعار المتكرر، كل إغلاق جديد يبدأ فترة الانتظار من الصفر.
+        // أما «مرة واحدة» فنحتفظ بأول إغلاق كأثر دائم لهذا الحساب.
+        await this.userActionRepo.update(
+          { notificationId: id, userId, action: 'dismissed' },
+          { createdAt: new Date() },
+        );
       }
     } catch {
       await this.repo.increment({ id }, 'dismissalsCount', 1);
