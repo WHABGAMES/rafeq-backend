@@ -27,6 +27,8 @@ import {
   BadRequestException,
   Inject,
   Optional,
+  Request,
+  Res,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -44,6 +46,8 @@ import { AdminJwtGuard, AdminPermissionGuard, RequirePermissions } from '../guar
 import { CurrentAdmin, AdminIp } from '../decorators/current-admin.decorator';
 import { AuditService } from '../services/audit.service';
 import { AuditAction } from '../entities/audit-log.entity';
+import { ConfigService } from '@nestjs/config';
+import type { Request as ExpressRequest, Response } from 'express';
 
 // Argon2 hashing options — balanced security/performance for production
 // Note: no explicit type annotation to avoid raw:boolean overload ambiguity (TS2769)
@@ -57,14 +61,43 @@ const ARGON2_OPTIONS = {
 
 @Controller('admin/auth')
 export class AdminAuthController {
+  private static readonly REFRESH_COOKIE = 'rafeq_admin_rt';
+
   constructor(
     @InjectRepository(AdminUser)
     private readonly adminUserRepo: Repository<AdminUser>,
 
     private readonly jwtService: JwtService,
     private readonly auditService: AuditService,
+    private readonly configService: ConfigService,
     @Optional() @Inject('REDIS_CLIENT') private readonly redis?: Redis,
   ) {}
+
+  /**
+   * The admin refresh token is deliberately unavailable to browser JavaScript.
+   * Keeping it in a host-only, httpOnly cookie prevents an XSS bug from turning
+   * into a long-lived administrator-session theft.
+   */
+  private setRefreshCookie(res: Response, refreshToken: string): void {
+    const isProduction = this.configService.get('NODE_ENV') === 'production';
+    res.cookie(AdminAuthController.REFRESH_COOKIE, refreshToken, {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: 'strict',
+      path: '/api/admin/auth',
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+    });
+  }
+
+  private clearRefreshCookie(res: Response): void {
+    const isProduction = this.configService.get('NODE_ENV') === 'production';
+    res.clearCookie(AdminAuthController.REFRESH_COOKIE, {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: 'strict',
+      path: '/api/admin/auth',
+    });
+  }
 
   // ─── Login ────────────────────────────────────────────────────────────────
 
@@ -79,6 +112,7 @@ export class AdminAuthController {
   async login(
     @Body() body: { email: string; password: string; totpCode?: string },
     @AdminIp() ip: string,
+    @Res({ passthrough: true }) res: Response,
   ) {
     if (!body.email?.trim() || !body.password) {
       throw new BadRequestException('Email and password are required');
@@ -135,9 +169,10 @@ export class AdminAuthController {
       ipAddress: ip,
     });
 
+    this.setRefreshCookie(res, refreshToken);
+
     return {
       accessToken,
-      refreshToken,
       admin: {
         id: admin.id,
         email: admin.email,
@@ -156,14 +191,19 @@ export class AdminAuthController {
   @Post('refresh')
   @Throttle({ default: { ttl: 60000, limit: 20 } })
   @HttpCode(HttpStatus.OK)
-  async refresh(@Body() body: { refreshToken: string }) {
-    if (!body.refreshToken) {
-      throw new BadRequestException('refreshToken is required');
+  async refresh(
+    @Request() req: ExpressRequest,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const refreshToken = req.cookies?.[AdminAuthController.REFRESH_COOKIE];
+    if (!refreshToken) {
+      this.clearRefreshCookie(res);
+      throw new BadRequestException('Admin refresh session is missing');
     }
 
     let payload: { sub: string; type: string };
     try {
-      payload = this.jwtService.verify(body.refreshToken, {
+      payload = this.jwtService.verify(refreshToken, {
         secret: process.env.ADMIN_JWT_SECRET || process.env.JWT_SECRET,
       });
     } catch {
@@ -188,11 +228,12 @@ export class AdminAuthController {
       throw new UnauthorizedException('Session invalidated — please login again');
     }
 
-    const tokenValid = await argon2.verify(admin.refreshToken, body.refreshToken);
+    const tokenValid = await argon2.verify(admin.refreshToken, refreshToken);
     if (!tokenValid) {
       // ✅ [TS2322] FIX: refreshToken?: string | null — null مقبول
       // هجوم إعادة استخدام — إلغاء كل الجلسات فورًا (security lockout)
       await this.adminUserRepo.update(admin.id, { refreshToken: null });
+      this.clearRefreshCookie(res);
       throw new UnauthorizedException(
         'Token reuse detected — all sessions have been invalidated for your security. Please login again.',
       );
@@ -207,8 +248,9 @@ export class AdminAuthController {
 
     const hashedNewRefresh = await argon2.hash(newRefreshToken, ARGON2_OPTIONS);
     await this.adminUserRepo.update(admin.id, { refreshToken: hashedNewRefresh });
+    this.setRefreshCookie(res, newRefreshToken);
 
-    return { accessToken, refreshToken: newRefreshToken };
+    return { accessToken };
   }
 
   // ─── Logout ───────────────────────────────────────────────────────────────
@@ -216,7 +258,11 @@ export class AdminAuthController {
   @Post('logout')
   @UseGuards(AdminJwtGuard)
   @HttpCode(HttpStatus.OK)
-  async logout(@CurrentAdmin() admin: AdminUser, @AdminIp() ip: string) {
+  async logout(
+    @CurrentAdmin() admin: AdminUser,
+    @AdminIp() ip: string,
+    @Res({ passthrough: true }) res: Response,
+  ) {
     // ✅ [TS2322] FIX: null مقبول لأن entity يعرّف refreshToken?: string | null
     await this.adminUserRepo.update(admin.id, { refreshToken: null });
 
@@ -225,6 +271,8 @@ export class AdminAuthController {
       action: AuditAction.ADMIN_LOGOUT,
       ipAddress: ip,
     });
+
+    this.clearRefreshCookie(res);
 
     return { success: true };
   }
