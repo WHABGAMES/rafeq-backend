@@ -117,7 +117,7 @@ export class PlatformNotification {
    * N    = كل N ساعة
    */
   @Column({ name: 'repeat_hours', type: 'int', nullable: true })
-  repeatHours?: number;
+  repeatHours?: number | null;
 
   // ─── Priority & State ─────────────────────────────────────────────────────
 
