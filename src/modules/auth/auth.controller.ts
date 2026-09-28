@@ -47,6 +47,7 @@ import {
 } from '@nestjs/swagger';
 import { Response } from 'express';
 import { ConfigService } from '@nestjs/config';
+import { Throttle } from '@nestjs/throttler';
 
 import { AuthService } from './auth.service';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
@@ -126,6 +127,7 @@ export class AuthController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Post('check-email')
+  @Throttle({ default: { ttl: 60000, limit: 5 } })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'التحقق من وجود الإيميل' })
   @ApiResponse({ status: 200, type: CheckEmailResponseDto })
@@ -154,7 +156,7 @@ export class AuthController {
       // 🔐 تسجيل محاولات الدخول الفاشلة
       const reason = error?.message?.includes('قفل') ? 'account_locked'
         : error?.message?.includes('غير مفعّل') ? 'account_inactive'
-        : error?.message?.includes('مسجّل عبر') ? 'no_password'
+        : error?.message?.includes('لا يملك كلمة مرور') ? 'no_password'
         : 'wrong_password';
       this.eventEmitter.emit('audit.login.failed', {
         email: dto.email,
