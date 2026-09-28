@@ -24,6 +24,12 @@ interface SendMailOptions {
 // رابط اللوقو على السيرفر
 const LOGO_URL = 'https://rafeq.ai/images/rafeq-logo.png';
 
+// Bound SMTP work so an unavailable mail provider cannot keep an HTTP request
+// open indefinitely. The values match the channel-email service defaults.
+const SMTP_CONNECTION_TIMEOUT_MS = 10_000;
+const SMTP_GREETING_TIMEOUT_MS = 5_000;
+const SMTP_SOCKET_TIMEOUT_MS = 10_000;
+
 @Injectable()
 export class MailService {
   private readonly logger = new Logger(MailService.name);
@@ -50,6 +56,9 @@ export class MailService {
       port,
       secure,
       auth: { user, pass },
+      connectionTimeout: SMTP_CONNECTION_TIMEOUT_MS,
+      greetingTimeout: SMTP_GREETING_TIMEOUT_MS,
+      socketTimeout: SMTP_SOCKET_TIMEOUT_MS,
     });
 
     this.transporter.verify((error) => {

@@ -21,6 +21,7 @@ import {
   UnauthorizedException,
   BadRequestException,
   ConflictException,
+  ServiceUnavailableException,
   Inject,
   OnModuleInit,
   forwardRef,
@@ -411,7 +412,11 @@ export class AuthService implements OnModuleInit {
     );
 
     // إرسال عبر الإيميل
-    await this.mailService.sendOtpEmail(normalizedEmail, otp);
+    const delivered = await this.mailService.sendOtpEmail(normalizedEmail, otp);
+    if (!delivered) {
+      this.logger.error(`Failed to deliver OTP to: ${this.maskEmail(normalizedEmail)}`);
+      throw new ServiceUnavailableException('تعذر إرسال رمز التحقق. يرجى المحاولة لاحقاً');
+    }
 
     this.logger.log(`✅ OTP sent to: ${this.maskEmail(normalizedEmail)}`);
     return {

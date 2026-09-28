@@ -12,6 +12,10 @@
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
+import { ServiceUnavailableException } from '@nestjs/common';
+import { decrypt, encrypt } from '../../../common/utils/encryption.util';
+import { AuthService } from '../auth.service';
+
 // Mock entity — adjust import path as needed
 const mockUserRepository = {
   findOne: jest.fn(),
@@ -24,6 +28,39 @@ const mockConfigService = {
 };
 
 describe('AuthService', () => {
+  describe('sendEmailOtp — delivery contract', () => {
+    const createService = (delivered: boolean) => Object.assign(Object.create(AuthService.prototype), {
+      otpService: {
+        generateOtp: jest.fn().mockResolvedValue({
+          otp: '123456',
+          expiresAt: new Date('2026-09-28T00:05:00.000Z'),
+        }),
+      },
+      mailService: {
+        sendOtpEmail: jest.fn().mockResolvedValue(delivered),
+      },
+      logger: {
+        log: jest.fn(),
+        error: jest.fn(),
+      },
+    }) as AuthService;
+
+    it('rejects the request when the mail provider does not accept the OTP', async () => {
+      const service = createService(false);
+
+      await expect(service.sendEmailOtp('test@example.com')).rejects.toBeInstanceOf(ServiceUnavailableException);
+    });
+
+    it('returns the expiry only after the OTP has been accepted for delivery', async () => {
+      const service = createService(true);
+
+      await expect(service.sendEmailOtp('test@example.com')).resolves.toEqual({
+        message: 'تم إرسال رمز التحقق إلى بريدك الإلكتروني',
+        expiresAt: new Date('2026-09-28T00:05:00.000Z'),
+      });
+    });
+  });
+
   // ─────────────────────────────────────────────────────────────────────────
   // C-04: Secret Validation Tests
   // ─────────────────────────────────────────────────────────────────────────
@@ -155,9 +192,6 @@ describe('Encryption Utility', () => {
   });
 
   it('should encrypt and decrypt correctly', () => {
-    // Dynamic import to pick up env var
-    const { encrypt, decrypt } = require('../../../common/utils/encryption.util');
-
     const plaintext = 'my-secret-token-12345';
     const encrypted = encrypt(plaintext);
 
@@ -169,15 +203,11 @@ describe('Encryption Utility', () => {
   });
 
   it('should NOT return plaintext on decrypt failure (M-05)', () => {
-    const { decrypt } = require('../../../common/utils/encryption.util');
-
     // Non-encrypted data should throw, not return as-is
     expect(() => decrypt('raw-plaintext-token')).toThrow('DECRYPT_LEGACY_DATA');
   });
 
   it('should return null for null/undefined input', () => {
-    const { encrypt, decrypt } = require('../../../common/utils/encryption.util');
-
     expect(encrypt(null)).toBeNull();
     expect(encrypt(undefined)).toBeNull();
     expect(decrypt(null)).toBeNull();
