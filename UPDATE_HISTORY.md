@@ -36,8 +36,63 @@
 
 # أحدث التحديثات
 
+### [2026-09-28] — BE-036 — v11 — فصل parsers مزودي OAuth عن خدمة المصادقة
+- **الحالة:** محلي — بانتظار المراجعة والرفع.
+- **النسخة:** `src/modules/auth/oauth-response.parsers.ts` v1 · `src/modules/auth/auth.service.ts` v8 · `src/modules/auth/__tests__/oauth-response.parsers.spec.ts` v2 · `UPDATE_HISTORY.md` v11.
+- **المشكلة:** كانت parsers التحقق من ردود Google وسلة وزد صحيحة وظيفياً لكنها موضوعة داخل `AuthService` الكبيرة، فتخلط منطق الجلسات والحسابات مع عقد مزودي HTTP وتضعف وضوح الصيانة.
+- **السبب الجذري:** أضيفت طبقة التحقق داخل الملف الموجود بسرعة مع معالجة التحذيرات بدلاً من إعطائها وحدة مستقلة.
+- **طريقة الحل:** نُقلت الأنواع وparsers النقية إلى `oauth-response.parsers.ts`، وأصبحت خدمة المصادقة مسؤولة فقط عن الاتصال واتخاذ قرار المصادقة. اختبارات parser تستورد الوحدة مباشرة؛ لا توجد casts غير موثوقة أو تعطيل lint.
+- **الأثر التشغيلي:** لا تغيير في API أو OAuth URLs أو callbacks أو Webhooks أو إعدادات سلة/زد؛ تحسين تنظيم واختبار فقط.
+- **الرأي الهندسي:** فصل حدود المزود الخارجي في وحدة نقية يقلل حجم الخدمة ويجعل تعديل عقد مزود أو إضافة مزود جديد عملاً محصوراً وقابلاً للاختبار دون لمس منطق الحسابات.
+- **التحقق:** نجحت اختبارات auth وparsers (20/20)، وESLint للملفات المتأثرة صفر تحذيرات/أخطاء، ونجح `nest build` و`git diff --check`.
+- **رسالة الـcommit:** `refactor(BE-036): v11 isolate OAuth response parsers` مع ملخص: فصل parsers، اختبارات مباشرة، بلا تغيير تكامل خارجي.
+- **PR / Commit:** لم يُنشأ بعد.
+- **خطة التراجع:** إعادة الملفات الثلاثة فقط تعيد التنظيم السابق ولا تمس بيانات أو إعدادات OAuth.
+
+### [2026-09-28] — BE-035 — v10 — تحقق وقت التشغيل من حدود OAuth الخارجية
+- **الحالة:** محلي — بانتظار المراجعة والرفع.
+- **النسخة:** `src/modules/auth/auth.service.ts` v7 · `src/modules/auth/__tests__/oauth-response.parsers.spec.ts` v1 · `UPDATE_HISTORY.md` v10.
+- **المشكلة:** أنواع TypeScript وحدها لا تثبت أن JSON القادم من Google أو سلة أو زد يطابق العقد فعلياً وقت التشغيل؛ assertion مثل `as Type` قد يخفي رد مزود ناقصاً حتى يصل إلى منطق الحسابات.
+- **السبب الجذري:** حدود HTTP الخارجية كانت تحول JSON مباشرة إلى أنواع تطبيق داخلية بلا parser يفحص البنية والحقول الأساسية.
+- **طريقة الحل:** أضيفت parsers حقيقية تتأكد من نوع الكائن والحقول الإلزامية. Google يتحقق من `id_token` ثم issuer وaudience و`email_verified` والبريد و`sub`. سلة وزد تتحققان من رموز الوصول/التجديد والبيانات الأساسية قبل إنشاء الحساب أو ربط المتجر. تُرجع الخدمة خطأ OAuth آمناً عند رد غير صالح، ولا تستخدم `as any` أو تعطيل ESLint.
+- **الأثر التشغيلي:** لا تغيير في URLs أو إعدادات أو Webhooks سلة وزد. الردود السليمة القائمة تمر كما كانت؛ الرد الناقص أو المختلف يُرفض مبكراً ويُسجّل سبب تقني آمن في الخادم.
+- **الرأي الهندسي:** هذا تحقق حدود حقيقي وليس إسكاتاً للمترجم: تبقى الأنواع مرجعاً للمطور، بينما تمنع parsers البيانات غير الموثوقة من تجاوز طبقة التكامل.
+- **المخاطر/الملاحظات:** يلزم اختبار OAuth الحي بعد النشر مع حساب سلة وزد وGoogle للتأكد من الحقول الفعلية؛ لا تتغير أسرار أو نطاقات أو redirect URIs.
+- **التحقق:** اختبارات parsers تشمل الردود السليمة والناقصة، ونجحت جميع اختبارات auth (20/20)، وESLint للملفات المتأثرة صفر تحذيرات/أخطاء، ونجح `nest build`.
+- **رسالة الـcommit:** `fix(BE-035): v10 validate OAuth provider responses at runtime` مع ملخص: parsers لحدود Google/Salla/Zid واختبارات الردود الناقصة.
+- **PR / Commit:** لم يُنشأ بعد.
+- **خطة التراجع:** إعادة ملف الخدمة واختبار parser فقط تعيد الاعتماد السابق على assertions غير الموثوقة؛ لا migrations أو بيانات دائمة.
+
+### [2026-09-28] — BE-034 — v9 — إزالة تحذيرات ESLint من طبقة المصادقة
+- **الحالة:** محلي — بانتظار المراجعة والرفع.
+- **النسخة:** `src/modules/auth/auth.controller.ts` v4 · `src/modules/auth/auth.module.ts` v2 · `src/modules/auth/auth.service.ts` v6 · `src/modules/auth/dto/index.ts` v4 · `UPDATE_HISTORY.md` v9.
+- **المشكلة:** كانت ملفات المصادقة المتأثرة تحوي 37 تحذيراً (35 استخداماً لـ`any` وتحذيري `catch` فارغين)، فتخفي عقود الطلبات والاستجابات وأعطالاً تشغيلية محتملة.
+- **السبب الجذري:** نمت طبقة المصادقة حول استجابات خارجية وطلبات Express وJWT من دون أنواع مشتركة، واستُخدمت عمليات تحويل عامة لتجاوز المترجم.
+- **طريقة الحل:** أضيفت أنواع للطلب الموثق ونتيجة الدخول وJWT وبيانات OAuth سلة/زد، واستُبدل `any` بـ`unknown` أو عقود محددة. تسجّل الخدمة فشل تتبع الجهاز وجلب الباقة بدلاً من ابتلاعه. لا تغيّر هذه التحققـات URLs أو Client IDs أو secrets أو Webhooks.
+- **الأثر التشغيلي:** لا تغيير في عقد API للواجهة. فشل تتبع جهاز أو جلب الباقة أصبح مرئياً في logs مع استمرار العملية الآمنة القائمة.
+- **الرأي الهندسي:** إزالة `any` هنا ليست تجميلية؛ تجعل تغيرات مزودي OAuth أو عقد الجلسة أخطاءً قابلة للاكتشاف عند البناء أو عند حدّ التكامل، بدلاً من بيانات خاطئة تسير داخل منطق الدخول.
+- **المخاطر/الملاحظات:** يستلزم اختبار OAuth الحي لسلة وزد بعد النشر؛ لا يُتوقع تغيير لأن الحقول المطلوبة كانت مستخدمة فعلياً قبل هذا التحقق.
+- **التحقق:** ESLint للملفات الثمانية = صفر تحذيرات وصفر أخطاء، ونجح `nest build` و17/17 من اختبارات auth و`git diff --check`.
+- **رسالة الـcommit:** `refactor(BE-034): v9 type and validate auth boundaries` مع ملخص: عقود Express/OAuth/JWT، سجلات أخطاء آمنة، وإزالة تحذيرات ESLint.
+- **PR / Commit:** لم يُنشأ بعد.
+- **خطة التراجع:** إعادة ملفات BE-034 فقط تعيد التحذيرات والسلوك السابق؛ لا توجد migrations أو تعديلات دائمة على بيانات سلة أو زد.
+
+### [2026-09-28] — BE-033 — v8 — ربط تدفقات OAuth بالجلسة ومنع إعادة الاستخدام
+- **الحالة:** محلي — بانتظار المراجعة والرفع.
+- **النسخة:** `src/modules/auth/oauth-state.service.ts` v1 · `src/modules/auth/auth.controller.ts` v3 · `src/modules/auth/auth.service.ts` v5 · `src/modules/auth/auth.module.ts` v1 · `src/modules/auth/dto/index.ts` v3 · `src/modules/auth/otp.service.ts` v1 · `src/modules/auth/__tests__/oauth-state.service.spec.ts` v1 · `src/modules/auth/__tests__/otp.service.spec.ts` v1 · `UPDATE_HISTORY.md` v8.
+- **المشكلة:** كانت حالة OAuth في سلة/زد موقعة فقط وليست مرتبطة بطلب المتصفح ولا تُستهلك مرة واحدة. كما أن Google يستخدم تدفقاً يعيد `id_token` إلى المتصفح، والتحقق من OTP يتكون من قراءات وكتابات Redis منفصلة تسمح لطلبين متزامنين بقبول الرمز نفسه.
+- **السبب الجذري:** خُلطت سلامة محتوى state مع مفهوم معاملة OAuth قصيرة العمر، وعاد اعتماد Google على بيانات حساسة داخل رابط المتصفح، ولم تكن عملية استهلاك OTP ذرية.
+- **طريقة الحل:** أضيف مخزن معاملات OAuth عشوائية في Redis بعمر 10 دقائق واستهلاك ذري؛ تحفظ القيمة نفسها في Cookie `HttpOnly` و`SameSite=Strict`، ويُلزم التطابق بين cookie وstate ومزود OAuth. انتقل Google إلى Authorization Code Flow: تستبدل الشفرة في الخادم فقط ثم تتحقق خدمة المصادقة من هوية Google، وأزيل endpoint القديم الذي يقبل `id_token` من المتصفح. تحقّق OTP أصبح Lua script ذرياً يقرأ السجل ويزيد المحاولات ويحذف الرمز الناجح في العملية نفسها.
+- **الأثر التشغيلي:** يبدأ Google وسلة وزد من صفحة الدخول ويعودون إليها ثم يرسلون callback إلى API كما هو قائم. لا تتغير Client IDs أو secrets أو redirect URIs أو Webhooks أو أحداث سلة/زد. يبدأ المستخدم تدفق OAuth جديداً إذا كانت لديه نافذة OAuth قديمة مفتوحة وقت النشر.
+- **الرأي الهندسي:** حفظ معاملة قصيرة العمر في Redis مع cookie مطابقة هو حل قابل للتوسع وأكثر وضوحاً من state موقعة ذاتياً؛ كما أن الاستهلاك الذري هو الضمان الصحيح لعبارة «مرة واحدة» وليس حذفاً بعد التحقق.
+- **المخاطر/الملاحظات:** يعتمد OAuth على Redis المتاح أصلاً للخادم؛ فشل Redis يمنع بدء OAuth بدلاً من فتح تدفق غير محمي. يجب نشر الواجهة والخادم معاً لأنهما يتفقان على Google Code Flow وcookies عند طلب روابط سلة/زد.
+- **التحقق:** نجحت اختبارات OAuth state وإعادة الاستخدام واختبارات OTP الذرية (17/17 مع اختبارات auth القائمة)، ونجح `nest build` و`tsc --noEmit` و`git diff --check`. فحص ESLint للملفات المتأثرة بلا أخطاء؛ تبقى 37 تحذيراً تاريخياً في ملفات auth خارج نطاق هذا الإصلاح.
+- **رسالة الـcommit:** `fix(BE-033): v8 bind and consume OAuth transactions atomically` مع ملخص: state عشوائي قصير العمر، Google code flow، واستهلاك OTP ذري.
+- **PR / Commit:** لم يُنشأ بعد.
+- **خطة التراجع:** إعادة ملفات BE-033 معاً تعيد التدفق السابق غير الموصى به؛ لا توجد migrations أو تغييرات دائمة في قاعدة البيانات.
+
 ### [2026-09-28] — BE-032 — v7 — إنهاء تعليق إرسال رمز البريد
-- **الحالة:** محلياً — بانتظار الفحص ثم الرفع والنشر.
+- **الحالة:** مرفوع ومندمج في `main` — لم يُوثق فحص حي مستقل في هذا السجل.
 - **النسخة:** `src/modules/mail/mail.service.ts` v1 · `src/modules/auth/auth.service.ts` v4 · `src/modules/auth/__tests__/auth.service.spec.ts` v1 · `UPDATE_HISTORY.md` v7.
 - **المشكلة:** يظل طلب `POST /auth/otp/send-email` مفتوحاً عندما يتعطل اتصال SMTP، فتظل واجهة تسجيل الدخول في حالة «جاري إرسال الرمز» ولا يعرف العميل هل نجح الإرسال.
 - **السبب الجذري:** ناقل Nodemailer لم يملك مهلات اتصال/تحية/مقبس، كما كان مسار المصادقة يتجاهل نتيجة خدمة البريد ويعلن النجاح حتى عندما لا تقبلها خدمة SMTP.
@@ -48,11 +103,11 @@
 - **المخاطر/الملاحظات:** عند وجود بطء حقيقي من SMTP يتلقى العميل رسالة فشل بعد الحد الزمني بدلاً من الانتظار. يلزم التحقق من إعدادات SMTP في DigitalOcean إذا استمر ظهور 503؛ لا تُسجل الأسرار أو عناوين البريد.
 - **التحقق:** اختبار وحدات يغطي رفض الإرسال ونجاحه، ثم TypeScript وNest build وESLint للملفات المتأثرة، واختبار حي لتدفق OTP بعد النشر.
 - **رسالة الـcommit:** `fix(BE-032): v7 bound OTP mail delivery` مع ملخص: مهلات SMTP صريحة، رفض 503 عند عدم تأكيد الإرسال، واختبارات لعقد OTP.
-- **PR / Commit:** لم يُنشأ بعد.
+- **PR / Commit:** `38d78ca` — `fix(BE-032): v7 bound OTP mail delivery`، مدمج عبر PR #35.
 - **خطة التراجع:** إزالة حقول المهلة والتحقق من النتيجة تعيد السلوك السابق غير الموصى به؛ لا يوجد ترحيل بيانات أو تغيير تكامل خارجي للتراجع عنه.
 
 ### [2026-09-27] — BE-030 — v6 — توحيد معرّفات المشكلات ورسائل GitHub
-- **الحالة:** محلياً — بانتظار الرفع.
+- **الحالة:** مرفوع ومندمج في `main`.
 - **النسخة:** `AGENTS.md` v3 · `UPDATE_HISTORY.md` v6.
 - **المشكلة:** أرقام نسخ الملفات وحدها لا تمنح المشكلة معرّفاً ثابتاً عبر ملفات المشروع ورسائل الـcommit والـPR.
 - **السبب الجذري:** لم تكن قواعد التوثيق تفرض معرّف مشكلة متزايداً أو تطابقاً بين ملخص السجل ورسالة GitHub.
@@ -63,7 +118,7 @@
 - **المخاطر/الملاحظات:** يبدأ المعرف التالي من `BE-031`؛ لا تعاد تسمية السجلات التاريخية تلقائياً حتى لا تنكسر مراجعها الحالية.
 - **التحقق:** نجح `git diff --check` للملفات المعدلة.
 - **رسالة الـcommit:** `docs(BE-030): v6 standardize issue identifiers and commit history` مع ملخص المشكلة والحل والتحقق أعلاه.
-- **PR / Commit:** لم يُنشأ بعد.
+- **PR / Commit:** `3611d69` — `docs(BE-030): v6 standardize issue identifiers and commit history`.
 - **خطة التراجع:** إعادة ملفي التوثيق فقط؛ لا أثر تشغيلي.
 
 ### [2026-09-27] — F-29 — v1 — مزامنة قفل npm مع تبعيات الخادم
@@ -317,11 +372,18 @@
 | `backend/src/app.module.ts` | v3 | F-06 |
 | `backend/src/config/typeorm.config.ts` | v2 | F-04 |
 | `backend/src/modules/auth/strategies/jwt.strategy.ts` | v2 | F-02 |
-| `backend/src/modules/auth/auth.service.ts` | v3 | F-21 |
+| `backend/src/modules/auth/auth.service.ts` | v8 | BE-036 |
 | `backend/src/modules/mail/mail.service.ts` | v1 | BE-032 |
 | `backend/src/modules/auth/__tests__/auth.service.spec.ts` | v1 | BE-032 |
-| `backend/src/modules/auth/auth.controller.ts` | v2 | F-07 |
-| `backend/src/modules/auth/dto/index.ts` | v2 | F-07 |
+| `backend/src/modules/auth/auth.controller.ts` | v4 | BE-034 |
+| `backend/src/modules/auth/dto/index.ts` | v4 | BE-034 |
+| `backend/src/modules/auth/auth.module.ts` | v2 | BE-034 |
+| `backend/src/modules/auth/otp.service.ts` | v1 | BE-033 |
+| `backend/src/modules/auth/oauth-state.service.ts` | v1 | BE-033 |
+| `backend/src/modules/auth/__tests__/oauth-state.service.spec.ts` | v1 | BE-033 |
+| `backend/src/modules/auth/__tests__/otp.service.spec.ts` | v1 | BE-033 |
+| `backend/src/modules/auth/__tests__/oauth-response.parsers.spec.ts` | v2 | BE-036 |
+| `backend/src/modules/auth/oauth-response.parsers.ts` | v1 | BE-036 |
 | `backend/src/modules/auth/auto-registration.service.ts` | v2 | F-21 |
 | `backend/src/common/interceptors/impersonation-readonly.interceptor.ts` | v1 | F-01 |
 | `backend/src/common/redis/redis.module.ts` | v1 | F-06 |

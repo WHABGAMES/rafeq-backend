@@ -43,6 +43,39 @@ interface OtpRecord {
   expiresAt: number;        // Unix timestamp
 }
 
+type AtomicVerificationResult = [number, (number | string)?];
+
+// Redis executes Lua scripts atomically. Keeping the read, attempt increment and
+// consume/delete operation in one script prevents two concurrent requests from
+// accepting the same one-time password.
+const VERIFY_OTP_SCRIPT = `
+local raw = redis.call('GET', KEYS[1])
+if not raw then return {0} end
+
+local record = cjson.decode(raw)
+local now = tonumber(ARGV[1])
+if now > tonumber(record.expiresAt) then
+  redis.call('DEL', KEYS[1])
+  return {1}
+end
+
+if tonumber(record.attempts) >= tonumber(ARGV[2]) then
+  redis.call('DEL', KEYS[1])
+  return {2}
+end
+
+record.attempts = tonumber(record.attempts) + 1
+local ttl = math.max(1, math.ceil((tonumber(record.expiresAt) - now) / 1000))
+
+if record.otpHash ~= ARGV[3] then
+  redis.call('SETEX', KEYS[1], ttl, cjson.encode(record))
+  return {3, tonumber(ARGV[2]) - tonumber(record.attempts)}
+end
+
+redis.call('DEL', KEYS[1])
+return {4, raw}
+`;
+
 /**
  * طريقة التحقق المتاحة
  */
@@ -271,61 +304,43 @@ export class OtpService implements OnModuleInit, OnModuleDestroy {
     const normalizedIdentifier = identifier.toLowerCase().trim();
     const key = this.getKey(normalizedIdentifier, channel);
     
-    // 1️⃣ Get OTP record
-    const record = await this.getOtpRecord(key);
+    const result = await this.redis.eval(
+      VERIFY_OTP_SCRIPT,
+      1,
+      key,
+      Date.now().toString(),
+      this.MAX_ATTEMPTS.toString(),
+      this.hashOtp(otp),
+    ) as AtomicVerificationResult;
+    const [status, detail] = result;
 
-    if (!record) {
-      this.logger.warn(`OTP not found`, {
-        identifier: this.maskValue(normalizedIdentifier, channel),
-        channel,
-      });
+    if (status === 0) {
+      this.logger.warn('OTP not found', { identifier: this.maskValue(normalizedIdentifier, channel), channel });
       throw new UnauthorizedException('رمز التحقق غير صحيح أو منتهي الصلاحية');
     }
-
-    // 2️⃣ Check expiration
-    if (Date.now() > record.expiresAt) {
-      await this.redis.del(key);
-      this.logger.warn(`OTP expired`, {
-        identifier: this.maskValue(normalizedIdentifier, channel),
-      });
+    if (status === 1) {
+      this.logger.warn('OTP expired', { identifier: this.maskValue(normalizedIdentifier, channel) });
       throw new UnauthorizedException('انتهت صلاحية رمز التحقق');
     }
-
-    // 3️⃣ Check attempts
-    if (record.attempts >= this.MAX_ATTEMPTS) {
-      await this.redis.del(key);
-      this.logger.warn(`Max OTP attempts exceeded`, {
-        identifier: this.maskValue(normalizedIdentifier, channel),
-      });
+    if (status === 2) {
+      this.logger.warn('Max OTP attempts exceeded', { identifier: this.maskValue(normalizedIdentifier, channel) });
       throw new UnauthorizedException('تم تجاوز عدد المحاولات المسموح. يرجى طلب رمز جديد');
     }
-
-    // 4️⃣ Increment attempts BEFORE verification (security)
-    record.attempts++;
-    const remainingTtl = Math.ceil((record.expiresAt - Date.now()) / 1000);
-    await this.redis.setex(key, Math.max(remainingTtl, 1), JSON.stringify(record));
-
-    // 5️⃣ Verify OTP hash (constant-time comparison)
-    const isValid = this.verifyOtpHash(otp, record.otpHash);
-
-    if (!isValid) {
-      const remainingAttempts = this.MAX_ATTEMPTS - record.attempts;
-      this.logger.warn(`Invalid OTP attempt`, {
+    if (status === 3) {
+      this.logger.warn('Invalid OTP attempt', {
         identifier: this.maskValue(normalizedIdentifier, channel),
-        remainingAttempts,
+        remainingAttempts: detail,
       });
-      throw new UnauthorizedException(
-        `رمز التحقق غير صحيح. المحاولات المتبقية: ${remainingAttempts}`,
-      );
+      throw new UnauthorizedException(`رمز التحقق غير صحيح. المحاولات المتبقية: ${detail}`);
+    }
+    if (status !== 4) {
+      throw new UnauthorizedException('رمز التحقق غير صالح');
     }
 
-    // 6️⃣ Success - Delete OTP (one-time use)
-    await this.redis.del(key);
-
+    const record = JSON.parse(detail as string) as OtpRecord;
     this.logger.log(`✅ OTP verified successfully`, {
       identifier: this.maskValue(normalizedIdentifier, channel),
       channel,
-      merchantId: record.merchantId,
     });
 
     return {
@@ -463,19 +478,6 @@ export class OtpService implements OnModuleInit, OnModuleDestroy {
       .createHmac('sha256', secret)
       .update(otp)
       .digest('hex');
-  }
-
-  private verifyOtpHash(otp: string, storedHash: string): boolean {
-    const inputHash = this.hashOtp(otp);
-    // Constant-time comparison to prevent timing attacks
-    try {
-      return crypto.timingSafeEqual(
-        Buffer.from(inputHash, 'hex'),
-        Buffer.from(storedHash, 'hex'),
-      );
-    } catch (error) {
-      return false;
-    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════

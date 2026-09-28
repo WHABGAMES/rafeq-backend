@@ -42,6 +42,19 @@ import { TrustedDevice } from './trusted-device.entity';
 import { OtpService, OtpChannel } from './otp.service';
 import { MailService } from '../mail/mail.service';
 import { ZidOAuthService, ZidTokenResponse, ZidStoreInfo } from '../stores/zid-oauth.service';
+import {
+  GoogleIdentity,
+  parseGoogleIdentity,
+  parseGoogleTokenResponse,
+  parseSallaMerchant,
+  parseSallaTokens,
+  parseZidMerchant,
+  parseZidTokens,
+  SallaMerchantResponse,
+  SallaOAuthTokens,
+  ZidMerchantAccount,
+  ZidOAuthTokenPayload,
+} from './oauth-response.parsers';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Types
@@ -82,10 +95,20 @@ export interface UserProfile {
   role: string;
   tenantId: string;
   authProvider?: string;
-  preferences?: Record<string, any>;
+  preferences?: Record<string, unknown>;
   createdAt: Date;
   subscriptionPlan?: string;
 }
+
+interface RefreshJwtPayload {
+  sub?: string;
+  type?: string;
+  jti?: string;
+  exp?: number;
+  iat?: number;
+}
+
+const getErrorMessage = (error: unknown): string => error instanceof Error ? error.message : 'Unknown error';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Service
@@ -474,27 +497,53 @@ export class AuthService implements OnModuleInit {
     return loginResult;
   }
 
-  private async verifyGoogleToken(idToken: string): Promise<Record<string, string>> {
+  getGoogleAuthUrl(state: string): string {
+    const clientId = this.configService.get<string>('GOOGLE_CLIENT_ID');
+    const redirectUri = this.configService.get<string>('GOOGLE_REDIRECT_URI',
+      `${this.configService.get('FRONTEND_URL', 'https://rafeq.ai')}/auth/callback/google`);
+    if (!clientId) throw new ServiceUnavailableException('تسجيل الدخول عبر Google غير مهيأ');
+
+    const params = new URLSearchParams({
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      response_type: 'code',
+      scope: 'openid email profile',
+      state,
+      prompt: 'select_account',
+    });
+    return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+  }
+
+  async googleAuthCode(code: string): Promise<LoginResult> {
+    const clientId = this.configService.get<string>('GOOGLE_CLIENT_ID');
+    const clientSecret = this.configService.get<string>('GOOGLE_CLIENT_SECRET');
+    const redirectUri = this.configService.get<string>('GOOGLE_REDIRECT_URI',
+      `${this.configService.get('FRONTEND_URL', 'https://rafeq.ai')}/auth/callback/google`);
+    if (!clientId || !clientSecret) throw new ServiceUnavailableException('تسجيل الدخول عبر Google غير مهيأ');
+
+    const response = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ code, client_id: clientId, client_secret: clientSecret, redirect_uri: redirectUri, grant_type: 'authorization_code' }),
+    });
+    if (!response.ok) throw new UnauthorizedException('فشل استبدال رمز Google');
+    return this.googleAuth(parseGoogleTokenResponse(await response.json()));
+  }
+
+  private async verifyGoogleToken(idToken: string): Promise<GoogleIdentity> {
     const clientId = this.configService.get<string>('GOOGLE_CLIENT_ID');
 
     try {
       // التحقق من التوكن عبر Google API
       const response = await fetch(
-        `https://oauth2.googleapis.com/tokeninfo?id_token=${idToken}`,
+        `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`,
       );
 
       if (!response.ok) {
         throw new Error('Invalid Google token');
       }
 
-      const payload = await response.json() as Record<string, string>;
-
-      // التحقق من audience
-      if (payload.aud !== clientId) {
-        throw new Error('Token audience mismatch');
-      }
-
-      return payload;
+      return parseGoogleIdentity(await response.json(), clientId);
     } catch (error) {
       this.logger.error(`❌ Google token verification failed: ${error instanceof Error ? error.message : 'Unknown'}`);
       throw new UnauthorizedException('فشل التحقق من حساب Google');
@@ -505,21 +554,8 @@ export class AuthService implements OnModuleInit {
   // 🟢 SALLA OAuth
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  async sallaAuth(code: string, state?: string): Promise<LoginResult> {
+  async sallaAuth(code: string): Promise<LoginResult> {
     this.logger.log('🟢 Salla OAuth attempt');
-
-    // 🔧 FIX H-01: Validate HMAC-signed state parameter to prevent CSRF
-    if (state) {
-      if (!this.verifyOAuthState(state)) {
-        this.logger.error('🚨 Invalid OAuth state parameter — potential CSRF attack');
-        throw new UnauthorizedException('Invalid OAuth state parameter');
-      }
-      this.logger.debug('✅ OAuth state verified successfully');
-    } else if (this.configService.get('NODE_ENV') === 'production') {
-      // In production, state parameter is REQUIRED
-      this.logger.error('🚨 Missing OAuth state parameter in production');
-      throw new BadRequestException('OAuth state parameter is required');
-    }
 
     // 1. استبدال الكود بتوكن
     const tokens = await this.exchangeSallaCode(code);
@@ -527,11 +563,10 @@ export class AuthService implements OnModuleInit {
     // 2. جلب بيانات التاجر من سلة
     const merchantData = await this.getSallaMerchantData(tokens.access_token);
 
-    if (!merchantData || !merchantData.data?.email) {
+    const merchant = merchantData.data;
+    if (!merchant?.email) {
       throw new UnauthorizedException('فشل الحصول على بيانات حساب سلة');
     }
-
-    const merchant = merchantData.data;
 
     // ⚡ توحيد الحسابات: بحث بالإيميل
     const loginResult = await this.findOrCreateUserByEmail({
@@ -548,19 +583,16 @@ export class AuthService implements OnModuleInit {
     return loginResult;
   }
 
-  getSallaAuthUrl(): string {
+  getSallaAuthUrl(state: string): string {
     const clientId = this.configService.get('SALLA_CLIENT_ID');
     const redirectUri = this.configService.get('SALLA_REDIRECT_URI',
       `${this.configService.get('FRONTEND_URL', 'https://rafeq.ai')}/auth/callback/salla`
     );
 
-    // 🔧 FIX H-01: Include HMAC-signed state for CSRF protection
-    const state = this.generateOAuthState('login', 'salla');
-
     return `https://accounts.salla.sa/oauth2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=offline_access+settings.read&state=${encodeURIComponent(state)}`;
   }
 
-  private async exchangeSallaCode(code: string): Promise<any> {
+  private async exchangeSallaCode(code: string): Promise<SallaOAuthTokens> {
     const clientId = this.configService.get('SALLA_CLIENT_ID');
     const clientSecret = this.configService.get('SALLA_CLIENT_SECRET');
     const redirectUri = this.configService.get('SALLA_REDIRECT_URI',
@@ -585,14 +617,14 @@ export class AuthService implements OnModuleInit {
         throw new Error(`Salla token exchange failed: ${error}`);
       }
 
-      return response.json();
+      return parseSallaTokens(await response.json());
     } catch (error) {
       this.logger.error(`❌ Salla code exchange failed: ${error instanceof Error ? error.message : 'Unknown'}`);
       throw new UnauthorizedException('فشل الاتصال بحساب سلة');
     }
   }
 
-  private async getSallaMerchantData(accessToken: string): Promise<any> {
+  private async getSallaMerchantData(accessToken: string): Promise<SallaMerchantResponse> {
     try {
       const response = await fetch('https://api.salla.dev/admin/v2/oauth2/user/info', {
         headers: { 'Authorization': `Bearer ${accessToken}` },
@@ -602,7 +634,7 @@ export class AuthService implements OnModuleInit {
         throw new Error('Failed to get Salla merchant data');
       }
 
-      return response.json();
+      return parseSallaMerchant(await response.json());
     } catch (error) {
       this.logger.error(`❌ Failed to get Salla merchant data: ${error instanceof Error ? error.message : 'Unknown'}`);
       throw new UnauthorizedException('فشل الحصول على بيانات حساب سلة');
@@ -613,23 +645,14 @@ export class AuthService implements OnModuleInit {
   // 🟣 ZID OAuth
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  async zidAuth(code: string, state?: string): Promise<LoginResult> {
+  async zidAuth(code: string): Promise<LoginResult> {
     this.logger.log('🟣 Zid OAuth activation attempt');
-
-    // 🔧 FIX H-01: Validate HMAC-signed state parameter to prevent CSRF
-    if (state) {
-      if (!this.verifyOAuthState(state)) {
-        this.logger.error('🚨 Invalid OAuth state parameter — potential CSRF attack');
-        throw new UnauthorizedException('Invalid OAuth state parameter');
-      }
-      this.logger.debug('✅ OAuth state verified successfully');
-    } else if (this.configService.get('NODE_ENV') === 'production') {
-      this.logger.error('🚨 Missing OAuth state parameter in production');
-      throw new BadRequestException('OAuth state parameter is required');
-    }
 
     // 1. استبدال الكود بتوكن
     const rawTokens = await this.exchangeZidCode(code);
+    if (!rawTokens.access_token || !rawTokens.refresh_token) {
+      throw new UnauthorizedException('استجابة رمز زد غير مكتملة');
+    }
     const tokens: ZidTokenResponse = {
       access_token: rawTokens.access_token,
       refresh_token: rawTokens.refresh_token,
@@ -648,8 +671,8 @@ export class AuthService implements OnModuleInit {
       if (storeInfo) {
         this.logger.log(`📊 Zid store info: id=${storeInfo.id}, name=${storeInfo.name}`);
       }
-    } catch (infoError: any) {
-      this.logger.warn(`⚠️ Could not fetch Zid store info via ZidOAuthService: ${infoError.message} — falling back to /account`);
+    } catch (infoError: unknown) {
+      this.logger.warn(`⚠️ Could not fetch Zid store info via ZidOAuthService: ${getErrorMessage(infoError)} — falling back to /account`);
     }
 
     // 2b. Fallback: جلب البيانات من /account إذا فشل getStoreInfo
@@ -666,11 +689,10 @@ export class AuthService implements OnModuleInit {
     } else {
       const merchantData = await this.getZidMerchantData(tokens.access_token);
 
-      if (!merchantData?.user?.email) {
+      const merchant = merchantData.user;
+      if (!merchant?.email) {
         throw new UnauthorizedException('فشل الحصول على بيانات حساب زد');
       }
-
-      const merchant = merchantData.user;
       email = merchant.email;
       merchantName = merchant.name || 'تاجر زد';
       merchantMobile = merchant.mobile;
@@ -711,7 +733,7 @@ export class AuthService implements OnModuleInit {
         await this.userRepository.update(loginResult.user.id, { password: hashedPassword });
 
         // ✅ FIX: تحديث needsPassword لأننا قمنا بتعيين كلمة مرور للمستخدم الجديد
-        (loginResult.user as any).needsPassword = false;
+        loginResult.user.needsPassword = false;
 
         // إرسال بيانات الدخول بالإيميل
         await this.mailService.sendWelcomeCredentials({
@@ -725,9 +747,9 @@ export class AuthService implements OnModuleInit {
         });
 
         this.logger.log(`✅ Welcome credentials sent to new Zid user: ${this.maskEmail(email)}`);
-      } catch (welcomeError: any) {
+      } catch (welcomeError: unknown) {
         // non-fatal — لا نُفشل العملية إذا فشل الإرسال
-        this.logger.error(`❌ Failed to send welcome credentials for Zid user: ${welcomeError.message}`);
+        this.logger.error(`❌ Failed to send welcome credentials for Zid user: ${getErrorMessage(welcomeError)}`);
       }
     }
 
@@ -745,8 +767,8 @@ export class AuthService implements OnModuleInit {
         } else {
           this.logger.warn('⚠️ User has no tenantId — skipping Zid store connection');
         }
-      } catch (storeError: any) {
-        this.logger.error(`❌ Zid store connection failed (non-fatal): ${storeError.message}`);
+      } catch (storeError: unknown) {
+        this.logger.error(`❌ Zid store connection failed (non-fatal): ${getErrorMessage(storeError)}`);
       }
     }
 
@@ -754,19 +776,16 @@ export class AuthService implements OnModuleInit {
     return loginResult;
   }
 
-  getZidAuthUrl(): string {
+  getZidAuthUrl(state: string): string {
     const clientId = this.configService.get('ZID_CLIENT_ID');
     const redirectUri = this.configService.get('ZID_REDIRECT_URI',
       `${this.configService.get('FRONTEND_URL', 'https://rafeq.ai')}/auth/callback/zid`
     );
 
-    // 🔧 FIX H-01: Include HMAC-signed state for CSRF protection
-    const state = this.generateOAuthState('login', 'zid');
-
     return `https://oauth.zid.sa/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&state=${encodeURIComponent(state)}`;
   }
 
-  private async exchangeZidCode(code: string): Promise<any> {
+  private async exchangeZidCode(code: string): Promise<ZidOAuthTokenPayload> {
     const clientId = this.configService.get('ZID_CLIENT_ID');
     const clientSecret = this.configService.get('ZID_CLIENT_SECRET');
     const redirectUri = this.configService.get('ZID_REDIRECT_URI',
@@ -790,14 +809,14 @@ export class AuthService implements OnModuleInit {
         throw new Error('Zid token exchange failed');
       }
 
-      return response.json();
+      return parseZidTokens(await response.json());
     } catch (error) {
       this.logger.error(`❌ Zid code exchange failed: ${error instanceof Error ? error.message : 'Unknown'}`);
       throw new UnauthorizedException('فشل الاتصال بحساب زد');
     }
   }
 
-  private async getZidMerchantData(accessToken: string): Promise<any> {
+  private async getZidMerchantData(accessToken: string): Promise<ZidMerchantAccount> {
     try {
       const response = await fetch('https://api.zid.sa/v1/account', {
         headers: { 'Authorization': `Bearer ${accessToken}` },
@@ -807,7 +826,7 @@ export class AuthService implements OnModuleInit {
         throw new Error('Failed to get Zid merchant data');
       }
 
-      return response.json();
+      return parseZidMerchant(await response.json());
     } catch (error) {
       this.logger.error(`❌ Failed to get Zid merchant data: ${error instanceof Error ? error.message : 'Unknown'}`);
       throw new UnauthorizedException('فشل الحصول على بيانات حساب زد');
@@ -971,15 +990,16 @@ export class AuthService implements OnModuleInit {
       }
 
       // ✅ رفض التوكن إذا تم تغيير كلمة المرور بعد إصداره
-      if (user.preferences?.passwordResetAt && payload.iat) {
-        const resetTime = new Date(user.preferences.passwordResetAt as string).getTime() / 1000;
+      const passwordResetAt = user.preferences?.passwordResetAt;
+      if (typeof passwordResetAt === 'string' && payload.iat) {
+        const resetTime = new Date(passwordResetAt).getTime() / 1000;
         if (payload.iat < resetTime) {
           throw new UnauthorizedException('تم تغيير كلمة المرور. يرجى تسجيل الدخول مجدداً.');
         }
       }
 
       return this.generateTokens(user);
-    } catch (error: any) {
+    } catch (error: unknown) {
       // ✅ إعادة رمي الخطأ إذا كان UnauthorizedException (مثل: تم تغيير كلمة المرور)
       if (error instanceof UnauthorizedException) {
         throw error;
@@ -1007,9 +1027,9 @@ export class AuthService implements OnModuleInit {
     // Verify the refresh token from the httpOnly cookie before trusting its jti.
     // A missing/expired cookie must not prevent logout or cookie cleanup.
     if (refreshToken) {
-      let payload: any;
+      let payload: RefreshJwtPayload;
       try {
-        payload = this.jwtService.verify(refreshToken, {
+        payload = this.jwtService.verify<RefreshJwtPayload>(refreshToken, {
           secret: this.resolveRefreshSecret(),
         });
       } catch {
@@ -1057,7 +1077,9 @@ export class AuthService implements OnModuleInit {
     try {
       const tenant = await this.tenantRepository.findOne({ where: { id: user.tenantId }, select: ['subscriptionPlan'] });
       if (tenant) subscriptionPlan = tenant.subscriptionPlan || 'free';
-    } catch {}
+    } catch (error: unknown) {
+      this.logger.warn(`Could not load subscription plan for ${user.id}: ${getErrorMessage(error)}`);
+    }
 
     return {
       id: user.id,
@@ -1134,8 +1156,8 @@ export class AuthService implements OnModuleInit {
             </div>
           `,
         });
-      } catch (e: any) {
-        this.logger.warn(`⚠️ Failed to send password change alert to ${user.email}: ${e.message}`);
+      } catch (error: unknown) {
+        this.logger.warn(`⚠️ Failed to send password change alert to ${user.email}: ${getErrorMessage(error)}`);
       }
     }
   }
@@ -1599,70 +1621,6 @@ export class AuthService implements OnModuleInit {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
-  // 🔧 FIX H-01: HMAC-Signed OAuth State (CSRF Protection)
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  /**
-   * Generate a CSRF-safe OAuth state parameter
-   * Format: base64(JSON({tenantId, ts, nonce})) + '.' + HMAC-SHA256(payload)
-   */
-  generateOAuthState(tenantId: string, custom?: string): string {
-    const payload = JSON.stringify({
-      tenantId,
-      custom: custom || '',
-      ts: Date.now(),
-      nonce: crypto.randomBytes(16).toString('hex'),
-    });
-
-    const encoded = Buffer.from(payload).toString('base64url');
-    const secret = this.configService.get('JWT_SECRET', '');
-    const signature = crypto
-      .createHmac('sha256', secret)
-      .update(encoded)
-      .digest('hex');
-
-    return `${encoded}.${signature}`;
-  }
-
-  /**
-   * Verify HMAC-signed OAuth state parameter
-   * Returns true if signature is valid and not expired (10 min window)
-   */
-  private verifyOAuthState(state: string): boolean {
-    try {
-      const [encoded, signature] = state.split('.');
-      if (!encoded || !signature) return false;
-
-      // Verify HMAC signature
-      const secret = this.configService.get('JWT_SECRET', '');
-      const expectedSignature = crypto
-        .createHmac('sha256', secret)
-        .update(encoded)
-        .digest('hex');
-
-      if (!crypto.timingSafeEqual(
-        Buffer.from(signature, 'hex'),
-        Buffer.from(expectedSignature, 'hex'),
-      )) {
-        return false;
-      }
-
-      // Verify timestamp (10 minute expiry)
-      const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString());
-      const MAX_STATE_AGE_MS = 10 * 60 * 1000; // 10 minutes
-      if (Date.now() - payload.ts > MAX_STATE_AGE_MS) {
-        this.logger.warn('OAuth state expired');
-        return false;
-      }
-
-      return true;
-    } catch (error) {
-      this.logger.error('OAuth state verification failed', error);
-      return false;
-    }
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
   // 📱 TRUSTED DEVICES
   // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1717,8 +1675,8 @@ export class AuthService implements OnModuleInit {
         this.logger.warn('⚠️ device_token column missing — run SQL migration');
         return '';
       }
-    } catch (err) {
-      this.logger.error(`Failed to track device: ${(err as Error).message}`);
+    } catch (error: unknown) {
+      this.logger.error(`Failed to track device: ${getErrorMessage(error)}`);
       return '';
     }
   }

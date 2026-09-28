@@ -15,7 +15,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { PassportModule } from '@nestjs/passport';
 import { HttpModule } from '@nestjs/axios';
-import Redis from 'ioredis';
+import Redis, { RedisOptions } from 'ioredis';
 
 // Entities
 import { User } from '@database/entities/user.entity';
@@ -28,6 +28,7 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { AutoRegistrationService } from './auto-registration.service';
 import { OtpService } from './otp.service';
+import { OAuthStateService } from './oauth-state.service';
 
 // Strategies
 import { JwtStrategy } from './strategies/jwt.strategy';
@@ -78,6 +79,7 @@ import { AdminModule } from '../admin/admin.module';
     AuthService,
     AutoRegistrationService,
     OtpService,
+    OAuthStateService,
     JwtStrategy,
 
     // Redis client للـ token blacklist وقفل الحساب
@@ -92,7 +94,7 @@ import { AdminModule } from '../admin/admin.module';
         const db = configService.get<number>('REDIS_DB', 0);
         const useTls = configService.get<string>('REDIS_TLS') === 'true';
 
-        const baseOptions: Record<string, unknown> = {
+        const baseOptions: RedisOptions = {
           maxRetriesPerRequest: 5,
           retryStrategy: (times: number) => {
             if (times > 10) {
@@ -114,7 +116,7 @@ import { AdminModule } from '../admin/admin.module';
         let client: Redis;
 
         if (redisUrl) {
-          client = new Redis(redisUrl, baseOptions as any);
+          client = new Redis(redisUrl, baseOptions);
         } else {
           client = new Redis({
             host,
@@ -123,7 +125,7 @@ import { AdminModule } from '../admin/admin.module';
             password: password || undefined,
             ...(useTls && { tls: { rejectUnauthorized: false } }),
             ...baseOptions,
-          } as any);
+          });
         }
 
         // ✅ Error handler to prevent unhandled crashes & log spam
