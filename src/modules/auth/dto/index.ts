@@ -88,7 +88,6 @@ export class CheckEmailDto {
 export class CheckEmailResponseDto {
   @ApiProperty() exists: boolean;
   @ApiProperty() hasPassword: boolean;
-  @ApiPropertyOptional() authProvider?: string;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

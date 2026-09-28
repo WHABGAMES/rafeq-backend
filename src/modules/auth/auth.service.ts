@@ -260,7 +260,7 @@ export class AuthService implements OnModuleInit {
     hasPassword: boolean;
   }> {
     const user = await this.userRepository.findOne({
-      where: { email: email.toLowerCase() },
+      where: { email: email.trim().toLowerCase() },
       select: ['id', 'password'],
     });
 
@@ -303,8 +303,7 @@ export class AuthService implements OnModuleInit {
     // إذا المستخدم ما عنده باسورد (سجّل عبر OAuth/OTP)
     if (!user.password) {
       throw new UnauthorizedException(
-        'هذا الحساب مسجّل عبر ' + this.getProviderName(user.authProvider) +
-        '. استخدم نفس الطريقة لتسجيل الدخول أو اختر "نسيت كلمة المرور" لإنشاء كلمة مرور.'
+        'هذا الحساب لا يملك كلمة مرور. استخدم رمز التحقق عبر البريد أو عيّن كلمة مرور بعد الدخول.'
       );
     }
 

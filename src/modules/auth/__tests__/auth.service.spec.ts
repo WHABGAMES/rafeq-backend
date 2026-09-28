@@ -12,6 +12,9 @@
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
+import { AuthService } from '../auth.service';
+import { decrypt, encrypt } from '../../../common/utils/encryption.util';
+
 // Mock entity — adjust import path as needed
 const mockUserRepository = {
   findOne: jest.fn(),
@@ -91,31 +94,42 @@ describe('AuthService', () => {
   // ─────────────────────────────────────────────────────────────────────────
 
   describe('checkEmail — No Provider Leakage', () => {
+    const checkEmail = (email: string) =>
+      AuthService.prototype.checkEmail.call(
+        { userRepository: mockUserRepository } as unknown as AuthService,
+        email,
+      );
+
+    beforeEach(() => {
+      jest.clearAllMocks();
+    });
+
     it('should NOT return authProvider in response', async () => {
-      // Simulate a user existing with Google auth
       const mockUser = {
         id: 'user-123',
         password: null,
-        authProvider: 'google', // This should NOT be in the response
+        authProvider: 'google',
       };
 
       mockUserRepository.findOne.mockResolvedValue(mockUser);
 
-      // The fixed checkEmail should only return exists + hasPassword
-      const result = {
-        exists: true,
-        hasPassword: !!mockUser.password,
-      };
+      const result = await checkEmail('Google.User@Example.com ');
 
       expect(result).not.toHaveProperty('authProvider');
       expect(result).toEqual({ exists: true, hasPassword: false });
+      expect(mockUserRepository.findOne).toHaveBeenCalledWith({
+        where: { email: 'google.user@example.com' },
+        select: ['id', 'password'],
+      });
     });
 
     it('should return exists: false for unknown emails', async () => {
       mockUserRepository.findOne.mockResolvedValue(null);
 
-      const result = { exists: false, hasPassword: false };
-      expect(result.exists).toBe(false);
+      await expect(checkEmail('unknown@example.com')).resolves.toEqual({
+        exists: false,
+        hasPassword: false,
+      });
     });
 
     it('should return hasPassword: true for password-based accounts', async () => {
@@ -126,10 +140,7 @@ describe('AuthService', () => {
 
       mockUserRepository.findOne.mockResolvedValue(mockUser);
 
-      const result = {
-        exists: true,
-        hasPassword: !!mockUser.password,
-      };
+      const result = await checkEmail('password@example.com');
 
       expect(result.hasPassword).toBe(true);
       expect(result).not.toHaveProperty('authProvider');
@@ -155,9 +166,6 @@ describe('Encryption Utility', () => {
   });
 
   it('should encrypt and decrypt correctly', () => {
-    // Dynamic import to pick up env var
-    const { encrypt, decrypt } = require('../../../common/utils/encryption.util');
-
     const plaintext = 'my-secret-token-12345';
     const encrypted = encrypt(plaintext);
 
@@ -169,15 +177,11 @@ describe('Encryption Utility', () => {
   });
 
   it('should NOT return plaintext on decrypt failure (M-05)', () => {
-    const { decrypt } = require('../../../common/utils/encryption.util');
-
     // Non-encrypted data should throw, not return as-is
     expect(() => decrypt('raw-plaintext-token')).toThrow('DECRYPT_LEGACY_DATA');
   });
 
   it('should return null for null/undefined input', () => {
-    const { encrypt, decrypt } = require('../../../common/utils/encryption.util');
-
     expect(encrypt(null)).toBeNull();
     expect(encrypt(undefined)).toBeNull();
     expect(decrypt(null)).toBeNull();
