@@ -36,6 +36,21 @@
 
 # أحدث التحديثات
 
+### [2026-09-28] — BE-032 — v7 — إنهاء تعليق إرسال رمز البريد
+- **الحالة:** محلياً — بانتظار الفحص ثم الرفع والنشر.
+- **النسخة:** `src/modules/mail/mail.service.ts` v1 · `src/modules/auth/auth.service.ts` v4 · `src/modules/auth/__tests__/auth.service.spec.ts` v1 · `UPDATE_HISTORY.md` v7.
+- **المشكلة:** يظل طلب `POST /auth/otp/send-email` مفتوحاً عندما يتعطل اتصال SMTP، فتظل واجهة تسجيل الدخول في حالة «جاري إرسال الرمز» ولا يعرف العميل هل نجح الإرسال.
+- **السبب الجذري:** ناقل Nodemailer لم يملك مهلات اتصال/تحية/مقبس، كما كان مسار المصادقة يتجاهل نتيجة خدمة البريد ويعلن النجاح حتى عندما لا تقبلها خدمة SMTP.
+- **طريقة الحل:** أضيفت مهلات ثابتة ومركزية للناقل (اتصال 10 ثوانٍ، تحية 5 ثوانٍ، مقبس 10 ثوانٍ). ويتحقق مسار OTP الآن من نتيجة الإرسال ويرد بخطأ `503` واضح عند الفشل؛ عندها تعرض الواجهة إعادة المحاولة بدلاً من التعليق أو النجاح الزائف.
+- **الأثر التشغيلي:** طلب OTP ينتهي دائماً بنجاح مؤكد أو خطأ قابل لإعادة المحاولة. لا تغيير في قاعدة البيانات أو روابط OAuth أو callbacks أو webhooks أو أسرار سلة وزد.
+- **الرأي الهندسي:** المهلة والعقد الصادق بين البريد والمصادقة أفضل من إخفاء تعطل مزود البريد في حالة تحميل دائمة؛ وهي تعزل العطل وتترك تجربة OTP قابلة للتشخيص.
+- **الملفات:** `src/modules/mail/mail.service.ts` (v1) · `src/modules/auth/auth.service.ts` (v4) · `src/modules/auth/__tests__/auth.service.spec.ts` (v1) · `UPDATE_HISTORY.md` (v7).
+- **المخاطر/الملاحظات:** عند وجود بطء حقيقي من SMTP يتلقى العميل رسالة فشل بعد الحد الزمني بدلاً من الانتظار. يلزم التحقق من إعدادات SMTP في DigitalOcean إذا استمر ظهور 503؛ لا تُسجل الأسرار أو عناوين البريد.
+- **التحقق:** اختبار وحدات يغطي رفض الإرسال ونجاحه، ثم TypeScript وNest build وESLint للملفات المتأثرة، واختبار حي لتدفق OTP بعد النشر.
+- **رسالة الـcommit:** `fix(BE-032): v7 bound OTP mail delivery` مع ملخص: مهلات SMTP صريحة، رفض 503 عند عدم تأكيد الإرسال، واختبارات لعقد OTP.
+- **PR / Commit:** لم يُنشأ بعد.
+- **خطة التراجع:** إزالة حقول المهلة والتحقق من النتيجة تعيد السلوك السابق غير الموصى به؛ لا يوجد ترحيل بيانات أو تغيير تكامل خارجي للتراجع عنه.
+
 ### [2026-09-27] — BE-030 — v6 — توحيد معرّفات المشكلات ورسائل GitHub
 - **الحالة:** محلياً — بانتظار الرفع.
 - **النسخة:** `AGENTS.md` v3 · `UPDATE_HISTORY.md` v6.
@@ -303,6 +318,8 @@
 | `backend/src/config/typeorm.config.ts` | v2 | F-04 |
 | `backend/src/modules/auth/strategies/jwt.strategy.ts` | v2 | F-02 |
 | `backend/src/modules/auth/auth.service.ts` | v3 | F-21 |
+| `backend/src/modules/mail/mail.service.ts` | v1 | BE-032 |
+| `backend/src/modules/auth/__tests__/auth.service.spec.ts` | v1 | BE-032 |
 | `backend/src/modules/auth/auth.controller.ts` | v2 | F-07 |
 | `backend/src/modules/auth/dto/index.ts` | v2 | F-07 |
 | `backend/src/modules/auth/auto-registration.service.ts` | v2 | F-21 |
@@ -320,7 +337,7 @@
 | `backend/src/modules/csat/csat.service.ts` | v2 | F-12 |
 | `backend/src/modules/admin/controllers/admin-auth.controller.ts` | v3 | F-24 |
 | `backend/AGENTS.md` | v2 | F-26 |
-| `backend/UPDATE_HISTORY.md` | v2 | F-26 |
+| `backend/UPDATE_HISTORY.md` | v7 | BE-032 |
 | `backend/.dockerignore` | v1 | F-27 |
 | `backend/src/modules/admin/services/admin-users.service.ts` | v2 | F-21 |
 | `backend/src/modules/users/users.service.ts` | v2 | F-21 |
