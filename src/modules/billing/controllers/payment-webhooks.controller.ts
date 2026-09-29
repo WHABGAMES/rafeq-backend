@@ -60,11 +60,15 @@ export class WebhooksController {
     this.stripeWebhookSecret = this.configService.get<string>('billing.stripe.webhookSecret', '');
     this.moyasarSecretKey = this.configService.get<string>('billing.moyasar.secretKey', '');
 
-    if (!this.stripeWebhookSecret) {
-      this.logger.warn('⚠️ STRIPE_WEBHOOK_SECRET not configured — Stripe webhooks will be rejected');
-    }
-    if (!this.moyasarSecretKey) {
-      this.logger.warn('⚠️ MOYASAR_SECRET_KEY not configured — Moyasar webhooks will be rejected');
+    const disabledProviders = [
+      !this.stripeWebhookSecret ? 'Stripe' : null,
+      !this.moyasarSecretKey ? 'Moyasar' : null,
+    ].filter((provider): provider is string => provider !== null);
+
+    if (disabledProviders.length > 0) {
+      // Missing credentials mean the optional provider is intentionally
+      // disabled. The endpoint still fails closed if it is called.
+      this.logger.log(`Payment webhooks disabled until configured: ${disabledProviders.join(', ')}`);
     }
   }
 

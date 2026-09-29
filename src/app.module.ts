@@ -555,6 +555,8 @@ export class AppModule implements NestModule {
       // الـ Middleware المراد تطبيقه
       .apply(RequestLoggerMiddleware)
       // تطبيقه على جميع المسارات
-      .forRoutes('*');
+      // Nest 11 / path-to-regexp v8 requires a named wildcard. This keeps the
+      // logger on every API route without relying on the legacy auto-converter.
+      .forRoutes('{*path}');
   }
 }

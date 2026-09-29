@@ -36,6 +36,21 @@
 
 # أحدث التحديثات
 
+### [2026-09-29] — BE-062 — v37 — تنظيف تحذيرات الإقلاع ومنع تكرار جلسة Telegram
+- **الحالة:** محلياً — إصلاحات الكود مكتملة مبدئياً؛ إعداد JWT وتدوير جلسة Telegram بانتظار مرحلة النشر.
+- **النسخة:** `src/app.module.ts` v4 · `src/modules/billing/controllers/payment-webhooks.controller.ts` v1 · `src/modules/otp-relay/telegram-otp-client.service.ts` v4 · `UPDATE_HISTORY.md` v37.
+- **المشكلة:** أظهر الإقلاع أربعة تحذيرات: صيغة wildcard قديمة، غياب مفاتيح بوابتين اختياريتين، وإعداد JWT أطول من السياسة. كما فشل Telegram بخطأ `AUTH_KEY_DUPLICATED` عند استعمال جلسة واحدة من اتصالين.
+- **السبب الجذري:** middleware الشامل بقي بصيغة path-to-regexp القديمة؛ غياب مزودي دفع غير مستخدمين عومل كتحذير رغم أن endpoints تفشل مغلقة؛ ومتغير الإنتاج `JWT_ACCESS_EXPIRATION` ما زال `1d`. جلسة Telegram لم تكن محمية بقفل موزع، لذلك يمكن لنسختي النشر المتدرج الاتصال بالمفتاح نفسه وإبطاله.
+- **طريقة الحل:** استُبدل wildcard بـ`{*path}` المسمى. أصبح غياب Stripe/Moyasar حالة تعطيل اختيارية بمستوى LOG مع استمرار رفض أي webhook دون سر. أضيفت ملكية اتصال Telegram بقفل Redis ذي TTL وتجديد دوري وتحرير ذري، مع وضع standby وإعادة محاولة للنسخة غير المالكة وقطع الاتصال عند فقد القفل. يتوقف retry عند `AUTH_KEY_DUPLICATED` لأن المفتاح المبطل لا يصلح بالتكرار. بقي تحذير JWT قصداً حتى يُصحح متغير DigitalOcean إلى `15m`، وتحتاج الجلسة الحالية تدويراً مرة واحدة بعد نشر القفل.
+- **الأثر التشغيلي:** يختفي تحذير المسار وتحذيرا الدفع الاختياريان. اتصال Telegram يصبح singleton عبر نسخ التطبيق، ما يمنع تكرار الإبطال في النشرات اللاحقة. لا تتغير routes العامة أو payloads.
+- **أثر سلة/زد:** لا تعديل في OAuth أو callbacks أو Webhooks أو أسماء الأحداث أو المفاتيح أو تخزين بيانات سلة وزد.
+- **الرأي الهندسي:** لم تُخفَ أعطال حقيقية: Webhooks غير المهيأة تظل fail-closed، وJWT يبقى تحذيراً حتى تصحيح البيئة، وفشل Telegram يبقى واضحاً ويتطلب تدوير credential حقيقي. القفل يعالج سبب التزامن بدلاً من تحويل الخطأ إلى log أهدأ.
+- **المخاطر/الملاحظات:** أول نشر للقفل قد يتداخل مع النسخة القديمة التي لا تملكه؛ لذلك يجب تدوير `TELEGRAM_SESSION` بعد نشر الكود ثم عدم استعمال الجلسة خارج الإنتاج. تعطل Redis يمنع تملك اتصال Telegram بصورة آمنة ولا يؤثر على بقية الخادم. Stripe/Moyasar سيظلان مرفوضين حتى إضافة أسرارهما عند تفعيل الدفع.
+- **التحقق:** تثبيت نظيف نجح (1051 حزمة) و`npm audit` = 0 ثغرات؛ ESLint الكامل = 0؛ Nest build ناجح؛ الاختبارات الكاملة = 17 suites و96/96؛ و`git diff --check` نظيف. بيئة الفحص المحلية شغلت Node 24.19.0 وأظهرت تحذير engine لأن الإنتاج/CI محددان على Node 22؛ لذلك يبقى CI على الإصدار المعتمد هو بوابة التوافق النهائية. بعد النشر يجب التحقق من غياب تحذير wildcard ومن امتلاك نسخة واحدة لقفل Telegram.
+- **رسالة الـcommit:** `fix(BE-062): v37 harden startup configuration and Telegram ownership` مع ملخص: wildcard متوافق مع Nest 11، بوابات دفع اختيارية fail-closed بلا إنذار كاذب، وقفل Redis موزع لاتصال Telegram.
+- **PR / Commit:** محلياً — يُملأ بعد الرفع فقط.
+- **خطة التراجع:** يمكن إعادة تغييرات BE-062 بلا migration. عند عطل القفل يُعطل Telegram OTP مؤقتاً بإزالة الجلسة بدلاً من السماح باتصالات متزامنة؛ لا تُخفف حماية Webhooks.
+
 ### [2026-09-29] — BE-061 — v36 — توثيق دمج ونشر حزمة تدقيق الخادم
 - **الحالة:** منشور في الإنتاج — اكتمل الدمج والنشر والفحص الحي.
 - **النسخة:** `UPDATE_HISTORY.md` v36.
@@ -718,7 +733,10 @@
 | `backend/src/modules/admin/services/whatsapp-settings.service.ts` | v2 | BE-060 |
 | `backend/src/modules/webhooks/dto/zid-webhook.dto.ts` | v1 | BE-060 |
 | `backend/package.json` | v5 | BE-060 |
-| `backend/UPDATE_HISTORY.md` | v36 | BE-061 |
+| `backend/UPDATE_HISTORY.md` | v37 | BE-062 |
+| `backend/src/app.module.ts` | v4 | BE-062 |
+| `backend/src/modules/billing/controllers/payment-webhooks.controller.ts` | v1 | BE-062 |
+| `backend/src/modules/otp-relay/telegram-otp-client.service.ts` | v4 | BE-062 |
 | `backend/src/database/entities/customer.entity.ts` | v1 | BE-059 |
 | `backend/src/database/entities/order.entity.ts` | v1 | BE-059 |
 | `backend/src/modules/campaigns/campaigns.processor.ts` | v1 | BE-059 |

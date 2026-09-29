@@ -13,8 +13,10 @@
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { Inject, Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { randomUUID } from 'crypto';
+import Redis from 'ioredis';
 import { Api, TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions';
 import { NewMessage, NewMessageEvent } from 'telegram/events';
@@ -40,6 +42,23 @@ interface ResponseWaiter {
 
 @Injectable()
 export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
+  private static readonly LEASE_KEY = 'rafeq:telegram-otp:connection-owner';
+  private static readonly LEASE_TTL_SECONDS = 60;
+  private static readonly LEASE_RENEW_INTERVAL_MS = 20_000;
+  private static readonly LEASE_RETRY_INTERVAL_MS = 10_000;
+  private static readonly RELEASE_LEASE_LUA = `
+    if redis.call('GET', KEYS[1]) == ARGV[1] then
+      return redis.call('DEL', KEYS[1])
+    end
+    return 0
+  `;
+  private static readonly RENEW_LEASE_LUA = `
+    if redis.call('GET', KEYS[1]) == ARGV[1] then
+      return redis.call('EXPIRE', KEYS[1], ARGV[2])
+    end
+    return 0
+  `;
+
   private readonly logger = new Logger('TelegramOtpClient');
   private client: TelegramClient | null = null;
   private connected = false;
@@ -47,6 +66,10 @@ export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
   private readonly apiId: number;
   private readonly apiHash: string;
   private readonly sessionString: string;
+  private readonly leaseOwner = randomUUID();
+  private leaseRenewTimer: NodeJS.Timeout | null = null;
+  private leaseRetryTimer: NodeJS.Timeout | null = null;
+  private shuttingDown = false;
 
   // ── Mutex: طلب واحد فقط لكل بوت في نفس الوقت ──
   private botLocks = new Map<string, Promise<void>>();
@@ -55,7 +78,10 @@ export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
   private responseWaiter: ResponseWaiter | null = null;
   private authTemp: TelegramAuthSession | null = null;
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    @Inject('REDIS_CLIENT') private readonly redis: Redis,
+  ) {
     this.apiId = Number(this.config.get<string>('TELEGRAM_API_ID') || '0');
     this.apiHash = this.config.get<string>('TELEGRAM_API_HASH') || '';
     this.sessionString = this.config.get<string>('TELEGRAM_SESSION') || '';
@@ -68,13 +94,22 @@ export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
     }
     try {
       this.available = true;
-      await this.connect();
+      await this.initializeConnection();
     } catch (error: unknown) {
       this.logger.warn(`⚠️ Telegram OTP initialization failed: ${getErrorMessage(error)}`);
     }
   }
 
   async onModuleDestroy(): Promise<void> {
+    this.shuttingDown = true;
+    if (this.leaseRetryTimer) {
+      clearTimeout(this.leaseRetryTimer);
+      this.leaseRetryTimer = null;
+    }
+    if (this.leaseRenewTimer) {
+      clearInterval(this.leaseRenewTimer);
+      this.leaseRenewTimer = null;
+    }
     if (this.responseWaiter) {
       clearTimeout(this.responseWaiter.timeout);
       this.responseWaiter = null;
@@ -86,6 +121,7 @@ export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
         this.logger.debug(`Telegram disconnect failed during shutdown: ${getErrorMessage(error)}`);
       }
     }
+    await this.releaseLease();
   }
 
   isAvailable(): boolean { return this.available && this.connected; }
@@ -94,7 +130,94 @@ export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
   // CONNECTION
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  private async connect(): Promise<void> {
+  private async initializeConnection(): Promise<void> {
+    if (this.shuttingDown || this.connected) return;
+
+    const acquired = await this.acquireLease();
+    if (!acquired) {
+      this.logger.log('Telegram OTP is in standby; another application instance owns the connection lease');
+      this.scheduleLeaseRetry();
+      return;
+    }
+
+    const result = await this.connect();
+    if (result === 'connected') {
+      this.startLeaseRenewal();
+      return;
+    }
+
+    await this.releaseLease();
+    if (result === 'failed') this.scheduleLeaseRetry();
+  }
+
+  private async acquireLease(): Promise<boolean> {
+    const result = await this.redis.set(
+      TelegramOtpClientService.LEASE_KEY,
+      this.leaseOwner,
+      'EX',
+      TelegramOtpClientService.LEASE_TTL_SECONDS,
+      'NX',
+    );
+    return result === 'OK';
+  }
+
+  private scheduleLeaseRetry(): void {
+    if (this.shuttingDown || this.leaseRetryTimer) return;
+    this.leaseRetryTimer = setTimeout(() => {
+      this.leaseRetryTimer = null;
+      void this.initializeConnection().catch((error: unknown) => {
+        this.logger.warn(`Telegram lease retry failed: ${getErrorMessage(error)}`);
+        this.scheduleLeaseRetry();
+      });
+    }, TelegramOtpClientService.LEASE_RETRY_INTERVAL_MS);
+  }
+
+  private startLeaseRenewal(): void {
+    if (this.leaseRenewTimer) clearInterval(this.leaseRenewTimer);
+    this.leaseRenewTimer = setInterval(() => {
+      void this.renewLease();
+    }, TelegramOtpClientService.LEASE_RENEW_INTERVAL_MS);
+  }
+
+  private async renewLease(): Promise<void> {
+    const renewed = Number(await this.redis.eval(
+      TelegramOtpClientService.RENEW_LEASE_LUA,
+      1,
+      TelegramOtpClientService.LEASE_KEY,
+      this.leaseOwner,
+      String(TelegramOtpClientService.LEASE_TTL_SECONDS),
+    ));
+    if (renewed === 1 || this.shuttingDown) return;
+
+    this.logger.error('Telegram connection lease was lost; disconnecting this instance to prevent session duplication');
+    this.connected = false;
+    if (this.leaseRenewTimer) {
+      clearInterval(this.leaseRenewTimer);
+      this.leaseRenewTimer = null;
+    }
+    try {
+      await this.client?.disconnect();
+    } catch (error: unknown) {
+      this.logger.debug(`Telegram disconnect after lease loss failed: ${getErrorMessage(error)}`);
+    }
+    this.client = null;
+    this.scheduleLeaseRetry();
+  }
+
+  private async releaseLease(): Promise<void> {
+    try {
+      await this.redis.eval(
+        TelegramOtpClientService.RELEASE_LEASE_LUA,
+        1,
+        TelegramOtpClientService.LEASE_KEY,
+        this.leaseOwner,
+      );
+    } catch (error: unknown) {
+      this.logger.debug(`Telegram lease release failed: ${getErrorMessage(error)}`);
+    }
+  }
+
+  private async connect(): Promise<'connected' | 'duplicate' | 'failed'> {
     try {
       const session = new StringSession(this.sessionString);
       this.client = new TelegramClient(session, this.apiId, this.apiHash, {
@@ -109,9 +232,15 @@ export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
 
       const me = await this.client.getMe();
       this.logger.log(`✅ Telegram connected: ${me.phone || me.username}`);
+      return 'connected';
     } catch (error: unknown) {
-      this.logger.error(`❌ Telegram connect failed: ${getErrorMessage(error)}`);
+      const message = getErrorMessage(error);
+      this.logger.error(`❌ Telegram connect failed: ${message}`);
       this.connected = false;
+      this.client = null;
+      // Telegram permanently invalidates a duplicated auth key. Retrying the
+      // same value only creates log noise; an operator must rotate the session.
+      return message.includes('AUTH_KEY_DUPLICATED') ? 'duplicate' : 'failed';
     }
   }
 
