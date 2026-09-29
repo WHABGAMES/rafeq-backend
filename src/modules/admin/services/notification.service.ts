@@ -751,7 +751,7 @@ export class NotificationService implements OnModuleInit {
         isActive: true,
         language: lang,
         deletedAt: IsNull(),
-      } as any,
+      },
       order: { createdAt: 'ASC' },
     });
 
@@ -1078,7 +1078,7 @@ export class NotificationService implements OnModuleInit {
 
   private async findTemplateOrFail(id: string): Promise<MessageTemplate> {
     const template = await this.templateRepo.findOne({
-      where: { id, deletedAt: IsNull() } as any,
+      where: { id, deletedAt: IsNull() },
     });
     if (!template) throw new NotFoundException(`القالب غير موجود: ${id}`);
     return template;

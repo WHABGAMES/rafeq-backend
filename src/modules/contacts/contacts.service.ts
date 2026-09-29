@@ -6,12 +6,13 @@
 
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { FindOptionsWhere, QueryDeepPartialEntity, Repository } from 'typeorm';
 import { OnEvent } from '@nestjs/event-emitter';
 import { randomUUID } from 'crypto';
 import { Customer, Conversation, Order, CustomerStatus, Store } from '@database/entities';
 import { SallaApiService } from '../stores/salla-api.service';
 import { decrypt } from '@common/utils/encryption.util';
+import { getErrorMessage } from '@common/utils/error.util';
 import {
   CreateContactDto,
   UpdateContactDto,
@@ -52,8 +53,8 @@ export class ContactsService {
     try {
       const result = await this.syncFromSalla(payload.tenantId);
       this.logger.log(`✅ Auto-sync complete: ${result.synced} customers synced for store ${payload.storeId}`);
-    } catch (error: any) {
-      this.logger.error(`❌ Auto-sync failed for store ${payload.storeId}: ${error?.message}`);
+    } catch (error: unknown) {
+      this.logger.error(`❌ Auto-sync failed for store ${payload.storeId}: ${getErrorMessage(error)}`);
     }
   }
 
@@ -142,7 +143,7 @@ export class ContactsService {
       .getMany();
 
     // ✅ جلب أرقام الطلبات لعملاء الصفحة الحالية فقط (أداء)
-    let orderRefsMap: Record<string, string[]> = {};
+    const orderRefsMap: Record<string, string[]> = {};
     if (contacts.length > 0) {
       const customerIds = contacts.map(c => c.id);
       const orderRefs: { customerId: string; referenceId: string }[] = await this.orderRepository.manager.query(
@@ -257,12 +258,17 @@ export class ContactsService {
    * إنشاء عميل جديد
    */
   async create(tenantId: string, dto: CreateContactDto) {
+    if (!dto.storeId) {
+      throw new BadRequestException('معرف المتجر مطلوب لإنشاء العميل');
+    }
+
     // Check for duplicate phone/email
+    const duplicateWhere: FindOptionsWhere<Customer>[] = [
+      { tenantId, phone: dto.phone },
+    ];
+    if (dto.email) duplicateWhere.push({ tenantId, email: dto.email });
     const existing = await this.customerRepository.findOne({
-      where: [
-        { tenantId, phone: dto.phone },
-        dto.email ? { tenantId, email: dto.email } : undefined,
-      ].filter(Boolean) as any,
+      where: duplicateWhere,
     });
 
     if (existing) {
@@ -270,14 +276,32 @@ export class ContactsService {
     }
 
     // Extract address string and other fields separately
-    const { address: addressString, ...restDto } = dto;
-
     const contact = this.customerRepository.create({
-      ...restDto,
       tenantId,
-      // Convert string address to CustomerAddress if provided
-      address: addressString ? { street: addressString } : undefined,
-    } as any);
+      storeId: dto.storeId,
+      sallaCustomerId: dto.sallaCustomerId,
+      name: dto.name,
+      fullName: dto.name,
+      firstName: dto.firstName,
+      lastName: dto.lastName,
+      phone: dto.phone,
+      email: dto.email,
+      channel: dto.channel,
+      tags: dto.tags ?? [],
+      avatarUrl: dto.avatar,
+      locale: dto.language,
+      address: dto.address || dto.city || dto.country ? {
+        street: dto.address,
+        city: dto.city,
+        country: dto.country,
+      } : undefined,
+      metadata: {
+        source: dto.externalId ? 'manual-import' : 'manual',
+        notes: dto.notes,
+        customFields: dto.metadata,
+      },
+      status: CustomerStatus.ACTIVE,
+    });
 
     const saved = await this.customerRepository.save(contact);
 
@@ -334,7 +358,36 @@ export class ContactsService {
       throw new NotFoundException('العميل غير موجود');
     }
 
-    Object.assign(contact, dto);
+    if (dto.name !== undefined) {
+      contact.name = dto.name;
+      contact.fullName = dto.name;
+    }
+    if (dto.phone !== undefined) contact.phone = dto.phone;
+    if (dto.email !== undefined) contact.email = dto.email;
+    if (dto.firstName !== undefined) contact.firstName = dto.firstName;
+    if (dto.lastName !== undefined) contact.lastName = dto.lastName;
+    if (dto.storeId !== undefined) contact.storeId = dto.storeId;
+    if (dto.sallaCustomerId !== undefined) contact.sallaCustomerId = dto.sallaCustomerId;
+    if (dto.tags !== undefined) contact.tags = dto.tags;
+    if (dto.avatar !== undefined) contact.avatarUrl = dto.avatar;
+    if (dto.language !== undefined) contact.locale = dto.language;
+    if (dto.vipStatus !== undefined) contact.vipStatus = dto.vipStatus;
+    if (dto.channel !== undefined) contact.channel = dto.channel;
+    if (dto.address !== undefined || dto.city !== undefined || dto.country !== undefined) {
+      contact.address = {
+        ...contact.address,
+        street: dto.address ?? contact.address?.street,
+        city: dto.city ?? contact.address?.city,
+        country: dto.country ?? contact.address?.country,
+      };
+    }
+    if (dto.notes !== undefined || dto.metadata !== undefined) {
+      contact.metadata = {
+        ...contact.metadata,
+        notes: dto.notes ?? contact.metadata?.notes,
+        customFields: dto.metadata ?? contact.metadata?.customFields,
+      };
+    }
 
     return this.customerRepository.save(contact);
   }
@@ -671,8 +724,7 @@ export class ContactsService {
         });
 
         // ✅ Salla API: { status, success, data: [...], pagination }
-        const rawData: any = response?.data;
-        const customers = Array.isArray(rawData) ? rawData : (Array.isArray(rawData?.data) ? rawData.data : []);
+        const customers = response.data;
         this.logger.log(`📦 Salla page ${page}: ${customers.length} customers received`);
         consecutiveFailures = 0; // ✅ نجحت الصفحة — reset العداد
         
@@ -732,8 +784,8 @@ export class ContactsService {
               await this.customerRepository.save(customer);
             }
             synced++;
-          } catch (err: any) {
-            this.logger.error(`❌ Customer sync failed for Salla ID ${sallaCustomer?.id}: ${err?.message || err}`);
+          } catch (error: unknown) {
+            this.logger.error(`❌ Customer sync failed for Salla ID ${sallaCustomer.id}: ${getErrorMessage(error)}`);
             errors++;
           }
         }
@@ -744,9 +796,9 @@ export class ContactsService {
         } else {
           page++;
         }
-      } catch (error: any) {
+      } catch (error: unknown) {
         consecutiveFailures++;
-        this.logger.error(`❌ Salla sync page ${page} failed (${consecutiveFailures}/3): ${error?.message}`);
+        this.logger.error(`❌ Salla sync page ${page} failed (${consecutiveFailures}/3): ${getErrorMessage(error)}`);
         // ✅ 3 صفحات متتالية فشلت = وقف | غير كذا = تخطي وكمل
         if (consecutiveFailures >= 3 || page >= 250) { hasMore = false; } else { page++; errors++; }
       }
@@ -766,8 +818,7 @@ export class ContactsService {
       while (hasMoreOrders) {
         try {
           const orderRes = await this.sallaApiService.getOrders(accessToken, { page: orderPage, perPage: 50 });
-          const rawOrders: any = orderRes?.data;
-          const orders = Array.isArray(rawOrders) ? rawOrders : (Array.isArray(rawOrders?.data) ? rawOrders.data : []);
+          const orders = orderRes.data;
 
           if (orders.length === 0) { hasMoreOrders = false; break; }
           orderConsecFails = 0; // ✅ نجحت
@@ -792,7 +843,7 @@ export class ContactsService {
               ?? order?.grand_total;                     // fallback
             const spent = typeof totalAmount === 'number' ? totalAmount
               : typeof totalAmount?.amount === 'number' ? totalAmount.amount
-              : parseFloat(String(totalAmount?.amount || totalAmount || '0')) || 0;
+              : 0;
             customerStats[custId].spent += spent;
             // ✅ تتبع آخر تاريخ طلب (سلة ترسل date كـ object أو string)
             const orderDate = order?.date?.date || order?.created_at || '';
@@ -818,9 +869,9 @@ export class ContactsService {
 
           if (orders.length < 50) hasMoreOrders = false;
           else orderPage++;
-        } catch (orderPageErr: any) {
+        } catch (error: unknown) {
           orderConsecFails++;
-          this.logger.error(`❌ Salla orders page ${orderPage} failed (${orderConsecFails}/3): ${orderPageErr?.message || orderPageErr}`);
+          this.logger.error(`❌ Salla orders page ${orderPage} failed (${orderConsecFails}/3): ${getErrorMessage(error)}`);
           if (orderConsecFails >= 3 || orderPage >= 250) { hasMoreOrders = false; } else { orderPage++; }
         }
       }
@@ -828,7 +879,7 @@ export class ContactsService {
       // تحديث العملاء بالإحصائيات
       for (const [sallaId, stats] of Object.entries(customerStats)) {
         try {
-          const updateData: any = {
+          const updateData: QueryDeepPartialEntity<Customer> = {
             totalOrders: stats.orders,
             totalSpent: Math.round(stats.spent * 100) / 100,
           };
@@ -845,7 +896,9 @@ export class ContactsService {
             .set(updateData)
             .where('"store_id" = :storeId AND "salla_customer_id" = :sallaId', { storeId: store.id, sallaId })
             .execute();
-        } catch {}
+        } catch (error: unknown) {
+          this.logger.warn(`Customer order statistics update failed for Salla customer ${sallaId}: ${getErrorMessage(error)}`);
+        }
       }
       this.logger.log(`✅ Order stats updated for ${Object.keys(customerStats).length} customers`);
 
@@ -857,14 +910,14 @@ export class ContactsService {
           for (const o of collectedOrders) {
             try {
               // تحقق أن الطلب غير موجود مسبقاً
-              const exists = await this.orderRepository.manager.query(
+              const exists: Array<{ exists: number }> = await this.orderRepository.manager.query(
                 `SELECT 1 FROM orders WHERE store_id = $1 AND salla_order_id = $2 LIMIT 1`,
                 [store.id, o.sallaOrderId]
               );
               if (exists.length > 0) continue; // موجود → تجاوز
 
               // جلب customer_id الداخلي
-              const custRow = await this.orderRepository.manager.query(
+              const custRow: Array<{ id: string }> = await this.orderRepository.manager.query(
                 `SELECT id FROM customers WHERE store_id = $1 AND salla_customer_id = $2 LIMIT 1`,
                 [store.id, o.sallaCustId]
               );
@@ -885,17 +938,17 @@ export class ContactsService {
                 [orderId, tenantId, store.id, custRow[0].id, o.sallaOrderId, o.referenceId, safeStatus, o.totalAmount, safeDate]
               );
               savedCount++;
-            } catch (orderErr: any) {
-              if (!firstError) firstError = orderErr?.message || String(orderErr);
+            } catch (error: unknown) {
+              if (!firstError) firstError = getErrorMessage(error);
             }
           }
           this.logger.log(`✅ Saved ${savedCount} new order records to DB (${collectedOrders.length} total from Salla)${firstError ? ` | First error: ${firstError}` : ''}`);
-        } catch (err: any) {
-          this.logger.warn(`⚠️ Order records save failed (non-blocking): ${err?.message}`);
+        } catch (error: unknown) {
+          this.logger.warn(`⚠️ Order records save failed (non-blocking): ${getErrorMessage(error)}`);
         }
       }
-    } catch (err: any) {
-      this.logger.error(`⚠️ Order sync failed: ${err?.message}`);
+    } catch (error: unknown) {
+      this.logger.error(`⚠️ Order sync failed: ${getErrorMessage(error)}`);
     }
 
     const total = await this.customerRepository.count({ where: { tenantId } });
@@ -904,9 +957,11 @@ export class ContactsService {
     try {
       await this.storeRepository.update(
         { id: store.id },
-        { sallaCustomersCount: total } as any,
+        { sallaCustomersCount: total },
       );
-    } catch {}
+    } catch (error: unknown) {
+      this.logger.warn(`Failed to update Salla customer count for store ${store.id}: ${getErrorMessage(error)}`);
+    }
 
     this.logger.log(`✅ Salla sync complete: ${synced} synced, ${errors} errors, ${total} total`, { tenantId });
 

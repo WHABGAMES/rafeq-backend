@@ -26,12 +26,17 @@ import { ApiTags, ApiOperation } from '@nestjs/swagger';
 // ✅ Relative imports داخل نفس الـ module
 import { PlatformNotificationsService } from './platform-notifications.service';
 import {
+  CreatePlatformNotificationDto,
+  UpdatePlatformNotificationDto,
+} from './dto/platform-notification.dto';
+import {
   PlatformNotificationType,
 } from './platform-notification.entity';
 
 // ✅ Admin guards — مسار صحيح من modules/platform-notifications
 import { AdminJwtGuard, AdminPermissionGuard } from '@modules/admin/guards/admin.guards';
 import { CurrentAdmin } from '@modules/admin/decorators/current-admin.decorator';
+import { AdminUser } from '@modules/admin/entities/admin-user.entity';
 
 @ApiTags('Admin: إشعارات المنصة')
 @Controller('admin/platform-notifications')
@@ -64,13 +69,19 @@ export class AdminPlatformNotificationsController {
   @Post()
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'إنشاء إشعار جديد' })
-  async create(@Body() body: any, @CurrentAdmin() admin: any) {
-    return this.service.create(body, admin?.id);
+  async create(
+    @Body() body: CreatePlatformNotificationDto,
+    @CurrentAdmin() admin: AdminUser,
+  ) {
+    return this.service.create(body, admin.id);
   }
 
   @Patch(':id')
   @ApiOperation({ summary: 'تعديل إشعار' })
-  async update(@Param('id', ParseUUIDPipe) id: string, @Body() body: any) {
+  async update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: UpdatePlatformNotificationDto,
+  ) {
     return this.service.update(id, body);
   }
 

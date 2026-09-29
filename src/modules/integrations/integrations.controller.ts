@@ -29,6 +29,7 @@ import { Response } from 'express';
 
 import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { User } from '../../database/entities/user.entity';
 import { IntegrationsService } from './integrations.service';
 import {
   ConnectShopifyDto,
@@ -139,7 +140,7 @@ export class IntegrationsController {
     summary: 'التكاملات النشطة',
     description: 'قائمة التكاملات المربوطة مع حسابك',
   })
-  async getActiveIntegrations(@CurrentUser() user: any) {
+  async getActiveIntegrations(@CurrentUser() user: User) {
     const tenantId = user.tenantId;
     return this.integrationsService.getActiveIntegrations(tenantId);
   }
@@ -152,7 +153,7 @@ export class IntegrationsController {
     summary: 'فصل تكامل',
     description: 'فصل الربط مع منصة',
   })
-  async disconnectIntegration(@CurrentUser() user: any,
+  async disconnectIntegration(@CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string) {
     const tenantId = user.tenantId;
     await this.integrationsService.disconnect(id, tenantId);
@@ -170,7 +171,7 @@ export class IntegrationsController {
     description: 'بدء عملية OAuth للربط مع سلة',
   })
   async connectSalla(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Res() res: Response,
   ) {
     const tenantId = user.tenantId;
@@ -184,17 +185,16 @@ export class IntegrationsController {
     description: 'معالجة رد سلة بعد الموافقة',
   })
   async sallaCallback(
-    @CurrentUser() _user: any,
     @Query('code') code: string,
     @Query('state') state: string,
     @Res() res: Response,
   ) {
     try {
       const result = await this.integrationsService.handleSallaCallback(code, state);
-      res.redirect(`/integrations/success?platform=salla&store=${result.storeName}`);
+      res.redirect(`/integrations/success?platform=salla&store=${encodeURIComponent(result.storeName)}`);
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      res.redirect(`/integrations/error?platform=salla&error=${errorMessage}`);
+      res.redirect(`/integrations/error?platform=salla&error=${encodeURIComponent(errorMessage)}`);
     }
   }
 
@@ -206,7 +206,7 @@ export class IntegrationsController {
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
   async getSallaOrders(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Query('status') status?: string,
     @Query('page', new ParseIntPipe({ optional: true })) page = 1,
     @Query('limit', new ParseIntPipe({ optional: true })) limit = 20,
@@ -220,7 +220,7 @@ export class IntegrationsController {
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'منتجات سلة' })
   async getSallaProducts(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Query('page', new ParseIntPipe({ optional: true })) page = 1,
     @Query('limit', new ParseIntPipe({ optional: true })) limit = 20,
   ) {
@@ -233,7 +233,7 @@ export class IntegrationsController {
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'عملاء سلة' })
   async getSallaCustomers(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Query('page', new ParseIntPipe({ optional: true })) page = 1,
     @Query('limit', new ParseIntPipe({ optional: true })) limit = 20,
   ) {
@@ -246,7 +246,7 @@ export class IntegrationsController {
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'السلات المتروكة في سلة' })
   async getSallaAbandonedCarts(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Query('page', new ParseIntPipe({ optional: true })) page = 1,
     @Query('limit', new ParseIntPipe({ optional: true })) limit = 20,
   ) {
@@ -266,7 +266,7 @@ export class IntegrationsController {
     description: 'بدء عملية OAuth للربط مع زد',
   })
   async connectZid(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Res() res: Response,
   ) {
     const tenantId = user.tenantId;
@@ -280,17 +280,16 @@ export class IntegrationsController {
     description: 'معالجة رد زد بعد الموافقة',
   })
   async zidCallback(
-    @CurrentUser() _user: any,
     @Query('code') code: string,
     @Query('state') state: string,
     @Res() res: Response,
   ) {
     try {
       const result = await this.integrationsService.handleZidCallback(code, state);
-      res.redirect(`/integrations/success?platform=zid&store=${result.storeName}`);
+      res.redirect(`/integrations/success?platform=zid&store=${encodeURIComponent(result.storeName)}`);
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      res.redirect(`/integrations/error?platform=zid&error=${errorMessage}`);
+      res.redirect(`/integrations/error?platform=zid&error=${encodeURIComponent(errorMessage)}`);
     }
   }
 
@@ -299,7 +298,7 @@ export class IntegrationsController {
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'طلبات زد' })
   async getZidOrders(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Query('status') status?: string,
     @Query('page', new ParseIntPipe({ optional: true })) page = 1,
     @Query('limit', new ParseIntPipe({ optional: true })) limit = 20,
@@ -313,7 +312,7 @@ export class IntegrationsController {
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'منتجات زد' })
   async getZidProducts(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Query('page', new ParseIntPipe({ optional: true })) page = 1,
     @Query('limit', new ParseIntPipe({ optional: true })) limit = 20,
   ) {
@@ -326,7 +325,7 @@ export class IntegrationsController {
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'عملاء زد' })
   async getZidCustomers(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Query('page', new ParseIntPipe({ optional: true })) page = 1,
     @Query('limit', new ParseIntPipe({ optional: true })) limit = 20,
   ) {
@@ -345,7 +344,7 @@ export class IntegrationsController {
     summary: 'ربط شوبيفاي',
     description: 'ربط متجر شوبيفاي باستخدام API Key',
   })
-  async connectShopify(@CurrentUser() user: any,
+  async connectShopify(@CurrentUser() user: User,
     @Body() dto: ConnectShopifyDto) {
     const tenantId = user.tenantId;
     return this.integrationsService.connectShopify(tenantId, dto);
@@ -356,7 +355,7 @@ export class IntegrationsController {
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'طلبات شوبيفاي' })
   async getShopifyOrders(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Query('page', new ParseIntPipe({ optional: true })) page = 1,
     @Query('limit', new ParseIntPipe({ optional: true })) limit = 20,
   ) {
@@ -375,7 +374,7 @@ export class IntegrationsController {
     summary: 'ربط ووكومرس',
     description: 'ربط متجر ووكومرس باستخدام API Keys',
   })
-  async connectWooCommerce(@CurrentUser() user: any,
+  async connectWooCommerce(@CurrentUser() user: User,
     @Body() dto: ConnectWooCommerceDto) {
     const tenantId = user.tenantId;
     return this.integrationsService.connectWooCommerce(tenantId, dto);
@@ -386,7 +385,7 @@ export class IntegrationsController {
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'طلبات ووكومرس' })
   async getWooCommerceOrders(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Query('page', new ParseIntPipe({ optional: true })) page = 1,
     @Query('limit', new ParseIntPipe({ optional: true })) limit = 20,
   ) {
@@ -406,7 +405,7 @@ export class IntegrationsController {
     summary: 'مزامنة البيانات',
     description: 'مزامنة الطلبات والعملاء من المنصة',
   })
-  async syncData(@CurrentUser() user: any,
+  async syncData(@CurrentUser() user: User,
     @Param('platform') platform: string) {
     const tenantId = user.tenantId;
     return this.integrationsService.syncData(tenantId, platform);
@@ -416,7 +415,7 @@ export class IntegrationsController {
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'حالة المزامنة' })
-  async getSyncStatus(@CurrentUser() user: any,
+  async getSyncStatus(@CurrentUser() user: User,
     @Param('platform') platform: string) {
     const tenantId = user.tenantId;
     return this.integrationsService.getSyncStatus(tenantId, platform);

@@ -43,9 +43,19 @@ import { StoresService } from '../stores/stores.service';
 import { Order } from '@database/entities';
 
 // 🔗 لجلب بيانات الطلب من Salla API
-import { SallaApiService } from '../stores/salla-api.service';
+import {
+  SallaApiService,
+  SallaOrder,
+  SallaOrderItem,
+} from '../stores/salla-api.service';
 import { Store } from '../stores/entities/store.entity';
 import { decrypt } from '@common/utils/encryption.util';
+import {
+  asJsonRecord,
+  getJsonNumber,
+  getJsonString,
+} from '@common/utils/json-record.util';
+import { getErrorMessage, getHttpErrorDetails } from '@common/utils/error.util';
 
 // ═══════════════════════════════════════════════════════════
 // Types
@@ -1421,10 +1431,11 @@ export class EmployeeNotificationsService {
    * إذا لا → نحتاج enrichment من DB
    */
   private hasOrderData(data: Record<string, unknown>): boolean {
+    const customer = asJsonRecord(data.customer);
     return !!(
       data.reference_id ||
       data.order_number ||
-      (data.customer && typeof data.customer === 'object' && (data.customer as any).first_name)
+      getJsonString(customer, 'first_name', 'name')
     );
   }
 
@@ -1479,16 +1490,16 @@ export class EmployeeNotificationsService {
             },
             items: order.items || [],
             shipping: {
-              company: { name: (order as any).shippingInfo?.carrierName || 'غير محدد' },
-              tracking_number: (order as any).shippingInfo?.trackingNumber || 'لا يوجد تتبع',
+              company: { name: order.shippingInfo?.carrierName || 'غير محدد' },
+              tracking_number: order.shippingInfo?.trackingNumber || 'لا يوجد تتبع',
             },
             created_at: order.createdAt ? new Date(order.createdAt).toLocaleDateString('ar-SA') : '',
           };
         }
 
         this.logger.log(`🔧 enrichOrder: order ${sallaId} not in DB — trying Salla API`);
-      } catch (e) {
-        this.logger.warn(`🔧 enrichOrder DB lookup failed: ${(e as Error).message}`);
+      } catch (error: unknown) {
+        this.logger.warn(`🔧 enrichOrder DB lookup failed: ${getErrorMessage(error)}`);
       }
     }
 
@@ -1511,7 +1522,7 @@ export class EmployeeNotificationsService {
         if (store?.accessToken && store.platform === 'salla') {
           const accessToken = decrypt(store.accessToken);
           if (accessToken) {
-            let sallaOrder: any = null;
+            let sallaOrder: SallaOrder | null = null;
 
             // ── طريقة 1: getOrder بالـ entity.id (Internal Salla ID) ──
             if (entityId) {
@@ -1523,8 +1534,9 @@ export class EmployeeNotificationsService {
                   this.logger.log(`🔧 enrichOrder v3: ✅ L2-A SUCCESS → ref=${sallaOrder.reference_id}`);
                   this.logger.log(`🔧 enrichOrder v3: RAW → items=${JSON.stringify(sallaOrder.items?.slice?.(0,2) || sallaOrder.items)}, total=${sallaOrder.amounts?.total?.amount}, keys=${Object.keys(sallaOrder).join(',')}`);
                 }
-              } catch (e: any) {
-                this.logger.warn(`🔧 enrichOrder v3: L2-A failed (status=${e?.status || 'unknown'}, ${e?.message || e}) → trying L2-B`);
+              } catch (error: unknown) {
+                const details = getHttpErrorDetails(error);
+                this.logger.warn(`🔧 enrichOrder v3: L2-A failed (status=${details.status ?? 'unknown'}, ${details.message}) → trying L2-B`);
               }
             }
 
@@ -1536,15 +1548,15 @@ export class EmployeeNotificationsService {
                 if (sallaOrder) {
                   this.logger.log(`🔧 enrichOrder v3: ✅ L2-B SUCCESS → ref=${sallaOrder.reference_id}`);
                 }
-              } catch (e: any) {
-                this.logger.warn(`🔧 enrichOrder v3: L2-B failed: ${e?.message}`);
+              } catch (error: unknown) {
+                this.logger.warn(`🔧 enrichOrder v3: L2-B failed: ${getErrorMessage(error)}`);
               }
             }
 
             // ── تحويل النتيجة ──
             if (sallaOrder) {
               // ✅ Salla GET /orders/{id} لا يرجّع items — نجلبها بشكل منفصل
-              let items: any[] = Array.isArray(sallaOrder.items) ? sallaOrder.items : [];
+              let items: SallaOrderItem[] = Array.isArray(sallaOrder.items) ? sallaOrder.items : [];
               if (items.length === 0) {
                 this.logger.log(`🔧 enrichOrder v3: items not in order response — fetching /orders/${sallaOrder.id}/items`);
                 items = await this.sallaApiService.getOrderItems(accessToken, sallaOrder.id);
@@ -1554,7 +1566,7 @@ export class EmployeeNotificationsService {
               // ✅ Salla returns payment_method (string) not payment.method.name
               const paymentMethod = sallaOrder.payment?.method?.name
                 || (typeof sallaOrder.payment_method === 'string' ? sallaOrder.payment_method : '')
-                || (typeof sallaOrder.payment_method === 'object' ? (sallaOrder.payment_method as any)?.name : '')
+                || (typeof sallaOrder.payment_method === 'object' ? sallaOrder.payment_method.name : '')
                 || 'غير محدد';
 
               const paymentStatus = sallaOrder.payment?.status || sallaOrder.payment_status || 'غير محدد';
@@ -1582,11 +1594,11 @@ export class EmployeeNotificationsService {
                   phone: sallaOrder.customer.mobile || '',
                   email: sallaOrder.customer.email || '',
                 } : undefined,
-                items: items.map((it: any) => ({
-                  name: it.name || it.product_name || 'منتج',
-                  quantity: it.quantity || 1,
-                  price: { amount: it.price?.amount || it.price || 0 },
-                  sku: it.sku || '',
+                items: items.map((item) => ({
+                  name: item.name || 'منتج',
+                  quantity: item.quantity || 1,
+                  price: { amount: item.price.amount || 0 },
+                  sku: item.sku || '',
                 })),
                 date: sallaOrder.date,
                 created_at: sallaOrder.date?.date || '',
@@ -1600,8 +1612,8 @@ export class EmployeeNotificationsService {
         } else {
           this.logger.warn(`🔧 enrichOrder v3: LAYER 2 SKIP — store=${store ? 'found' : 'null'}, hasToken=${!!store?.accessToken}, platform=${store?.platform || 'unknown'}`);
         }
-      } catch (e) {
-        this.logger.warn(`🔧 enrichOrder v3: LAYER 2 ERROR: ${(e as Error).message}`);
+      } catch (error: unknown) {
+        this.logger.warn(`🔧 enrichOrder v3: LAYER 2 ERROR: ${getErrorMessage(error)}`);
       }
     } else {
       this.logger.warn(`🔧 enrichOrder v3: LAYER 2 SKIP — no storeId`);
@@ -1643,10 +1655,16 @@ export class EmployeeNotificationsService {
     const items = Array.isArray(data.items) ? data.items : [];
     let itemsText = '';
     if (items.length > 0) {
-      itemsText = items.map((it: any, idx: number) => {
-        const name = it.name || it.product_name || 'منتج';
-        const qty = it.quantity || 1;
-        const price = it.price?.amount || it.price || it.unitPrice || it.total || 0;
+      itemsText = items.map((value, idx: number) => {
+        const item = asJsonRecord(value);
+        const priceValue = item?.price;
+        const price = typeof priceValue === 'number'
+          ? priceValue
+          : getJsonNumber(asJsonRecord(priceValue), 'amount')
+            ?? getJsonNumber(item, 'unitPrice', 'total')
+            ?? 0;
+        const name = getJsonString(item, 'name', 'product_name') || 'منتج';
+        const qty = getJsonNumber(item, 'quantity') ?? 1;
         return `${idx + 1}. *${name}*\n   - *الكمية:* ${qty}\n   - *السعر:* ${price} ر.س`;
       }).join('\n');
     }

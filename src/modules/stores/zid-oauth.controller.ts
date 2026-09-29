@@ -48,8 +48,9 @@ import { StoresService } from './stores.service';
 import { JwtAuthGuard, Public } from '../auth/guards/jwt-auth.guard';
 import { User } from '@database/entities';
 import { ZidApiService } from './zid-api.service';
+import { getErrorMessage } from '@common/utils/error.util';
 
-interface RequestWithUser extends Request {
+interface RequestWithUser extends ExpressRequest {
   user: User;
 }
 
@@ -93,8 +94,8 @@ export class ZidOAuthController {
       this.logger.log(`Generated Zid OAuth URL for tenant ${tenantId}`);
       
       return { redirectUrl };
-    } catch (error: any) {
-      this.logger.error('Failed to start Zid OAuth flow', error);
+    } catch (error: unknown) {
+      this.logger.error('Failed to start Zid OAuth flow', getErrorMessage(error));
       throw new BadRequestException('فشل في بدء عملية الربط مع زد');
     }
   }
@@ -280,8 +281,8 @@ export class ZidOAuthController {
             authorizationToken: tokens.authorization || undefined,
             storeId: undefined,
           });
-        } catch (storeInfoErr: any) {
-          this.logger.warn(`⚠️ getStoreInfo failed in dashboard flow: ${storeInfoErr.message} — aborting connect`);
+        } catch (storeInfoError: unknown) {
+          this.logger.warn(`⚠️ getStoreInfo failed in dashboard flow: ${getErrorMessage(storeInfoError)} — aborting connect`);
           throw new BadRequestException('تعذر التحقق من بيانات متجر زد، حاول مرة أخرى.');
         }
         const storeInfo = { ...rawStoreInfo, created_at: new Date().toISOString() };
@@ -332,7 +333,7 @@ export class ZidOAuthController {
         );
       }
 
-    } catch (error: any) {
+    } catch (error: unknown) {
       this.logger.error('Zid OAuth callback error', {
         error: error instanceof Error ? error.message : 'Unknown',
       });
@@ -370,7 +371,7 @@ export class ZidOAuthController {
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)
   async reRegisterWebhooks(
-    @Req() req: any,
+    @Req() req: RequestWithUser,
     @Param('storeId') storeId: string,
   ) {
     this.logger.log(`🔔 Re-registering Zid webhooks for store: ${storeId}`);

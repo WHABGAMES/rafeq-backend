@@ -35,6 +35,7 @@ import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import { DataSource } from 'typeorm';
 import { csrfCookieMiddleware } from './common/guards/csrf.guard';
+import { getErrorMessage } from './common/utils/error.util';
 
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
@@ -322,9 +323,9 @@ async function bootstrap() {
         ON CONFLICT (slug) DO NOTHING
       `);
       logger.log('✅ Subscription tables ready');
-    } catch (e: any) {
-      logger.error(`❌ SUBSCRIPTION TABLES FAILED: ${e.message}`);
-      logger.error(e.stack);
+    } catch (error: unknown) {
+      logger.error(`❌ SUBSCRIPTION TABLES FAILED: ${getErrorMessage(error)}`);
+      if (error instanceof Error) logger.error(error.stack);
     }
 
     // ─── Auto-create suggestions tables (safe — IF NOT EXISTS) ──────────────
@@ -416,9 +417,9 @@ async function bootstrap() {
       await ds.query(`CREATE INDEX IF NOT EXISTS idx_suggestion_followers_suggestion ON suggestion_followers (suggestion_id)`);
 
       logger.log('✅ Suggestions tables ready');
-    } catch (e: any) {
-      logger.error(`❌ SUGGESTIONS TABLES FAILED: ${e.message}`);
-      logger.error(e.stack);
+    } catch (error: unknown) {
+      logger.error(`❌ SUGGESTIONS TABLES FAILED: ${getErrorMessage(error)}`);
+      if (error instanceof Error) logger.error(error.stack);
     }
 
     // ─── Auto-create campaigns table (safe — IF NOT EXISTS) ─────────────────
@@ -466,9 +467,9 @@ async function bootstrap() {
       await ds.query(`CREATE INDEX IF NOT EXISTS idx_campaigns_scheduled ON campaigns (scheduled_at) WHERE status = 'scheduled' AND scheduled_at IS NOT NULL`);
 
       logger.log('✅ Campaigns table ready');
-    } catch (e: any) {
-      logger.error(`❌ CAMPAIGNS TABLE FAILED: ${e.message}`);
-      logger.error(e.stack);
+    } catch (error: unknown) {
+      logger.error(`❌ CAMPAIGNS TABLE FAILED: ${getErrorMessage(error)}`);
+      if (error instanceof Error) logger.error(error.stack);
     }
 
     // ─── Auto-create widget_settings table ──────────────────────────────
@@ -523,9 +524,9 @@ async function bootstrap() {
       await ds.query(`ALTER TABLE widget_settings ALTER COLUMN custom_icon_url TYPE TEXT`);
 
       logger.log('✅ Widget settings table ready');
-    } catch (e: any) {
-      logger.error(`❌ WIDGET TABLE FAILED: ${e.message}`);
-      logger.error(e.stack);
+    } catch (error: unknown) {
+      logger.error(`❌ WIDGET TABLE FAILED: ${getErrorMessage(error)}`);
+      if (error instanceof Error) logger.error(error.stack);
     }
 
     // ─── Auto-create short_links + link_clicks tables ──────────────────
@@ -571,9 +572,9 @@ async function bootstrap() {
       await ds.query(`CREATE INDEX IF NOT EXISTS idx_link_clicks_date ON link_clicks (clicked_at)`);
 
       logger.log('✅ Short links tables ready');
-    } catch (e: any) {
-      logger.error(`❌ SHORT LINKS TABLES FAILED: ${e.message}`);
-      logger.error(e.stack);
+    } catch (error: unknown) {
+      logger.error(`❌ SHORT LINKS TABLES FAILED: ${getErrorMessage(error)}`);
+      if (error instanceof Error) logger.error(error.stack);
     }
 
     // ─── Auto-create trusted_devices table ─────────────────────────
@@ -600,9 +601,9 @@ async function bootstrap() {
       await ds.query(`CREATE INDEX IF NOT EXISTS idx_trusted_devices_user ON trusted_devices (user_id)`);
 
       logger.log('✅ Trusted devices table ready');
-    } catch (e: any) {
-      logger.error(`❌ TRUSTED DEVICES TABLE FAILED: ${e.message}`);
-      logger.error(e.stack);
+    } catch (error: unknown) {
+      logger.error(`❌ TRUSTED DEVICES TABLE FAILED: ${getErrorMessage(error)}`);
+      if (error instanceof Error) logger.error(error.stack);
     }
 
     // ─── Start ────────────────────────────────────────────────────────────────
@@ -649,8 +650,8 @@ process.on('uncaughtException', (error) => {
   setTimeout(() => process.exit(1), 3000);
 });
 
-process.on('unhandledRejection', (reason: any) => {
-  console.error('❌ Unhandled Rejection:', reason?.message || reason);
+process.on('unhandledRejection', (reason: unknown) => {
+  console.error('❌ Unhandled Rejection:', getErrorMessage(reason));
   setTimeout(() => process.exit(1), 3000);
 });
 

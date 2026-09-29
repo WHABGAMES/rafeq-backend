@@ -33,6 +33,7 @@ import {
 
 // ChannelsService: الإرسال الفعلي عبر واتساب
 import { ChannelsService } from '../../channels/channels.service';
+import { getErrorMessage } from '../../../common/utils/error.util';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 📌 JOB INTERFACES
@@ -310,9 +311,9 @@ export class MessagingProcessor extends WorkerHost {
 
       return { status: 'ai_re_triggered' };
 
-    } catch (error: any) {
+    } catch (error: unknown) {
       this.logger.error(
-        `❌ [SAFETY NET] Failed for message ${messageId}: ${error.message}`,
+        `❌ [SAFETY NET] Failed for message ${messageId}: ${getErrorMessage(error)}`,
       );
       throw error; // BullMQ will retry
     }

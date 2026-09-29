@@ -81,7 +81,7 @@ export class WidgetService {
       settings = this.repo.create({ storeId, tenantId, whatsappNumber: '' });
     }
 
-    const allowed = [
+    const allowed: readonly (keyof WidgetSettings)[] = [
       'isEnabled', 'whatsappNumber', 'welcomeMessage', 'prefilledMessage',
       'position', 'buttonColor', 'headerColor', 'size',
       'buttonStyle', 'buttonAnimation', 'buttonText', 'popupStyle',
@@ -92,12 +92,19 @@ export class WidgetService {
     ];
 
     for (const key of allowed) {
-      if (dto[key as keyof WidgetSettings] !== undefined) {
-        (settings as any)[key] = dto[key as keyof WidgetSettings];
-      }
+      this.assignIfDefined(settings, dto, key);
     }
 
     return this.repo.save(settings);
+  }
+
+  private assignIfDefined<K extends keyof WidgetSettings>(
+    target: WidgetSettings,
+    source: Partial<WidgetSettings>,
+    key: K,
+  ): void {
+    const value = source[key];
+    if (value !== undefined) target[key] = value;
   }
 
   /**

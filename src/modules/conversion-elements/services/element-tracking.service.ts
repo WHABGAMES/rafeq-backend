@@ -102,7 +102,7 @@ export class ElementTrackingService implements OnModuleDestroy {
       const numericId = parseInt(identifier, 10);
       if (!isNaN(numericId)) {
         store = await this.storeRepo.findOne({
-          where: { sallaMerchantId: numericId } as any,
+          where: { sallaMerchantId: numericId },
           select: ['id', 'tenantId'],
         });
       }
@@ -256,7 +256,7 @@ export class ElementTrackingService implements OnModuleDestroy {
           .createQueryBuilder()
           .insert()
           .into(ElementEvent)
-          .values(chunk as any)
+          .values(chunk)
           .execute();
       }
 

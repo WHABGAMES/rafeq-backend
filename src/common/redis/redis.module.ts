@@ -14,7 +14,7 @@
 
 import { Global, Module, Logger } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import Redis from 'ioredis';
+import Redis, { RedisOptions } from 'ioredis';
 
 export const REDIS_CLIENT = 'REDIS_CLIENT';
 
@@ -33,7 +33,7 @@ export const REDIS_CLIENT = 'REDIS_CLIENT';
         const db = configService.get<number>('REDIS_DB', 0);
         const useTls = configService.get<string>('REDIS_TLS') === 'true';
 
-        const baseOptions: Record<string, unknown> = {
+        const baseOptions: RedisOptions = {
           maxRetriesPerRequest: 5,
           retryStrategy: (times: number) => {
             if (times > 10) {
@@ -53,7 +53,7 @@ export const REDIS_CLIENT = 'REDIS_CLIENT';
         let client: Redis;
 
         if (redisUrl) {
-          client = new Redis(redisUrl, baseOptions as any);
+          client = new Redis(redisUrl, baseOptions);
         } else {
           client = new Redis({
             host,
@@ -62,7 +62,7 @@ export const REDIS_CLIENT = 'REDIS_CLIENT';
             password: password || undefined,
             ...(useTls && { tls: { rejectUnauthorized: false } }),
             ...baseOptions,
-          } as any);
+          });
         }
 
         client.on('error', (err) => {

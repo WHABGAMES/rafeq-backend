@@ -62,9 +62,9 @@ export interface CustomerMetadata {
   cancelledOrdersCount?: number;
   notes?: string;
   tags?: string[];
-  customFields?: Record<string, any>;
-  sallaData?: Record<string, any>;
-  zidData?: Record<string, any>;     // ✅ v4: بيانات زد الخام
+  customFields?: Record<string, unknown>;
+  sallaData?: Record<string, unknown>;
+  zidData?: Record<string, unknown>;     // ✅ v4: بيانات زد الخام
 }
 
 /**

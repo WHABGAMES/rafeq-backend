@@ -151,6 +151,15 @@ export interface SubscriptionMetadata {
   notes?: string;
   /** سبب الإلغاء */
   cancellationReason?: string;
+  scheduledPlanChange?: {
+    newPlanId: string;
+    effectiveAt?: Date;
+  };
+  createdBy?: string;
+  adminId?: string;
+  reason?: string;
+  activatedBy?: string;
+  externalId?: string;
 }
 
 /**
@@ -273,7 +282,7 @@ export class Subscription extends BaseEntity {
     nullable: true,
     comment: 'تاريخ طلب الإلغاء',
   })
-  cancelledAt?: Date;
+  cancelledAt?: Date | null;
 
   /**
    * 📅 Ends At - تاريخ انتهاء الاشتراك
@@ -287,7 +296,7 @@ export class Subscription extends BaseEntity {
     nullable: true,
     comment: 'تاريخ انتهاء الاشتراك الفعلي',
   })
-  endsAt?: Date;
+  endsAt?: Date | null;
 
   /**
    * ═══════════════════════════════════════════════════════════════════════════════

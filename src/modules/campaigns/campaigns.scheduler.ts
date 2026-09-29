@@ -14,6 +14,7 @@ import { Repository, LessThanOrEqual } from 'typeorm';
 
 import { Campaign, CampaignStatus } from '@database/entities';
 import { CampaignsService } from './campaigns.service';
+import { getErrorMessage } from '@common/utils/error.util';
 
 @Injectable()
 export class CampaignsScheduler {
@@ -45,23 +46,24 @@ export class CampaignsScheduler {
         try {
           await this.campaignsService.executeNow(campaign.id, campaign.tenantId);
           this.logger.log(`📣 Executed: ${campaign.id} "${campaign.name}"`);
-        } catch (err: any) {
-          this.logger.error(`📣 Failed to execute campaign ${campaign.id}: ${err.message}`);
+        } catch (error: unknown) {
+          const message = getErrorMessage(error);
+          this.logger.error(`📣 Failed to execute campaign ${campaign.id}: ${message}`);
           await this.campaignRepo.update(campaign.id, {
             status: CampaignStatus.FAILED,
             metadata: {
-              ...((campaign as any).metadata || {}),
-              lastError: err.message,
+              ...(campaign.metadata || {}),
+              lastError: message,
               changelog: [
-                ...((campaign.metadata as any)?.changelog || []),
+                ...(campaign.metadata?.changelog || []),
                 { action: 'scheduler_execution_failed', timestamp: new Date().toISOString() },
               ],
             },
-          } as any);
+          });
         }
       }
-    } catch (err: any) {
-      this.logger.error(`📣 Scheduler error: ${err.message}`);
+    } catch (error: unknown) {
+      this.logger.error(`📣 Scheduler error: ${getErrorMessage(error)}`);
     }
   }
 }

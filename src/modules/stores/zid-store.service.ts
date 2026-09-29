@@ -27,6 +27,8 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ConfigService } from '@nestjs/config';
 
 import { encrypt, decryptSafe, isEncrypted } from '@common/utils/encryption.util';
+import { getErrorMessage } from '@common/utils/error.util';
+import { getJsonString } from '@common/utils/json-record.util';
 import { Store, StoreStatus, StorePlatform } from './entities/store.entity';
 import { ZidStoreInfo } from './zid-oauth.service';
 import { ZidApiService, ZidAuthTokens } from './zid-api.service';
@@ -131,8 +133,8 @@ export class ZidStoreService {
         appId,
       );
       this.logger.log(`🔔 Zid webhooks registered: ${result.registered.join(',')}`);
-    } catch (error: any) {
-      this.logger.warn(`⚠️ Webhook registration failed (non-fatal): ${error.message}`);
+    } catch (error: unknown) {
+      this.logger.warn(`⚠️ Webhook registration failed (non-fatal): ${getErrorMessage(error)}`);
     }
 
     this.eventEmitter.emit('store.connected', {
@@ -217,7 +219,8 @@ export class ZidStoreService {
       };
     } else {
       // ✅ مسح التوكن القديم لمنع 401 errors
-      const { zidAuthorizationToken: _removed, ...otherSettings } = (store.settings as any) || {};
+      const otherSettings = { ...store.settings };
+      delete otherSettings.zidAuthorizationToken;
       store.settings = otherSettings;
       this.logger.warn(`⚠️ No authorization token from Zid — cleared old token for store ${store.zidStoreId}`);
     }
@@ -296,8 +299,8 @@ export class ZidStoreService {
         customers: store.zidCustomersCount,
       });
 
-    } catch (error: any) {
-      this.logger.error(`Failed to sync Zid store ${store.id}`, error);
+    } catch (error: unknown) {
+      this.logger.error(`Failed to sync Zid store ${store.id}`, getErrorMessage(error));
       throw error;
     }
   }
@@ -311,7 +314,7 @@ export class ZidStoreService {
    * زد يحتاج headerين: Authorization (Bearer) + X-Manager-Token
    */
   buildZidTokens(store: Store, managerToken: string): ZidAuthTokens {
-    const storedAuth = (store.settings as any)?.zidAuthorizationToken;
+    const storedAuth = getJsonString(store.settings, 'zidAuthorizationToken');
     let authorizationToken: string | null = null;
 
     if (storedAuth) {

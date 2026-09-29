@@ -30,6 +30,7 @@ import {
   Partials,
   Attachment,
   Interaction,
+  MessageCreateOptions,
 } from 'discord.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -296,7 +297,7 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
     const client = this.getClient(channelId);
     const channel = await this.getTextChannel(client, discordChannelId);
 
-    const options: any = { content: text };
+    const options: MessageCreateOptions = { content: text };
     
     if (replyToMessageId) {
       options.reply = { messageReference: replyToMessageId };
@@ -456,7 +457,7 @@ export class DiscordService implements OnModuleInit, OnModuleDestroy {
       const user = await client.users.fetch(userId);
       const dmChannel = await user.createDM();
 
-      const options: any = {};
+      const options: MessageCreateOptions = {};
       if (text) options.content = text;
 
       if (embed) {

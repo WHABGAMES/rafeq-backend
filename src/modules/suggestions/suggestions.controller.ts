@@ -37,6 +37,7 @@ import {
 
 import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { User } from '../../database/entities/user.entity';
 import { SuggestionsService } from './suggestions.service';
 import {
   CreateSuggestionDto,
@@ -67,7 +68,7 @@ export class SuggestionsController {
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
   async list(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Query() query: ListSuggestionsQueryDto,
   ) {
     return this.suggestionsService.list(query, user.id);
@@ -95,7 +96,7 @@ export class SuggestionsController {
   @ApiOperation({ summary: 'تفاصيل اقتراح' })
   async findOne(
     @Param('id', ParseUUIDPipe) id: string,
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
   ) {
     return this.suggestionsService.findOne(id, user.id);
   }
@@ -110,7 +111,7 @@ export class SuggestionsController {
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'إنشاء اقتراح أو الإبلاغ عن مشكلة' })
   async create(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Body() dto: CreateSuggestionDto,
   ) {
     return this.suggestionsService.create(dto, {
@@ -133,7 +134,7 @@ export class SuggestionsController {
   @ApiOperation({ summary: 'إعجاب / إلغاء إعجاب' })
   async toggleLike(
     @Param('id', ParseUUIDPipe) id: string,
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
   ) {
     return this.suggestionsService.toggleLike(id, user.id);
   }
@@ -149,7 +150,7 @@ export class SuggestionsController {
   @ApiOperation({ summary: 'متابعة / إلغاء متابعة' })
   async toggleFollow(
     @Param('id', ParseUUIDPipe) id: string,
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
   ) {
     return this.suggestionsService.toggleFollow(id, user.id);
   }
@@ -179,7 +180,7 @@ export class SuggestionsController {
   @ApiOperation({ summary: 'إضافة تعليق' })
   async addComment(
     @Param('id', ParseUUIDPipe) id: string,
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Body() dto: CreateCommentDto,
   ) {
     return this.suggestionsService.addComment(id, dto, {

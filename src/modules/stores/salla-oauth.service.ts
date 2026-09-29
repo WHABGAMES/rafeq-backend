@@ -25,6 +25,13 @@ import { AutoRegistrationService } from '../auth/auto-registration.service';
 
 // 🔐 Encryption
 import { encrypt } from '@common/utils/encryption.util';
+import { getErrorMessage, getHttpErrorDetails, isUniqueConstraintError } from '@common/utils/error.util';
+import {
+  asJsonRecord,
+  getJsonNumber,
+  getJsonString,
+  getNestedJsonRecord,
+} from '@common/utils/json-record.util';
 import * as crypto from 'crypto';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -91,6 +98,36 @@ export interface SallaAppAuthorizeData {
   scope: string;
 }
 
+interface SallaStoreApiData {
+  id: number;
+  name: string;
+  username?: string;
+  email: string;
+  mobile?: string;
+  domain: string;
+  plan: string;
+  avatar?: string;
+}
+
+export function parseSallaStoreData(value: unknown): SallaStoreApiData {
+  const root = asJsonRecord(value);
+  const data = getNestedJsonRecord(root, 'data');
+  const id = getJsonNumber(data, 'id');
+  const name = getJsonString(data, 'name');
+  if (id === undefined || !name) throw new Error('Salla store response is missing id or name');
+
+  return {
+    id,
+    name,
+    username: getJsonString(data, 'username'),
+    email: getJsonString(data, 'email') ?? '',
+    mobile: getJsonString(data, 'mobile'),
+    domain: getJsonString(data, 'domain') ?? '',
+    plan: getJsonString(data, 'plan') ?? '',
+    avatar: getJsonString(data, 'avatar'),
+  };
+}
+
 @Injectable()
 export class SallaOAuthService {
   private readonly logger = new Logger(SallaOAuthService.name);
@@ -138,7 +175,7 @@ export class SallaOAuthService {
       nonce: crypto.randomBytes(16).toString('hex'),
     };
     const encoded = Buffer.from(JSON.stringify(stateData)).toString('base64url');
-    const secret = this.configService.get('JWT_SECRET', '');
+    const secret = this.configService.getOrThrow<string>('JWT_SECRET');
     const signature = crypto
       .createHmac('sha256', secret)
       .update(encoded)
@@ -166,7 +203,7 @@ export class SallaOAuthService {
         throw new Error('Invalid state format');
       }
 
-      const secret = this.configService.get('JWT_SECRET', '');
+      const secret = this.configService.getOrThrow<string>('JWT_SECRET');
       const expectedSignature = crypto
         .createHmac('sha256', secret)
         .update(encoded)
@@ -182,14 +219,17 @@ export class SallaOAuthService {
       }
 
       // Verify timestamp (10 minute window)
-      const decoded = JSON.parse(Buffer.from(encoded, 'base64url').toString());
+      const decoded = asJsonRecord(JSON.parse(Buffer.from(encoded, 'base64url').toString()) as unknown);
+      const timestamp = getJsonNumber(decoded, 'ts');
+      const tenantId = getJsonString(decoded, 'tenantId');
+      if (timestamp === undefined || !tenantId) throw new Error('Invalid state payload');
       const MAX_AGE = 10 * 60 * 1000;
-      if (Date.now() - decoded.ts > MAX_AGE) {
+      if (Date.now() - timestamp > MAX_AGE || timestamp > Date.now() + 60_000) {
         throw new Error('State parameter expired');
       }
 
-      return { tenantId: decoded.tenantId, custom: decoded.custom || '' };
-    } catch (error) {
+      return { tenantId, custom: getJsonString(decoded, 'custom') ?? '' };
+    } catch {
       // ✅ FIX: DEBUG وليس ERROR — state من سلة (غير موقّع) هو سلوك متوقع
       // يحدث عند تثبيت التطبيق من متجر سلة (وليس من الداشبورد)
       this.logger.debug('State is not HMAC-signed — likely Salla-generated state');
@@ -332,8 +372,10 @@ export class SallaOAuthService {
         tenantId,
         merchantId: merchantInfo.id,
       };
-    } catch (error: any) {
-      this.logger.error('Failed to exchange code for tokens', { error: error.response?.data || error.message });
+    } catch (error: unknown) {
+      this.logger.error('Failed to exchange code for tokens', {
+        error: getHttpErrorDetails(error, 'Salla token exchange failed').message,
+      });
       throw new BadRequestException('Failed to exchange authorization code');
     }
   }
@@ -444,9 +486,9 @@ export class SallaOAuthService {
         } else {
           this.logger.log(`✅ Salla store updated: ${sallaMerchantId} → tenant ${store.tenantId}`);
         }
-      } catch (saveError: any) {
+      } catch (saveError: unknown) {
         // Handle duplicate key constraint violation (race condition)
-        if (saveError.code === '23505' || saveError.message?.includes('duplicate key')) {
+        if (isUniqueConstraintError(saveError)) {
           this.logger.warn(`⚠️ Duplicate key detected for ${sallaMerchantId}, re-querying and updating...`);
           
           // Re-query the existing store
@@ -506,8 +548,8 @@ export class SallaOAuthService {
           isNewUser: regResult.isNewUser,
           ownerEmail,
         });
-      } catch (error: any) {
-        this.logger.error(`❌ Auto-registration failed: ${error.message}`, {
+      } catch (error: unknown) {
+        this.logger.error(`❌ Auto-registration failed: ${getErrorMessage(error)}`, {
           merchantId: merchantInfo.id,
           ownerEmail,
           storeEmail: merchantInfo.email,
@@ -520,9 +562,9 @@ export class SallaOAuthService {
         email: ownerEmail,  // ✅ إرجاع إيميل المالك الشخصي
       };
 
-    } catch (error: any) {
+    } catch (error: unknown) {
       this.logger.error('Failed exchangeCodeAndAutoRegister', {
-        error: error.response?.data || error.message,
+        error: getHttpErrorDetails(error, 'Salla store installation failed').message,
       });
       throw new BadRequestException('Failed to complete Salla store installation');
     }
@@ -549,16 +591,16 @@ export class SallaOAuthService {
    */
   async fetchMerchantInfo(accessToken: string): Promise<SallaMerchantInfo> {
     // ─── 1. جلب بيانات المتجر (store/info) ───
-    let storeData: any;
+    let storeData: SallaStoreApiData;
     try {
       const storeResponse = await firstValueFrom(
-        this.httpService.get(`${this.sallaApiUrl}/store/info`, {
+        this.httpService.get<unknown>(`${this.sallaApiUrl}/store/info`, {
           headers: { Authorization: `Bearer ${accessToken}` },
         }),
       );
-      storeData = storeResponse.data.data;
-    } catch (error: any) {
-      this.logger.error('Failed to fetch store info from Salla', error.message);
+      storeData = parseSallaStoreData(storeResponse.data);
+    } catch (error: unknown) {
+      this.logger.error('Failed to fetch store info from Salla', getErrorMessage(error));
       throw new BadRequestException('Failed to fetch store information from Salla');
     }
 
@@ -566,19 +608,21 @@ export class SallaOAuthService {
     let userData: { email?: string; mobile?: string; name?: string } = {};
     try {
       const userResponse = await firstValueFrom(
-        this.httpService.get(this.sallaUserInfoUrl, {
+        this.httpService.get<unknown>(this.sallaUserInfoUrl, {
           headers: { Authorization: `Bearer ${accessToken}` },
         }),
       );
 
-      const userPayload = userResponse.data?.data || userResponse.data;
+      const responseRoot = asJsonRecord(userResponse.data);
+      const userPayload = getNestedJsonRecord(responseRoot, 'data') ?? responseRoot;
 
       userData = {
-        email: userPayload?.email || undefined,
-        mobile: userPayload?.mobile || userPayload?.phone || undefined,
-        name: userPayload?.name
-          || [userPayload?.first_name, userPayload?.last_name].filter(Boolean).join(' ')
-          || undefined,
+        email: getJsonString(userPayload, 'email'),
+        mobile: getJsonString(userPayload, 'mobile', 'phone'),
+        name: getJsonString(userPayload, 'name')
+          ?? ([getJsonString(userPayload, 'first_name'), getJsonString(userPayload, 'last_name')]
+            .filter((part): part is string => Boolean(part))
+            .join(' ') || undefined),
       };
 
       this.logger.log(`👤 Salla user/info fetched`, {
@@ -586,14 +630,14 @@ export class SallaOAuthService {
         ownerMobile: userData.mobile ? '✓' : '(none)',
         ownerName: userData.name || '(none)',
       });
-    } catch (error: any) {
+    } catch (error: unknown) {
       // ⚠️ user/info قد يفشل في بعض الحالات (scope محدود، متجر تجريبي)
       // لا نوقف العملية — نسجل تحذير ونكمل ببيانات المتجر كـ fallback
       this.logger.warn(
         `⚠️ Failed to fetch user/info from Salla OAuth — will fallback to store email`,
         {
-          status: error.response?.status,
-          error: error.response?.data?.error || error.message,
+          status: getHttpErrorDetails(error).status,
+          error: getHttpErrorDetails(error, 'Salla user info request failed').message,
           hint: 'This is expected for some test stores or limited OAuth scopes',
         },
       );
@@ -723,8 +767,8 @@ export class SallaOAuthService {
 
       this.logger.log('Access token refreshed successfully');
       return response.data;
-    } catch (error: any) {
-      this.logger.error('Failed to refresh token', error.message);
+    } catch (error: unknown) {
+      this.logger.error('Failed to refresh token', getErrorMessage(error));
       throw new BadRequestException('Failed to refresh access token');
     }
   }
@@ -852,8 +896,8 @@ export class SallaOAuthService {
           isNewUser: result.isNewUser,
           ownerEmail,
         });
-      } catch (error: any) {
-        this.logger.error(`❌ Auto-registration failed: ${error.message}`, {
+      } catch (error: unknown) {
+        this.logger.error(`❌ Auto-registration failed: ${getErrorMessage(error)}`, {
           merchantId,
           ownerEmail,
           storeEmail: merchantInfo.email,

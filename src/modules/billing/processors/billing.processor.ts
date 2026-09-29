@@ -12,6 +12,11 @@ import { Logger } from '@nestjs/common';
 
 import { PaymentService } from '../services/payment.service';
 import { UsageTrackingService } from '../services/usage-tracking.service';
+import {
+  asJsonRecord,
+  getJsonNumber,
+  getJsonString,
+} from '../../../common/utils/json-record.util';
 
 @Processor('billing')
 export class BillingProcessor extends WorkerHost {
@@ -27,25 +32,50 @@ export class BillingProcessor extends WorkerHost {
   /**
    * معالجة المهام
    */
-  async process(job: Job<any, any, string>): Promise<any> {
+  async process(job: Job<unknown, unknown, string>): Promise<void> {
     this.logger.log(`Processing billing job: ${job.name}`);
 
     switch (job.name) {
-      case 'renew-subscription':
-        return this.handleRenewal(job.data);
+      case 'renew-subscription': {
+        const subscriptionId = this.requireStringField(job.data, 'subscriptionId', job.name);
+        return this.handleRenewal({ subscriptionId });
+      }
       
-      case 'reset-usage':
-        return this.handleUsageReset(job.data);
+      case 'reset-usage': {
+        const tenantId = this.requireStringField(job.data, 'tenantId', job.name);
+        return this.handleUsageReset({ tenantId });
+      }
       
-      case 'send-usage-alert':
-        return this.handleUsageAlert(job.data);
+      case 'send-usage-alert': {
+        const tenantId = this.requireStringField(job.data, 'tenantId', job.name);
+        const percentageUsed = this.requireNumberField(job.data, 'percentageUsed', job.name);
+        return this.handleUsageAlert({ tenantId, percentageUsed });
+      }
       
-      case 'expire-trial':
-        return this.handleTrialExpiry(job.data);
+      case 'expire-trial': {
+        const tenantId = this.requireStringField(job.data, 'tenantId', job.name);
+        return this.handleTrialExpiry({ tenantId });
+      }
       
       default:
         this.logger.warn(`Unknown job type: ${job.name}`);
     }
+  }
+
+  private requireStringField(data: unknown, field: string, jobName: string): string {
+    const value = getJsonString(asJsonRecord(data), field);
+    if (!value) {
+      throw new Error(`Invalid ${jobName} job: ${field} must be a non-empty string`);
+    }
+    return value;
+  }
+
+  private requireNumberField(data: unknown, field: string, jobName: string): number {
+    const value = getJsonNumber(asJsonRecord(data), field);
+    if (value === undefined || !Number.isFinite(value)) {
+      throw new Error(`Invalid ${jobName} job: ${field} must be a finite number`);
+    }
+    return value;
   }
 
   /**

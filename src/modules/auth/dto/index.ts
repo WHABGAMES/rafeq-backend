@@ -114,40 +114,14 @@ export class VerifyEmailOtpDto {
   otp: string;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// 🔵 GOOGLE OAuth
-// ═══════════════════════════════════════════════════════════════════════════════
-
-export class GoogleAuthDto {
-  @ApiProperty({ description: 'Google ID Token' })
-  @IsString() @IsNotEmpty({ message: 'Google token مطلوب' })
-  idToken: string;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// 🟢 SALLA OAuth
-// ═══════════════════════════════════════════════════════════════════════════════
-
-export class SallaAuthDto {
-  @ApiProperty({ description: 'كود التفويض من Salla' })
-  @IsString() @IsNotEmpty({ message: 'Salla auth code مطلوب' })
+export class OAuthCallbackDto {
+  @ApiProperty({ description: 'OAuth authorization code' })
+  @IsString() @IsNotEmpty({ message: 'OAuth code مطلوب' })
   code: string;
 
-  @ApiPropertyOptional() @IsString() @IsOptional()
-  state?: string;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// 🟣 ZID OAuth
-// ═══════════════════════════════════════════════════════════════════════════════
-
-export class ZidAuthDto {
-  @ApiProperty({ description: 'كود التفويض من Zid' })
-  @IsString() @IsNotEmpty({ message: 'Zid auth code مطلوب' })
-  code: string;
-
-  @ApiPropertyOptional() @IsString() @IsOptional()
-  state?: string;
+  @ApiProperty({ description: 'One-time OAuth state' })
+  @IsString() @IsNotEmpty({ message: 'OAuth state مطلوب' })
+  state: string;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -254,7 +228,7 @@ export class UserProfileDto {
   @ApiProperty() role: string;
   @ApiProperty() tenantId: string;
   @ApiPropertyOptional() authProvider?: string;
-  @ApiPropertyOptional() preferences?: Record<string, any>;
+  @ApiPropertyOptional() preferences?: Record<string, unknown>;
   @ApiProperty() createdAt: Date;
 }
 

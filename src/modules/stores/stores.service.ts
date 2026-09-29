@@ -25,15 +25,16 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DeepPartial, Not } from 'typeorm';
+import { Repository, DeepPartial, Not, FindOptionsWhere } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { encrypt, decrypt } from '@common/utils/encryption.util';
 import { Store, StoreStatus, StorePlatform } from './entities/store.entity';
 
 import { SallaStoreService, ConnectSallaStoreData } from './salla-store.service';
 import { ZidStoreService, ConnectZidStoreData } from './zid-store.service';
-import { SallaOAuthService } from './salla-oauth.service';
+import { SallaOAuthService, SallaTokenResponse } from './salla-oauth.service';
 import { ZidOAuthService, ZidTokenResponse } from './zid-oauth.service';
+import { getErrorMessage } from '@common/utils/error.util';
 
 // ─── Other Platform ───────────────────────────────────────────────────────────
 
@@ -78,7 +79,7 @@ export class StoresService {
     store.refreshToken = encrypt(tokens.refreshToken) ?? undefined;
   }
 
-  private async findWithTokens(where: Record<string, any>): Promise<Store | null> {
+  private async findWithTokens(where: FindOptionsWhere<Store>): Promise<Store | null> {
     return this.storeRepository
       .createQueryBuilder('store')
       .addSelect('store.accessToken')
@@ -269,12 +270,13 @@ export class StoresService {
 
       return updatedStore;
 
-    } catch (error: any) {
-      store.lastError         = error.message || 'Sync failed';
+    } catch (error: unknown) {
+      const message = getErrorMessage(error, 'Sync failed');
+      store.lastError         = message;
       store.lastErrorAt       = new Date();
       store.consecutiveErrors += 1;
       await this.storeRepository.save(store);
-      throw new BadRequestException(`فشل في المزامنة: ${error.message}`);
+      throw new BadRequestException(`فشل في المزامنة: ${message}`);
     }
   }
 
@@ -309,7 +311,7 @@ export class StoresService {
     this.logger.log(`Refreshing token for store: ${store.id} (${store.platform})`);
 
     try {
-      let tokens: any;
+      let tokens: SallaTokenResponse | ZidTokenResponse;
 
       if (store.platform === StorePlatform.SALLA) {
         tokens = await this.sallaOAuthService.refreshAccessToken(refreshToken);
@@ -339,7 +341,7 @@ export class StoresService {
 
       return tokens.access_token;
 
-    } catch (error: any) {
+    } catch (error: unknown) {
       store.status            = StoreStatus.TOKEN_EXPIRED;
       store.lastError         = error instanceof Error ? error.message : 'Token refresh failed';
       store.lastErrorAt       = new Date();

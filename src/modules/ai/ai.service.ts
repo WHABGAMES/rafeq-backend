@@ -22,6 +22,8 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import OpenAI from 'openai';
 import axios from 'axios';
 import type {
+  ChatCompletion,
+  ChatCompletionCreateParamsNonStreaming,
   ChatCompletionMessageParam,
   ChatCompletionTool,
 } from 'openai/resources/chat/completions';
@@ -39,11 +41,38 @@ import {
 } from '@database/entities';
 
 // ✅ Services
-import { SallaApiService, SallaProduct } from '../stores/salla-api.service';
+import {
+  SallaApiService,
+  SallaOrder,
+  SallaOrderItem,
+  SallaProduct,
+} from '../stores/salla-api.service';
 import { ZidApiService, ZidAuthTokens } from '../stores/zid-api.service';
 
 // ✅ Utils
 import { decrypt } from '@common/utils/encryption.util';
+import {
+  asJsonRecord,
+  getJsonBoolean,
+  getJsonNumber,
+  getJsonString,
+  getJsonValue,
+} from '@common/utils/json-record.util';
+import {
+  getErrorCode,
+  getErrorMessage,
+  getHttpErrorDetails,
+} from '@common/utils/error.util';
+import {
+  OrderItem,
+  PaymentMethod,
+  PaymentStatus,
+} from '@database/entities/order.entity';
+import {
+  assertPublicHttpUrl,
+  publicHttpAgent,
+  publicHttpsAgent,
+} from '@common/utils/public-url.util';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 📌 ENUMS & INTERFACES
@@ -120,7 +149,7 @@ export interface AISettings {
   productActiveOnly?: boolean; // Default: true — المنتجات المعروضة فقط
   websiteUrl?: string; // URL for website scraping mode
   websiteScrapedAt?: string; // Last scrape timestamp
-  websiteProducts?: Array<{ name: string; price: string; available: boolean; url: string; description?: string }>; // Cached scraped products
+  websiteProducts?: ScrapedProduct[]; // Cached scraped products
   
   // ✅ Level 2: Timeouts and Rate Limits
   openaiTimeout?: number; // Default: 30000 ms (30 seconds)
@@ -131,6 +160,7 @@ export interface AISettings {
   // ✅ وضع المالك — Owner/Merchant Mode
   ownerModeEnabled?: boolean; // Default: false
   ownerPhones?: string[]; // أرقام هواتف المالك والموظفين (حتى 5)
+  ownerLids?: string[]; // معرّفات WhatsApp LID المكتشفة للمالك (حتى 10)
   ownerWelcomeMessage?: string; // رسالة ترحيب خاصة بالتاجر
   ownerCapabilities?: {
     orderLookup: boolean; // استعلام عن الطلبات وبيانات العملاء
@@ -146,6 +176,29 @@ export interface AISettings {
   // ✅ تجميع الرسائل — Message Batching
   messageBatchingEnabled?: boolean; // Default: true — ينتظر قبل الرد
   messageBatchingSeconds?: number; // Default: 30 ثانية | المدى: 30-300
+}
+
+interface DigitalContent {
+  type: 'digital_codes' | 'digital_url';
+  codes?: Array<{ product: string; code: string }>;
+  url?: string | null;
+  message?: string | null;
+}
+
+interface ScrapedProduct {
+  name: string;
+  price: string;
+  available: boolean;
+  url: string;
+  description?: string;
+}
+
+interface OrderEnrichmentUpdate {
+  items: OrderItem[];
+  paymentMethod?: PaymentMethod;
+  paymentStatus?: PaymentStatus;
+  referenceId?: string;
+  sallaOrderId?: string;
 }
 
 export interface ConversationContext {
@@ -1570,7 +1623,8 @@ export class AIService {
       const finalReply = completion.choices[0]?.message?.content || '';
 
       if (!finalReply) {
-        const status = (orderResult as any).status || (orderResult as any).statusAr || 'unknown';
+        const orderRecord = asJsonRecord(orderResult);
+        const status = getJsonString(orderRecord, 'status', 'statusAr', 'status_ar') || 'unknown';
         const isAr = settings.language !== 'en';
         return {
           reply: isAr ? `طلبك برقم ${orderNumber} حالته: ${status}.` : `Your order #${orderNumber} status: ${status}.`,
@@ -1914,14 +1968,14 @@ export class AIService {
           // ✅ MODE: Website Scrape — استخدم المنتجات المحفوظة من scraping
           const query = message.toLowerCase();
           const words = query.split(/\s+/).filter((w: string) => w.length > 2);
-          const matchedProducts = (settings.websiteProducts || []).filter((p: any) => {
+          const matchedProducts = (settings.websiteProducts || []).filter((p) => {
             const pName = (p.name || '').toLowerCase();
             const pDesc = (p.description || '').toLowerCase();
             return pName.includes(query) || query.includes(pName) || words.some((w: string) => pName.includes(w) || pDesc.includes(w));
           });
 
           if (matchedProducts.length > 0) {
-            chunks.push(...matchedProducts.slice(0, 5).map((p: any) => ({
+            chunks.push(...matchedProducts.slice(0, 5).map((p) => ({
               title: `منتج: ${p.name}`,
               content: `المنتج: ${p.name}\nالسعر: ${p.price}\nالحالة: ${p.available ? 'متوفر ✅' : 'غير متوفر ❌'}${p.description ? '\nالوصف: ' + p.description : ''}${p.url ? '\nالرابط: ' + p.url : ''}`,
               score: 0.8,
@@ -1929,7 +1983,7 @@ export class AIService {
             this.logger.log(`🌐 Website products: found ${matchedProducts.length} matches`);
           } else {
             // لم يجد تطابق → أرسل أول 10 منتجات لـ GPT يقرر
-            chunks.push(...(settings.websiteProducts || []).slice(0, 10).map((p: any) => ({
+            chunks.push(...(settings.websiteProducts || []).slice(0, 10).map((p) => ({
               title: `منتج: ${p.name}`,
               content: `${p.name} — ${p.price} — ${p.available ? 'متوفر' : 'غير متوفر'}`,
               score: 0.5,
@@ -1944,7 +1998,7 @@ export class AIService {
             this.logger.log(`🛒 Salla API: ${productResult.chunks.length} products found`);
           }
         }
-      } catch (error) {
+      } catch {
         this.logger.warn('Smart Retrieve: Product search failed — continuing with library only');
       }
     }
@@ -2499,190 +2553,6 @@ If there is no store identity above AND no information relates to the customer's
   }
 
   /**
-   * ✅ Level 2: Enhanced Intent Router
-   * Routes messages to appropriate strategy based on intent and store settings
-   */
-  // @ts-ignore — kept as dead code for backward compatibility
-  private async routeIntent(
-    message: string,
-    settings: AISettings,
-  ): Promise<IntentResult> {
-    // First, classify the intent
-    const intentResult = await this.classifyIntent(message, settings);
-    
-    // Determine strategy and allowed sources based on intent
-    let strategy: SearchPriority | undefined;
-    let allowedSources: ('library' | 'products')[] | undefined;
-    
-    switch (intentResult.intent) {
-      case IntentType.PRODUCT_QUESTION:
-        // Product questions should prioritize products
-        strategy = settings.searchPriority === SearchPriority.LIBRARY_ONLY 
-          ? SearchPriority.LIBRARY_ONLY 
-          : SearchPriority.PRODUCTS_ONLY;
-        allowedSources = strategy === SearchPriority.LIBRARY_ONLY ? ['library'] : ['products'];
-        break;
-        
-      case IntentType.POLICY_SUPPORT_FAQ:
-        // Policy/FAQ should prioritize library
-        strategy = settings.searchPriority === SearchPriority.PRODUCTS_ONLY
-          ? SearchPriority.PRODUCTS_ONLY
-          : SearchPriority.LIBRARY_ONLY;
-        allowedSources = strategy === SearchPriority.PRODUCTS_ONLY ? ['products'] : ['library'];
-        break;
-        
-      case IntentType.COMPLAINT_ESCALATION:
-        // Complaints should trigger handoff
-        strategy = undefined;
-        allowedSources = [];
-        break;
-        
-      case IntentType.OUT_OF_SCOPE:
-        // ✅ FIX: حتى لو Intent classifier قال "خارج النطاق"
-        // نحمّل المكتبة ونخلي GPT يقرر — Intent classifier ممكن يغلط
-        strategy = settings.searchPriority;
-        allowedSources = ['library', 'products'];
-        break;
-        
-      default:
-        // Use store default for other intents
-        strategy = settings.searchPriority;
-        allowedSources = ['library', 'products'];
-        break;
-    }
-    
-    return {
-      ...intentResult,
-      strategy,
-      allowedSources,
-    };
-  }
-
-
-  /**
-   * ✅ المهمة 1: تصنيف نية الرسالة بالـ LLM (Intent Classification)
-   * يحدد نوع الرسالة قبل أي بحث أو معالجة
-   * يستخدم gpt-4o-mini للسرعة والتكلفة المنخفضة
-   */
-  private async classifyIntent(
-    message: string,
-    settings: AISettings,
-  ): Promise<IntentResult> {
-    // ✅ فحص سريع بـ Pattern أولاً (لتجنب API call غير ضروري)
-    const patternResult = this.detectSimpleIntentPattern(message, settings);
-    if (patternResult) return patternResult;
-
-    try {
-      const lang = settings.language !== 'en' ? 'ar' : 'en';
-      const systemPrompt = lang === 'ar'
-        ? `أنت محلل نوايا متقدم لمتجر إلكتروني. صنّف رسالة العميل إلى واحد فقط من الأنواع التالية.
-أجب فقط بـ JSON بدون أي نص آخر.
-
-الأنواع:
-- GREETING: تحية بسيطة فقط (مثل: مرحبا، السلام عليكم، هلا، صباح الخير) بدون أي سؤال
-- SMALLTALK: كلام اجتماعي (مثل: كيفك، اخبارك، شلونك) بدون سؤال محدد
-- PRODUCT_QUESTION: سؤال عن منتج معين، سعر، توفر، مواصفات (مثل: كم سعر المنتج X، هل متوفر، مواصفات)
-- POLICY_SUPPORT_FAQ: سؤال عن سياسات المتجر، التوصيل، الإرجاع، ساعات العمل، معلومات عامة، أو سؤال عن خدمة/منتج بشكل عام (مثل: متى دوري، كم المدة، اذا طلبت/اشتريت)
-- COMPLAINT_ESCALATION: شكوى أو طلب تصعيد أو استياء (مثل: غير راضي، مشكلة، اشتكي)
-- ORDER_QUERY: أي استفسار عن طلب العميل — سواء بوجود رقم طلب (مثل: وين طلبي رقم 1234) أو بدون رقم (مثل: طلبي تأخر، وين طلبي، متى يوصل طلبي، ابي اتتبع طلبي)
-- HUMAN_REQUEST: طلب صريح للتحدث مع موظف أو شخص بشري
-- OUT_OF_SCOPE: سؤال خارج نطاق المتجر تماماً (مثل: سياسة، رياضة، طبخ)
-- UNKNOWN: لا يمكن تحديد النوع
-
-⚠️ قواعد مهمة:
-- ORDER_QUERY: أي ذكر لطلب العميل (بوجود رقم أو بدونه) — مثل: طلبي تأخر، وين طلبي، ابي اتتبع الطلب
-- "اذا طلبت/اشتريت X متى..." = POLICY_SUPPORT_FAQ (سؤال عام عن الخدمة وليس استفسار طلب)
-- "متى دوري" أو "كم المدة" = POLICY_SUPPORT_FAQ
-- إذا الرسالة تسأل عن معلومة محددة = ليست GREETING/SMALLTALK
-- أسئلة المنتجات المحددة (سعر، مواصفات) = PRODUCT_QUESTION
-- أسئلة السياسات العامة = POLICY_SUPPORT_FAQ
-- SMALLTALK فقط للكلام الاجتماعي الحقيقي (كيفك، اخبارك) — أي سؤال يطلب معلومة (وش اسمك، من أنت، وش تسوي) = POLICY_SUPPORT_FAQ وليس SMALLTALK
-- أي رسالة فيها علامة استفهام أو تبدأ بـ "وش/ايش/شو/هل/كم/متى/وين/ليش/كيف" = ليست SMALLTALK`
-        : `You are an advanced intent classifier for an online store. Classify the customer message into exactly one type.
-Respond ONLY with JSON, no other text.
-
-Types:
-- GREETING: Simple greeting only (e.g., hi, hello, good morning) without any question
-- SMALLTALK: Social talk (e.g., how are you, what's up) without specific question
-- PRODUCT_QUESTION: Question about a specific product, price, availability, specs
-- POLICY_SUPPORT_FAQ: Question about store policies, shipping, returns, hours, general info, or general service questions (e.g., if I buy X when will it arrive, how long does it take)
-- COMPLAINT_ESCALATION: Complaint, escalation request, dissatisfaction
-- ORDER_QUERY: Any mention of customer's order — with or without order number (e.g., where is my order #1234, my order is late, track my order, when will my order arrive)
-- HUMAN_REQUEST: Explicit request to speak to a human agent
-- OUT_OF_SCOPE: Question completely outside store scope (politics, sports, cooking)
-- UNKNOWN: Cannot determine
-
-⚠️ Important rules:
-- ORDER_QUERY: any mention of customer's order (with or without number) — e.g., my order is late, where is my order, track my order
-- "If I order/buy X when will..." = POLICY_SUPPORT_FAQ (general service question, NOT order query)
-- "When is my turn" or "how long" = POLICY_SUPPORT_FAQ
-- If message asks for specific info = NOT GREETING/SMALLTALK
-- Specific product questions = PRODUCT_QUESTION
-- General policy questions = POLICY_SUPPORT_FAQ`;
-
-      const response = await this.withTimeout(
-        this.openai.chat.completions.create({
-          model: 'gpt-4o-mini',
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: `رسالة العميل: "${message}"\n\nأجب بـ JSON:\n{"intent":"...","confidence":0.00}` },
-          ],
-          temperature: 0,
-          max_tokens: 50,
-        }),
-        10000, // 10 second timeout for intent classification
-        'Intent classification'
-      );
-
-      const raw = (response.choices[0]?.message?.content || '').trim();
-      const cleaned = raw.replace(/```json|```/g, '').trim();
-      const parsed = JSON.parse(cleaned) as { intent: string; confidence: number };
-
-      // Map old intent names to new enum if needed
-      let mappedIntent: IntentType;
-      switch (parsed.intent) {
-        case 'GREETING':
-          mappedIntent = IntentType.GREETING;
-          break;
-        case 'SMALLTALK':
-          mappedIntent = IntentType.SMALLTALK;
-          break;
-        case 'PRODUCT_QUESTION':
-          mappedIntent = IntentType.PRODUCT_QUESTION;
-          break;
-        case 'POLICY_SUPPORT_FAQ':
-        case 'SUPPORT_QUERY':
-          mappedIntent = IntentType.POLICY_SUPPORT_FAQ;
-          break;
-        case 'COMPLAINT_ESCALATION':
-          mappedIntent = IntentType.COMPLAINT_ESCALATION;
-          break;
-        case 'ORDER_QUERY':
-          mappedIntent = IntentType.ORDER_QUERY;
-          break;
-        case 'HUMAN_REQUEST':
-          mappedIntent = IntentType.HUMAN_REQUEST;
-          break;
-        case 'OUT_OF_SCOPE':
-          mappedIntent = IntentType.OUT_OF_SCOPE;
-          break;
-        default:
-          mappedIntent = IntentType.UNKNOWN;
-      }
-
-      this.logger.log(`🧠 Intent: ${mappedIntent} (${parsed.confidence}) for: "${message.substring(0, 50)}"`);
-      return { intent: mappedIntent, confidence: parsed.confidence };
-
-    } catch (error) {
-      this.logger.warn('Intent classification failed — using pattern fallback', {
-        error: error instanceof Error ? error.message : 'Unknown',
-      });
-      // Fallback: محاولة تصنيف بدائي
-      return this.fallbackIntentClassification(message);
-    }
-  }
-
-  /**
    * ✅ فحص سريع بـ Pattern — لتجنب API call على التحيات الواضحة
    */
   private detectSimpleIntentPattern(
@@ -2758,43 +2628,6 @@ Types:
     }
 
     return null; // لا يمكن التحديد بـ pattern → Smart RAG يتولى
-  }
-
-  /**
-   * ✅ Fallback: تصنيف بدائي بدون LLM (إذا فشل API)
-   */
-  private fallbackIntentClassification(message: string): IntentResult {
-    const lower = message.toLowerCase();
-
-    // ✅ FIX: فحص كلمات الاستفهام أولاً — قبل فحص الطول
-    const questionWords = ['وش', 'ايش', 'كم', 'هل', 'وين', 'متى', 'كيف', 'ليش', 'اسم', 'سعر',
-      'what', 'how', 'where', 'when', 'which', 'price', 'name'];
-    const hasQuestion = questionWords.some((q) => lower.includes(q));
-
-    if (hasQuestion) {
-      // ✅ FIX: استفسار طلب حقيقي فقط (باستخدام isOrderInquiry المحدّث)
-      if (this.isOrderInquiry(message)) {
-        return { intent: IntentType.ORDER_QUERY, confidence: 0.7 };
-      }
-      
-      // فيه سؤال → Check if product or policy question
-      const productWords = ['منتج', 'سعر', 'product', 'price', 'buy', 'purchase'];
-      if (productWords.some(w => lower.includes(w))) {
-        return { intent: IntentType.PRODUCT_QUESTION, confidence: 0.7 };
-      }
-      return { intent: IntentType.POLICY_SUPPORT_FAQ, confidence: 0.7 };
-    }
-
-    // ✅ FIX: استفسار طلب حقيقي (بدون كلمة استفهام — مثل "#12345")
-    if (this.isOrderInquiry(message)) {
-      return { intent: IntentType.ORDER_QUERY, confidence: 0.7 };
-    }
-
-    // فقط إذا الرسالة قصيرة جداً وبدون أي سؤال → SMALLTALK
-    if (lower.length < 15) return { intent: IntentType.SMALLTALK, confidence: 0.6 };
-
-    // افتراضي: سؤال دعم
-    return { intent: IntentType.POLICY_SUPPORT_FAQ, confidence: 0.6 };
   }
 
   /**
@@ -3062,7 +2895,7 @@ Types:
       const isCompleted = ['completed', 'delivered', 'in_progress'].includes(statusSlug);
 
       // ✅ تحقق من رقم الجوال للمحتوى الرقمي
-      let digitalContent: unknown = null;
+      let digitalContent: DigitalContent | null = null;
       let phoneVerified = false;
       let phoneHint = '';
 
@@ -3096,7 +2929,7 @@ Types:
         payment_status: sallaOrder.payment?.status,
         payment_method: sallaOrder.payment?.method?.name,
         items_count: sallaOrder.items?.length || 0,
-        items: sallaOrder.items?.map((i: any) => i.name).join(', ') || '',
+        items: sallaOrder.items?.map((item) => item.name).join(', ') || '',
         shipping_company: sallaOrder.shipping?.company?.name || null,
         order_date: sallaOrder.date?.date || null,
         is_digital: isDigital,
@@ -3105,17 +2938,16 @@ Types:
 
       if (isDigital && isCompleted) {
         if (phoneVerified && digitalContent) {
-          const dc = digitalContent as any;
-          if (dc.type === 'digital_codes' && dc.codes?.length) {
+          if (digitalContent.type === 'digital_codes' && digitalContent.codes?.length) {
             // ✅ أكواد فعلية متاحة (تطبيقات قديمة)
             result.digital_content = digitalContent;
             result.phone_verified = true;
             result.digital_note = 'تم التحقق من هوية العميل. الأكواد الرقمية مرفقة — أرسلها للعميل مباشرة.';
-          } else if (dc.type === 'digital_url' && dc.url) {
+          } else if (digitalContent.type === 'digital_url' && digitalContent.url) {
             // ✅ رابط المحتوى الرقمي من سلة
-            result.digital_content_url = dc.url;
+            result.digital_content_url = digitalContent.url;
             result.phone_verified = true;
-            result.digital_note = `تم التحقق من هوية العميل. أرسل للعميل رابط استلام المحتوى الرقمي: ${dc.url} — وأخبره يشيّك على إيميله المسجّل بعد لأن الكود وصله هناك أيضاً.`;
+            result.digital_note = `تم التحقق من هوية العميل. أرسل للعميل رابط استلام المحتوى الرقمي: ${digitalContent.url} — وأخبره يشيّك على إيميله المسجّل بعد لأن الكود وصله هناك أيضاً.`;
           } else {
             // ✅ ما في أكواد ولا رابط — وجّه للإيميل والمتجر
             result.phone_verified = true;
@@ -3180,7 +3012,7 @@ Types:
   /**
    * ✅ كشف المنتج الرقمي — لا يحتاج شحن
    */
-  private isDigitalOrder(order: any): boolean {
+  private isDigitalOrder(order: SallaOrder): boolean {
     // لا يوجد شحن
     if (!order.shipping?.company && !order.shipping?.address) {
       return true;
@@ -3210,21 +3042,28 @@ Types:
   /**
    * ✅ جلب المحتوى الرقمي — أكواد البطاقات من سلة
    */
-  private async fetchDigitalContent(accessToken: string, order: any): Promise<unknown> {
+  private async fetchDigitalContent(
+    accessToken: string,
+    order: SallaOrder,
+  ): Promise<DigitalContent | null> {
     try {
       const orderId = order.id;
       const response = await this.sallaApiService.getOrder(accessToken, orderId);
-      const fullOrder = response?.data as any;
+      const fullOrder = response?.data;
 
       if (!fullOrder) return null;
 
       // ✅ أولاً: جرّب جلب الأكواد مباشرة (للتطبيقات القديمة قبل أغسطس 2024)
       const codes: Array<{ product: string; code: string }> = [];
-      for (const item of (fullOrder.items || [])) {
-        const itemAny = item as any;
-        if (itemAny.codes?.length) {
-          for (const code of itemAny.codes) {
-            codes.push({ product: item.name, code: String(code.code || code) });
+      for (const item of fullOrder.items || []) {
+        if (item.codes?.length) {
+          for (const code of item.codes) {
+            const codeValue = typeof code === 'string'
+              ? code
+              : getJsonValue(asJsonRecord(code), 'code');
+            if (codeValue !== undefined && codeValue !== null) {
+              codes.push({ product: item.name, code: String(codeValue) });
+            }
           }
         }
       }
@@ -3251,7 +3090,7 @@ Types:
   /**
    * ✅ تنسيق بيانات الطلب المحلي
    */
-  private formatOrderResponse(order: any): unknown {
+  private formatOrderResponse(order: Order): Record<string, unknown> {
     return {
       found: true,
       order_id: order.sallaOrderId || order.zidOrderId || order.referenceId,
@@ -3482,7 +3321,7 @@ Types:
             },
           };
         }
-      } catch (error) {
+      } catch {
         this.logger.warn(`FIX-B: LLM failed for settings answer, using raw value`);
         // Fallback: إرجاع القيمة مباشرة
         const label = isAr ? sp.labelAr : sp.labelEn;
@@ -3805,7 +3644,7 @@ Types:
     if (!ownerCheckPhone && isLidConversation && conv?.channelId && needsPhoneResolution) {
       try {
         // طريقة 1: ownerLids — LIDs محفوظة مسبقاً (أسرع)
-        const knownLids = (settings as any).ownerLids as string[] | undefined;
+        const knownLids = settings.ownerLids;
         if (knownLids?.includes(currentExternalId)) {
           // هذا LID معروف → نجيب أول رقم مالك
           ownerCheckPhone = settings.ownerPhones?.[0];
@@ -3886,11 +3725,13 @@ Types:
         // ═══ LAYER 3: Auto-discover — حفظ LID للمستقبل ═══
         if (isLidConversation && currentExternalId) {
           try {
-            const existingLids = ((settings as any).ownerLids || []) as string[];
+            const existingLids = settings.ownerLids || [];
             if (!existingLids.includes(currentExternalId)) {
-              (settings as any).ownerLids = [...existingLids, currentExternalId].slice(-10);
+              settings.ownerLids = [...existingLids, currentExternalId].slice(-10);
               // حفظ الإعدادات المحدّثة
-              await this.updateSettings(params.tenantId, storeId, { ownerLids: (settings as any).ownerLids } as any);
+              await this.updateSettings(params.tenantId, storeId, {
+                ownerLids: settings.ownerLids,
+              });
               this.logger.log(`🔑 Auto-discovered owner LID: ${currentExternalId.slice(0, 12)}... → saved`);
             }
           } catch (e) {
@@ -4036,7 +3877,7 @@ ${capsList.join('\n')}
 ${storeData ? '🏪 ' + storeData : ''}`;
 
     // ═══ Function Definitions ═══
-    const ownerTools: any[] = [];
+    const ownerTools: ChatCompletionTool[] = [];
     if (caps.orderLookup) {
       ownerTools.push(
         {
@@ -4110,20 +3951,24 @@ ${storeData ? '🏪 ' + storeData : ''}`;
       const requestedModel = settings.model || 'gpt-4o-mini';
       let safeModel = VALID_MODELS.includes(requestedModel) ? requestedModel : 'gpt-4o-mini';
 
-      const gptMessages: any[] = [
+      const gptMessages: ChatCompletionMessageParam[] = [
         { role: 'system', content: ownerSystemPrompt },
         ...cleanPreviousMessages,
         { role: 'user', content: message },
       ];
 
-      const callGpt = async (model: string, msgs: any[], tools?: any[]) => {
-        const params: any = {
+      const callGpt = async (
+        model: string,
+        msgs: ChatCompletionMessageParam[],
+        tools?: ChatCompletionTool[],
+      ): Promise<ChatCompletion> => {
+        const params: ChatCompletionCreateParamsNonStreaming = {
           model,
           temperature: 0.2,
           max_tokens: settings.maxTokens || 1500,
           messages: msgs,
+          ...(tools?.length ? { tools } : {}),
         };
-        if (tools && tools.length > 0) params.tools = tools;
         return this.withTimeout(
           this.openai.chat.completions.create(params),
           30000,
@@ -4131,11 +3976,12 @@ ${storeData ? '🏪 ' + storeData : ''}`;
         );
       };
 
-      let completion: any;
+      let completion: ChatCompletion;
       try {
         completion = await callGpt(safeModel, gptMessages, ownerTools);
-      } catch (firstError: any) {
-        if (firstError?.status === 404 || firstError?.code === 'model_not_found') {
+      } catch (firstError: unknown) {
+        const details = getHttpErrorDetails(firstError);
+        if (details.status === 404 || details.code === 'model_not_found') {
           this.logger.warn(`🔑 Model "${safeModel}" failed, fallback to gpt-4o-mini`);
           safeModel = 'gpt-4o-mini'; // ✅ حدّث الموديل عشان الـ loop يستخدم الصح
           completion = await callGpt('gpt-4o-mini', gptMessages, ownerTools);
@@ -4162,13 +4008,13 @@ ${storeData ? '🏪 ' + storeData : ''}`;
           const fnName = toolCall.function.name;
           let result = '';
           try {
-            const fnArgs = JSON.parse(toolCall.function.arguments || '{}');
+            const fnArgs: unknown = JSON.parse(toolCall.function.arguments || '{}');
             this.logger.log(`🔧 Tool: ${fnName}(${JSON.stringify(fnArgs).slice(0, 100)})`);
             if (!context.storeId) throw new Error('storeId missing');
             result = await this.executeOwnerTool(fnName, fnArgs, context.storeId);
           } catch (e) {
-            result = JSON.stringify({ error: (e as Error).message });
-            this.logger.error(`🔧 Tool error: ${fnName}`, { error: (e as Error).message });
+            result = JSON.stringify({ error: getErrorMessage(e) });
+            this.logger.error(`🔧 Tool error: ${fnName}`, { error: getErrorMessage(e) });
           }
 
           gptMessages.push({
@@ -4195,11 +4041,12 @@ ${storeData ? '🏪 ' + storeData : ''}`;
         intent: 'owner_request',
         toolsUsed: ['owner_mode', 'function_calling'],
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const details = getHttpErrorDetails(error);
       this.logger.error('🔑 Owner mode GPT FAILED', {
-        error: error?.message || 'Unknown',
-        status: error?.status,
-        code: error?.code,
+        error: details.message,
+        status: details.status,
+        code: details.code,
       });
 
       return {
@@ -4215,47 +4062,59 @@ ${storeData ? '🏪 ' + storeData : ''}`;
   // ═══════════════════════════════════════════════════════════════════
   // ✅ Owner Mode v2 — Tool Execution Engine
   // ═══════════════════════════════════════════════════════════════════
-  private async executeOwnerTool(fnName: string, args: any, storeId: string): Promise<string> {
+  private async executeOwnerTool(
+    fnName: string,
+    args: unknown,
+    storeId: string,
+  ): Promise<string> {
+    const argsRecord = asJsonRecord(args);
+
     switch (fnName) {
       case 'search_orders': {
-        const limit = Math.min(args.limit || 20, 50);
+        const requestedLimit = getJsonNumber(argsRecord, 'limit') ?? 20;
+        const limit = Math.max(1, Math.min(requestedLimit, 50));
+        const orderId = getJsonString(argsRecord, 'order_id');
+        const phone = getJsonString(argsRecord, 'phone');
+        const customerName = getJsonString(argsRecord, 'customer_name');
+        const email = getJsonString(argsRecord, 'email');
+        const status = getJsonString(argsRecord, 'status');
         const qb = this.orderRepo
           .createQueryBuilder('o')
           .leftJoinAndSelect('o.customer', 'c')
           .where('o.storeId = :storeId', { storeId });
 
-        if (args.order_id) {
-          const oid = args.order_id.replace(/[^0-9]/g, '');
+        if (orderId) {
+          const oid = orderId.replace(/[^0-9]/g, '');
           qb.andWhere(
             '(o.referenceId LIKE :oid OR o.sallaOrderId LIKE :oid OR o.zidOrderId LIKE :oid)',
             { oid: `%${oid}%` },
           );
         }
-        if (args.phone) {
-          const phone9 = args.phone.replace(/[^0-9]/g, '').slice(-9);
+        if (phone) {
+          const phone9 = phone.replace(/[^0-9]/g, '').slice(-9);
           qb.andWhere('c.phone LIKE :phone', { phone: `%${phone9}%` });
         }
-        if (args.customer_name) {
+        if (customerName) {
           qb.andWhere(
             '(c.fullName ILIKE :name OR c.firstName ILIKE :name OR c.lastName ILIKE :name)',
-            { name: `%${args.customer_name}%` },
+            { name: `%${customerName}%` },
           );
         }
-        if (args.email) {
-          qb.andWhere('c.email ILIKE :email', { email: `%${args.email}%` });
+        if (email) {
+          qb.andWhere('c.email ILIKE :email', { email: `%${email}%` });
         }
-        if (args.status) {
-          qb.andWhere('o.status = :status', { status: args.status });
+        if (status) {
+          qb.andWhere('o.status = :status', { status });
         }
 
         // إذا ما فيه أي فلتر → جلب آخر الطلبات
-        if (!args.order_id && !args.phone && !args.customer_name && !args.email && !args.status) {
+        if (!orderId && !phone && !customerName && !email && !status) {
           // no filter = recent orders
         }
 
         const orders = await qb.orderBy('o.createdAt', 'DESC').take(limit).getMany();
 
-        this.logger.log(`🔧 search_orders: found ${orders.length} results (args: ${JSON.stringify(args).slice(0, 80)})`);
+        this.logger.log(`🔧 search_orders: found ${orders.length} results (args: ${JSON.stringify(argsRecord).slice(0, 80)})`);
 
         if (orders.length === 0) {
           return JSON.stringify({ count: 0, message: 'لا توجد نتائج مطابقة. ممكن الطلب قديم أو غير مسجل في النظام.' });
@@ -4267,8 +4126,8 @@ ${storeData ? '🏪 ' + storeData : ''}`;
             order_number: o.referenceId || o.sallaOrderId || o.id?.slice(0, 8),
             salla_id: o.sallaOrderId || '—',
             reference_id: o.referenceId || '—',
-            customer: o.customer?.fullName || o.customer?.firstName || (o as any).customerName || 'غير معروف',
-            phone: o.customer?.phone || (o as any).customerPhone || '—',
+            customer: o.customer?.fullName || o.customer?.firstName || 'غير معروف',
+            phone: o.customer?.phone || '—',
             email: o.customer?.email || '—',
             amount: `${o.totalAmount || 0} ${o.currency || 'SAR'}`,
             status: o.status,
@@ -4276,14 +4135,14 @@ ${storeData ? '🏪 ' + storeData : ''}`;
             date: o.createdAt ? new Date(o.createdAt).toLocaleDateString('ar-SA') : '—',
             items_count: o.items?.length || 0,
             items: o.items?.length
-              ? o.items.map((it: any) => `${it.name || 'منتج'} ×${it.quantity || 1} = ${it.totalPrice || it.price || 0} SAR`).join(' | ')
+              ? o.items.map((item) => `${item.name || 'منتج'} ×${item.quantity || 1} = ${item.totalPrice || 0} SAR`).join(' | ')
               : '⚠️ منتجات غير محملة — استخدم get_order_details لجلبها من سلة',
           })),
         });
       }
 
       case 'get_order_details': {
-        const oid = (args.order_id || '').replace(/[^0-9]/g, '');
+        const oid = (getJsonString(argsRecord, 'order_id') || '').replace(/[^0-9]/g, '');
         const order = await this.orderRepo
           .createQueryBuilder('o')
           .leftJoinAndSelect('o.customer', 'c')
@@ -4326,30 +4185,31 @@ ${storeData ? '🏪 ' + storeData : ''}`;
           status: order.status,
           payment_status: order.paymentStatus || '—',
           payment_method: order.paymentMethod || 'غير محدد',
-          items: items.length ? items.map((it: any, idx: number) => ({
-            '#': idx + 1,
-            product: it.name || it.product_name || 'منتج غير معروف',
-            sku: it.sku || '—',
-            quantity: it.quantity || 1,
-            unit_price: `${it.unitPrice || it.price?.amount || it.price || 0} SAR`,
-            total: `${it.totalPrice || it.total || 0} SAR`,
-            options: it.options?.map((o: any) => `${o.name}: ${o.value}`).join(', ') || '',
+          items: items.length ? items.map((item, index) => ({
+            '#': index + 1,
+            product: item.name || 'منتج غير معروف',
+            sku: item.sku || '—',
+            quantity: item.quantity || 1,
+            unit_price: `${item.unitPrice || 0} SAR`,
+            total: `${item.totalPrice || 0} SAR`,
+            options: item.options?.map((option) => `${option.name}: ${option.value}`).join(', ') || '',
           })) : [{ note: 'لا توجد منتجات مسجلة — ممكن الطلب ما تضمّن تفاصيل المنتجات' }],
           items_count: items.length,
           shipping: {
-            carrier: (order as any).shippingInfo?.carrierName || 'غير محدد',
-            tracking: (order as any).shippingInfo?.trackingNumber || 'غير متوفر',
+            carrier: order.shippingInfo?.carrierName || 'غير محدد',
+            tracking: order.shippingInfo?.trackingNumber || 'غير متوفر',
           },
           date: order.createdAt ? new Date(order.createdAt).toLocaleDateString('ar-SA') : '—',
         });
       }
 
       case 'get_store_stats': {
-        const days = args.days || 30;
+        const days = Math.max(1, Math.min(getJsonNumber(argsRecord, 'days') ?? 30, 365));
+        const metric = getJsonString(argsRecord, 'metric');
         const since = new Date();
         since.setDate(since.getDate() - days);
 
-        switch (args.metric) {
+        switch (metric) {
           case 'summary': {
             const [totalOrders, totalRevenue, uniqueCustomers] = await Promise.all([
               this.orderRepo
@@ -4427,7 +4287,10 @@ ${storeData ? '🏪 ' + storeData : ''}`;
   // ═══════════════════════════════════════════════════════════════════
   // ✅ Auto-enrich: جلب منتجات الطلب من API المنصة إذا فاضية بالـ DB
   // ═══════════════════════════════════════════════════════════════════
-  private async enrichOrderItemsFromPlatform(order: any, storeId: string): Promise<any[]> {
+  private async enrichOrderItemsFromPlatform(
+    order: Order,
+    storeId: string,
+  ): Promise<OrderItem[]> {
     // ✅ accessToken is select:false — must use addSelect
     const store = await this.storeRepo
       .createQueryBuilder('store')
@@ -4447,12 +4310,12 @@ ${storeData ? '🏪 ' + storeData : ''}`;
       return [];
     }
 
-    let items: any[] = [];
+    let items: OrderItem[] = [];
 
     // ═══ Salla ═══
-    if (store.platform === 'salla') {
+    if (store.platform === StorePlatform.SALLA) {
       try {
-        let sallaOrder: any = null;
+        let sallaOrder: SallaOrder | null = null;
 
         // طريقة 1: جلب بالـ sallaOrderId مباشرة
         if (order.sallaOrderId) {
@@ -4460,8 +4323,10 @@ ${storeData ? '🏪 ' + storeData : ''}`;
           try {
             const resp = await this.sallaApiService.getOrder(accessToken, Number(order.sallaOrderId));
             sallaOrder = resp?.data;
-          } catch (e: any) {
-            this.logger.warn(`🔧 Salla getOrder(${order.sallaOrderId}) failed: ${e?.message}`);
+          } catch (error: unknown) {
+            this.logger.warn(
+              `🔧 Salla getOrder(${order.sallaOrderId}) failed: ${getErrorMessage(error)}`,
+            );
           }
         }
 
@@ -4470,33 +4335,39 @@ ${storeData ? '🏪 ' + storeData : ''}`;
           this.logger.log(`🔧 Searching Salla by reference: ${order.referenceId}`);
           try {
             sallaOrder = await this.sallaApiService.searchOrderByReference(accessToken, order.referenceId);
-          } catch (e: any) {
-            this.logger.warn(`🔧 Salla searchByRef(${order.referenceId}) failed: ${e?.message}`);
+          } catch (error: unknown) {
+            this.logger.warn(
+              `🔧 Salla searchByRef(${order.referenceId}) failed: ${getErrorMessage(error)}`,
+            );
           }
         }
 
         // استخراج المنتجات
         if (sallaOrder?.items?.length) {
-          items = sallaOrder.items.map((it: any) => ({
-            productId: String(it.product_id || it.id || ''),
-            name: String(it.name || ''),
-            sku: it.sku || undefined,
-            quantity: Number(it.quantity || 1),
-            unitPrice: it.price?.amount || it.price || 0,
-            totalPrice: (it.price?.amount || it.price || 0) * (it.quantity || 1),
-            imageUrl: it.thumbnail || it.image?.url || undefined,
+          items = sallaOrder.items.map((item: SallaOrderItem) => ({
+            productId: String(item.product_id || item.id || ''),
+            name: String(item.name || ''),
+            sku: item.sku || undefined,
+            quantity: Number(item.quantity || 1),
+            unitPrice: item.price?.amount || 0,
+            totalPrice: (item.price?.amount || 0) * (item.quantity || 1),
+            imageUrl: item.thumbnail || undefined,
           }));
 
           // حفظ في DB — المرة الجاية ما نحتاج API
-          const updateData: any = { items: items as any };
+          const updateData: OrderEnrichmentUpdate = { items };
 
           // إثراء بيانات الدفع
           if (sallaOrder.payment?.method?.name && !order.paymentMethod) {
-            updateData.paymentMethod = sallaOrder.payment.method.name;
+            updateData.paymentMethod = this.mapSallaPaymentMethod(
+              sallaOrder.payment.method.name,
+            );
           }
           if (sallaOrder.payment?.status && (!order.paymentStatus || order.paymentStatus === 'pending')) {
             const pStatus = String(sallaOrder.payment.status).toLowerCase();
-            if (pStatus.includes('paid') || pStatus.includes('تم')) updateData.paymentStatus = 'paid';
+            if (pStatus.includes('paid') || pStatus.includes('تم')) {
+              updateData.paymentStatus = PaymentStatus.PAID;
+            }
           }
 
           // إثراء الرقم المرجعي
@@ -4507,17 +4378,34 @@ ${storeData ? '🏪 ' + storeData : ''}`;
             updateData.sallaOrderId = String(sallaOrder.id);
           }
 
-          await this.orderRepo.update({ id: order.id }, updateData);
+          // `items` is a JSONB aggregate. Persist the loaded entity instead of
+          // forcing it through TypeORM's SQL-partial type, which cannot model
+          // arbitrary nested JSON safely.
+          order.items = updateData.items;
+          if (updateData.paymentMethod !== undefined) {
+            order.paymentMethod = updateData.paymentMethod;
+          }
+          if (updateData.paymentStatus !== undefined) {
+            order.paymentStatus = updateData.paymentStatus;
+          }
+          if (updateData.referenceId !== undefined) {
+            order.referenceId = updateData.referenceId;
+          }
+          if (updateData.sallaOrderId !== undefined) {
+            order.sallaOrderId = updateData.sallaOrderId;
+          }
+          await this.orderRepo.save(order);
           this.logger.log(`🔧 ✅ Enriched order ${order.sallaOrderId || order.referenceId} with ${items.length} items + payment/shipping`);
         } else {
           this.logger.warn(`🔧 Salla API returned 0 items for order ${order.sallaOrderId || order.referenceId}`);
         }
-      } catch (e: any) {
-        const status = e?.response?.status;
+      } catch (error: unknown) {
+        const details = getHttpErrorDetails(error);
+        const status = details.status;
         if (status === 401) {
           this.logger.warn(`🔧 Salla token expired for store ${storeId}`);
         } else {
-          this.logger.warn(`🔧 Salla enrichment error: ${e?.message || 'unknown'}`);
+          this.logger.warn(`🔧 Salla enrichment error: ${details.message}`);
         }
       }
     }
@@ -4526,6 +4414,28 @@ ${storeData ? '🏪 ' + storeData : ''}`;
     // if (store.platform === 'zid') { ... }
 
     return items;
+  }
+
+  private mapSallaPaymentMethod(methodName: string): PaymentMethod {
+    const normalized = methodName.toLowerCase();
+    if (normalized.includes('mada') || normalized.includes('مدى')) return PaymentMethod.MADA;
+    if (normalized.includes('apple')) return PaymentMethod.APPLE_PAY;
+    if (normalized.includes('stc')) return PaymentMethod.STC_PAY;
+    if (normalized.includes('tabby') || normalized.includes('تابي')) return PaymentMethod.TABBY;
+    if (normalized.includes('tamara') || normalized.includes('تمارا')) return PaymentMethod.TAMARA;
+    if (normalized.includes('bank') || normalized.includes('تحويل')) return PaymentMethod.BANK_TRANSFER;
+    if (normalized.includes('cash') || normalized.includes('الدفع عند')) {
+      return PaymentMethod.CASH_ON_DELIVERY;
+    }
+    if (
+      normalized.includes('visa') ||
+      normalized.includes('master') ||
+      normalized.includes('credit') ||
+      normalized.includes('بطاق')
+    ) {
+      return PaymentMethod.CREDIT_CARD;
+    }
+    return PaymentMethod.OTHER;
   }
 
 
@@ -4800,7 +4710,18 @@ Output ONLY valid JSON with these exact keys: store_intro, store_description, sh
     const cleaned = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
 
     try {
-      return JSON.parse(cleaned);
+      const parsed: unknown = JSON.parse(cleaned);
+      const record = asJsonRecord(parsed);
+      if (!record) throw new Error('OpenAI returned a non-object store profile');
+
+      return {
+        store_intro: getJsonString(record, 'store_intro') || '',
+        store_description: getJsonString(record, 'store_description') || '',
+        shipping_info: getJsonString(record, 'shipping_info') || '',
+        return_policy: getJsonString(record, 'return_policy') || '',
+        cancellation_policy: getJsonString(record, 'cancellation_policy') || '',
+        working_hours: getJsonString(record, 'working_hours') || '',
+      };
     } catch {
       this.logger.warn(`generateStoreInfo: failed to parse JSON: ${cleaned.substring(0, 200)}`);
       return {
@@ -4832,24 +4753,33 @@ Output ONLY valid JSON with these exact keys: store_intro, store_description, sh
       this.logger.log(`🌐 Scraping products from: ${url}`);
 
       // ✅ SECURITY: SSRF Protection — منع الوصول لعناوين داخلية
-      const parsedUrl = new URL(url);
-      const hostname = parsedUrl.hostname.toLowerCase();
-      const blockedPatterns = ['localhost', '127.0.0.1', '0.0.0.0', '::1', '169.254.', '10.', '192.168.', 'internal', '.local'];
-      if (blockedPatterns.some(p => hostname.includes(p)) || hostname.startsWith('172.') || !parsedUrl.protocol.startsWith('http')) {
-        return { success: false, products: [], count: 0, error: 'الرابط غير مسموح — يجب أن يكون رابط موقع خارجي' };
+      // 1. جلب HTML مع فحص DNS لكل وجهة وتحويل لمنع SSRF عبر DNS/redirect.
+      let currentUrl = url;
+      let response;
+      for (let redirectCount = 0; redirectCount <= 3; redirectCount++) {
+        const safeUrl = await assertPublicHttpUrl(currentUrl);
+        response = await axios.get(safeUrl.toString(), {
+          timeout: 15000,
+          maxRedirects: 0,
+          httpAgent: publicHttpAgent,
+          httpsAgent: publicHttpsAgent,
+          validateStatus: (status) =>
+            (status >= 200 && status < 300) || (status >= 300 && status < 400),
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (compatible; RafeqBot/1.0)',
+            'Accept': 'text/html',
+            'Accept-Language': 'ar,en',
+          },
+          maxContentLength: 2 * 1024 * 1024,
+        });
+
+        if (response.status < 300 || response.status >= 400) break;
+        const location = response.headers.location;
+        if (!location || redirectCount === 3) throw new Error('Too many or invalid redirects');
+        currentUrl = new URL(location, safeUrl).toString();
       }
 
-      // 1. جلب HTML الصفحة
-      const response = await axios.get(url, {
-        timeout: 15000,
-        maxRedirects: 3,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible; RafeqBot/1.0)',
-          'Accept': 'text/html',
-          'Accept-Language': 'ar,en',
-        },
-        maxContentLength: 2 * 1024 * 1024, // 2MB max
-      });
+      if (!response) throw new Error('No response received from website');
 
       const html = String(response.data || '');
       if (!html || html.length < 100) {
@@ -4863,7 +4793,7 @@ Output ONLY valid JSON with these exact keys: store_intro, store_description, sh
         .replace(/<nav[\s\S]*?<\/nav>/gi, '')
         .replace(/<footer[\s\S]*?<\/footer>/gi, '')
         .replace(/<header[\s\S]*?<\/header>/gi, '')
-        .replace(/<!\-\-[\s\S]*?\-\->/g, '')
+        .replace(/<!--[\s\S]*?-->/g, '')
         .replace(/<[^>]+>/g, ' ')
         .replace(/\s+/g, ' ')
         .trim()
@@ -4911,19 +4841,28 @@ Example output:
       const jsonCleaned = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
 
       try {
-        const products = JSON.parse(jsonCleaned);
-        if (!Array.isArray(products)) {
+        const parsedProducts: unknown = JSON.parse(jsonCleaned);
+        if (!Array.isArray(parsedProducts)) {
           return { success: false, products: [], count: 0, error: 'لم يتم استخراج منتجات — تأكد أن الصفحة تحتوي على منتجات' };
         }
 
         // تنظيف وتوحيد البيانات
-        const cleanProducts = products.slice(0, 50).map((p: any) => ({
-          name: String(p.name || '').trim().slice(0, 200),
-          price: String(p.price || 'غير محدد').trim(),
-          available: Boolean(p.available),
-          url: String(p.url || '').trim(),
-          description: String(p.description || '').trim().slice(0, 300),
-        })).filter((p: any) => p.name.length > 0);
+        const cleanProducts = parsedProducts
+          .slice(0, 50)
+          .map((product): ScrapedProduct | null => {
+            const record = asJsonRecord(product);
+            const name = (getJsonString(record, 'name') || '').trim().slice(0, 200);
+            if (!name) return null;
+
+            return {
+              name,
+              price: (getJsonString(record, 'price') || 'غير محدد').trim(),
+              available: getJsonBoolean(record, 'available') ?? false,
+              url: (getJsonString(record, 'url') || '').trim(),
+              description: (getJsonString(record, 'description') || '').trim().slice(0, 300),
+            };
+          })
+          .filter((product): product is ScrapedProduct => product !== null);
 
         this.logger.log(`🌐 Scraped ${cleanProducts.length} products from ${url}`);
         return { success: true, products: cleanProducts, count: cleanProducts.length };
@@ -4933,12 +4872,14 @@ Example output:
         return { success: false, products: [], count: 0, error: 'فشل تحليل بيانات المنتجات — حاول مرة أخرى' };
       }
 
-    } catch (error: any) {
-      const msg = error?.code === 'ECONNREFUSED' ? 'لا يمكن الوصول للموقع'
-        : error?.code === 'ENOTFOUND' ? 'الموقع غير موجود'
-        : error?.response?.status === 403 ? 'الموقع يرفض الوصول'
-        : error?.response?.status === 404 ? 'الصفحة غير موجودة'
-        : `خطأ: ${error?.message || 'غير معروف'}`;
+    } catch (error: unknown) {
+      const details = getHttpErrorDetails(error);
+      const code = getErrorCode(error);
+      const msg = code === 'ECONNREFUSED' ? 'لا يمكن الوصول للموقع'
+        : code === 'ENOTFOUND' ? 'الموقع غير موجود'
+        : details.status === 403 ? 'الموقع يرفض الوصول'
+        : details.status === 404 ? 'الصفحة غير موجودة'
+        : `خطأ: ${details.message}`;
 
       this.logger.warn(`🌐 Scrape failed for ${url}: ${msg}`);
       return { success: false, products: [], count: 0, error: msg };

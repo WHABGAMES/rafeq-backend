@@ -8,6 +8,8 @@ import {
 import { Observable, tap } from 'rxjs';
 import { AuditService } from '../services/audit.service';
 import { AuditAction } from '../entities/audit-log.entity';
+import { asJsonRecord, getJsonString } from '@common/utils/json-record.util';
+import { getErrorMessage } from '@common/utils/error.util';
 
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
@@ -27,6 +29,21 @@ interface RouteMapping {
   action: AuditAction | string;
   targetType?: string;
   label: string;
+}
+
+interface TenantAuditRequest {
+  method: string;
+  url?: string;
+  headers?: Record<string, string | string[] | undefined>;
+  ip?: string;
+  body?: unknown;
+  user?: {
+    sub?: string;
+    id?: string;
+    email?: string;
+    tenantId?: string;
+    role?: string;
+  };
 }
 
 const ROUTE_MAP: Record<string, RouteMapping> = {
@@ -82,8 +99,8 @@ export class TenantAuditInterceptor implements NestInterceptor {
 
   constructor(private readonly auditService: AuditService) {}
 
-  intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
-    const request = context.switchToHttp().getRequest();
+  intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
+    const request = context.switchToHttp().getRequest<TenantAuditRequest>();
     const { method, url } = request;
 
     // Only intercept write operations
@@ -110,9 +127,9 @@ export class TenantAuditInterceptor implements NestInterceptor {
 
     return next.handle().pipe(
       tap({
-        next: (responseData) => {
+        next: (responseData: unknown) => {
           this.logAction(request, mapping, responseData, startTime).catch(err =>
-            this.logger.warn(`Audit log failed: ${err?.message}`),
+            this.logger.warn(`Audit log failed: ${getErrorMessage(err)}`),
           );
         },
       }),
@@ -120,24 +137,28 @@ export class TenantAuditInterceptor implements NestInterceptor {
   }
 
   private async logAction(
-    request: any,
+    request: TenantAuditRequest,
     mapping: RouteMapping,
-    responseData: any,
+    responseData: unknown,
     startTime: number,
   ): Promise<void> {
-    const { user, headers, ip, body } = request;
+    const { user, headers = {}, ip } = request;
+    const body = asJsonRecord(request.body);
+    const response = asJsonRecord(responseData);
+    const responseUser = asJsonRecord(response?.user);
 
     // Extract actor info from JWT or response
-    const actorId = user?.sub || user?.id || responseData?.user?.id || 'unknown';
-    const actorEmail = user?.email || responseData?.user?.email || 'unknown';
-    const tenantId = user?.tenantId || responseData?.user?.tenantId || '';
+    const actorId = user?.sub || user?.id || getJsonString(responseUser, 'id') || 'unknown';
+    const actorEmail = user?.email || getJsonString(responseUser, 'email') || 'unknown';
+    const tenantId = user?.tenantId || getJsonString(responseUser, 'tenantId') || '';
 
     // Skip if no identifiable actor
     if (actorId === 'unknown' && actorEmail === 'unknown') return;
 
     // Extract target ID from URL or response
     const uuidMatch = (request.url || '').match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
-    const targetId = uuidMatch?.[1] || responseData?.id || undefined;
+    const targetId = uuidMatch?.[1] || getJsonString(response, 'id');
+    let action = mapping.action;
 
     // Build metadata — capture key info without sensitive data
     const metadata: Record<string, unknown> = {
@@ -151,10 +172,10 @@ export class TenantAuditInterceptor implements NestInterceptor {
         metadata.botEnabled = body.enabled;
         // Override action for enable/disable
         if (body.enabled === true) {
-          (mapping as any).action = AuditAction.TENANT_AI_ENABLED;
+          action = AuditAction.TENANT_AI_ENABLED;
           metadata.label = 'تفعيل البوت';
         } else if (body.enabled === false) {
-          (mapping as any).action = AuditAction.TENANT_AI_DISABLED;
+          action = AuditAction.TENANT_AI_DISABLED;
           metadata.label = 'تعطيل البوت';
         }
       }
@@ -170,19 +191,22 @@ export class TenantAuditInterceptor implements NestInterceptor {
 
     // ── Store metadata ──
     if (mapping.targetType === 'store') {
-      if (responseData?.platform) metadata.platform = responseData.platform;
-      if (responseData?.name) metadata.storeName = responseData.name;
+      const platform = getJsonString(response, 'platform');
+      const name = getJsonString(response, 'name');
+      if (platform) metadata.platform = platform;
+      if (name) metadata.storeName = name;
     }
 
     // ── IP & User-Agent ──
+    const forwardedFor = this.firstHeaderValue(headers['x-forwarded-for']);
     const ipAddress =
-      headers?.['x-forwarded-for']?.split(',')?.[0]?.trim() ||
-      headers?.['x-real-ip'] ||
+      forwardedFor?.split(',')[0]?.trim() ||
+      this.firstHeaderValue(headers['x-real-ip']) ||
       ip || 'unknown';
 
     const storeName =
       headers?.['x-store-name'] as string ||
-      (responseData?.storeName as string) ||
+      getJsonString(response, 'storeName') ||
       undefined;
 
     await this.auditService.logTenant({
@@ -191,12 +215,16 @@ export class TenantAuditInterceptor implements NestInterceptor {
       actorRole: user?.role || 'tenant',
       tenantId,
       storeName,
-      action: mapping.action,
+      action,
       targetType: mapping.targetType,
       targetId,
       metadata,
       ipAddress,
-      userAgent: headers?.['user-agent'],
+      userAgent: this.firstHeaderValue(headers['user-agent']),
     });
+  }
+
+  private firstHeaderValue(value: string | string[] | undefined): string | undefined {
+    return Array.isArray(value) ? value[0] : value;
   }
 }

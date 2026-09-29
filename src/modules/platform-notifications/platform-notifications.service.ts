@@ -10,35 +10,13 @@ import { Repository } from 'typeorm';
 import {
   PlatformNotification,
   PlatformNotificationType,
-  PlatformNotificationDisplay,
   PlatformNotificationColor,
 } from './platform-notification.entity';
 import { PlatformNotificationUserAction } from './platform-notification-user-action.entity';
-
-export interface CreateNotificationDto {
-  type?: PlatformNotificationType;
-  displayType: PlatformNotificationDisplay;
-  title?: string;
-  message: string;
-  link?: string;
-  linkLabel?: string;
-  colorScheme?: PlatformNotificationColor;
-  bgColor?: string;
-  textColor?: string;
-  icon?: string;
-  isScrolling?: boolean;
-  isDismissible?: boolean;
-  targetPlans?: string[];
-  showOnPages?: string[];
-  showOnLogin?: boolean;
-  startsAt?: Date;
-  endsAt?: Date;
-  repeatHours?: number | null;
-  priority?: number;
-  isActive?: boolean;
-}
-
-export interface UpdateNotificationDto extends Partial<CreateNotificationDto> {}
+import {
+  CreatePlatformNotificationDto,
+  UpdatePlatformNotificationDto,
+} from './dto/platform-notification.dto';
 
 @Injectable()
 export class PlatformNotificationsService {
@@ -79,7 +57,7 @@ export class PlatformNotificationsService {
     return item;
   }
 
-  async create(dto: CreateNotificationDto, adminId?: string): Promise<PlatformNotification> {
+  async create(dto: CreatePlatformNotificationDto, adminId?: string): Promise<PlatformNotification> {
     const notification = this.repo.create({
       type:          dto.type          || PlatformNotificationType.CUSTOM,
       displayType:   dto.displayType,
@@ -109,7 +87,7 @@ export class PlatformNotificationsService {
     return saved;
   }
 
-  async update(id: string, dto: UpdateNotificationDto): Promise<PlatformNotification> {
+  async update(id: string, dto: UpdatePlatformNotificationDto): Promise<PlatformNotification> {
     const notification = await this.findById(id);
 
     Object.assign(notification, {
@@ -252,7 +230,7 @@ export class PlatformNotificationsService {
       // inserted.length === 0 = شاف من قبل → لا نسوي شي
       if (inserted.length > 0) {
         const uniqueViews = await this.userActionRepo.count({
-          where: { notificationId: id, action: 'viewed' as any },
+          where: { notificationId: id, action: 'viewed' },
         });
         await this.repo.update(id, { viewsCount: uniqueViews });
       }
@@ -286,7 +264,7 @@ export class PlatformNotificationsService {
 
       if (inserted.length > 0) {
         const uniqueDismissals = await this.userActionRepo.count({
-          where: { notificationId: id, action: 'dismissed' as any },
+          where: { notificationId: id, action: 'dismissed' },
         });
         await this.repo.update(id, { dismissalsCount: uniqueDismissals });
       } else if (notification?.repeatHours != null) {

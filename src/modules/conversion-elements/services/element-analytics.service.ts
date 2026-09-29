@@ -16,8 +16,18 @@ import { Repository } from 'typeorm';
 import { Cron, CronExpression } from '@nestjs/schedule';
 
 import { ElementAnalyticsDaily } from '../entities/element-analytics-daily.entity';
-import { ConversionElement } from '../entities/conversion-element.entity';
+import { ConversionElement, ElementStatus } from '../entities/conversion-element.entity';
 import { ABTest, ABTestStatus } from '../entities/ab-test.entity';
+
+interface VariantStats {
+  views: number;
+  clicks: number;
+  purchases: number;
+  revenue: number;
+  ctr: number;
+  conversionRate: number;
+  avgOrderValue: number;
+}
 
 @Injectable()
 export class ElementAnalyticsService {
@@ -61,7 +71,7 @@ export class ElementAnalyticsService {
 
     // Active elements count
     const activeCount = await this.elementRepo.count({
-      where: { storeId, tenantId, status: 'active' as any },
+      where: { storeId, tenantId, status: ElementStatus.ACTIVE },
     });
 
     return {
@@ -206,7 +216,7 @@ export class ElementAnalyticsService {
     };
   }
 
-  private calculateWinner(a: any, b: any, test: ABTest) {
+  private calculateWinner(a: VariantStats, b: VariantStats, test: ABTest) {
     const minViews = test.minViewsPerVariant;
     if (a.views < minViews || b.views < minViews) {
       return { ready: false, message: `يحتاج ${minViews} مشاهدة على الأقل لكل نسخة` };
@@ -372,7 +382,7 @@ export class ElementAnalyticsService {
 
             // Pause loser
             const loserId = result.winner === 'A' ? test.elementBId : test.elementAId;
-            await this.elementRepo.update(loserId, { status: 'paused' as any });
+            await this.elementRepo.update(loserId, { status: ElementStatus.PAUSED });
 
             this.logger.log(`A/B test ${test.id} auto-completed: winner = ${result.winner}`);
           }

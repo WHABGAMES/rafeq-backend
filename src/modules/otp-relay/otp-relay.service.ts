@@ -1,19 +1,18 @@
-/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-var-requires */
 import { Injectable, Logger, NotFoundException, BadRequestException, ForbiddenException, Optional, Inject } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, MoreThan, Raw } from 'typeorm';
+import { FindOptionsWhere, Repository, MoreThan, Raw } from 'typeorm';
 import Redis from 'ioredis';
+import { ImapFlow } from 'imapflow';
+import { simpleParser } from 'mailparser';
 import { OtpConfig, OtpRequestLog, PLATFORM_PRESETS } from './entities/otp-config.entity';
 import { encrypt, decrypt } from '@common/utils/encryption.util';
-import { SallaApiService } from '../stores/salla-api.service';
-import { Store } from '../stores/entities/store.entity';
+import { SallaApiService, SallaOrder } from '../stores/salla-api.service';
+import { Store, StorePlatform } from '../stores/entities/store.entity';
 import { Channel, ChannelType, ChannelStatus } from '../channels/entities/channel.entity';
 import { WhatsAppBaileysService } from '../channels/whatsapp/whatsapp-baileys.service';
 import { TelegramOtpClientService, PREDEFINED_BOT_FLOWS } from './telegram-otp-client.service';
-
-let Imap: any;
-let simpleParser: any;
-try { Imap = require('imap'); simpleParser = require('mailparser').simpleParser; } catch {}
+import { CreateOtpRelayConfigDto, UpdateOtpRelayConfigDto } from './dto/otp-relay.dto';
+import { getErrorMessage, getHttpErrorDetails } from '@common/utils/error.util';
 
 const IMAP_HOSTS: Record<string, string> = {
   'gmail.com': 'imap.gmail.com', 'googlemail.com': 'imap.gmail.com',
@@ -32,6 +31,39 @@ interface OrderData {
   referenceId: string;
   customerName: string;
   customerPhone: string;
+}
+
+type OtpConfigChanges = Partial<CreateOtpRelayConfigDto>;
+
+export interface OtpAnalyticsResult {
+  config: {
+    totalViews: number;
+    totalRequests: number;
+    successCount: number;
+    failCount: number;
+    successRate: number;
+  };
+  daily: Array<{ date: string; total: number; success: number; fail: number }>;
+  recentLogs: OtpRequestLog[];
+}
+
+export interface OtpRequestResult {
+  code: string;
+  platform: string;
+  message: string;
+}
+
+export interface OtpPlatformOption {
+  value: string;
+  label: string;
+  icon: string;
+  senderEmail: string;
+  otpRegex: string;
+  otpLength: number;
+  freshnessMinutes?: number;
+  needsUsername: boolean;
+  usernameLabel: string;
+  usernameRegex: string;
 }
 
 // ═══ القوالب الافتراضية ═══
@@ -72,12 +104,10 @@ const SAFE_FIELDS = new Set([
   'compensationNotifyCustomer', 'compensationCustomerTemplate',
 ]);
 
-function pickSafe(data: Record<string, any>): Record<string, any> {
-  const safe: Record<string, any> = {};
-  for (const key of Object.keys(data)) {
-    if (SAFE_FIELDS.has(key)) safe[key] = data[key];
-  }
-  return safe;
+function pickSafe(data: object): OtpConfigChanges {
+  return Object.fromEntries(
+    Object.entries(data).filter(([key]) => SAFE_FIELDS.has(key)),
+  ) as OtpConfigChanges;
 }
 
 @Injectable()
@@ -100,18 +130,18 @@ export class OtpRelayService {
   // ═══ ADMIN ═══════════════════════════════════════════════
 
   async getConfigs(tenantId: string, storeId: string): Promise<OtpConfig[]> {
-    return this.configRepo.find({ where: { tenantId, storeId } as any, order: { createdAt: 'DESC' } as any });
+    return this.configRepo.find({ where: { tenantId, storeId }, order: { createdAt: 'DESC' } });
   }
 
   async getConfig(id: string, tenantId: string): Promise<OtpConfig> {
-    const c = await this.configRepo.findOne({ where: { id, tenantId } as any });
+    const c = await this.configRepo.findOne({ where: { id, tenantId } });
     if (!c) throw new NotFoundException('غير موجود');
     return c;
   }
 
-  async createConfig(tenantId: string, storeId: string, data: any): Promise<OtpConfig> {
+  async createConfig(tenantId: string, storeId: string, data: CreateOtpRelayConfigDto): Promise<OtpConfig> {
     const safe = pickSafe(data);
-    const preset = PLATFORM_PRESETS[safe.platform];
+    const preset = safe.platform ? PLATFORM_PRESETS[safe.platform] : undefined;
     if (preset && safe.platform !== 'custom') {
       safe.senderFilter = safe.senderFilter || preset.senderEmail;
       safe.otpRegex = safe.otpRegex || preset.otpRegex;
@@ -131,7 +161,7 @@ export class OtpRelayService {
     return this.configRepo.save(entity);
   }
 
-  async updateConfig(id: string, tenantId: string, data: any): Promise<OtpConfig> {
+  async updateConfig(id: string, tenantId: string, data: UpdateOtpRelayConfigDto): Promise<OtpConfig> {
     const config = await this.getConfig(id, tenantId);
     const safe = pickSafe(data);
     if (safe.emailPassword) safe.emailPassword = encrypt(safe.emailPassword) || '';
@@ -174,17 +204,19 @@ export class OtpRelayService {
     if (!pw) return { success: false, message: 'فشل فك تشفير كلمة المرور' };
     try {
       const imap = await this.openImap(c.emailHost, c.emailPort, c.emailUser, pw, c.emailTls);
-      imap.end();
+      await this.closeImap(imap);
       return { success: true, message: 'تم الاتصال بنجاح ✅' };
-    } catch (e: any) { return { success: false, message: `فشل: ${e?.message}` }; }
+    } catch (error: unknown) {
+      return { success: false, message: `فشل: ${getErrorMessage(error)}` };
+    }
   }
 
   // ═══ ANALYTICS ═══════════════════════════════════════════
 
-  async getAnalytics(id: string, tenantId: string, days = 7): Promise<any> {
+  async getAnalytics(id: string, tenantId: string, days = 7): Promise<OtpAnalyticsResult> {
     const config = await this.getConfig(id, tenantId);
     const since = new Date(); since.setDate(since.getDate() - days);
-    const logs = await this.logRepo.find({ where: { configId: id, createdAt: MoreThan(since) } as any, order: { createdAt: 'DESC' } as any, take: 100 });
+    const logs = await this.logRepo.find({ where: { configId: id, createdAt: MoreThan(since) }, order: { createdAt: 'DESC' }, take: 100 });
     const daily: Record<string, { total: number; success: number; fail: number }> = {};
     logs.forEach((l: OtpRequestLog) => {
       const day = l.createdAt.toISOString().split('T')[0];
@@ -201,9 +233,9 @@ export class OtpRelayService {
 
   // ═══ PUBLIC PAGE ═════════════════════════════════════════
 
-  async getPublicPage(slug: string): Promise<any> {
+  async getPublicPage(slug: string): Promise<Record<string, unknown> | null> {
     // أولاً: فحص بدون فلتر isActive لمعرفة إذا الرابط معطل بسبب انتهاء الاشتراك
-    const anyConfig = await this.configRepo.findOne({ where: { slug } as any });
+    const anyConfig = await this.configRepo.findOne({ where: { slug } });
     if (!anyConfig) return null;
 
     if (!anyConfig.isActive) {
@@ -221,7 +253,7 @@ export class OtpRelayService {
     }
 
     const c = anyConfig;
-    await this.configRepo.increment({ id: c.id } as any, 'totalViews', 1);
+    await this.configRepo.increment({ id: c.id }, 'totalViews', 1);
     const preset = PLATFORM_PRESETS[c.platform];
     return {
       pageTitle: c.pageTitle, pageSubtitle: c.pageSubtitle, logoUrl: c.logoUrl, logoSize: c.logoSize || 96,
@@ -244,7 +276,7 @@ export class OtpRelayService {
 
   // ═══ OTP REQUEST ═════════════════════════════════════════
 
-  async requestOtp(slug: string, orderNumber: string, username: string, clientIp: string): Promise<any> {
+  async requestOtp(slug: string, orderNumber: string, username: string, clientIp: string): Promise<OtpRequestResult> {
     const start = Date.now();
     orderNumber = (orderNumber || '').trim();
     username = (username || '').trim();
@@ -254,7 +286,7 @@ export class OtpRelayService {
     if (!c) throw new NotFoundException('الخدمة غير متوفرة');
 
     await this.checkRate(clientIp, slug, c.rateLimit);
-    await this.configRepo.increment({ id: c.id } as any, 'totalRequests', 1);
+    await this.configRepo.increment({ id: c.id }, 'totalRequests', 1);
 
     const log: Partial<OtpRequestLog> = {
       configId: c.id, tenantId: c.tenantId, storeId: c.storeId,
@@ -278,7 +310,7 @@ export class OtpRelayService {
       // Step 2.5: Check order code limit (before IMAP to save resources)
       // ✅ الحد يتحقق بـ order + username — طلب واحد فيه عدة حسابات، كل حساب له حده
       if (c.maxCodesPerOrder > 0 && orderNumber) {
-        const where: any = { configId: c.id, orderNumber, success: true };
+        const where: FindOptionsWhere<OtpRequestLog> = { configId: c.id, orderNumber, success: true };
         if (c.needsUsername && username) {
           where.username = Raw(alias => `LOWER(${alias}) = LOWER(:uname)`, { uname: username });
         }
@@ -361,23 +393,24 @@ export class OtpRelayService {
 
       // Step 5: Success — save log
       log.success = true;
-      await this.configRepo.increment({ id: c.id } as any, 'successCount', 1);
+      await this.configRepo.increment({ id: c.id }, 'successCount', 1);
       log.responseMs = Date.now() - start;
       await this.logRepo.save(this.logRepo.create(log));
       this.logger.log(`🔑 ✅ Delivered: user=${username}, code=***${result.code.slice(-2)}, ${Date.now() - start}ms`);
 
       // Step 6: Fire-and-forget WhatsApp notifications
-      this.sendNotifications(c, orderNumber, username, result.code, orderData).catch(e =>
-        this.logger.error(`🔑 Notification error: ${e?.message}`),
+      this.sendNotifications(c, orderNumber, username, result.code, orderData).catch((error: unknown) =>
+        this.logger.error(`🔑 Notification error: ${getErrorMessage(error)}`),
       );
 
       return { code: result.code, platform: PLATFORM_PRESETS[c.platform]?.label || c.platform, message: c.successMsg };
-    } catch (e: any) {
-      if (e instanceof NotFoundException || e instanceof ForbiddenException || e instanceof BadRequestException) throw e;
-      log.errorMsg = e?.message;
+    } catch (error: unknown) {
+      if (error instanceof NotFoundException || error instanceof ForbiddenException || error instanceof BadRequestException) throw error;
+      const message = getErrorMessage(error);
+      log.errorMsg = message;
       log.responseMs = Date.now() - start;
       await this.logRepo.save(this.logRepo.create(log)).catch(() => {});
-      throw new BadRequestException(e?.message || 'حدث خطأ');
+      throw new BadRequestException(message || 'حدث خطأ');
     }
   }
 
@@ -412,8 +445,8 @@ export class OtpRelayService {
         try {
           await this.whatsapp.sendTextMessage(channelId, phone, message);
           this.logger.log(`🔑 📤 Employee notified: ${phone.slice(-4)}`);
-        } catch (e: any) {
-          this.logger.warn(`🔑 ❌ Failed to notify ${phone.slice(-4)}: ${e?.message}`);
+        } catch (error: unknown) {
+          this.logger.warn(`🔑 ❌ Failed to notify ${phone.slice(-4)}: ${getErrorMessage(error)}`);
         }
       }
     }
@@ -428,8 +461,8 @@ export class OtpRelayService {
         try {
           await this.whatsapp.sendTextMessage(channelId, phone, message);
           this.logger.log(`🔑 📤 OTP sent to customer: ${phone.slice(-4)}`);
-        } catch (e: any) {
-          this.logger.warn(`🔑 ❌ Failed to send OTP to customer: ${e?.message}`);
+        } catch (error: unknown) {
+          this.logger.warn(`🔑 ❌ Failed to send OTP to customer: ${getErrorMessage(error)}`);
         }
       } else {
         this.logger.warn(`🔑 ⚠️ Invalid customer phone: "${orderData.customerPhone}" — skipping`);
@@ -446,7 +479,7 @@ export class OtpRelayService {
   }
 
   private async getAttemptCount(configId: string, orderNumber: string, username: string): Promise<number> {
-    const where: any = { configId, orderNumber, success: true };
+    const where: FindOptionsWhere<OtpRequestLog> = { configId, orderNumber, success: true };
     if (username) {
       where.username = Raw(alias => `LOWER(${alias}) = LOWER(:uname)`, { uname: username });
     }
@@ -455,7 +488,7 @@ export class OtpRelayService {
 
   private async findWhatsAppChannel(storeId: string): Promise<string | null> {
     const channel = await this.channelRepo.findOne({
-      where: { storeId, type: ChannelType.WHATSAPP_QR, status: ChannelStatus.CONNECTED } as any,
+      where: { storeId, type: ChannelType.WHATSAPP_QR, status: ChannelStatus.CONNECTED },
     });
     return channel?.id || null;
   }
@@ -465,15 +498,15 @@ export class OtpRelayService {
   private async verifyOrder(storeId: string, orderNumber: string): Promise<OrderData> {
     const store = await this.storeRepo.createQueryBuilder('s').addSelect('s.accessToken')
       .where('s.id = :storeId AND s.deletedAt IS NULL', { storeId }).getOne();
-    if (!store?.accessToken || store.platform !== 'salla') throw new BadRequestException('تعذر التحقق من الطلب');
+    if (!store?.accessToken || store.platform !== StorePlatform.SALLA) throw new BadRequestException('تعذر التحقق من الطلب');
     const token = decrypt(store.accessToken);
     if (!token) throw new BadRequestException('تعذر التحقق');
 
-    let order: any = null;
+    let order: SallaOrder | null = null;
     for (let attempt = 1; attempt <= 2; attempt++) {
       try { order = await this.sallaApi.searchOrderByReference(token, orderNumber); break; }
-      catch (e: any) {
-        if (attempt === 2 || e?.response?.status !== 500) throw e;
+      catch (error: unknown) {
+        if (attempt === 2 || getHttpErrorDetails(error).status !== 500) throw error;
         this.logger.warn(`🔑 Salla 500 — retry`);
         await new Promise(r => setTimeout(r, 500));
       }
@@ -490,49 +523,60 @@ export class OtpRelayService {
 
   private async saveFailLog(log: Partial<OtpRequestLog>, configId: string, start: number): Promise<void> {
     log.success = false; log.responseMs = Date.now() - start;
-    await this.configRepo.increment({ id: configId } as any, 'failCount', 1);
+    await this.configRepo.increment({ id: configId }, 'failCount', 1);
     await this.logRepo.save(this.logRepo.create(log)).catch(() => {});
   }
 
   // ═══ IMAP ═══════════════════════════════════════════════
 
-  private openImap(host: string, port: number, user: string, pw: string, tls: boolean): Promise<any> {
-    if (!Imap) throw new BadRequestException('حزمة imap غير مثبتة — npm install imap mailparser');
-    return new Promise((resolve, reject) => {
-      const imap = new Imap({ user, password: pw, host, port, tls, tlsOptions: { rejectUnauthorized: false }, connTimeout: 15000, authTimeout: 15000 });
-      imap.once('ready', () => resolve(imap));
-      imap.once('error', (err: Error) => reject(err));
-      imap.connect();
+  private async openImap(host: string, port: number, user: string, password: string, tls: boolean): Promise<ImapFlow> {
+    const client = new ImapFlow({
+      host,
+      port,
+      secure: tls,
+      auth: { user, pass: password },
+      connectionTimeout: 15_000,
+      greetingTimeout: 15_000,
+      logger: false,
     });
+
+    await client.connect();
+    return client;
   }
 
-  private safeClose(imap: any): void { if (imap) try { imap.end(); } catch {} }
+  private async closeImap(client: ImapFlow | null): Promise<void> {
+    if (!client) return;
 
-  private fetchOneEmail(imap: any, uid: number): Promise<{ raw: string; internalDate: Date | null }> {
-    return new Promise((resolve, reject) => {
-      const f = imap.fetch([uid], { bodies: '', struct: true });
-      let raw = ''; let internalDate: Date | null = null;
-      let streamEnded = false; let attrsReceived = false;
-      const tryResolve = () => { if (streamEnded && attrsReceived) resolve({ raw, internalDate }); };
-      f.on('message', (msg: any) => {
-        msg.on('body', (stream: any) => {
-          stream.on('data', (chunk: Buffer) => { raw += chunk.toString(); });
-          stream.on('end', () => { streamEnded = true; tryResolve(); });
-        });
-        msg.on('attributes', (attrs: any) => { internalDate = attrs.date || null; attrsReceived = true; tryResolve(); });
-      });
-      f.once('error', (err: Error) => reject(err));
-      setTimeout(() => { if (!streamEnded) resolve({ raw, internalDate }); }, 10000);
-    });
+    try {
+      if (client.usable) await client.logout();
+      else client.close();
+    } catch {
+      client.close();
+    }
+  }
+
+  private async fetchOneEmail(client: ImapFlow, uid: number): Promise<{ raw: string; internalDate: Date | null }> {
+    const message = await client.fetchOne(uid, { source: true, internalDate: true }, { uid: true });
+    if (!message) return { raw: '', internalDate: null };
+
+    const internalDate = message.internalDate
+      ? new Date(message.internalDate)
+      : null;
+
+    return {
+      raw: message.source?.toString() || '',
+      internalDate: Number.isNaN(internalDate?.getTime()) ? null : internalDate,
+    };
   }
 
   // ═══ CORE: Smart OTP extraction ═════════════════════════
 
   private async extractOtp(config: OtpConfig, pw: string, requestedUsername?: string): Promise<ExtractResult> {
-    let imap: any = null;
+    let imap: ImapFlow | null = null;
+    let mailboxLock: { release(): void } | null = null;
     try {
       imap = await this.openImap(config.emailHost, config.emailPort, config.emailUser, pw, config.emailTls);
-      await new Promise<void>((res, rej) => { imap.openBox('INBOX', true, (err: Error | null) => err ? rej(err) : res()); });
+      mailboxLock = await imap.getMailboxLock('INBOX', { readOnly: true });
 
       const freshnessMin = config.freshnessMinutes || 3;
       const since = new Date(); since.setMinutes(since.getMinutes() - freshnessMin);
@@ -542,16 +586,14 @@ export class OtpRelayService {
 
       // ✅ IMAP SEARCH — بدون BODY filter لأن بعض السيرفرات حساسة لحالة الأحرف
       // المطابقة تتم في الكود (case-insensitive) بعد جلب الإيميلات
-      const criteria: any[] = [['SINCE', since]];
-      if (config.senderFilter) criteria.push(['FROM', config.senderFilter]);
+      const criteria: { since: Date; from?: string } = { since };
+      if (config.senderFilter) criteria.from = config.senderFilter;
 
-      let uids: number[] = await new Promise((res, rej) => {
-        imap.search(criteria, (err: Error | null, r: number[]) => err ? rej(err) : res(r || []));
-      });
+      const uids = (await imap.search(criteria, { uid: true })) || [];
 
       this.logger.log(`🔑 IMAP: ${uids.length} emails (last ${freshnessMin}min)${needsMatch ? `, will match "${requestedUsername}" in code` : ''}`);
 
-      if (uids.length === 0) { this.safeClose(imap); return { code: null, emailUsername: null, reason: 'no_email' }; }
+      if (uids.length === 0) return { code: null, emailUsername: null, reason: 'no_email' };
 
       const scanUids = uids.slice(-10).reverse();
       let hadUserMismatch = false;
@@ -589,24 +631,27 @@ export class OtpRelayService {
 
           const code = this.extractCode(textBody, fullBody, otpRegexStr, emailUser, config.otpLength);
           if (code) {
-            this.safeClose(imap);
             this.logger.log(`🔑 ✅ Found: UID=${uid}, user="${emailUser}", code=***${code.slice(-2)}`);
             return { code, emailUsername: emailUser };
           }
           this.logger.log(`🔑 UID=${uid} no valid code`);
-        } catch (e: any) { this.logger.warn(`🔑 UID=${uid} error: ${e?.message}`); continue; }
+        } catch (error: unknown) {
+          this.logger.warn(`🔑 UID=${uid} error: ${getErrorMessage(error)}`);
+          continue;
+        }
       }
 
-      this.safeClose(imap);
       // ✅ إذا فيه إيميلات لكن ما طابق اليوزرنيم → username_mismatch
       if (needsMatch && hadUserMismatch) {
         this.logger.log(`🔑 ❌ Scanned ${scanUids.length} emails, none matched "${requestedUsername}" (case-insensitive)`);
         return { code: null, emailUsername: null, reason: 'username_mismatch' };
       }
       return { code: null, emailUsername: null, reason: 'no_code' };
-    } catch (e: any) {
-      this.safeClose(imap);
-      throw new BadRequestException(`فشل الاتصال بالإيميل: ${e?.message}`);
+    } catch (error: unknown) {
+      throw new BadRequestException(`فشل الاتصال بالإيميل: ${getErrorMessage(error)}`);
+    } finally {
+      mailboxLock?.release();
+      await this.closeImap(imap);
     }
   }
 
@@ -693,5 +738,7 @@ export class OtpRelayService {
     ts.push(now); this.rateMap.set(key, ts);
   }
 
-  getPlatforms(): any[] { return Object.entries(PLATFORM_PRESETS).map(([value, p]) => ({ value, ...p })); }
+  getPlatforms(): OtpPlatformOption[] {
+    return Object.entries(PLATFORM_PRESETS).map(([value, preset]) => ({ value, ...preset }));
+  }
 }

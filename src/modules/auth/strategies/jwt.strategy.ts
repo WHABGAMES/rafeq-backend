@@ -66,6 +66,11 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     @Inject('REDIS_CLIENT')
     private readonly redis: Redis,
   ) {
+    const secret = configService.get<string>('JWT_SECRET');
+    if (!secret) {
+      throw new Error('JWT_SECRET is required but not set');
+    }
+
     super({
       // ═══════════════════════════════════════════════════════════════════════════════
       // من أين نستخرج الـ Token
@@ -91,7 +96,7 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       // المفتاح السري للتحقق من التوقيع
       // ═══════════════════════════════════════════════════════════════════════════════
       
-      secretOrKey: configService.get<string>('JWT_SECRET'),
+      secretOrKey: secret,
     });
   }
 

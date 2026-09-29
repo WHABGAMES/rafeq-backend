@@ -13,12 +13,20 @@ import {
   Put,
   Body,
   UseGuards,
-  Req,
   Query,
   Headers,
 } from '@nestjs/common';
+import { User } from '@database/entities';
+import { CurrentUser } from '@common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { SettingsService } from './settings.service';
+import {
+  UpdateAutoRepliesDto,
+  UpdateGeneralSettingsDto,
+  UpdateNotificationSettingsDto,
+  UpdateTeamSettingsDto,
+  UpdateWorkingHoursDto,
+} from './dto';
 
 @Controller('settings')
 @UseGuards(JwtAuthGuard)
@@ -43,11 +51,11 @@ export class SettingsController {
 
   @Get()
   async getAllSettings(
-    @Req() req: any,
+    @CurrentUser() user: User,
     @Headers('x-store-id') storeIdHeader?: string,
     @Query('storeId') storeIdQuery?: string,
   ) {
-    const tenantId = req.user.tenantId;
+    const tenantId = user.tenantId;
     const storeId = this.getStoreId(storeIdHeader, storeIdQuery);
     return this.settingsService.getAllSettings(tenantId, storeId);
   }
@@ -58,23 +66,23 @@ export class SettingsController {
 
   @Get('general')
   async getGeneralSettings(
-    @Req() req: any,
+    @CurrentUser() user: User,
     @Headers('x-store-id') storeIdHeader?: string,
     @Query('storeId') storeIdQuery?: string,
   ) {
-    const tenantId = req.user.tenantId;
+    const tenantId = user.tenantId;
     const storeId = this.getStoreId(storeIdHeader, storeIdQuery);
     return this.settingsService.getGeneralSettings(tenantId, storeId);
   }
 
   @Put('general')
   async updateGeneralSettings(
-    @Req() req: any,
-    @Body() data: any,
+    @CurrentUser() user: User,
+    @Body() data: UpdateGeneralSettingsDto,
     @Headers('x-store-id') storeIdHeader?: string,
     @Query('storeId') storeIdQuery?: string,
   ) {
-    const tenantId = req.user.tenantId;
+    const tenantId = user.tenantId;
     const storeId = this.getStoreId(storeIdHeader, storeIdQuery);
     return this.settingsService.updateGeneralSettings(tenantId, data, storeId);
   }
@@ -85,23 +93,23 @@ export class SettingsController {
 
   @Get('notifications')
   async getNotificationSettings(
-    @Req() req: any,
+    @CurrentUser() user: User,
     @Headers('x-store-id') storeIdHeader?: string,
     @Query('storeId') storeIdQuery?: string,
   ) {
-    const tenantId = req.user.tenantId;
+    const tenantId = user.tenantId;
     const storeId = this.getStoreId(storeIdHeader, storeIdQuery);
     return this.settingsService.getNotificationSettings(tenantId, storeId);
   }
 
   @Put('notifications')
   async updateNotificationSettings(
-    @Req() req: any,
-    @Body() data: any,
+    @CurrentUser() user: User,
+    @Body() data: UpdateNotificationSettingsDto,
     @Headers('x-store-id') storeIdHeader?: string,
     @Query('storeId') storeIdQuery?: string,
   ) {
-    const tenantId = req.user.tenantId;
+    const tenantId = user.tenantId;
     const storeId = this.getStoreId(storeIdHeader, storeIdQuery);
     return this.settingsService.updateNotificationSettings(tenantId, data, storeId);
   }
@@ -112,23 +120,23 @@ export class SettingsController {
 
   @Get('working-hours')
   async getWorkingHours(
-    @Req() req: any,
+    @CurrentUser() user: User,
     @Headers('x-store-id') storeIdHeader?: string,
     @Query('storeId') storeIdQuery?: string,
   ) {
-    const tenantId = req.user.tenantId;
+    const tenantId = user.tenantId;
     const storeId = this.getStoreId(storeIdHeader, storeIdQuery);
     return this.settingsService.getWorkingHours(tenantId, storeId);
   }
 
   @Put('working-hours')
   async updateWorkingHours(
-    @Req() req: any,
-    @Body() data: any,
+    @CurrentUser() user: User,
+    @Body() data: UpdateWorkingHoursDto,
     @Headers('x-store-id') storeIdHeader?: string,
     @Query('storeId') storeIdQuery?: string,
   ) {
-    const tenantId = req.user.tenantId;
+    const tenantId = user.tenantId;
     const storeId = this.getStoreId(storeIdHeader, storeIdQuery);
     return this.settingsService.updateWorkingHours(tenantId, data, storeId);
   }
@@ -139,23 +147,23 @@ export class SettingsController {
 
   @Get('auto-replies')
   async getAutoReplies(
-    @Req() req: any,
+    @CurrentUser() user: User,
     @Headers('x-store-id') storeIdHeader?: string,
     @Query('storeId') storeIdQuery?: string,
   ) {
-    const tenantId = req.user.tenantId;
+    const tenantId = user.tenantId;
     const storeId = this.getStoreId(storeIdHeader, storeIdQuery);
     return this.settingsService.getAutoReplies(tenantId, storeId);
   }
 
   @Put('auto-replies')
   async updateAutoReplies(
-    @Req() req: any,
-    @Body() data: any,
+    @CurrentUser() user: User,
+    @Body() data: UpdateAutoRepliesDto,
     @Headers('x-store-id') storeIdHeader?: string,
     @Query('storeId') storeIdQuery?: string,
   ) {
-    const tenantId = req.user.tenantId;
+    const tenantId = user.tenantId;
     const storeId = this.getStoreId(storeIdHeader, storeIdQuery);
     return this.settingsService.updateAutoReplies(tenantId, data, storeId);
   }
@@ -166,23 +174,23 @@ export class SettingsController {
 
   @Get('team')
   async getTeamSettings(
-    @Req() req: any,
+    @CurrentUser() user: User,
     @Headers('x-store-id') storeIdHeader?: string,
     @Query('storeId') storeIdQuery?: string,
   ) {
-    const tenantId = req.user.tenantId;
+    const tenantId = user.tenantId;
     const storeId = this.getStoreId(storeIdHeader, storeIdQuery);
     return this.settingsService.getTeamSettings(tenantId, storeId);
   }
 
   @Put('team')
   async updateTeamSettings(
-    @Req() req: any,
-    @Body() data: any,
+    @CurrentUser() user: User,
+    @Body() data: UpdateTeamSettingsDto,
     @Headers('x-store-id') storeIdHeader?: string,
     @Query('storeId') storeIdQuery?: string,
   ) {
-    const tenantId = req.user.tenantId;
+    const tenantId = user.tenantId;
     const storeId = this.getStoreId(storeIdHeader, storeIdQuery);
     return this.settingsService.updateTeamSettings(tenantId, data, storeId);
   }

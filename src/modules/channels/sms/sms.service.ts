@@ -109,8 +109,8 @@ export class SmsService {
       existing.status = ChannelStatus.CONNECTED;
       existing.name = `SMS - ${params.senderId} (${params.provider})`;
       existing.connectedAt = new Date();
-      existing.disconnectedAt = null as any;
-      existing.lastError = null as any;
+      existing.disconnectedAt = null;
+      existing.lastError = null;
       existing.errorCount = 0;
       await this.channelRepository.save(existing);
       this.logger.log(`♻️ SMS channel updated: ${params.provider}`, { tenantId, storeId });
@@ -548,7 +548,7 @@ export class SmsService {
   normalizePhone(phone: string): string {
     if (!phone) return '';
     // إزالة المسافات والشرطات والأقواس
-    let n = phone.replace(/[\s\-\(\)]/g, '').replace(/^\+/, '');
+    let n = phone.replace(/[\s()-]/g, '').replace(/^\+/, '');
 
     if (n.startsWith('05') && n.length === 10)  n = '966' + n.slice(1);
     else if (n.startsWith('5') && n.length === 9)  n = '966' + n;

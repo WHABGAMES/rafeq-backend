@@ -32,6 +32,7 @@ import {
 import { Request } from 'express';
 
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { User } from '@database/entities';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { CampaignsService, CreateCampaignDto } from './campaigns.service';
 import { CampaignType, CampaignStatus, CampaignChannel, AudienceFilter } from '@database/entities/campaign.entity';
@@ -50,7 +51,7 @@ export class CampaignsController {
   @Post()
   @ApiOperation({ summary: 'إنشاء حملة جديدة' })
   async create(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Req() req: Request,
     @Body() dto: CreateCampaignDto,
   ) {
@@ -77,7 +78,7 @@ export class CampaignsController {
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'limit', required: false, type: Number })
   async findAll(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Query('status') status?: CampaignStatus,
     @Query('type') type?: CampaignType,
     @Query('page', new ParseIntPipe({ optional: true })) page?: number,
@@ -94,7 +95,7 @@ export class CampaignsController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'معاينة عدد المستهدفين' })
   async preview(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Req() req: Request,
     @Body() body: {
       audienceFilter: AudienceFilter;
@@ -122,7 +123,7 @@ export class CampaignsController {
 
   @Get(':id')
   @ApiOperation({ summary: 'تفاصيل حملة' })
-  async findOne(@CurrentUser() user: any, @Param('id') id: string) {
+  async findOne(@CurrentUser() user: User, @Param('id') id: string) {
     return this.campaignsService.findById(id, user.tenantId);
   }
 
@@ -133,7 +134,7 @@ export class CampaignsController {
   @Patch(':id')
   @ApiOperation({ summary: 'تحديث حملة' })
   async update(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Param('id') id: string,
     @Req() req: Request,
     @Body() dto: Partial<CreateCampaignDto>,
@@ -150,7 +151,7 @@ export class CampaignsController {
 
   @Delete(':id')
   @ApiOperation({ summary: 'حذف حملة' })
-  async remove(@CurrentUser() user: any, @Param('id') id: string) {
+  async remove(@CurrentUser() user: User, @Param('id') id: string) {
     return this.campaignsService.remove(id, user.tenantId);
   }
 
@@ -161,7 +162,7 @@ export class CampaignsController {
   @Post(':id/execute')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'تنفيذ الحملة فوراً' })
-  async execute(@CurrentUser() user: any, @Param('id') id: string) {
+  async execute(@CurrentUser() user: User, @Param('id') id: string) {
     await this.campaignsService.executeNow(id, user.tenantId);
     return { message: 'تم بدء تنفيذ الحملة' };
   }
@@ -173,21 +174,21 @@ export class CampaignsController {
   @Post(':id/pause')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'إيقاف الحملة مؤقتاً' })
-  async pause(@CurrentUser() user: any, @Param('id') id: string) {
+  async pause(@CurrentUser() user: User, @Param('id') id: string) {
     return this.campaignsService.pause(id, user.tenantId);
   }
 
   @Post(':id/resume')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'استئناف الحملة' })
-  async resume(@CurrentUser() user: any, @Param('id') id: string) {
+  async resume(@CurrentUser() user: User, @Param('id') id: string) {
     return this.campaignsService.resume(id, user.tenantId);
   }
 
   @Post(':id/cancel')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'إلغاء الحملة' })
-  async cancel(@CurrentUser() user: any, @Param('id') id: string) {
+  async cancel(@CurrentUser() user: User, @Param('id') id: string) {
     return this.campaignsService.cancel(id, user.tenantId);
   }
 
@@ -197,7 +198,7 @@ export class CampaignsController {
 
   @Get(':id/stats')
   @ApiOperation({ summary: 'إحصائيات الحملة' })
-  async getStats(@CurrentUser() user: any, @Param('id') id: string) {
+  async getStats(@CurrentUser() user: User, @Param('id') id: string) {
     return this.campaignsService.getStats(id, user.tenantId);
   }
 }

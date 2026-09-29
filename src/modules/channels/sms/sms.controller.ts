@@ -35,6 +35,7 @@ import {
 } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
+import { User } from '@database/entities';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { SmsService } from './sms.service';
 
@@ -116,7 +117,7 @@ export class SmsController {
     description: 'ربط حساب مزود SMS',
   })
   async connect(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Body() body: {
       provider: string;
       apiKey: string;
@@ -135,7 +136,7 @@ export class SmsController {
     summary: 'حالة الاتصال',
     description: 'التحقق من حالة اتصال SMS',
   })
-  async getStatus(@CurrentUser() user: any) {
+  async getStatus(@CurrentUser() user: User) {
     const tenantId = user.tenantId;
     return this.smsService.getStatus(tenantId);
   }
@@ -147,7 +148,7 @@ export class SmsController {
     summary: 'الرصيد',
     description: 'الرصيد المتبقي من رسائل SMS',
   })
-  async getBalance(@CurrentUser() user: any) {
+  async getBalance(@CurrentUser() user: User) {
     const tenantId = user.tenantId;
     return this.smsService.getBalance(tenantId);
   }
@@ -160,7 +161,7 @@ export class SmsController {
     summary: 'فصل SMS',
     description: 'فصل الربط مع مزود SMS',
   })
-  async disconnect(@CurrentUser() user: any) {
+  async disconnect(@CurrentUser() user: User) {
     const tenantId = user.tenantId;
     await this.smsService.disconnect(tenantId);
   }
@@ -177,7 +178,7 @@ export class SmsController {
     description: 'إرسال رسالة SMS',
   })
   async sendMessage(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Body() body: {
       to: string;
       message: string;
@@ -196,7 +197,7 @@ export class SmsController {
     description: 'إرسال رسائل SMS لعدة أرقام',
   })
   async sendBulk(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Body() body: {
       recipients: string[];
       message: string;
@@ -215,7 +216,7 @@ export class SmsController {
     description: 'إرسال رمز تحقق',
   })
   async sendOtp(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Body() body: {
       to: string;
       code?: string;
@@ -238,7 +239,7 @@ export class SmsController {
     description: 'تقارير الرسائل المرسلة',
   })
   async getReports(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('page', new ParseIntPipe({ optional: true })) page = 1,

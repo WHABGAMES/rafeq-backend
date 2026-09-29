@@ -16,6 +16,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { SallaOrderHandler, SallaProcessorContext } from './salla-order.handler';
 import { Tenant, TenantStatus, SubscriptionPlan } from '@database/entities/tenant.entity';
+import { getErrorMessage } from '@common/utils/error.util';
 
 @Injectable()
 export class SallaMiscHandler {
@@ -322,12 +323,13 @@ export class SallaMiscHandler {
       });
 
       return { handled: true, action: `subscription_${eventType}`, plan, planName };
-    } catch (error: any) {
-      this.logger.error(`❌ Failed to update subscription: ${error.message}`, {
+    } catch (error: unknown) {
+      const message = getErrorMessage(error);
+      this.logger.error(`❌ Failed to update subscription: ${message}`, {
         tenantId: context.tenantId,
         eventType,
       });
-      return { handled: false, error: error.message, eventType };
+      return { handled: false, error: message, eventType };
     }
   }
 

@@ -24,7 +24,11 @@ import {
 } from '@database/entities/subscription.entity';
 
 // ✅ SubscriptionPlan ENTITY (جدول الخطط)
-import { SubscriptionPlan as SubscriptionPlanEntity } from '@database/entities/subscription-plan.entity';
+import {
+  PlanStatus,
+  PlanType,
+  SubscriptionPlan as SubscriptionPlanEntity,
+} from '@database/entities/subscription-plan.entity';
 
 // ✅ Tenant entity + SubscriptionPlan ENUM (حقل الباقة في Tenant)
 import { Tenant } from '@database/entities/tenant.entity';
@@ -55,6 +59,50 @@ export interface PlanFeatureSet {
   maxStores: number;
   maxUsers: number;
   maxChannels: number;
+}
+
+interface AdminSubscriptionRow {
+  user_id: string | null;
+  user_email: string | null;
+  first_name: string | null;
+  last_name: string | null;
+  user_role: string | null;
+  user_status: string | null;
+  user_preferences: Record<string, unknown> | null;
+  user_created_at: Date | string | null;
+  users_count: number | string | null;
+  id: string;
+  name: string | null;
+  subscription_plan: string | null;
+  tenant_status: string | null;
+  subscription_ends_at: Date | string | null;
+  trial_ends_at: Date | string | null;
+  subscribed_at: Date | string | null;
+  sub_status: string | null;
+  usage_stats: Partial<UsageStats> | null;
+  current_period_end: Date | string | null;
+}
+
+export interface AdminSubscriptionItem {
+  tenantId: string;
+  tenantName: string;
+  accountId: string | null;
+  accountName: string;
+  email: string;
+  accountRole: string;
+  accountStatus: string;
+  accountsCount: number;
+  settingsCount: number;
+  plan: PlanTier;
+  status: string;
+  messagesUsed: number;
+  messagesLimit: number;
+  messagesRemaining: number;
+  currentPeriodEnd: Date | string | null;
+  subscribedAt: Date | string | null;
+  subscriptionEndsAt: Date | string | null;
+  trialEndsAt: Date | string | null;
+  daysRemaining: number | null;
 }
 
 export const PLAN_FEATURES: Record<PlanTier, PlanFeatureSet> = {
@@ -281,9 +329,9 @@ export class SubscriptionManagementService {
       sub.amount = planEntity.pricing?.monthlyPrice || 0;
       sub.usageStats = newUsageStats;
       // ✅ FIX: مسح تواريخ الإلغاء عند إعادة التفعيل
-      sub.cancelledAt = null as any;
-      sub.endsAt = null as any;
-      (sub as any).metadata = {
+      sub.cancelledAt = null;
+      sub.endsAt = null;
+      sub.metadata = {
         ...(sub.metadata || {}),
         notes: `Admin ${adminId}: ${reason || `Set plan to ${plan}`} at ${now.toISOString()}`,
         cancellationReason: undefined,
@@ -303,7 +351,7 @@ export class SubscriptionManagementService {
         usageStats: newUsageStats,
         paymentMethods: [],
         metadata: { createdBy: 'admin', adminId, reason },
-      } as unknown as Subscription);
+      });
     }
 
     await this.subscriptionRepo.save(sub);
@@ -362,7 +410,7 @@ export class SubscriptionManagementService {
     plan?: PlanTier;
     search?: string;
   }): Promise<{
-    items: any[];
+    items: AdminSubscriptionItem[];
     total: number;
     page: number;
     limit: number;
@@ -370,7 +418,7 @@ export class SubscriptionManagementService {
     const { page = 1, limit = 50 } = { page: filters.page || 1, limit: filters.limit || 50 };
 
     const whereConditions: string[] = ['t.deleted_at IS NULL'];
-    const params: any[] = [];
+    const params: unknown[] = [];
     let idx = 1;
 
     if (filters.search) {
@@ -481,13 +529,13 @@ export class SubscriptionManagementService {
     `;
 
     const [rows, countResult] = await Promise.all([
-      this.dataSource.query(dataQuery, dataParams),
-      this.dataSource.query(countQuery, params),
+      this.dataSource.query<AdminSubscriptionRow[]>(dataQuery, dataParams),
+      this.dataSource.query<Array<{ count: string }>>(countQuery, params),
     ]);
 
     const total = parseInt(countResult[0]?.count || '0', 10);
 
-    const items = rows.map((row: any) => {
+    const items = rows.map((row): AdminSubscriptionItem => {
       const usageStats = row.usage_stats || {};
       const resolvedPlan = this.mapTenantPlanToTier(row.subscription_plan || 'free');
       const resolvedStatus = row.sub_status || row.tenant_status || (resolvedPlan !== PlanTier.NONE ? 'active' : 'none');
@@ -631,8 +679,8 @@ export class SubscriptionManagementService {
     const newPlan = this.planRepo.create({
       name: isProf ? 'احترافي' : 'أساسي',
       slug,
-      type: 'paid' as any,
-      status: 'active' as any,
+      type: PlanType.PAID,
+      status: PlanStatus.ACTIVE,
       pricing: {
         currency: 'SAR',
         monthlyPrice: isProf ? 69 : 49,
@@ -667,9 +715,9 @@ export class SubscriptionManagementService {
       displayOrder: isProf ? 2 : 1,
       isVisible: true,
       metadata: {},
-    } as any);
+    });
 
-    const saved = await this.planRepo.save(newPlan) as unknown as SubscriptionPlanEntity;
+    const saved = await this.planRepo.save(newPlan);
     this.logger.log(`📦 Created ${slug} plan in DB`);
     return saved;
   }
@@ -700,8 +748,8 @@ export class SubscriptionManagementService {
       sub.amount = planEntity.pricing?.monthlyPrice || 0;
       sub.usageStats = usageStats;
       // ✅ FIX: مسح تواريخ الإلغاء عند إعادة التفعيل
-      sub.cancelledAt = null as any;
-      sub.endsAt = null as any;
+      sub.cancelledAt = null;
+      sub.endsAt = null;
     } else {
       sub = this.subscriptionRepo.create({
         tenantId, planId: planEntity.id, status: SubscriptionStatus.ACTIVE,
@@ -710,7 +758,7 @@ export class SubscriptionManagementService {
         currency: 'SAR', amount: planEntity.pricing?.monthlyPrice || 0,
         autoRenew: true, usageStats, paymentMethods: [],
         metadata: { activatedBy: ctx.source, externalId: ctx.externalId },
-      } as unknown as Subscription);
+      });
     }
 
     await this.subscriptionRepo.save(sub);

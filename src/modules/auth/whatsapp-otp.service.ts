@@ -11,6 +11,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
+import { getHttpErrorDetails } from '../../common/utils/error.util';
 
 @Injectable()
 export class WhatsAppOtpService {
@@ -112,13 +113,13 @@ export class WhatsAppOtpService {
 
       return false;
 
-    } catch (error: any) {
+    } catch (error: unknown) {
       // ─────────────────────────────────────────────────────────────────────────────
       // إذا فشل الـ Template، نجرب إرسال رسالة نصية مباشرة
       // (يعمل فقط إذا كان هناك محادثة نشطة خلال 24 ساعة)
       // ─────────────────────────────────────────────────────────────────────────────
       this.logger.warn(`WhatsApp Template failed, trying direct message...`, {
-        error: error.response?.data || error.message,
+        error: getHttpErrorDetails(error),
       });
 
       return this.sendDirectOtpMessage(formattedPhone, otp, merchantName);
@@ -175,9 +176,9 @@ export class WhatsAppOtpService {
 
       return false;
 
-    } catch (error: any) {
+    } catch (error: unknown) {
       this.logger.error(`❌ Failed to send WhatsApp OTP to ${this.maskPhone(phoneNumber)}`, {
-        error: error.response?.data || error.message,
+        error: getHttpErrorDetails(error),
       });
       return false;
     }

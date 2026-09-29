@@ -37,6 +37,18 @@ import { ZidApiService } from './zid-api.service';
 
 // 🔐 Encryption
 import { encrypt, decryptSafe } from '@common/utils/encryption.util';
+import { getErrorMessage, getHttpErrorDetails, isUniqueConstraintError } from '@common/utils/error.util';
+import { asJsonRecord, getJsonString, getNestedJsonRecord } from '@common/utils/json-record.util';
+
+export function extractAuthorizationToken(payload: unknown): string | undefined {
+  const root = asJsonRecord(payload);
+  const data = getNestedJsonRecord(root, 'data') ?? root;
+  const user = getNestedJsonRecord(data, 'user');
+  return getJsonString(data, 'authorization')
+    ?? getJsonString(user, 'authorization')
+    ?? getJsonString(getNestedJsonRecord(user, 'store'), 'authorization')
+    ?? getJsonString(getNestedJsonRecord(data, 'manager'), 'authorization');
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ✅ Exported Types
@@ -167,9 +179,9 @@ export class ZidOAuthService {
       this.logger.log('Successfully exchanged code for Zid tokens', { tenantId });
 
       return { tokens: response.data, tenantId };
-    } catch (error: any) {
+    } catch (error: unknown) {
       this.logger.error('Failed to exchange Zid code for tokens', {
-        error: error?.response?.data || error.message,
+        error: getHttpErrorDetails(error, 'Zid token exchange failed').message,
       });
       throw new UnauthorizedException('فشل في الحصول على tokens من زد');
     }
@@ -199,7 +211,7 @@ export class ZidOAuthService {
       // 1. استبدال code بـ tokens
       // ═══════════════════════════════════════════════════════════════════════
       const response = await firstValueFrom(
-        this.httpService.post(
+        this.httpService.post<ZidTokenResponse>(
           this.ZID_TOKEN_URL,
           {
             grant_type: 'authorization_code',
@@ -264,12 +276,12 @@ export class ZidOAuthService {
           storeId: undefined,
         });
         // zidApiService.getStoreInfo لا تُعيد created_at — نضيفها
-        storeInfo = { ...rawInfo, created_at: new Date().toISOString() } as ZidStoreInfo;
+        storeInfo = { ...rawInfo, created_at: new Date().toISOString() };
         this.logger.log(`📊 Zid Store: ${storeInfo.id} — ${storeInfo.name}`);
-      } catch (storeInfoErr: any) {
+      } catch (storeInfoErr: unknown) {
         // ⚠️ getStoreInfo فشل — نستمر بأقل البيانات لضمان حفظ المتجر
         // سيتم تحديث البيانات عند أول sync ناجح
-        this.logger.warn(`⚠️ getStoreInfo failed, proceeding with minimal data: ${storeInfoErr.message}`);
+        this.logger.warn(`⚠️ getStoreInfo failed, proceeding with minimal data: ${getErrorMessage(storeInfoErr)}`);
         storeInfo = {
           id: hintStoreId || '',
           uuid: hintStoreId || '',
@@ -280,7 +292,7 @@ export class ZidOAuthService {
           currency: 'SAR',
           language: 'ar',
           created_at: new Date().toISOString(),
-        } as ZidStoreInfo;
+        };
       }
 
       // ═══════════════════════════════════════════════════════════════════════
@@ -377,9 +389,9 @@ export class ZidOAuthService {
         } else {
           this.logger.log(`✅ Zid store updated: ${zidStoreId} → tenant ${store.tenantId}`);
         }
-      } catch (saveError: any) {
+      } catch (saveError: unknown) {
         // Handle duplicate key constraint violation (race condition)
-        if (saveError.code === '23505' || saveError.message?.includes('duplicate key')) {
+        if (isUniqueConstraintError(saveError)) {
           this.logger.warn(`⚠️ Duplicate key detected for ${zidStoreId}, re-querying and updating...`);
           
           // Re-query the existing store (including soft-deleted)
@@ -438,10 +450,10 @@ export class ZidOAuthService {
         // ── (a) Fetch authorization token if missing ──────────────────────
         if (!webhookTokens.authorizationToken) {
           try {
-            let accountResp: any = null;
+            let accountData: unknown;
             try {
-              accountResp = await firstValueFrom(
-                this.httpService.get(`${this.ZID_API_URL}/managers/account/profile`, {
+              const accountResponse = await firstValueFrom(
+                this.httpService.get<unknown>(`${this.ZID_API_URL}/managers/account/profile`, {
                   headers: {
                     'Authorization': `Bearer ${tokens.access_token}`,
                     'X-Manager-Token': tokens.access_token,
@@ -452,9 +464,10 @@ export class ZidOAuthService {
                   timeout: 6000,
                 }),
               );
-            } catch (_ignored) {
-              accountResp = await firstValueFrom(
-                this.httpService.get(`${this.ZID_API_URL}/account`, {
+              accountData = accountResponse.data;
+            } catch {
+              const accountResponse = await firstValueFrom(
+                this.httpService.get<unknown>(`${this.ZID_API_URL}/account`, {
                   headers: {
                     'Authorization': `Bearer ${tokens.access_token}`,
                     'X-Manager-Token': tokens.access_token,
@@ -464,12 +477,9 @@ export class ZidOAuthService {
                   timeout: 6000,
                 }),
               );
+              accountData = accountResponse.data;
             }
-            const fetchedAuth = accountResp?.data?.authorization
-              || accountResp?.data?.data?.authorization
-              || accountResp?.data?.user?.authorization
-              || accountResp?.data?.user?.store?.authorization
-              || accountResp?.data?.manager?.authorization;
+            const fetchedAuth = extractAuthorizationToken(accountData);
             if (fetchedAuth && savedStore?.id) {
               // ✅ حفظ authorization token في المتجر
               await this.storeRepository.update(
@@ -486,8 +496,8 @@ export class ZidOAuthService {
             } else {
               this.logger.warn(`[BG] ⚠️ Could not retrieve authorization token — webhooks may use access_token only`);
             }
-          } catch (authErr: any) {
-            this.logger.warn(`[BG] ⚠️ Authorization fetch failed (non-fatal): ${authErr.message}`);
+          } catch (authErr: unknown) {
+            this.logger.warn(`[BG] ⚠️ Authorization fetch failed (non-fatal): ${getErrorMessage(authErr)}`);
           }
         }
 
@@ -497,14 +507,14 @@ export class ZidOAuthService {
           this.logger.log(`🔔 [BG] Zid webhooks registered: ${result.registered.join(',')} | failed: ${result.failed.join(',') || 'none'}`);
 
           const webhooks = await this.zidApiService.listWebhooks(webhookTokens);
-          const active   = webhooks.filter((w: any) => w.active === true).length;
-          const inactive = webhooks.filter((w: any) => w.active === false).length;
+          const active = webhooks.filter((webhook) => webhook.active === true).length;
+          const inactive = webhooks.filter((webhook) => webhook.active === false).length;
           this.logger.log(`📋 [BG] Zid webhooks: total=${webhooks.length}, active=${active}, inactive=${inactive}`);
           if (inactive > 0) {
             this.logger.error(`🚨 [BG] ${inactive} Zid webhooks INACTIVE — notifications will NOT work!`);
           }
-        } catch (err: any) {
-          this.logger.warn(`⚠️ [BG] Zid webhook registration failed (non-fatal): ${err.message}`);
+        } catch (err: unknown) {
+          this.logger.warn(`⚠️ [BG] Zid webhook registration failed (non-fatal): ${getErrorMessage(err)}`);
         }
       })();
 
@@ -531,8 +541,8 @@ export class ZidOAuthService {
           userId: regResult.userId,
           isNewUser: regResult.isNewUser,
         });
-      } catch (error: any) {
-        this.logger.error(`❌ Zid Auto-registration failed: ${error.message}`, {
+      } catch (error: unknown) {
+        this.logger.error(`❌ Zid Auto-registration failed: ${getErrorMessage(error)}`, {
           zidStoreId: storeInfo.id,
           email: storeInfo.email,
         });
@@ -544,9 +554,9 @@ export class ZidOAuthService {
         email: storeInfo.email,
       };
 
-    } catch (error: any) {
+    } catch (error: unknown) {
       this.logger.error('❌ [V2] Failed exchangeCodeAndAutoRegister', {
-        error: error?.response?.data || error.message,
+        error: getHttpErrorDetails(error, 'Zid store installation failed').message,
       });
       throw new BadRequestException('Failed to complete Zid store installation');
     }
@@ -581,9 +591,9 @@ export class ZidOAuthService {
 
       this.logger.log('Successfully refreshed Zid access token');
       return response.data;
-    } catch (error: any) {
+    } catch (error: unknown) {
       this.logger.error('Failed to refresh Zid token', {
-        error: error?.response?.data || error.message,
+        error: getHttpErrorDetails(error, 'Zid token refresh failed').message,
       });
       throw new UnauthorizedException('فشل في تجديد token زد');
     }
@@ -609,9 +619,9 @@ export class ZidOAuthService {
         storeId: undefined,
       });
       // zidApiService لا تُعيد created_at — نُضيفها
-      return { ...raw, created_at: new Date().toISOString() } as ZidStoreInfo;
-    } catch (err: any) {
-      this.logger.warn(`⚠️ getStoreInfo failed: ${err.message}`);
+      return { ...raw, created_at: new Date().toISOString() };
+    } catch (err: unknown) {
+      this.logger.warn(`⚠️ getStoreInfo failed: ${getErrorMessage(err)}`);
       return null;
     }
   }
@@ -653,7 +663,8 @@ export class ZidOAuthService {
     } else {
       // ✅ FIX: Clear old (potentially invalid) authorization token when Zid does not return one
       // This prevents using a revoked token from a previous connection after reactivation
-      const { zidAuthorizationToken: _removed, ...otherSettings } = (store.settings as any) || {};
+      const otherSettings = { ...store.settings };
+      delete otherSettings.zidAuthorizationToken;
       store.settings = otherSettings;
       this.logger.warn(`⚠️ No authorization token from Zid - cleared old token for store ${store.zidStoreId}`, {
         storeName: store.zidStoreName,
@@ -843,8 +854,8 @@ export class ZidOAuthService {
       this.logger.log(
         `✅ Zid store ${isNewStore ? 'created' : 'updated'}: ${zidStoreId} → tenant ${tenantId}`,
       );
-    } catch (saveError: any) {
-      if (saveError.code === '23505' || saveError.message?.includes('duplicate key')) {
+    } catch (saveError: unknown) {
+      if (isUniqueConstraintError(saveError)) {
         this.logger.warn(`⚠️ Duplicate key for ${zidStoreId}, re-querying...`);
 
         const existing = await this.storeRepository.findOne({
@@ -888,8 +899,8 @@ export class ZidOAuthService {
 
       await this.zidApiService.registerWebhooks(webhookTokens, webhookUrl, appId);
       this.logger.log(`🔔 Webhooks registered for Zid store ${zidStoreId}`);
-    } catch (error: any) {
-      this.logger.warn(`⚠️ Webhook registration failed (non-fatal): ${error.message}`);
+    } catch (error: unknown) {
+      this.logger.warn(`⚠️ Webhook registration failed (non-fatal): ${getErrorMessage(error)}`);
     }
 
     return savedStore;
@@ -914,7 +925,7 @@ export class ZidOAuthService {
     }
 
     const accessToken = decryptSafe(store.accessToken ?? null);
-    const authToken = decryptSafe((store.settings as any)?.zidAuthorizationToken);
+    const authToken = decryptSafe(getJsonString(store.settings, 'zidAuthorizationToken'));
 
     if (!accessToken) {
       this.logger.error(`❌ Store ${storeId} has no access token — store needs to be reconnected`);

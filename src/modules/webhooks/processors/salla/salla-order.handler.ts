@@ -23,6 +23,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Order, OrderStatus } from '@database/entities/order.entity';
 import { Customer, CustomerStatus } from '@database/entities/customer.entity';
 import { SallaStatusMapper } from './salla-status.mapper';
+import { asJsonRecord, getJsonString, getNestedJsonRecord } from '@common/utils/json-record.util';
 
 export interface SallaProcessorContext {
   tenantId?: string;
@@ -123,7 +124,7 @@ export class SallaOrderHandler {
       const statusSignature = this.statusMapper.buildStatusSignature(statusCandidate);
       const mappedStatus = this.statusMapper.mapSallaOrderStatus(statusCandidate);
       const resolved = this.statusMapper.resolveSpecificStatusEvent(statusCandidate, mappedStatus, normalizedData);
-      const { templateSlug: _templateSlug, specificEvent, mappedStatus: resolvedStatus } = resolved;
+      const { specificEvent, mappedStatus: resolvedStatus } = resolved;
 
       const criticalFallbackEvents = new Set([
         'order.status.pending_payment',
@@ -140,7 +141,10 @@ export class SallaOrderHandler {
           const existingOrder = await this.orderRepository.findOne({
             where: { storeId: context.storeId, sallaOrderId: String(normalizedOrderId) },
           });
-          existingStatusSignature = String((existingOrder?.metadata as any)?.sallaData?.lastStatusSignature || '');
+          existingStatusSignature = getJsonString(
+            getNestedJsonRecord(asJsonRecord(existingOrder?.metadata), 'sallaData'),
+            'lastStatusSignature',
+          ) ?? '';
           hasRealStatusTransition =
             !existingOrder ||
             existingOrder.status !== resolvedStatus ||
@@ -319,7 +323,7 @@ export class SallaOrderHandler {
         if (fullName)  customer.fullName  = fullName;
         if (phone)     customer.phone     = phone;
         if (email)     customer.email     = email;
-        customer.metadata = { ...(customer.metadata || {}), sallaData: customerData } as any;
+        customer.metadata = { ...(customer.metadata || {}), sallaData: customerData };
         customer = await this.customerRepository.save(customer);
         this.logger.log(`🔄 Customer updated: ${sallaCustomerId} (${fullName || 'N/A'})`);
       } else {
@@ -329,7 +333,7 @@ export class SallaOrderHandler {
           sallaCustomerId,
           firstName, lastName, fullName, phone, email,
           status: CustomerStatus.ACTIVE,
-          metadata: { sallaData: customerData } as any,
+          metadata: { sallaData: customerData },
         });
         customer = await this.customerRepository.save(customer);
         this.logger.log(`✅ Customer saved: ${sallaCustomerId} (${fullName || 'N/A'})`);
@@ -378,11 +382,11 @@ export class SallaOrderHandler {
         if (customerId) order.customerId = customerId;
         order.referenceId = (orderData.reference_id as string) || (orderData.order_number as string) || order.referenceId;
         if (orderData.total) order.totalAmount = this.statusMapper.extractAmount(orderData.total);
-        if (items.length > 0) order.items = items as any;
+        if (items.length > 0) order.items = items;
         const existingSallaData = (order.metadata?.sallaData as Record<string, unknown>) || {};
         const mergedSallaData = { ...existingSallaData, ...orderData };
-        if (statusSignature) (mergedSallaData as any).lastStatusSignature = statusSignature;
-        order.metadata = { ...(order.metadata || {}), sallaData: mergedSallaData } as any;
+        if (statusSignature) mergedSallaData.lastStatusSignature = statusSignature;
+        order.metadata = { ...(order.metadata || {}), sallaData: mergedSallaData };
         order = await this.orderRepository.save(order);
         this.logger.log(`🔄 Order updated: ${sallaOrderId} → ${status}`);
       } else {
@@ -398,8 +402,8 @@ export class SallaOrderHandler {
           currency: (orderData.currency as string) || 'SAR',
           totalAmount: this.statusMapper.extractAmount(orderData.total),
           subtotal: this.statusMapper.extractAmount(orderData.sub_total || orderData.total),
-          items: items as any,
-          metadata: { sallaData: initialSallaData } as any,
+          items,
+          metadata: { sallaData: initialSallaData },
         });
         order = await this.orderRepository.save(order);
         this.logger.log(`✅ Order saved: ${sallaOrderId} (${order.totalAmount} ${order.currency})`);
@@ -437,9 +441,9 @@ export class SallaOrderHandler {
       if (extraUpdates) Object.assign(order, extraUpdates);
 
       const existingSallaData = (order.metadata?.sallaData as Record<string, unknown>) || {};
-      const mergedSallaData = { ...existingSallaData, lastWebhookData: orderData };
-      if (statusSignature) (mergedSallaData as any).lastStatusSignature = statusSignature;
-      order.metadata = { ...(order.metadata || {}), sallaData: mergedSallaData } as any;
+      const mergedSallaData: Record<string, unknown> = { ...existingSallaData, lastWebhookData: orderData };
+      if (statusSignature) mergedSallaData.lastStatusSignature = statusSignature;
+      order.metadata = { ...(order.metadata || {}), sallaData: mergedSallaData };
 
       const saved = await this.orderRepository.save(order);
       this.logger.log(`🔄 Order ${sallaOrderId} → ${newStatus}`);
@@ -474,11 +478,11 @@ export class SallaOrderHandler {
     }
 
     if (!result && phone) {
-      result = String(phone).replace(/[\s\-\(\)]/g, '').replace(/^\+/, '');
+      result = String(phone).replace(/[\s()-]/g, '').replace(/^\+/, '');
     }
 
     if (!result && mobile) {
-      let n = String(mobile).replace(/[\s\-\(\)]/g, '').replace(/^\+/, '');
+      let n = String(mobile).replace(/[\s()-]/g, '').replace(/^\+/, '');
       if (n.startsWith('05') && n.length === 10) n = '966' + n.slice(1);
       else if (n.startsWith('5') && n.length === 9) n = '966' + n;
       result = n;

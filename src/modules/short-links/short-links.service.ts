@@ -277,7 +277,6 @@ export class ShortLinksService {
    * No personal data stored — only a hash
    */
   private hashVisitor(ip: string, userAgent: string): string {
-    const crypto = require('crypto');
     return crypto.createHash('sha256').update(`${ip}|${userAgent}`).digest('hex').substring(0, 32);
   }
 

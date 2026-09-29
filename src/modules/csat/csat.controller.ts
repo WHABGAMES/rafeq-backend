@@ -42,6 +42,7 @@ import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { CsatService } from './csat.service';
 import { UpdateCsatSettingsDto, SubmitCsatDto } from './dto';
+import { User } from '@database/entities/user.entity';
 
 @ApiTags('CSAT - تقييم رضا العملاء')
 @Controller({
@@ -59,7 +60,7 @@ export class CsatController {
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'إعدادات التقييم' })
-  async getSettings(@CurrentUser() user: any) {
+  async getSettings(@CurrentUser() user: User) {
     return this.csatService.getSettings(user.tenantId);
   }
 
@@ -68,7 +69,7 @@ export class CsatController {
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'تحديث الإعدادات' })
   async updateSettings(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Body() dto: UpdateCsatSettingsDto,
   ) {
     return this.csatService.updateSettings(user.tenantId, dto);
@@ -138,7 +139,7 @@ export class CsatController {
   @ApiQuery({ name: 'page',    required: false })
   @ApiQuery({ name: 'limit',   required: false })
   async getSurveys(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Query('type')    type?: string,
     @Query('rating')  ratingRaw?: string,
     @Query('agentId') agentId?: string,
@@ -165,7 +166,7 @@ export class CsatController {
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'تفاصيل تقييم' })
   async getSurvey(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     return this.csatService.getSurveyById(id, user.tenantId);
@@ -199,7 +200,7 @@ export class CsatController {
     summary: 'نظرة عامة على رضا العملاء',
     description: 'يُرجع: totalSurveys, avgRating, satisfactionRate, improvementRate',
   })
-  async getOverview(@CurrentUser() user: any) {
+  async getOverview(@CurrentUser() user: User) {
     return this.csatService.getOverview(user.tenantId);
   }
 
@@ -215,7 +216,7 @@ export class CsatController {
   @ApiQuery({ name: 'from',   required: false })
   @ApiQuery({ name: 'to',     required: false })
   async getAnalytics(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Query('period') period = 'month',
     @Query('from')   from?: string,
     @Query('to')     to?: string,
@@ -228,7 +229,7 @@ export class CsatController {
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'تقييمات الوكلاء' })
   async getAgentRatings(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Query('from') from?: string,
     @Query('to')   to?: string,
   ) {
@@ -240,7 +241,7 @@ export class CsatController {
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'اتجاهات التقييم عبر الزمن' })
   async getTrends(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Query('period')  period = 'month',
     @Query('groupBy') groupBy: 'day' | 'week' | 'month' = 'day',
   ) {
@@ -259,7 +260,7 @@ export class CsatController {
   @ApiQuery({ name: 'from',   required: false })
   @ApiQuery({ name: 'to',     required: false })
   async exportSurveys(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Query('format') format = 'csv',
     @Query('from')   from?: string,
     @Query('to')     to?: string,

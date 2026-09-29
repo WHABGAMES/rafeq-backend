@@ -5,7 +5,7 @@
  * ║  📌 Decorator لجلب المستخدم الحالي بطريقة نظيفة                                  ║
  * ║                                                                                ║
  * ║  بدلاً من:                                                                      ║
- * ║    @Request() req: any                                                        ║
+ * ║    @Request() req: RequestWithUser                                            ║
  * ║    const user = req.user;                                                     ║
  * ║                                                                                ║
  * ║  نكتب:                                                                         ║

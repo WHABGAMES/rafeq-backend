@@ -25,6 +25,7 @@ import {
   HttpStatus,
   UseGuards,
   NotFoundException,
+  Logger,
 } from '@nestjs/common';
 import { Response } from 'express';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
@@ -35,6 +36,9 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { WidgetService } from './widget.service';
 import { Store } from '../stores/entities/store.entity';
+import { User } from '@database/entities/user.entity';
+import { WidgetSettings } from './widget-settings.entity';
+import { getErrorMessage } from '../../common/utils/error.util';
 
 // ═══════════════════════════════════════════════════════════════
 // 🌐 PUBLIC CONTROLLER — no auth required
@@ -43,6 +47,8 @@ import { Store } from '../stores/entities/store.entity';
 @ApiTags('Widget: Public')
 @Controller({ path: 'widget', version: '1' })
 export class WidgetPublicController {
+  private readonly logger = new Logger(WidgetPublicController.name);
+
   constructor(private readonly widgetService: WidgetService) {}
 
   /**
@@ -97,7 +103,9 @@ export class WidgetPublicController {
     try {
       if (body.event === 'click') await this.widgetService.trackClick(storeId);
       else if (body.event === 'impression') await this.widgetService.trackImpression(storeId);
-    } catch {}
+    } catch (error: unknown) {
+      this.logger.debug(`Widget tracking failed for store ${storeId}: ${getErrorMessage(error)}`);
+    }
 
     res.status(204).send();
   }
@@ -139,7 +147,7 @@ export class WidgetSettingsController {
 
   @Get()
   @ApiOperation({ summary: 'Get widget settings' })
-  async getSettings(@CurrentUser() user: any) {
+  async getSettings(@CurrentUser() user: User) {
     const storeId = await this.findStoreId(user.tenantId);
     return this.widgetService.getSettings(storeId, user.tenantId);
   }
@@ -147,11 +155,11 @@ export class WidgetSettingsController {
   @Put()
   @ApiOperation({ summary: 'Update widget settings' })
   async updateSettings(
-    @CurrentUser() user: any,
-    @Body() body: Record<string, unknown>,
+    @CurrentUser() user: User,
+    @Body() body: Partial<WidgetSettings>,
   ) {
     const storeId = await this.findStoreId(user.tenantId);
-    return this.widgetService.updateSettings(storeId, user.tenantId, body as any);
+    return this.widgetService.updateSettings(storeId, user.tenantId, body);
   }
 }
 

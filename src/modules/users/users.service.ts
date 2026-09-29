@@ -30,6 +30,15 @@ import { User, UserStatus, UserRole, AuthProvider } from '@database/entities';
 import { Tenant } from '@database/entities/tenant.entity';
 import { CreateUserDto, UpdateUserDto } from './dto';
 import { MailService } from '../mail/mail.service';
+import { asJsonRecord, getJsonString } from '@common/utils/json-record.util';
+
+interface StaffInviteData {
+  tokenHash: string;
+  inviterId: string;
+  storeName: string;
+  expiresAt: string;
+  createdAt: string;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 📌 أنواع الصلاحيات
@@ -106,8 +115,9 @@ export class UsersService {
     // ✅ إزالة بيانات الدعوة الحساسة من الاستجابة
     return users.map(user => {
       if (user.preferences?.invite) {
-        const { invite, ...cleanPrefs } = user.preferences as any;
-        user.preferences = cleanPrefs;
+        const cleanPreferences = { ...user.preferences };
+        delete cleanPreferences.invite;
+        user.preferences = cleanPreferences;
       }
       return user;
     });
@@ -252,7 +262,7 @@ export class UsersService {
     pendingUser: User,
     inviterUser: User,
   ): Promise<{ message: string; inviteId: string }> {
-    const invitePrefs = pendingUser.preferences?.invite as any;
+    const invitePrefs = this.getInviteData(pendingUser.preferences);
     const storeName = invitePrefs?.storeName || 'رفيق';
 
     const inviteToken = crypto.randomBytes(48).toString('hex');
@@ -317,7 +327,7 @@ export class UsersService {
       throw new BadRequestException('رابط الدعوة غير صالح أو منتهي الصلاحية');
     }
 
-    const inviteData = pendingUser.preferences?.invite as any;
+    const inviteData = this.getInviteData(pendingUser.preferences);
     if (!inviteData || !inviteData.tokenHash) {
       throw new BadRequestException('رابط الدعوة غير صالح');
     }
@@ -380,7 +390,7 @@ export class UsersService {
       return { valid: false };
     }
 
-    const inviteData = pendingUser.preferences?.invite as any;
+    const inviteData = this.getInviteData(pendingUser.preferences);
     if (!inviteData || inviteData.tokenHash !== tokenHash) {
       return { valid: false };
     }
@@ -540,6 +550,21 @@ export class UsersService {
   // ═══════════════════════════════════════════════════════════════════════════════
   // 🛠️ Helpers
   // ═══════════════════════════════════════════════════════════════════════════════
+
+  private getInviteData(preferences: Record<string, unknown> | undefined): StaffInviteData | undefined {
+    const invite = asJsonRecord(preferences?.invite);
+    const tokenHash = getJsonString(invite, 'tokenHash');
+    const inviterId = getJsonString(invite, 'inviterId');
+    const storeName = getJsonString(invite, 'storeName');
+    const expiresAt = getJsonString(invite, 'expiresAt');
+    const createdAt = getJsonString(invite, 'createdAt');
+
+    if (!tokenHash || !inviterId || !storeName || !expiresAt || !createdAt) {
+      return undefined;
+    }
+
+    return { tokenHash, inviterId, storeName, expiresAt, createdAt };
+  }
 
   private hashToken(token: string): string {
     return crypto

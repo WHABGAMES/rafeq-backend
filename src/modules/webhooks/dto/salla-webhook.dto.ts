@@ -62,6 +62,7 @@ export class SallaWebhookDto {
   @ApiProperty({
     description: 'بيانات الحدث',
     type: 'object',
+    additionalProperties: true,
   })
   @IsObject()
   data: Record<string, unknown>;

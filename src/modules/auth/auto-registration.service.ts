@@ -24,6 +24,7 @@ import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 import { hashPassword } from '@common/utils/password.util';
+import { getErrorMessage, getHttpErrorDetails } from '@common/utils/error.util';
 
 import { User, UserStatus, UserRole } from '@database/entities/user.entity';
 import { Store } from '@modules/stores/entities/store.entity';
@@ -142,8 +143,8 @@ export class AutoRegistrationService {
       // 👤 نفس التاجر — ربط المتجر الجديد فقط
       return this.handleExistingUser(user, merchantData, store);
 
-    } catch (error: any) {
-      this.logger.error(`❌ Failed to handle app installation: ${error.message}`);
+    } catch (error: unknown) {
+      this.logger.error(`❌ Failed to handle app installation: ${getErrorMessage(error)}`);
       throw error;
     }
   }
@@ -344,8 +345,8 @@ export class AutoRegistrationService {
         isNewUser: true,
       });
       this.logger.log(`📧 Welcome email sent to ${email}`);
-    } catch (error: any) {
-      this.logger.error(`❌ Failed to send welcome email: ${error.message}`);
+    } catch (error: unknown) {
+      this.logger.error(`❌ Failed to send welcome email: ${getErrorMessage(error)}`);
     }
 
     // 📱 WhatsApp
@@ -368,8 +369,8 @@ export class AutoRegistrationService {
           `💡 ننصحك بتغيير كلمة المرور بعد أول تسجيل دخول`,
         ].join('\n'),
       });
-    } catch (error: any) {
-      this.logger.error(`❌ Failed to send WhatsApp: ${error.message}`);
+    } catch (error: unknown) {
+      this.logger.error(`❌ Failed to send WhatsApp: ${getErrorMessage(error)}`);
     }
 
     this.logger.log(`✅ Welcome credentials sent — Email: ${email}`);
@@ -395,8 +396,8 @@ export class AutoRegistrationService {
         html: this.buildNewStoreEmailHtml(name, storeName),
       });
       this.logger.log(`📧 New store notification sent to ${email}`);
-    } catch (error: any) {
-      this.logger.error(`❌ Failed to send new store email: ${error.message}`);
+    } catch (error: unknown) {
+      this.logger.error(`❌ Failed to send new store email: ${getErrorMessage(error)}`);
     }
 
     // 📱 WhatsApp — تنبيه بدون باسورد
@@ -416,8 +417,8 @@ export class AutoRegistrationService {
           `سجّل الدخول بنفس بيانات حسابك الحالي.`,
         ].join('\n'),
       });
-    } catch (error: any) {
-      this.logger.error(`❌ Failed to send WhatsApp: ${error.message}`);
+    } catch (error: unknown) {
+      this.logger.error(`❌ Failed to send WhatsApp: ${getErrorMessage(error)}`);
     }
 
     this.logger.log(`✅ New store notification sent — Email: ${email}, Store: ${storeName}`);
@@ -503,8 +504,8 @@ export class AutoRegistrationService {
         this.logger.warn(`⚠️ Admin WhatsApp send failed — trying ENV fallback`, {
           messageLogId: result.messageLogId,
         });
-      } catch (error: any) {
-        this.logger.warn(`⚠️ Admin WhatsApp error: ${error.message} — trying ENV fallback`);
+      } catch (error: unknown) {
+        this.logger.warn(`⚠️ Admin WhatsApp error: ${getErrorMessage(error)} — trying ENV fallback`);
       }
     }
 
@@ -549,10 +550,11 @@ export class AutoRegistrationService {
           messageId: response.data.messages[0].id,
         });
       }
-    } catch (error: any) {
-      this.logger.error(`❌ WhatsApp API error: ${error.response?.data?.error?.message || error.message}`, {
+    } catch (error: unknown) {
+      const details = getHttpErrorDetails(error, 'WhatsApp API request failed');
+      this.logger.error(`❌ WhatsApp API error: ${details.message}`, {
         phone: this.maskPhone(formattedPhone),
-        status: error.response?.status,
+        status: details.status,
       });
     }
   }

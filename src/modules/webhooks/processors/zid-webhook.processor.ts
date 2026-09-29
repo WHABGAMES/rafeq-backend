@@ -19,6 +19,7 @@ import { WebhookLogAction } from '../entities/webhook-log.entity';
 import { Order, OrderStatus } from '@database/entities/order.entity';
 import { Customer, CustomerStatus } from '@database/entities/customer.entity';
 import { Store, StoreStatus } from '../../../modules/stores/entities/store.entity';
+import { getErrorMessage } from '@common/utils/error.util';
 
 interface ZidWebhookJobData {
   webhookEventId: string;
@@ -188,9 +189,9 @@ export class ZidWebhookProcessor extends WorkerHost {
           result = { handled: true, action: eventType };
           this.eventEmitter.emit(eventType, { tenantId, storeId: internalStoreId, raw: data });
           break;
+        // ✅ FIX: App Market events from Partner Dashboard (event_name field)
         case 'app-uninstalled':
         case 'app.uninstalled':
-        // ✅ FIX: App Market events from Partner Dashboard (event_name field)
         case 'app.market.application.uninstall':
           result = await this.handleAppUninstalled(data, context);
           break;
@@ -415,11 +416,16 @@ export class ZidWebhookProcessor extends WorkerHost {
 
     if (context.tenantId && data.id) {
       try {
-        await this.orderRepository.update(
-          { sallaOrderId: String(data.id), tenantId: context.tenantId },
-          { status: OrderStatus.CANCELLED, cancelledAt: new Date() },
-        );
-      } catch (e) { /* ignore - order may not exist */ }
+        const order = await this.findZidOrder(String(data.id), context);
+        if (order) {
+          order.zidOrderId = String(data.id);
+          order.status = OrderStatus.CANCELLED;
+          order.cancelledAt = new Date();
+          await this.orderRepository.save(order);
+        }
+      } catch (error: unknown) {
+        this.logger.warn(`Could not mark Zid order ${String(data.id)} cancelled: ${getErrorMessage(error)}`);
+      }
     }
 
     this.eventEmitter.emit('order.cancelled', {
@@ -441,11 +447,15 @@ export class ZidWebhookProcessor extends WorkerHost {
 
     if (context.tenantId && data.id) {
       try {
-        await this.orderRepository.update(
-          { sallaOrderId: String(data.id), tenantId: context.tenantId },
-          { status: OrderStatus.REFUNDED },
-        );
-      } catch (e) { /* ignore */ }
+        const order = await this.findZidOrder(String(data.id), context);
+        if (order) {
+          order.zidOrderId = String(data.id);
+          order.status = OrderStatus.REFUNDED;
+          await this.orderRepository.save(order);
+        }
+      } catch (error: unknown) {
+        this.logger.warn(`Could not mark Zid order ${String(data.id)} refunded: ${getErrorMessage(error)}`);
+      }
     }
 
     this.eventEmitter.emit('order.refunded', {
@@ -586,7 +596,9 @@ export class ZidWebhookProcessor extends WorkerHost {
           await this.storeRepository.update({ id: store.id }, { status: StoreStatus.ACTIVE });
           this.logger.log(`✅ Store reactivated: ${store.id}`);
         }
-      } catch (e) { /* non-fatal */ }
+      } catch (error: unknown) {
+        this.logger.warn(`Could not reactivate Zid store ${zidStoreId}: ${getErrorMessage(error)}`);
+      }
     }
 
     this.eventEmitter.emit('store.subscription.active', {
@@ -638,7 +650,9 @@ export class ZidWebhookProcessor extends WorkerHost {
           await this.storeRepository.update({ id: store.id }, { status: StoreStatus.SUSPENDED });
           this.logger.log(`⚠️ Store suspended due to subscription expiry: ${store.id}`);
         }
-      } catch (e) { /* non-fatal */ }
+      } catch (error: unknown) {
+        this.logger.warn(`Could not suspend Zid store ${zidStoreId}: ${getErrorMessage(error)}`);
+      }
     }
 
     this.eventEmitter.emit('store.subscription.expired', {
@@ -802,11 +816,15 @@ export class ZidWebhookProcessor extends WorkerHost {
     // تحديث حالة الطلب في DB إذا أصبح مدفوعاً
     if (context.tenantId && data.id && newStatus === 'paid') {
       try {
-        await this.orderRepository.update(
-          { sallaOrderId: String(data.id), tenantId: context.tenantId },
-          { status: OrderStatus.PAID },
-        );
-      } catch (e) { /* ignore - order may not exist yet */ }
+        const order = await this.findZidOrder(String(data.id), context);
+        if (order) {
+          order.zidOrderId = String(data.id);
+          order.status = OrderStatus.PAID;
+          await this.orderRepository.save(order);
+        }
+      } catch (error: unknown) {
+        this.logger.warn(`Could not mark Zid order ${String(data.id)} paid: ${getErrorMessage(error)}`);
+      }
     }
 
     this.eventEmitter.emit('order.payment_status.updated', {
@@ -1078,9 +1096,12 @@ export class ZidWebhookProcessor extends WorkerHost {
     if (!context.storeId || !data.id) return null;
 
     try {
-      const sallaOrderId = String(data.id);
+      const zidOrderId = String(data.id);
       let order = await this.orderRepository.findOne({
-        where: { sallaOrderId, storeId: context.storeId },
+        where: [
+          { zidOrderId, storeId: context.storeId },
+          { sallaOrderId: zidOrderId, storeId: context.storeId },
+        ],
       });
 
       const rawItems = (data.products as Record<string, unknown>[] | undefined) 
@@ -1106,21 +1127,22 @@ export class ZidWebhookProcessor extends WorkerHost {
           tenantId: context.tenantId,
           storeId: context.storeId,
           customerId: customerId || undefined,
-          sallaOrderId,
+          zidOrderId,
           referenceId: (data.code as string) || (data.invoice_number as string) || (data.order_number as string) || undefined,
           status: this.mapZidOrderStatus(data.order_status || data.status),
           totalAmount,
           subtotal: Number(data.sub_total || totalAmount) || 0,
           currency: String(data.currency_code || data.currency || 'SAR'),
-          items: items as any,
-          metadata: { source: 'zid', sallaData: data } as any,
+          items,
+          metadata: { source: 'zid', zidData: data },
         });
       } else {
         order.status = this.mapZidOrderStatus(data.order_status || data.status);
         order.totalAmount = totalAmount || order.totalAmount;
         if (customerId) order.customerId = customerId;
-        if (items.length > 0) order.items = items as any;
-        order.metadata = { ...(order.metadata || {}), source: 'zid', sallaData: data } as any;
+        if (items.length > 0) order.items = items;
+        order.zidOrderId = zidOrderId;
+        order.metadata = { ...(order.metadata || {}), source: 'zid', zidData: data };
       }
 
       return await this.orderRepository.save(order);
@@ -1132,6 +1154,20 @@ export class ZidWebhookProcessor extends WorkerHost {
     }
   }
 
+  private findZidOrder(
+    zidOrderId: string,
+    context: { tenantId?: string; storeId?: string },
+  ): Promise<Order | null> {
+    const scope = context.storeId ? { storeId: context.storeId } : { tenantId: context.tenantId };
+    return this.orderRepository.findOne({
+      where: [
+        { ...scope, zidOrderId },
+        // Legacy compatibility: earlier Zid webhooks incorrectly stored the external ID here.
+        { ...scope, sallaOrderId: zidOrderId },
+      ],
+    });
+  }
+
   private async updateOrderStatusInDatabase(
     data: Record<string, unknown>,
     context: { tenantId?: string; storeId?: string },
@@ -1139,19 +1175,27 @@ export class ZidWebhookProcessor extends WorkerHost {
     if (!context.storeId || !data.id) return;
 
     try {
-      const sallaOrderId = String(data.id);
+      const zidOrderId = String(data.id);
       const order = await this.orderRepository.findOne({
-        where: { sallaOrderId, storeId: context.storeId },
+        where: [
+          { zidOrderId, storeId: context.storeId },
+          { sallaOrderId: zidOrderId, storeId: context.storeId },
+        ],
       });
 
       if (!order) {
-        this.logger.warn(`⚠️ Zid order ${sallaOrderId} not in DB - creating`);
+        this.logger.warn(`⚠️ Zid order ${zidOrderId} not in DB - creating`);
         await this.syncOrderToDatabase(data, context);
         return;
       }
 
       order.status = this.mapZidOrderStatus(data.order_status || data.status);
-      order.metadata = { ...(order.metadata || {}), source: 'zid', sallaData: { ...(order.metadata?.sallaData || {}), lastWebhookData: data } } as any;
+      order.zidOrderId = zidOrderId;
+      order.metadata = {
+        ...(order.metadata || {}),
+        source: 'zid',
+        zidData: { ...(order.metadata?.zidData || {}), lastWebhookData: data },
+      };
       await this.orderRepository.save(order);
     } catch (error) {
       this.logger.error(`Failed to update Zid order status ${data.id}`, {
@@ -1167,9 +1211,12 @@ export class ZidWebhookProcessor extends WorkerHost {
     if (!context.storeId || !data.id) return null;
 
     try {
-      const sallaCustomerId = String(data.id);
+      const zidCustomerId = String(data.id);
       let customer = await this.customerRepository.findOne({
-        where: { sallaCustomerId, storeId: context.storeId },
+        where: [
+          { zidCustomerId, storeId: context.storeId },
+          { sallaCustomerId: zidCustomerId, storeId: context.storeId },
+        ],
       });
 
       // Zid sends name as single field, not first_name/last_name
@@ -1189,14 +1236,14 @@ export class ZidWebhookProcessor extends WorkerHost {
         customer = this.customerRepository.create({
           tenantId: context.tenantId,
           storeId: context.storeId,
-          sallaCustomerId,
+          zidCustomerId,
           firstName: firstName || undefined,
           lastName: lastName || undefined,
           fullName: fullName || (firstName && lastName ? `${firstName} ${lastName}` : firstName || undefined),
           email,
           phone,
           status: CustomerStatus.ACTIVE,
-          metadata: { source: 'zid', sallaData: data } as any,
+          metadata: { source: 'zid', zidData: data },
           address: data.city || data.country ? {
             city: data.city ? String(data.city) : undefined,
             country: data.country ? String(data.country) : undefined,
@@ -1208,7 +1255,8 @@ export class ZidWebhookProcessor extends WorkerHost {
         if (fullName) customer.fullName = fullName;
         if (email) customer.email = email;
         if (phone) customer.phone = phone;
-        customer.metadata = { ...(customer.metadata || {}), source: 'zid', sallaData: data } as any;
+        customer.zidCustomerId = zidCustomerId;
+        customer.metadata = { ...(customer.metadata || {}), source: 'zid', zidData: data };
       }
 
       return await this.customerRepository.save(customer);

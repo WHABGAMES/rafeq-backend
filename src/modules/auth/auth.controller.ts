@@ -8,7 +8,8 @@
  * ║  POST /auth/register        → تسجيل حساب جديد                                ║
  * ║  POST /auth/otp/send        → إرسال OTP عبر الإيميل                           ║
  * ║  POST /auth/otp/verify      → التحقق من OTP                                   ║
- * ║  POST /auth/google          → Google OAuth                                    ║
+ * ║  GET  /auth/google/url      → Google OAuth authorization URL                  ║
+ * ║  POST /auth/google/callback → Google OAuth callback                           ║
  * ║  GET  /auth/salla/url       → Salla OAuth URL                                ║
  * ║  POST /auth/salla/callback  → Salla OAuth Callback                            ║
  * ║  GET  /auth/zid/url         → Zid OAuth URL                                  ║
@@ -38,6 +39,7 @@ import {
   HttpStatus,
   Logger,
   NotFoundException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -45,14 +47,15 @@ import {
   ApiResponse,
   ApiBearerAuth,
 } from '@nestjs/swagger';
-import { Response } from 'express';
+import { Request as ExpressRequest, Response } from 'express';
 import { ConfigService } from '@nestjs/config';
 
-import { AuthService } from './auth.service';
+import { AuthService, LoginResult } from './auth.service';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { AuditService } from '../admin/services/audit.service';
 import { AuditAction } from '../admin/entities/audit-log.entity';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { OAuthStateService } from './oauth-state.service';
 
 import {
   LoginDto,
@@ -62,9 +65,7 @@ import {
   CheckEmailResponseDto,
   SendEmailOtpDto,
   VerifyEmailOtpDto,
-  GoogleAuthDto,
-  SallaAuthDto,
-  ZidAuthDto,
+  OAuthCallbackDto,
   SetPasswordDto,
   RefreshTokenDto,
   RefreshTokenResponseDto,
@@ -76,6 +77,14 @@ import {
   UserProfileDto,
 } from './dto';
 
+type AuthenticatedRequest = ExpressRequest & {
+  cookies?: Record<string, string>;
+  user?: { sub?: string; id?: string; email?: string; tenantId?: string };
+};
+type OAuthCallbackRequest = AuthenticatedRequest;
+
+const getErrorMessage = (error: unknown): string => error instanceof Error ? error.message : 'Unknown error';
+
 @ApiTags('🔐 Authentication')
 @Controller('auth')
 export class AuthController {
@@ -86,6 +95,7 @@ export class AuthController {
     private readonly auditService: AuditService,
     private readonly eventEmitter: EventEmitter2,
     private readonly configService: ConfigService,
+    private readonly oauthStateService: OAuthStateService,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -96,6 +106,7 @@ export class AuthController {
   //  تنكسر الجلسات النشطة؛ الواجهة الجديدة تعتمد على الكوكي وتتوقف عن تخزينه.
   // ═══════════════════════════════════════════════════════════════════════════════
   private static readonly REFRESH_COOKIE = 'rafeq_rt';
+  private static readonly OAUTH_STATE_COOKIE = 'rafeq_oauth_state';
 
   private setRefreshCookie(res: Response, refreshToken: string): void {
     const isProduction = this.configService.get('NODE_ENV') === 'production';
@@ -110,6 +121,17 @@ export class AuthController {
 
   private clearRefreshCookie(res: Response): void {
     res.clearCookie(AuthController.REFRESH_COOKIE, { path: '/api/auth' });
+  }
+
+  private setOAuthStateCookie(res: Response, state: string): void {
+    const isProduction = this.configService.get('NODE_ENV') === 'production';
+    res.cookie(AuthController.OAUTH_STATE_COOKIE, state, {
+      httpOnly: true, secure: isProduction, sameSite: 'strict', path: '/api/auth', maxAge: 10 * 60 * 1000,
+    });
+  }
+
+  private clearOAuthStateCookie(res: Response): void {
+    res.clearCookie(AuthController.OAUTH_STATE_COOKIE, { path: '/api/auth' });
   }
 
   private maskEmail(email: string): string {
@@ -141,20 +163,21 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'تسجيل الدخول بالإيميل وكلمة المرور' })
   @ApiResponse({ status: 200, type: LoginResponseDto })
-  async login(@Body() dto: LoginDto, @Request() req: any, @Res({ passthrough: true }) res: Response): Promise<LoginResponseDto> {
+  async login(@Body() dto: LoginDto, @Request() req: AuthenticatedRequest, @Res({ passthrough: true }) res: Response): Promise<LoginResponseDto> {
     this.logger.log(`Login attempt: ${this.maskEmail(dto.email)}`);
     const ip = (req.headers?.['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || '';
     const ua = req.headers?.['user-agent'] || '';
     try {
       const result = await this.authService.login(dto.email, dto.password, { ip, ua });
-      this._auditAsync(AuditAction.TENANT_LOGIN, req, result.user?.id, result.user?.email, (result as any).user?.tenantId, { method: 'email' });
+      this._auditAsync(AuditAction.TENANT_LOGIN, req, result.user.id, result.user.email, result.user.tenantId, { method: 'email' });
       if (result?.refreshToken) this.setRefreshCookie(res, result.refreshToken);
       return result;
-    } catch (error: any) {
+    } catch (error: unknown) {
       // 🔐 تسجيل محاولات الدخول الفاشلة
-      const reason = error?.message?.includes('قفل') ? 'account_locked'
-        : error?.message?.includes('غير مفعّل') ? 'account_inactive'
-        : error?.message?.includes('مسجّل عبر') ? 'no_password'
+      const message = getErrorMessage(error);
+      const reason = message.includes('قفل') ? 'account_locked'
+        : message.includes('غير مفعّل') ? 'account_inactive'
+        : message.includes('مسجّل عبر') ? 'no_password'
         : 'wrong_password';
       this.eventEmitter.emit('audit.login.failed', {
         email: dto.email,
@@ -174,7 +197,7 @@ export class AuthController {
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'تسجيل حساب جديد' })
   @ApiResponse({ status: 201 })
-  async register(@Body() dto: RegisterDto, @Request() req: any, @Res({ passthrough: true }) res: Response): Promise<LoginResponseDto> {
+  async register(@Body() dto: RegisterDto, @Request() req: AuthenticatedRequest, @Res({ passthrough: true }) res: Response): Promise<LoginResponseDto> {
     this.logger.log(`Register attempt: ${this.maskEmail(dto.email)}`);
     const result = await this.authService.register({
       email: dto.email,
@@ -183,7 +206,7 @@ export class AuthController {
       storeName: dto.storeName,
     });
     this._trackDeviceAsync(result?.user?.id, result, req);
-    this._auditAsync(AuditAction.TENANT_REGISTER, req, result.user?.id, result.user?.email, (result as any).user?.tenantId, { storeName: dto.storeName });
+    this._auditAsync(AuditAction.TENANT_REGISTER, req, result.user.id, result.user.email, result.user.tenantId, { storeName: dto.storeName });
     if (result?.refreshToken) this.setRefreshCookie(res, result.refreshToken);
     return result;
   }
@@ -203,7 +226,7 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'التحقق من رمز الإيميل وتسجيل الدخول' })
   @ApiResponse({ status: 200, type: LoginResponseDto })
-  async verifyEmailOtp(@Body() dto: VerifyEmailOtpDto, @Request() req: any, @Res({ passthrough: true }) res: Response): Promise<LoginResponseDto> {
+  async verifyEmailOtp(@Body() dto: VerifyEmailOtpDto, @Request() req: AuthenticatedRequest, @Res({ passthrough: true }) res: Response): Promise<LoginResponseDto> {
     const result = await this.authService.verifyEmailOtp(dto.email, dto.otp);
     this._trackDeviceAsync(result?.user?.id, result, req);
     if (result?.refreshToken) this.setRefreshCookie(res, result.refreshToken);
@@ -214,12 +237,29 @@ export class AuthController {
   // 🔵 GOOGLE OAuth
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  @Post('google')
+  @Get('google/url')
+  async getGoogleAuthUrl(@Res({ passthrough: true }) res: Response): Promise<{ url: string }> {
+    const state = await this.oauthStateService.create('google');
+    this.setOAuthStateCookie(res, state);
+    return { url: this.authService.getGoogleAuthUrl(state) };
+  }
+
+  @Post('google/callback')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'تسجيل الدخول عبر Google' })
-  @ApiResponse({ status: 200, type: LoginResponseDto })
-  async googleAuth(@Body() dto: GoogleAuthDto, @Request() req: any, @Res({ passthrough: true }) res: Response): Promise<LoginResponseDto> {
-    const result = await this.authService.googleAuth(dto.idToken);
+  async googleCallback(
+    @Body() dto: OAuthCallbackDto,
+    @Request() req: OAuthCallbackRequest,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<LoginResponseDto> {
+    try {
+      if (!dto.state || dto.state !== req.cookies?.[AuthController.OAUTH_STATE_COOKIE]) {
+        throw new UnauthorizedException('جلسة تفويض Google غير صالحة أو منتهية');
+      }
+      await this.oauthStateService.consume(dto.state, 'google');
+    } finally {
+      this.clearOAuthStateCookie(res);
+    }
+    const result = await this.authService.googleAuthCode(dto.code);
     this._trackDeviceAsync(result?.user?.id, result, req);
     if (result?.refreshToken) this.setRefreshCookie(res, result.refreshToken);
     return result;
@@ -231,18 +271,28 @@ export class AuthController {
 
   @Get('salla/url')
   @ApiOperation({ summary: 'الحصول على رابط تسجيل الدخول عبر سلة' })
-  getSallaAuthUrl(): { url: string } {
-    return { url: this.authService.getSallaAuthUrl() };
+  async getSallaAuthUrl(@Res({ passthrough: true }) res: Response): Promise<{ url: string }> {
+    const state = await this.oauthStateService.create('salla');
+    this.setOAuthStateCookie(res, state);
+    return { url: this.authService.getSallaAuthUrl(state) };
   }
 
   @Post('salla/callback')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'معالجة callback من سلة' })
   @ApiResponse({ status: 200, type: LoginResponseDto })
-  async sallaCallback(@Body() dto: SallaAuthDto, @Request() req: any, @Res({ passthrough: true }) res: Response): Promise<LoginResponseDto> {
-    const result = await this.authService.sallaAuth(dto.code, dto.state);
+  async sallaCallback(@Body() dto: OAuthCallbackDto, @Request() req: OAuthCallbackRequest, @Res({ passthrough: true }) res: Response): Promise<LoginResponseDto> {
+    try {
+      if (!dto.state || dto.state !== req.cookies?.[AuthController.OAUTH_STATE_COOKIE]) {
+        throw new UnauthorizedException('جلسة تفويض OAuth غير صالحة أو منتهية');
+      }
+      await this.oauthStateService.consume(dto.state, 'salla');
+    } finally {
+      this.clearOAuthStateCookie(res);
+    }
+    const result = await this.authService.sallaAuth(dto.code);
     this._trackDeviceAsync(result?.user?.id, result, req);
-    this._auditAsync(AuditAction.TENANT_SALLA_LOGIN, req, result.user?.id, result.user?.email, (result as any).user?.tenantId, { method: 'salla_oauth' });
+    this._auditAsync(AuditAction.TENANT_SALLA_LOGIN, req, result.user.id, result.user.email, result.user.tenantId, { method: 'salla_oauth' });
     if (result?.refreshToken) this.setRefreshCookie(res, result.refreshToken);
     return result;
   }
@@ -253,18 +303,28 @@ export class AuthController {
 
   @Get('zid/url')
   @ApiOperation({ summary: 'الحصول على رابط تسجيل الدخول عبر زد' })
-  getZidAuthUrl(): { url: string } {
-    return { url: this.authService.getZidAuthUrl() };
+  async getZidAuthUrl(@Res({ passthrough: true }) res: Response): Promise<{ url: string }> {
+    const state = await this.oauthStateService.create('zid');
+    this.setOAuthStateCookie(res, state);
+    return { url: this.authService.getZidAuthUrl(state) };
   }
 
   @Post('zid/callback')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'معالجة callback من زد' })
   @ApiResponse({ status: 200, type: LoginResponseDto })
-  async zidCallback(@Body() dto: ZidAuthDto, @Request() req: any, @Res({ passthrough: true }) res: Response): Promise<LoginResponseDto> {
-    const result = await this.authService.zidAuth(dto.code, dto.state);
+  async zidCallback(@Body() dto: OAuthCallbackDto, @Request() req: OAuthCallbackRequest, @Res({ passthrough: true }) res: Response): Promise<LoginResponseDto> {
+    try {
+      if (!dto.state || dto.state !== req.cookies?.[AuthController.OAUTH_STATE_COOKIE]) {
+        throw new UnauthorizedException('جلسة تفويض OAuth غير صالحة أو منتهية');
+      }
+      await this.oauthStateService.consume(dto.state, 'zid');
+    } finally {
+      this.clearOAuthStateCookie(res);
+    }
+    const result = await this.authService.zidAuth(dto.code);
     this._trackDeviceAsync(result?.user?.id, result, req);
-    this._auditAsync(AuditAction.TENANT_ZID_LOGIN, req, result.user?.id, result.user?.email, (result as any).user?.tenantId, { method: 'zid_oauth' });
+    this._auditAsync(AuditAction.TENANT_ZID_LOGIN, req, result.user.id, result.user.email, result.user.tenantId, { method: 'zid_oauth' });
     if (result?.refreshToken) this.setRefreshCookie(res, result.refreshToken);
     return result;
   }
@@ -279,10 +339,10 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'تعيين كلمة مرور جديدة (للمستخدمين بدون كلمة مرور)' })
   async setPassword(
-    @Request() req: any,
+    @Request() req: AuthenticatedRequest,
     @Body() dto: SetPasswordDto,
   ): Promise<MessageResponseDto> {
-    await this.authService.setPassword(req.user.sub || req.user.id, dto.password);
+    await this.authService.setPassword(this.authenticatedUserId(req), dto.password);
     this._auditAsync(AuditAction.TENANT_PASSWORD_CHANGED, req, undefined, undefined, undefined, { method: 'set_password' });
     return { message: 'تم تعيين كلمة المرور بنجاح' };
   }
@@ -297,7 +357,7 @@ export class AuthController {
   @ApiResponse({ status: 200, type: RefreshTokenResponseDto })
   async refreshToken(
     @Body() dto: RefreshTokenDto,
-    @Request() req: any,
+    @Request() req: AuthenticatedRequest,
     @Res({ passthrough: true }) res: Response,
   ): Promise<RefreshTokenResponseDto> {
     // 🔒 FIX F-07: الكوكي أولاً (httpOnly، لا يقرؤه JS)، مع الرجوع للجسم للتوافق
@@ -329,8 +389,8 @@ export class AuthController {
   @ApiBearerAuth('JWT-auth')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'تسجيل الخروج' })
-  async logout(@Request() req: any, @Res({ passthrough: true }) res: Response): Promise<MessageResponseDto> {
-    const userId = req.user.sub || req.user.id;
+  async logout(@Request() req: AuthenticatedRequest, @Res({ passthrough: true }) res: Response): Promise<MessageResponseDto> {
+    const userId = this.authenticatedUserId(req);
     const accessToken = req.headers?.authorization?.replace(/^Bearer\s+/i, '');
     const refreshToken = req.cookies?.[AuthController.REFRESH_COOKIE];
     // حساب مدة الجلسة من JWT iat
@@ -340,7 +400,10 @@ export class AuthController {
         const payload = JSON.parse(Buffer.from(accessToken.split('.')[1], 'base64').toString());
         if (payload.iat) sessionMinutes = Math.round((Date.now() / 1000 - payload.iat) / 60);
       }
-    } catch {}
+    } catch {
+      // The JWT guard has already authenticated the request; this only omits optional audit duration.
+      this.logger.debug('Could not derive logout session duration from access token');
+    }
     this._auditAsync(AuditAction.TENANT_LOGOUT, req, undefined, undefined, undefined, {
       ...(sessionMinutes !== undefined && { sessionDuration: `${sessionMinutes} دقيقة` }),
       ...(sessionMinutes !== undefined && { sessionMinutes }),
@@ -368,8 +431,8 @@ export class AuthController {
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'معلومات المستخدم الحالي' })
   @ApiResponse({ status: 200, type: UserProfileDto })
-  async getMe(@Request() req: any): Promise<UserProfileDto> {
-    return this.authService.getUserProfile(req.user.sub || req.user.id);
+  async getMe(@Request() req: AuthenticatedRequest): Promise<UserProfileDto> {
+    return this.authService.getUserProfile(this.authenticatedUserId(req));
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -382,10 +445,10 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'تغيير كلمة المرور' })
   async changePassword(
-    @Request() req: any,
+    @Request() req: AuthenticatedRequest,
     @Body() dto: ChangePasswordDto,
   ): Promise<MessageResponseDto> {
-    await this.authService.changePassword(req.user.sub || req.user.id, dto.currentPassword, dto.newPassword);
+    await this.authService.changePassword(this.authenticatedUserId(req), dto.currentPassword, dto.newPassword);
     this._auditAsync(AuditAction.TENANT_PASSWORD_CHANGED, req);
     return { message: 'تم تغيير كلمة المرور بنجاح' };
   }
@@ -398,7 +461,7 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'طلب استعادة كلمة المرور' })
   @ApiResponse({ status: 200, description: 'تم إرسال رابط الاستعادة (إذا كان الإيميل مسجلاً)' })
-  async forgotPassword(@Body() dto: ForgotPasswordDto, @Request() req: any): Promise<MessageResponseDto> {
+  async forgotPassword(@Body() dto: ForgotPasswordDto, @Request() req: AuthenticatedRequest): Promise<MessageResponseDto> {
     this.logger.log(`Forgot password request: ${this.maskEmail(dto.email)}`);
     const ip = (req.headers?.['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || '';
     this.eventEmitter.emit('audit.password.reset_requested', { email: dto.email, ipAddress: ip, userAgent: req.headers?.['user-agent'] || '' });
@@ -430,8 +493,8 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'قائمة الأجهزة الموثوقة' })
-  async getDevices(@Request() req: any) {
-    const userId = req.user?.id || req.user?.sub;
+  async getDevices(@Request() req: AuthenticatedRequest) {
+    const userId = this.authenticatedUserId(req);
     const currentIp = (req.headers?.['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || '';
     const currentUA = req.headers?.['user-agent'] || '';
     return this.authService.getDevices(userId, currentIp, currentUA);
@@ -441,8 +504,8 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'إلغاء ثقة جهاز' })
-  async revokeDevice(@Request() req: any, @Param('id') id: string) {
-    const userId = req.user?.id || req.user?.sub;
+  async revokeDevice(@Request() req: AuthenticatedRequest, @Param('id') id: string) {
+    const userId = this.authenticatedUserId(req);
     const ok = await this.authService.revokeDevice(userId, id);
     if (!ok) throw new NotFoundException('الجهاز غير موجود');
     return { message: 'تم إلغاء الثقة' };
@@ -452,8 +515,8 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'تسجيل الخروج من جميع الأجهزة' })
-  async revokeAllDevices(@Request() req: any) {
-    const userId = req.user?.id || req.user?.sub;
+  async revokeAllDevices(@Request() req: AuthenticatedRequest) {
+    const userId = this.authenticatedUserId(req);
     const ip = (req.headers?.['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip;
     const count = await this.authService.revokeAllDevices(userId, ip);
     return { message: `تم تسجيل الخروج من ${count} جهاز` };
@@ -463,12 +526,19 @@ export class AuthController {
   // 🔧 PRIVATE HELPER — تتبع الجهاز بعد أي نوع من تسجيل الدخول
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  private _trackDeviceAsync(userId: string | undefined, result: any, req: any): void {
+  private _trackDeviceAsync(userId: string | undefined, result: LoginResult, req: AuthenticatedRequest): void {
     if (!userId) return;
     const tenantId = result?.user?.tenantId || '';
     const ip = (req.headers?.['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || '';
     const ua = req.headers?.['user-agent'] || '';
-    this.authService.trackDevice(userId, tenantId, { ip, userAgent: ua }).catch(() => {});
+    this.authService.trackDevice(userId, tenantId, { ip, userAgent: ua })
+      .catch((error: unknown) => this.logger.warn(`Device tracking failed: ${getErrorMessage(error)}`));
+  }
+
+  private authenticatedUserId(req: AuthenticatedRequest): string {
+    const userId = req.user?.sub || req.user?.id;
+    if (!userId) throw new UnauthorizedException('جلسة المستخدم غير صالحة');
+    return userId;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -477,7 +547,7 @@ export class AuthController {
 
   private _auditAsync(
     action: AuditAction,
-    req: any,
+    req: AuthenticatedRequest,
     userId?: string,
     email?: string,
     tenantId?: string,
@@ -494,6 +564,6 @@ export class AuthController {
       metadata: meta || {},
       ipAddress: ip,
       userAgent: ua,
-    }).catch(err => this.logger.warn(`Audit log failed: ${err?.message}`));
+    }).catch((error: unknown) => this.logger.warn(`Audit log failed: ${getErrorMessage(error)}`));
   }
 }

@@ -33,6 +33,7 @@ import { Repository } from 'typeorm';
 import { AdminJwtGuard, AdminPermissionGuard } from '../guards/admin.guards';
 import { CurrentAdmin } from '../decorators/current-admin.decorator';
 import { WhatsappSettings } from '../entities/whatsapp-settings.entity';
+import { AdminUser } from '../entities/admin-user.entity';
 
 import { Conversation, Message, ConversationStatus, Channel } from '@database/entities';
 import { InboxService } from '@modules/inbox/inbox.service';
@@ -231,7 +232,7 @@ export class AdminInboxController {
   @ApiOperation({ summary: 'إرسال رسالة من الأدمن عبر WhatsApp Admin Settings' })
   async sendMessage(
     @Param('id') id: string,
-    @CurrentAdmin() _admin: any,
+    @CurrentAdmin() _admin: AdminUser,
     @Body() body: { content: string },
   ) {
     const conv = await this.conversationRepo.findOne({ where: { id } });

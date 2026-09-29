@@ -44,6 +44,7 @@ import {
 } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
+import { User } from '@database/entities';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { TemplatesService } from './templates.service';
 import {
@@ -120,7 +121,7 @@ export class TemplatesController {
   @ApiQuery({ name: 'limit', required: false, type: Number })
   @ApiResponse({ status: 200, description: 'قائمة القوالب' })
   async findAll(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Query('type') type?: TemplateType,
     @Query('category') category?: TemplateCategory,
     @Query('status') status?: TemplateStatus,
@@ -563,7 +564,7 @@ export class TemplatesController {
     summary: 'تشخيص القوالب',
     description: 'عرض جميع القوالب مع حالة الحذف — للتشخيص فقط',
   })
-  async debug(@CurrentUser() user: any) {
+  async debug(@CurrentUser() user: User) {
     const tenantId = user.tenantId;
     return this.templatesService.debugGetAll(tenantId);
   }
@@ -578,7 +579,7 @@ export class TemplatesController {
     description: 'إنشاء قالب رسالة جديد (نصي، صورة، فيديو، تفاعلي)',
   })
   @ApiResponse({ status: 201, description: 'تم إنشاء القالب' })
-  async create(@CurrentUser() user: any,
+  async create(@CurrentUser() user: User,
     @Body() dto: CreateTemplateDto) {
     const tenantId = user.tenantId;
     return this.templatesService.create(tenantId, dto);
@@ -596,7 +597,7 @@ export class TemplatesController {
   @ApiParam({ name: 'id', description: 'معرف القالب' })
   @ApiResponse({ status: 200, description: 'تفاصيل القالب' })
   @ApiResponse({ status: 404, description: 'القالب غير موجود' })
-  async findOne(@CurrentUser() user: any,
+  async findOne(@CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string) {
     const tenantId = user.tenantId;
     return this.templatesService.findById(id, tenantId);
@@ -613,7 +614,7 @@ export class TemplatesController {
   })
   @ApiResponse({ status: 200, description: 'تم التحديث' })
   async update(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateTemplateDto,
   ) {
@@ -632,7 +633,7 @@ export class TemplatesController {
     description: 'حذف قالب نهائياً (لا يمكن التراجع)',
   })
   @ApiResponse({ status: 204, description: 'تم الحذف' })
-  async remove(@CurrentUser() user: any,
+  async remove(@CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string) {
     const tenantId = user.tenantId;
     await this.templatesService.delete(id, tenantId);
@@ -648,7 +649,7 @@ export class TemplatesController {
     description: 'تبديل حالة القالب بين نشط ومعطل',
   })
   @ApiResponse({ status: 200, description: 'تم تغيير الحالة' })
-  async toggle(@CurrentUser() user: any,
+  async toggle(@CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string) {
     const tenantId = user.tenantId;
     return this.templatesService.toggle(id, tenantId);
@@ -665,7 +666,7 @@ export class TemplatesController {
   })
   @ApiResponse({ status: 200, description: 'تم تحديث إعدادات الإرسال' })
   async updateSendSettings(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() body: Record<string, unknown>,
   ) {
@@ -685,7 +686,7 @@ export class TemplatesController {
   })
   @ApiResponse({ status: 200, description: 'تم تغيير حالة القوالب' })
   async bulkToggle(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Body() body: { ids: string[]; enable: boolean },
   ) {
     const tenantId = user.tenantId;
@@ -703,7 +704,7 @@ export class TemplatesController {
   })
   @ApiResponse({ status: 201, description: 'تم نسخ القالب' })
   async duplicate(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() body: { name?: string },
   ) {
@@ -722,7 +723,7 @@ export class TemplatesController {
     description: 'إرسال رسالة اختبارية للتأكد من القالب',
   })
   async test(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() body: { phone: string; variables?: Record<string, string> },
   ) {
@@ -739,7 +740,7 @@ export class TemplatesController {
     summary: 'إرسال قالب للموافقة',
     description: 'إرسال قالب WhatsApp لمراجعة Meta',
   })
-  async submitWhatsAppTemplate(@CurrentUser() user: any,
+  async submitWhatsAppTemplate(@CurrentUser() user: User,
     @Body() dto: SubmitWhatsAppTemplateDto) {
     const tenantId = user.tenantId;
     return this.templatesService.submitToWhatsApp(tenantId, dto);
@@ -750,7 +751,7 @@ export class TemplatesController {
     summary: 'حالة قوالب WhatsApp',
     description: 'جلب حالة الموافقة على قوالب WhatsApp',
   })
-  async getWhatsAppTemplatesStatus(@CurrentUser() user: any) {
+  async getWhatsAppTemplatesStatus(@CurrentUser() user: User) {
     const tenantId = user.tenantId;
     return this.templatesService.getWhatsAppTemplatesStatus(tenantId);
   }
@@ -761,7 +762,7 @@ export class TemplatesController {
     summary: 'مزامنة قوالب WhatsApp',
     description: 'مزامنة القوالب مع WhatsApp Business API',
   })
-  async syncWhatsAppTemplates(@CurrentUser() user: any) {
+  async syncWhatsAppTemplates(@CurrentUser() user: User) {
     const tenantId = user.tenantId;
     return this.templatesService.syncWithWhatsApp(tenantId);
   }
@@ -775,7 +776,7 @@ export class TemplatesController {
     summary: 'إحصائيات القالب',
     description: 'عدد مرات الاستخدام، معدل القراءة، معدل النقر',
   })
-  async getStats(@CurrentUser() user: any,
+  async getStats(@CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string) {
     const tenantId = user.tenantId;
     return this.templatesService.getStats(id, tenantId);

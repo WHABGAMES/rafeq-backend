@@ -147,16 +147,16 @@ export class AnalyticsService {
 
     // ─── العملاء ───
     const customersCurrent = await this.customerRepository.count({
-      where: { tenantId, createdAt: Between(currentStart, currentEnd) } as any,
+      where: { tenantId, createdAt: Between(currentStart, currentEnd) },
     });
     const customersPrevious = await this.customerRepository.count({
-      where: { tenantId, createdAt: Between(previousStart, previousEnd) } as any,
+      where: { tenantId, createdAt: Between(previousStart, previousEnd) },
     });
     const customersToday = await this.customerRepository.count({
-      where: { tenantId, createdAt: MoreThanOrEqual(today) } as any,
+      where: { tenantId, createdAt: MoreThanOrEqual(today) },
     });
     const totalCustomers = await this.customerRepository.count({
-      where: { tenantId } as any,
+      where: { tenantId },
     });
 
     // ─── ✅ متوسط وقت الرد الحقيقي (بدل hardcoded 5) ───
@@ -479,22 +479,20 @@ export class AnalyticsService {
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let repository: Repository<any>;
+    let queryBuilder;
     switch (metric) {
       case 'conversations':
-        repository = this.conversationRepository;
+        queryBuilder = this.conversationRepository.createQueryBuilder('entity');
         break;
       case 'messages':
-        repository = this.messageRepository;
+        queryBuilder = this.messageRepository.createQueryBuilder('entity');
         break;
       case 'customers':
-        repository = this.customerRepository;
+        queryBuilder = this.customerRepository.createQueryBuilder('entity');
         break;
     }
 
-    const data = await repository
-      .createQueryBuilder('entity')
+    const data = await queryBuilder
       .select("DATE(entity.createdAt)", 'date')
       .addSelect('COUNT(*)', 'count')
       .where('entity.tenantId = :tenantId', { tenantId })

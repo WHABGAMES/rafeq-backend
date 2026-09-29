@@ -15,7 +15,7 @@
 
 import { Injectable, NestMiddleware, Logger } from '@nestjs/common';
 import { Request, Response, NextFunction } from 'express';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Request Logger Middleware
@@ -85,7 +85,7 @@ export class RequestLoggerMiddleware implements NestMiddleware {
      * this.logger.error(`[${requestId}] Failed to process...`);
      */
     const requestId =
-      (request.headers['x-request-id'] as string) || uuidv4();
+      (request.headers['x-request-id'] as string) || randomUUID();
 
     // إضافة Request ID للـ headers (للاستخدام لاحقاً)
     request.headers['x-request-id'] = requestId;

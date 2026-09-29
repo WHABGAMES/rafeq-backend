@@ -14,6 +14,16 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
+import {
+  asJsonRecord,
+  getJsonBoolean,
+  getJsonNumber,
+  getJsonRecordArray,
+  getJsonString,
+  getNestedJsonRecord,
+  JsonRecord,
+} from '@common/utils/json-record.util';
+import { getErrorCode, getErrorMessage, getHttpErrorDetails } from '@common/utils/error.util';
 
 /**
  * 📌 Zid API Documentation:
@@ -107,6 +117,75 @@ export interface ZidAddress {
   country: string;
 }
 
+export interface ZidStoreProfile {
+  id: string;
+  uuid: string;
+  name: string;
+  email: string;
+  mobile: string;
+  url: string;
+  logo?: string;
+  currency: string;
+  language: string;
+}
+
+export interface ZidWebhook {
+  id?: string | number;
+  event?: string;
+  target_url?: string;
+  active?: boolean;
+  status?: unknown;
+}
+
+interface ZidRequestOptions {
+  params?: Record<string, unknown>;
+  body?: unknown;
+  useProductHeaders?: boolean;
+  timeoutMs?: number;
+}
+
+function normalizeWebhook(value: JsonRecord): ZidWebhook {
+  const id = value.id;
+  return {
+    id: typeof id === 'string' || typeof id === 'number' ? id : undefined,
+    event: getJsonString(value, 'event'),
+    target_url: getJsonString(value, 'target_url'),
+    active: getJsonBoolean(value, 'active'),
+    status: value.status,
+  };
+}
+
+export function parseZidStoreProfile(raw: unknown): ZidStoreProfile {
+  const root = asJsonRecord(raw);
+  const user = getNestedJsonRecord(root, 'user') ?? getNestedJsonRecord(root, 'data') ?? root;
+  const storeData = getNestedJsonRecord(user, 'store') ?? user;
+  if (!storeData) throw new Error('Zid store profile response is invalid');
+
+  const rawCurrency = storeData.currency;
+  const rawLanguage = storeData.language;
+  const currencyRecord = asJsonRecord(rawCurrency);
+  const languageRecord = asJsonRecord(rawLanguage);
+  const id = getJsonString(storeData, 'id', 'store_id')
+    ?? getJsonNumber(storeData, 'id', 'store_id')?.toString()
+    ?? '';
+
+  return {
+    id,
+    uuid: getJsonString(storeData, 'uuid') ?? id,
+    name: getJsonString(storeData, 'name', 'store_name', 'title') ?? '',
+    email: getJsonString(storeData, 'email') ?? getJsonString(user, 'email') ?? '',
+    mobile: getJsonString(storeData, 'mobile', 'phone') ?? getJsonString(user, 'mobile') ?? '',
+    url: getJsonString(storeData, 'url', 'domain') ?? '',
+    logo: getJsonString(storeData, 'logo')?.substring(0, 490),
+    currency: getJsonString(currencyRecord, 'code')
+      ?? (typeof rawCurrency === 'string' ? rawCurrency : undefined)
+      ?? 'SAR',
+    language: getJsonString(languageRecord, 'code')
+      ?? (typeof rawLanguage === 'string' ? rawLanguage : undefined)
+      ?? 'ar',
+  };
+}
+
 @Injectable()
 export class ZidApiService {
   private readonly logger = new Logger(ZidApiService.name);
@@ -192,7 +271,7 @@ export class ZidApiService {
     params: { page?: number; per_page?: number; status?: string } = {},
   ): Promise<ZidApiResponse<ZidProduct[]>> {
     // Products API has a different response shape — handle normalization after the call
-    const productParams: Record<string, any> = {};
+    const productParams: Record<string, unknown> = {};
     if (params.page) productParams['page'] = params.page;
     if (params.per_page) productParams['page_size'] = params.per_page;
     if (params.status) productParams['status'] = params.status;
@@ -237,18 +316,8 @@ export class ZidApiService {
   // ✅ Store Info - للمزامنة
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  async getStoreInfo(tokens: ZidAuthTokens): Promise<{
-    id: string;
-    uuid: string;
-    name: string;
-    email: string;
-    mobile: string;
-    url: string;
-    logo?: string;
-    currency: string;
-    language: string;
-  }> {
-    const raw = await this.callZidApi<any>(
+  async getStoreInfo(tokens: ZidAuthTokens): Promise<ZidStoreProfile> {
+    const raw = await this.callZidApi<unknown>(
       'GET',
       '/managers/account/profile',
       tokens,
@@ -256,25 +325,7 @@ export class ZidApiService {
       'get store info',
     );
 
-    const user = raw?.user || raw?.data || raw;
-    const storeData = user?.store || user;
-
-    const rawCurrency = storeData.currency;
-    const rawLanguage = storeData.language;
-
-    return {
-      id: String(storeData.id || storeData.store_id || ''),
-      uuid: String(storeData.uuid || storeData.id || ''),
-      name: storeData.name || storeData.store_name || storeData.title || '',
-      email: storeData.email || user?.email || '',
-      mobile: storeData.mobile || storeData.phone || user?.mobile || '',
-      url: storeData.url || storeData.domain || '',
-      logo: typeof storeData.logo === 'string' ? storeData.logo.substring(0, 490) : undefined,
-      currency: typeof rawCurrency === 'object' && rawCurrency !== null
-        ? (rawCurrency.code || 'SAR') : (rawCurrency || 'SAR'),
-      language: typeof rawLanguage === 'object' && rawLanguage !== null
-        ? (rawLanguage.code || 'ar') : (rawLanguage || 'ar'),
-    };
+    return parseZidStoreProfile(raw);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -294,12 +345,7 @@ export class ZidApiService {
     method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     endpoint: string,
     tokens: ZidAuthTokens,
-    options: {
-      params?: Record<string, any>;
-      body?: any;
-      useProductHeaders?: boolean;
-      timeoutMs?: number;   // ✅ per-request timeout override (default: 8000ms)
-    } = {},
+    options: ZidRequestOptions = {},
     operationName: string,
     retryCount = 0,
   ): Promise<T> {
@@ -329,9 +375,12 @@ export class ZidApiService {
       this.logger.debug(`✅ Zid API: ${operationName} succeeded`);
       return response.data;
 
-    } catch (error: any) {
-      const status = error?.response?.status;
-      const errorDetail = error?.response?.data?.detail || error?.response?.data?.message;
+    } catch (error: unknown) {
+      const details = getHttpErrorDetails(error, `Zid API ${operationName} failed`);
+      const errorRecord = asJsonRecord(error);
+      const responseData = getNestedJsonRecord(getNestedJsonRecord(errorRecord, 'response'), 'data');
+      const status = details.status;
+      const errorDetail = getJsonString(responseData, 'detail', 'message') ?? details.message;
 
       // ⚠️ Handle 401 "No such user" — يعني Authorization أو Store Token مفقود/خاطئ
       // حسب وثائق زد: يجب إرسال Authorization + X-Manager-Token/Access-Token معاً
@@ -399,17 +448,14 @@ export class ZidApiService {
    * Check if error is retryable (network/timeout/5xx/429)
    * @private
    */
-  private isRetryableError(error: any): boolean {
+  private isRetryableError(error: unknown): boolean {
     // Network errors
-    if (
-      error.code === 'ECONNRESET' ||
-      error.code === 'ETIMEDOUT' ||
-      error.code === 'ENOTFOUND'
-    ) {
+    const code = getErrorCode(error);
+    if (code === 'ECONNRESET' || code === 'ETIMEDOUT' || code === 'ENOTFOUND') {
       return true;
     }
 
-    const status = error?.response?.status;
+    const status = getHttpErrorDetails(error).status;
     if (!status) return false;
 
     // 5xx server errors
@@ -489,15 +535,16 @@ export class ZidApiService {
         ),
       );
       this.logger.log(`✅ Old Zid webhooks deleted for original_id: ${appId}`);
-    } catch (deleteError: any) {
-      const status = deleteError?.response?.status;
+    } catch (deleteError: unknown) {
+      const details = getHttpErrorDetails(deleteError, 'Failed to delete old Zid webhooks');
+      const status = details.status;
       // 404 = ما فيه webhooks قديمة — عادي
       if (status === 404) {
         this.logger.log(`📋 No existing Zid webhooks to clean up (404)`);
       } else {
         this.logger.warn(`⚠️ Failed to delete old Zid webhooks (non-fatal)`, {
           status,
-          error: deleteError?.response?.data?.message || deleteError.message,
+          error: details.message,
         });
       }
     }
@@ -523,8 +570,9 @@ export class ZidApiService {
           ),
         );
 
-        const webhookData = response.data?.data || response.data;
-        const isActive = webhookData?.active;
+        const responseRoot = asJsonRecord(response.data);
+        const webhookData = getNestedJsonRecord(responseRoot, 'data') ?? responseRoot;
+        const isActive = getJsonBoolean(webhookData, 'active');
         const webhookStatus = webhookData?.status;
 
         registered.push(event);
@@ -538,16 +586,19 @@ export class ZidApiService {
         if (isActive === false) {
           this.logger.error(`🚨 Zid webhook registered but NOT ACTIVE: ${event} — may need manual intervention`);
         }
-      } catch (error: any) {
-        const msg = error?.response?.data?.message?.description
-          || error?.response?.data?.message
-          || error.message;
-        const status = error?.response?.status;
+      } catch (error: unknown) {
+        const details = getHttpErrorDetails(error, 'Zid webhook registration failed');
+        const errorRecord = asJsonRecord(error);
+        const responseData = getNestedJsonRecord(getNestedJsonRecord(errorRecord, 'response'), 'data');
+        const responseMessage = getNestedJsonRecord(responseData, 'message');
+        const msg = getJsonString(responseMessage, 'description')
+          ?? getJsonString(responseData, 'message')
+          ?? details.message;
+        const status = details.status;
         failed.push(event);
         this.logger.warn(`⚠️ Failed to register Zid webhook: ${event}`, {
           status,
           error: msg,
-          responseData: JSON.stringify(error?.response?.data || {}).slice(0, 200),
         });
       }
     }
@@ -558,7 +609,7 @@ export class ZidApiService {
   /**
    * قائمة webhooks المسجلة — مع تشخيص حالة كل webhook
    */
-  async listWebhooks(tokens: ZidAuthTokens): Promise<any[]> {
+  async listWebhooks(tokens: ZidAuthTokens): Promise<ZidWebhook[]> {
     try {
       const response = await firstValueFrom(
         this.httpService.get(
@@ -566,7 +617,8 @@ export class ZidApiService {
           { headers: this.getManagerHeaders(tokens) },
         ),
       );
-      const webhooks = response.data?.data || [];
+      const responseRoot = asJsonRecord(response.data);
+      const webhooks = (getJsonRecordArray(responseRoot, 'data') ?? []).map(normalizeWebhook);
 
       // تشخيص: طباعة حالة كل webhook
       for (const wh of webhooks) {
@@ -579,9 +631,9 @@ export class ZidApiService {
       }
 
       return webhooks;
-    } catch (error: any) {
+    } catch (error: unknown) {
       this.logger.error('Failed to list Zid webhooks', {
-        error: error?.response?.data || error.message,
+        error: getErrorMessage(error, 'Failed to list Zid webhooks'),
       });
       return [];
     }

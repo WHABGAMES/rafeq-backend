@@ -10,6 +10,23 @@ import { WhatsAppBaileysService } from '../channels/whatsapp/whatsapp-baileys.se
 import { SallaApiService } from '../stores/salla-api.service';
 import { decrypt } from '@common/utils/encryption.util';
 
+export interface InventoryStatusCount {
+  status: InventoryStatus;
+  count: string;
+}
+
+export interface CompensationResult {
+  success: boolean;
+  method?: 'manual' | 'auto';
+  message: string;
+  limitReached?: boolean;
+  outOfStock?: boolean;
+  used?: number;
+  max?: number;
+  accountData?: string;
+  accountLabel?: string;
+}
+
 @Injectable()
 export class OtpInventoryService {
   private readonly logger = new Logger(OtpInventoryService.name);
@@ -64,7 +81,7 @@ export class OtpInventoryService {
     return { added: items.length };
   }
 
-  async listItems(configId: string, tenantId: string, filters?: { status?: string; page?: number; limit?: number }): Promise<{ items: OtpInventoryItem[]; total: number; stats: any }> {
+  async listItems(configId: string, tenantId: string, filters?: { status?: string; page?: number; limit?: number }): Promise<{ items: OtpInventoryItem[]; total: number; stats: InventoryStatusCount[] }> {
     await this.getConfigSafe(configId, tenantId);
     const page = filters?.page || 1;
     const limit = Math.min(filters?.limit || 50, 200);
@@ -89,7 +106,7 @@ export class OtpInventoryService {
   }
 
   async deleteItem(itemId: string, tenantId: string): Promise<void> {
-    const item = await this.inventoryRepo.findOne({ where: { id: itemId, tenantId } as any });
+    const item = await this.inventoryRepo.findOne({ where: { id: itemId, tenantId } });
     if (!item) throw new NotFoundException('العنصر غير موجود');
     if (item.status === InventoryStatus.ASSIGNED) throw new BadRequestException('لا يمكن حذف حساب تم تعيينه لطلب');
     await this.inventoryRepo.remove(item);
@@ -98,7 +115,7 @@ export class OtpInventoryService {
 
   async deleteAllAvailable(configId: string, tenantId: string): Promise<{ deleted: number }> {
     await this.getConfigSafe(configId, tenantId);
-    const result = await this.inventoryRepo.delete({ configId, tenantId, status: InventoryStatus.AVAILABLE } as any);
+    const result = await this.inventoryRepo.delete({ configId, tenantId, status: InventoryStatus.AVAILABLE });
     await this.refreshInventoryCount(configId);
     return { deleted: result.affected || 0 };
   }
@@ -107,12 +124,12 @@ export class OtpInventoryService {
   // 🎁 COMPENSATION
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  async requestCompensation(slug: string, orderNumber: string, username: string, reason: string, clientIp: string): Promise<any> {
+  async requestCompensation(slug: string, orderNumber: string, username: string, reason: string, clientIp: string): Promise<CompensationResult> {
     orderNumber = (orderNumber || '').trim();
     username = (username || '').trim();
     reason = (reason || '').trim();
 
-    const config = await this.configRepo.findOne({ where: { slug, isActive: true } as any });
+    const config = await this.configRepo.findOne({ where: { slug, isActive: true } });
     if (!config) throw new NotFoundException('الخدمة غير متوفرة');
     if (!config.compensationEnabled) throw new BadRequestException('خدمة التعويضات غير مفعلة');
 
@@ -125,7 +142,7 @@ export class OtpInventoryService {
 
     if (config.maxCompensationsPerOrder > 0) {
       const used = await this.compensationRepo.count({
-        where: { configId: config.id, orderNumber } as any,
+        where: { configId: config.id, orderNumber },
       });
       if (used >= config.maxCompensationsPerOrder) {
         return {
@@ -142,7 +159,9 @@ export class OtpInventoryService {
       const orderData = await this.getOrderInfo(config.storeId, orderNumber);
       customerName = orderData?.customerName;
       customerPhone = orderData?.customerPhone;
-    } catch {}
+    } catch (error: unknown) {
+      this.logger.debug(`Could not load compensation customer details: ${error instanceof Error ? error.message : 'unknown error'}`);
+    }
 
     // ═══ METHOD 1: Manual — إرسال طلب للتاجر ═══
     if (config.compensationMethod === 'manual') {
@@ -155,7 +174,7 @@ export class OtpInventoryService {
         method: 'manual', status: 'pending', reason,
       });
       await this.compensationRepo.save(compensation);
-      await this.configRepo.increment({ id: config.id } as any, 'totalCompensations', 1);
+      await this.configRepo.increment({ id: config.id }, 'totalCompensations', 1);
 
       // إشعار التاجر
       this.sendManualRequestNotification(config, orderNumber, reason, customerName, customerPhone).catch(e =>
@@ -206,7 +225,9 @@ export class OtpInventoryService {
         const orderData = await this.getOrderInfo(config.storeId, orderNumber);
         customerName = orderData?.customerName;
         customerPhone = orderData?.customerPhone;
-      } catch {}
+    } catch (error: unknown) {
+      this.logger.debug(`Could not reload compensation customer details: ${error instanceof Error ? error.message : 'unknown error'}`);
+    }
     }
 
     const compensation = this.compensationRepo.create({
@@ -219,7 +240,7 @@ export class OtpInventoryService {
     });
     await this.compensationRepo.save(compensation);
 
-    await this.configRepo.increment({ id: config.id } as any, 'totalCompensations', 1);
+    await this.configRepo.increment({ id: config.id }, 'totalCompensations', 1);
     await this.refreshInventoryCount(config.id);
 
     this.sendCompensationNotifications(config, orderNumber, username, item.accountData, customerName, customerPhone).catch(e =>
@@ -241,7 +262,7 @@ export class OtpInventoryService {
   // 📊 ANALYTICS
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  async getCompensationStats(configId: string, tenantId: string, days = 30): Promise<any> {
+  async getCompensationStats(configId: string, tenantId: string, days = 30): Promise<{ inventory: { total: number; available: number; assigned: number }; compensations: { total: number; daily: Record<string, number>; recentList: Array<Pick<OtpCompensation, 'id' | 'orderNumber' | 'username' | 'customerName' | 'createdAt'>>; topOrders: Array<{ orderNumber: string; count: string }> } }> {
     await this.getConfigSafe(configId, tenantId);
     const since = new Date();
     since.setDate(since.getDate() - days);
@@ -251,11 +272,11 @@ export class OtpInventoryService {
       .addSelect('COUNT(*)', 'count')
       .where('i.configId = :configId', { configId })
       .groupBy('i.status')
-      .getRawMany();
+      .getRawMany<InventoryStatusCount>();
 
     const compensations = await this.compensationRepo.find({
-      where: { configId, createdAt: MoreThan(since) } as any,
-      order: { createdAt: 'DESC' } as any,
+      where: { configId, createdAt: MoreThan(since) },
+      order: { createdAt: 'DESC' },
       take: 100,
     });
 
@@ -272,13 +293,13 @@ export class OtpInventoryService {
       .groupBy('c.orderNumber')
       .orderBy('count', 'DESC')
       .limit(10)
-      .getRawMany();
+      .getRawMany<{ orderNumber: string; count: string }>();
 
     return {
       inventory: {
-        total: inventoryStats.reduce((s: number, r: any) => s + +r.count, 0),
-        available: +((inventoryStats.find((r: any) => r.status === 'available')?.count) || 0),
-        assigned: +((inventoryStats.find((r: any) => r.status === 'assigned')?.count) || 0),
+        total: inventoryStats.reduce((sum: number, row: InventoryStatusCount) => sum + Number(row.count), 0),
+        available: Number(inventoryStats.find((row: InventoryStatusCount) => row.status === InventoryStatus.AVAILABLE)?.count || 0),
+        assigned: Number(inventoryStats.find((row: InventoryStatusCount) => row.status === InventoryStatus.ASSIGNED)?.count || 0),
       },
       compensations: {
         total: compensations.length, daily,
@@ -294,8 +315,8 @@ export class OtpInventoryService {
   async listCompensations(configId: string, tenantId: string, page = 1, limit = 30): Promise<{ items: OtpCompensation[]; total: number }> {
     await this.getConfigSafe(configId, tenantId);
     const [items, total] = await this.compensationRepo.findAndCount({
-      where: { configId, tenantId } as any,
-      order: { createdAt: 'DESC' } as any,
+      where: { configId, tenantId },
+      order: { createdAt: 'DESC' },
       skip: (page - 1) * limit,
       take: Math.min(limit, 200),
     });
@@ -326,7 +347,7 @@ export class OtpInventoryService {
       const message = this.renderTemplate(template, vars);
       const phones = String(config.employeePhones).split(',').map(p => p.trim().replace(/[^0-9+]/g, '')).filter(p => p.length >= 9);
       for (const phone of phones) {
-        try { await this.whatsapp.sendTextMessage(channelId, phone, message); } catch {}
+        try { await this.whatsapp.sendTextMessage(channelId, phone, message); } catch (error: unknown) { this.logger.warn(`Employee compensation notification failed: ${error instanceof Error ? error.message : 'unknown error'}`); }
       }
     }
 
@@ -335,7 +356,7 @@ export class OtpInventoryService {
       const message = this.renderTemplate(template, vars);
       const phone = String(customerPhone).replace(/[^0-9+]/g, '');
       if (phone.length >= 9) {
-        try { await this.whatsapp.sendTextMessage(channelId, phone, message); } catch {}
+        try { await this.whatsapp.sendTextMessage(channelId, phone, message); } catch (error: unknown) { this.logger.warn(`Customer compensation notification failed: ${error instanceof Error ? error.message : 'unknown error'}`); }
       }
     }
   }
@@ -358,7 +379,7 @@ export class OtpInventoryService {
     const phones = String(config.employeePhones).split(',').map(p => p.trim().replace(/[^0-9+]/g, '')).filter(p => p.length >= 9);
 
     for (const phone of phones) {
-      try { await this.whatsapp.sendTextMessage(channelId, phone, message); } catch {}
+      try { await this.whatsapp.sendTextMessage(channelId, phone, message); } catch (error: unknown) { this.logger.warn(`Manual compensation notification failed: ${error instanceof Error ? error.message : 'unknown error'}`); }
     }
   }
 
@@ -416,20 +437,20 @@ export class OtpInventoryService {
   }
 
   private async getConfigSafe(id: string, tenantId: string): Promise<OtpConfig> {
-    const c = await this.configRepo.findOne({ where: { id, tenantId } as any });
+    const c = await this.configRepo.findOne({ where: { id, tenantId } });
     if (!c) throw new NotFoundException('غير موجود');
     return c;
   }
 
   private async refreshInventoryCount(configId: string): Promise<void> {
-    const total = await this.inventoryRepo.count({ where: { configId } as any });
-    const available = await this.inventoryRepo.count({ where: { configId, status: InventoryStatus.AVAILABLE } as any });
-    await this.configRepo.update(configId, { inventoryTotal: total, inventoryAvailable: available } as any);
+    const total = await this.inventoryRepo.count({ where: { configId } });
+    const available = await this.inventoryRepo.count({ where: { configId, status: InventoryStatus.AVAILABLE } });
+    await this.configRepo.update(configId, { inventoryTotal: total, inventoryAvailable: available });
   }
 
   private async findWhatsAppChannel(storeId: string): Promise<string | null> {
     const ch = await this.channelRepo.findOne({
-      where: { storeId, type: ChannelType.WHATSAPP_QR, status: ChannelStatus.CONNECTED } as any,
+      where: { storeId, type: ChannelType.WHATSAPP_QR, status: ChannelStatus.CONNECTED },
     });
     return ch?.id || null;
   }

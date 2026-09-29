@@ -25,12 +25,10 @@ const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 function sanitizeMessage(msg: string): string {
   if (!IS_PRODUCTION) return msg;
 
-  // Remove emoji and other non-ASCII symbols
+  // Remove pictographic symbols and variation selectors without treating
+  // multi-codepoint emoji sequences as individual character classes.
   return msg
-    .replace(
-      /[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{27BF}]|[\u{FE00}-\u{FE0F}]|[\u{1F000}-\u{1F02F}]|[\u{1F0A0}-\u{1F0FF}]|[✅❌⚡⚠️🔧🚀🔐🔔📥🗑️👋🎉🔗📚🏥🔒📍⛔🚫]/gu,
-      '',
-    )
+    .replace(/\p{Extended_Pictographic}|\uFE0F/gu, '')
     .replace(/\s{2,}/g, ' ')
     .trim();
 }
@@ -42,27 +40,27 @@ export class StructuredLogger implements LoggerService {
     this.context = context;
   }
 
-  log(message: string, ...optionalParams: any[]): void {
+  log(message: string, ...optionalParams: unknown[]): void {
     this.writeLog('info', message, optionalParams);
   }
 
-  error(message: string, ...optionalParams: any[]): void {
+  error(message: string, ...optionalParams: unknown[]): void {
     this.writeLog('error', message, optionalParams);
   }
 
-  warn(message: string, ...optionalParams: any[]): void {
+  warn(message: string, ...optionalParams: unknown[]): void {
     this.writeLog('warn', message, optionalParams);
   }
 
-  debug(message: string, ...optionalParams: any[]): void {
+  debug(message: string, ...optionalParams: unknown[]): void {
     this.writeLog('debug', message, optionalParams);
   }
 
-  verbose(message: string, ...optionalParams: any[]): void {
+  verbose(message: string, ...optionalParams: unknown[]): void {
     this.writeLog('verbose', message, optionalParams);
   }
 
-  fatal(message: string, ...optionalParams: any[]): void {
+  fatal(message: string, ...optionalParams: unknown[]): void {
     this.writeLog('fatal', message, optionalParams);
   }
 
@@ -70,7 +68,7 @@ export class StructuredLogger implements LoggerService {
     // Can be implemented if needed
   }
 
-  private writeLog(level: string, message: string, params: any[]): void {
+  private writeLog(level: string, message: string, params: unknown[]): void {
     const cleanMessage = sanitizeMessage(message);
 
     if (IS_PRODUCTION) {
