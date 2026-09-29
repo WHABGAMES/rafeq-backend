@@ -26,7 +26,9 @@ function loadCACert(): Buffer | undefined {
 
   const certPath = process.env.DB_CA_CERT_PATH;
   if (certPath) {
-    try { return fs.readFileSync(path.resolve(certPath)); } catch {}
+    // A configured CA path is an explicit security requirement. Failing fast is
+    // safer than silently downgrading to an unverified TLS connection.
+    return fs.readFileSync(path.resolve(certPath));
   }
   return undefined;
 }

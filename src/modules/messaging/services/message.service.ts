@@ -28,10 +28,23 @@ import { Channel, ChannelType } from '../../../database/entities/channel.entity'
 
 // ✅ ChannelsService — للإرسال المباشر عبر WhatsApp
 import { ChannelsService } from '../../channels/channels.service';
+import { getErrorMessage } from '@common/utils/error.util';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 📌 INTERFACES & TYPES
 // ═══════════════════════════════════════════════════════════════════════════════
+
+interface GroupedCountRow {
+  count: string;
+  direction?: string;
+  status?: string;
+  sender?: string;
+  type?: string;
+}
+
+interface AverageResponseRow {
+  avg: string | null;
+}
 
 export interface IncomingMessageData {
   channelId: string;
@@ -474,9 +487,9 @@ export class MessageService implements OnModuleInit {
 
       return message;
 
-    } catch (error: any) {
+    } catch (error: unknown) {
       await queryRunner.rollbackTransaction();
-      this.logger.error(`❌ Failed to save message: ${(error as Error).message}`);
+      this.logger.error(`❌ Failed to save message: ${getErrorMessage(error)}`);
       throw error;
     } finally {
       await queryRunner.release();
@@ -794,7 +807,7 @@ export class MessageService implements OnModuleInit {
         endDate,
       })
       .groupBy('message.direction')
-      .getRawMany();
+      .getRawMany<GroupedCountRow>();
 
     const statusStats = await this.messageRepo
       .createQueryBuilder('message')
@@ -806,7 +819,7 @@ export class MessageService implements OnModuleInit {
         endDate,
       })
       .groupBy('message.status')
-      .getRawMany();
+      .getRawMany<GroupedCountRow>();
 
     const senderStats = await this.messageRepo
       .createQueryBuilder('message')
@@ -818,7 +831,7 @@ export class MessageService implements OnModuleInit {
         endDate,
       })
       .groupBy('message.sender')
-      .getRawMany();
+      .getRawMany<GroupedCountRow>();
 
     const typeStats = await this.messageRepo
       .createQueryBuilder('message')
@@ -830,7 +843,7 @@ export class MessageService implements OnModuleInit {
         endDate,
       })
       .groupBy('message.type')
-      .getRawMany();
+      .getRawMany<GroupedCountRow>();
 
     const avgResponseTime = await this.conversationRepo
       .createQueryBuilder('conversation')
@@ -841,30 +854,29 @@ export class MessageService implements OnModuleInit {
         startDate,
         endDate,
       })
-      .getRawOne();
+      .getRawOne<AverageResponseRow>();
 
-    const directionMap = directionStats.reduce((acc: Record<string, number>, item: any) => {
-      acc[item.direction] = parseInt(item.count);
-      return acc;
-    }, {} as Record<string, number>);
+    const directionMap = this.toCountMap(directionStats, 'direction');
 
     return {
       total: (directionMap.inbound || 0) + (directionMap.outbound || 0),
       inbound: directionMap.inbound || 0,
       outbound: directionMap.outbound || 0,
-      byStatus: statusStats.reduce((acc: Record<string, number>, item: any) => {
-        acc[item.status] = parseInt(item.count);
-        return acc;
-      }, {} as Record<string, number>),
-      bySender: senderStats.reduce((acc: Record<string, number>, item: any) => {
-        acc[item.sender] = parseInt(item.count);
-        return acc;
-      }, {} as Record<string, number>),
-      byType: typeStats.reduce((acc: Record<string, number>, item: any) => {
-        acc[item.type] = parseInt(item.count);
-        return acc;
-      }, {} as Record<string, number>),
-      avgResponseTime: parseFloat(avgResponseTime?.avg) || 0,
+      byStatus: this.toCountMap(statusStats, 'status'),
+      bySender: this.toCountMap(senderStats, 'sender'),
+      byType: this.toCountMap(typeStats, 'type'),
+      avgResponseTime: Number.parseFloat(avgResponseTime?.avg ?? '0') || 0,
     };
+  }
+
+  private toCountMap(
+    rows: GroupedCountRow[],
+    key: 'direction' | 'status' | 'sender' | 'type',
+  ): Record<string, number> {
+    return rows.reduce<Record<string, number>>((counts, row) => {
+      const label = row[key];
+      if (label) counts[label] = Number.parseInt(row.count, 10) || 0;
+      return counts;
+    }, {});
   }
 }

@@ -16,11 +16,12 @@ import {
   Body,
   Query,
   UseGuards,
-  Request,
 } from '@nestjs/common';
 import { MaintenanceService } from '../services/maintenance.service';
 import { MaintenanceStyle } from '../entities/maintenance-page.entity';
 import { AdminJwtGuard } from '../guards/admin.guards';
+import { CurrentAdmin } from '../decorators/current-admin.decorator';
+import { AdminUser } from '../entities/admin-user.entity';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Public API — يُستخدم من الفرونت إند (التاجر)
@@ -78,10 +79,9 @@ export class MaintenanceAdminController {
   async toggle(
     @Param('id') id: string,
     @Body() body: { isActive: boolean },
-    @Request() req: any,
+    @CurrentAdmin() admin: AdminUser,
   ) {
-    const adminEmail = req.user?.email || 'admin';
-    return this.maintenanceService.toggle(id, body.isActive, adminEmail);
+    return this.maintenanceService.toggle(id, body.isActive, admin.email);
   }
 
   /**
@@ -92,9 +92,8 @@ export class MaintenanceAdminController {
   async update(
     @Param('id') id: string,
     @Body() body: { style?: MaintenanceStyle; message?: string; isActive?: boolean },
-    @Request() req: any,
+    @CurrentAdmin() admin: AdminUser,
   ) {
-    const adminEmail = req.user?.email || 'admin';
-    return this.maintenanceService.update(id, body, adminEmail);
+    return this.maintenanceService.update(id, body, admin.email);
   }
 }

@@ -23,6 +23,7 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { getHttpErrorDetails } from '@common/utils/error.util';
 import { Repository } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
@@ -273,8 +274,8 @@ export class SallaStoreService {
         customers: store.sallaCustomersCount,
       });
 
-    } catch (error: any) {
-      const status = error?.status || error?.response?.status;
+    } catch (error: unknown) {
+      const { status } = getHttpErrorDetails(error, 'Salla store sync failed');
 
       if (status === 401 || status === 403) {
         this.logger.error(`❌ Salla 401 — token invalid for store ${store.id}`, {
@@ -332,7 +333,7 @@ export class SallaStoreService {
   private async autoRecoverStoreForMerchant(merchantId: number): Promise<Store | null> {
     this.logger.warn(`🔄 AUTO-RECOVERY: Attempting to recover Salla store for merchant ${merchantId}`);
 
-    let pastEvents: Array<{ tenant_id: string }> = await this.storeRepository.manager.query(
+    const pastEvents: Array<{ tenant_id: string }> = await this.storeRepository.manager.query(
       `SELECT tenant_id FROM webhook_events
        WHERE source = 'salla' AND tenant_id IS NOT NULL
        AND payload->>'_merchant' = $1

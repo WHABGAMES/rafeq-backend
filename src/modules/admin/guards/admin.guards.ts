@@ -17,6 +17,7 @@ import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { Request } from 'express';
 // ✅ FIX [TS6133]: Removed ROLE_PERMISSIONS — not used directly in guards
 import { AdminUser, AdminStatus, Permission } from '../entities/admin-user.entity';
 
@@ -29,6 +30,11 @@ export const RequirePermissions = (...permissions: Permission[]) =>
   SetMetadata(PERMISSIONS_KEY, permissions);
 
 export const Require2FA = () => SetMetadata(REQUIRE_2FA_KEY, true);
+
+interface AdminRequest extends Request {
+  admin?: AdminUser;
+  ipAddress?: string;
+}
 
 // ─── Admin JWT Auth Guard ─────────────────────────────────────────────────────
 
@@ -45,7 +51,7 @@ export class AdminJwtGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const request = context.switchToHttp().getRequest();
+    const request = context.switchToHttp().getRequest<AdminRequest>();
     const authHeader = request.headers['authorization'];
 
     if (!authHeader?.startsWith('Bearer ')) {
@@ -88,13 +94,14 @@ export class AdminJwtGuard implements CanActivate {
     }
   }
 
-  private extractIp(request: any): string {
-    return (
-      request.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
-      request.headers['x-real-ip'] ||
-      request.ip ||
-      'unknown'
-    );
+  private extractIp(request: Request): string {
+    const forwarded = request.headers['x-forwarded-for'];
+    const forwardedIp = Array.isArray(forwarded)
+      ? forwarded[0]
+      : forwarded?.split(',')[0]?.trim();
+    const realIp = request.headers['x-real-ip'];
+
+    return forwardedIp || (Array.isArray(realIp) ? realIp[0] : realIp) || request.ip || 'unknown';
   }
 }
 
@@ -117,7 +124,7 @@ export class AdminPermissionGuard implements CanActivate {
     // لا توجد صلاحيات مطلوبة → السماح بالمرور
     if (!requiredPermissions?.length) return true;
 
-    const { admin } = context.switchToHttp().getRequest();
+    const { admin } = context.switchToHttp().getRequest<AdminRequest>();
 
     if (!admin) {
       throw new UnauthorizedException('Not authenticated as admin');

@@ -10,7 +10,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
-import { Subscription } from '@database/entities/subscription.entity';
+import { Subscription, SubscriptionStatus } from '@database/entities/subscription.entity';
 
 export interface UsageReport {
   messagesUsed: number;
@@ -35,7 +35,7 @@ export class UsageTrackingService {
    */
   async getUsageReport(tenantId: string): Promise<UsageReport> {
     const subscription = await this.subscriptionRepository.findOne({
-      where: { tenantId, status: 'active' as any },
+      where: { tenantId, status: SubscriptionStatus.ACTIVE },
       relations: ['plan'],
     });
 
@@ -113,7 +113,7 @@ export class UsageTrackingService {
    */
   async resetMonthlyUsage(tenantId: string): Promise<void> {
     await this.subscriptionRepository.update(
-      { tenantId, status: 'active' as any },
+      { tenantId, status: SubscriptionStatus.ACTIVE },
       {
         usageStats: {
           messagesUsed: 0,

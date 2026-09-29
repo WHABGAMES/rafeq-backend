@@ -519,7 +519,10 @@ export class AdminAlertsService implements OnModuleInit {
     if (v === null || v === undefined) return '';
     const s = String(v);
     // Prevent log/message injection + length cap
-    return s.replace(/[\r\n\x00-\x1F]/g, ' ').slice(0, 200);
+    return Array.from(s, (character) => {
+      const code = character.charCodeAt(0);
+      return character === '\r' || character === '\n' || code <= 0x1f ? ' ' : character;
+    }).join('').slice(0, 200);
   }
 
   private truncate(s: string, max: number): string {

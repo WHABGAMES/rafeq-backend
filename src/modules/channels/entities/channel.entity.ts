@@ -110,7 +110,7 @@ export class Channel extends BaseEntity {
     comment: 'Access Token للـ WhatsApp API',
   })
   @Exclude()
-  whatsappAccessToken?: string;
+  whatsappAccessToken?: string | null;
 
   @Column({
     name: 'whatsapp_phone_number',
@@ -150,7 +150,7 @@ export class Channel extends BaseEntity {
     comment: 'بيانات الجلسة (مشفرة)',
   })
   @Exclude()
-  sessionData?: string;
+  sessionData?: string | null;
 
   // ═══════════════════════════════════════════════════════════════════════════════
   // 📸 Instagram Fields
@@ -181,7 +181,7 @@ export class Channel extends BaseEntity {
     comment: 'Instagram Access Token',
   })
   @Exclude()
-  instagramAccessToken?: string;
+  instagramAccessToken?: string | null;
 
   @Column({
     name: 'instagram_page_id',
@@ -203,7 +203,7 @@ export class Channel extends BaseEntity {
     comment: 'Discord Bot Token',
   })
   @Exclude()
-  discordBotToken?: string;
+  discordBotToken?: string | null;
 
   @Column({
     name: 'discord_guild_id',
@@ -257,7 +257,7 @@ export class Channel extends BaseEntity {
     nullable: true,
     comment: 'تاريخ قطع الاتصال',
   })
-  disconnectedAt?: Date;
+  disconnectedAt?: Date | null;
 
   @Column({
     name: 'last_activity_at',
@@ -289,7 +289,7 @@ export class Channel extends BaseEntity {
     nullable: true,
     comment: 'آخر خطأ',
   })
-  lastError?: string;
+  lastError?: string | null;
 
   @Column({
     name: 'last_error_at',
@@ -297,7 +297,7 @@ export class Channel extends BaseEntity {
     nullable: true,
     comment: 'تاريخ آخر خطأ',
   })
-  lastErrorAt?: Date;
+  lastErrorAt?: Date | null;
 
   @Column({
     name: 'error_count',

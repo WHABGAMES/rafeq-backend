@@ -21,6 +21,7 @@ import { ApiTags, ApiOperation } from '@nestjs/swagger';
 // ✅ مسارات صحيحة باستخدام path aliases المعرّفة في tsconfig.json
 import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
 import { CurrentUser } from '@common/decorators/current-user.decorator';
+import { User } from '@database/entities/user.entity';
 import { PlatformNotificationsService } from './platform-notifications.service';
 
 @ApiTags('Platform Notifications')
@@ -36,11 +37,11 @@ export class PlatformNotificationsPublicController {
   @Get('active')
   @ApiOperation({ summary: 'الإشعارات النشطة للتاجر' })
   async getActive(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Query('page') page?: string,
   ) {
     const plan = user?.tenant?.subscriptionPlan || 'free';
-    const userId = user?.id || user?.sub;
+    const userId = user.id;
     const notifications = await this.service.getActiveForMerchant({ plan, page, userId });
     return { notifications };
   }
@@ -50,9 +51,9 @@ export class PlatformNotificationsPublicController {
   @ApiOperation({ summary: 'تسجيل مشاهدة إشعار' })
   async trackView(
     @Param('id', ParseUUIDPipe) id: string,
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
   ): Promise<void> {
-    const userId = user?.id || user?.sub;
+    const userId = user.id;
     await this.service.trackView(id, userId).catch(() => {});
   }
 
@@ -61,9 +62,9 @@ export class PlatformNotificationsPublicController {
   @ApiOperation({ summary: 'تسجيل رفض إشعار' })
   async trackDismiss(
     @Param('id', ParseUUIDPipe) id: string,
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
   ): Promise<void> {
-    const userId = user?.id || user?.sub;
+    const userId = user.id;
     await this.service.trackDismissal(id, userId).catch(() => {});
   }
 }

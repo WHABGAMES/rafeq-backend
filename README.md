@@ -23,7 +23,7 @@
 
 ## 💻 المتطلبات
 
-- Node.js 20+
+- Node.js 22 LTS
 - PostgreSQL 16+
 - Redis 7+
 - Docker & Docker Compose (اختياري)

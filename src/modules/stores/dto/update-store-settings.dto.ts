@@ -14,6 +14,7 @@ export class UpdateStoreSettingsDto {
   @ApiProperty({
     description: 'الإعدادات الجديدة',
     type: 'object',
+    additionalProperties: true,
     example: {
       autoReply: true,
       welcomeMessageEnabled: true,

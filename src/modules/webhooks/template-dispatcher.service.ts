@@ -33,18 +33,43 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import {
+  FindOptionsOrder,
+  FindOptionsSelect,
+  FindOptionsWhere,
+  Repository,
+} from 'typeorm';
 import { MessageTemplate, Order, Customer } from '@database/entities';
 import { SendingMode } from '@database/entities/message-template.entity';
 import { Channel, ChannelType, ChannelStatus } from '../channels/entities/channel.entity';
 import { Store } from '../stores/entities/store.entity';
-import { SallaApiService } from '../stores/salla-api.service';
+import { SallaApiService, SallaOrder } from '../stores/salla-api.service';
 import { decrypt } from '@common/utils/encryption.util';
+import {
+  asJsonRecord,
+  getJsonValue,
+  getNestedJsonRecord,
+} from '@common/utils/json-record.util';
 import { ChannelsService } from '../channels/channels.service';
 import { TemplateSchedulerService } from './template-scheduler.service';
 import { SmsService } from '../channels/sms/sms.service';
 import { MailService } from '../mail/mail.service';
 import { CommunicationEventType } from './dto/salla-webhook.dto';
+
+const TEMPLATE_DIAGNOSTIC_SELECT: FindOptionsSelect<MessageTemplate> = {
+  id: true,
+  name: true,
+  triggerEvent: true,
+  status: true,
+};
+
+const NEWEST_TEMPLATE_FIRST: FindOptionsOrder<MessageTemplate> = {
+  updatedAt: 'DESC',
+};
+
+type SallaOrderWithOptionalUrls = SallaOrder & {
+  urls?: { tracking?: string };
+};
 
 @Injectable()
 export class TemplateDispatcherService {
@@ -93,6 +118,13 @@ export class TemplateDispatcherService {
     private readonly smsService: SmsService,
     private readonly mailService: MailService,
   ) {}
+
+  private activeTemplateWhere(
+    tenantId: string,
+    triggerEvent: string,
+  ): FindOptionsWhere<MessageTemplate>[] {
+    return this.ACTIVE_STATUSES.map(status => ({ tenantId, triggerEvent, status }));
+  }
 
   // ═══════════════════════════════════════════════════════════════════════════════
   // Event Listeners
@@ -539,8 +571,8 @@ export class TemplateDispatcherService {
 
     // ─── البحث عن كل القوالب المفعَّلة (ليس واحداً فقط) ─────────────────
     const allTemplates = await this.templateRepository.find({
-      where: triggerCandidates.flatMap(t =>
-        this.ACTIVE_STATUSES.map(s => ({ tenantId, triggerEvent: t, status: s as any })),
+      where: triggerCandidates.flatMap(triggerEvent =>
+        this.activeTemplateWhere(tenantId, triggerEvent),
       ),
       order: { updatedAt: 'DESC' },
     });
@@ -548,8 +580,8 @@ export class TemplateDispatcherService {
     if (!allTemplates.length) {
       const tenantTemplates = await this.templateRepository.find({
         where: { tenantId },
-        select: ['id', 'name', 'triggerEvent', 'status'] as any,
-        order: { updatedAt: 'DESC' } as any,
+        select: TEMPLATE_DIAGNOSTIC_SELECT,
+        order: NEWEST_TEMPLATE_FIRST,
         take: 20,
       });
 
@@ -559,7 +591,7 @@ export class TemplateDispatcherService {
           tenantId,
           searched_triggers: triggerCandidates,
           hint: `Create & activate a template with triggerEvent="${triggerCandidates[0]}"`,
-          tenant_templates: tenantTemplates.map((t: any) => ({
+          tenant_templates: tenantTemplates.map(t => ({
             name: t.name, trigger: t.triggerEvent, status: t.status,
           })),
         },
@@ -914,13 +946,13 @@ export class TemplateDispatcherService {
             customer_phone:       customerFromOrder?.phone  || String(baseVars.customer_phone || ''),
             customer_email:       customerFromOrder?.email  || String(baseVars.customer_email || ''),
             // بيانات الشحن
-            tracking_number:      (order.metadata as any)?.trackingNumber  || (order.metadata as any)?.tracking_number,
-            shipping_company:     (order.metadata as any)?.shippingCompany || (order.metadata as any)?.shipping_company,
-            tracking_url:         (order.metadata as any)?.trackingUrl     || (order.metadata as any)?.tracking_url,
-            order_tracking:       (order.metadata as any)?.trackingUrl     || (order.metadata as any)?.tracking_url,
+            tracking_number:      getJsonValue(asJsonRecord(order.metadata), 'trackingNumber', 'tracking_number'),
+            shipping_company:     getJsonValue(asJsonRecord(order.metadata), 'shippingCompany', 'shipping_company'),
+            tracking_url:         getJsonValue(asJsonRecord(order.metadata), 'trackingUrl', 'tracking_url'),
+            order_tracking:       getJsonValue(asJsonRecord(order.metadata), 'trackingUrl', 'tracking_url'),
             // روابط
-            payment_link:         (order.metadata as any)?.paymentUrl      || (order.metadata as any)?.payment_url,
-            store_name:           (order.metadata as any)?.storeName       || 'متجرنا',
+            payment_link:         getJsonValue(asJsonRecord(order.metadata), 'paymentUrl', 'payment_url'),
+            store_name:           getJsonValue(asJsonRecord(order.metadata), 'storeName') || 'متجرنا',
           };
 
         } else {
@@ -946,12 +978,12 @@ export class TemplateDispatcherService {
               if (accessToken) {
                 this.logger.debug(`🔄 Fetching order ${entityIdStr} from Salla API...`);
                 const resp = await this.sallaApiService.getOrder(accessToken, Number(entityIdStr));
-                const sallaOrder = resp?.data;
+                const sallaOrder = resp?.data as SallaOrderWithOptionalUrls | undefined;
 
                 if (sallaOrder) {
                   // ✅ استخراج المبلغ — نفس النمط المُثبت في enrichOrder
-                  const total = (sallaOrder as any).amounts?.total?.amount
-                    ?? (sallaOrder as any).total
+                  const total = sallaOrder.amounts?.total?.amount
+                    ?? getJsonValue(asJsonRecord(sallaOrder), 'total')
                     ?? 0;
                   if (total) {
                     baseVars.order_total = total;
@@ -960,7 +992,7 @@ export class TemplateDispatcherService {
                   }
 
                   // استخراج بيانات إضافية
-                  const so = sallaOrder as any;
+                  const so = sallaOrder;
                   if (so.reference_id) baseVars.reference_id = so.reference_id;
                   if (so.reference_id) baseVars.order_id = so.reference_id;
                   if (so.status?.name) baseVars.order_status = so.status.name;
@@ -1671,9 +1703,7 @@ export class TemplateDispatcherService {
     // ─── DISPATCH DIAGNOSTIC (يظهر في كل مكالمة لـ dispatch) ──────────────
     if (tenantId) {
       const tplCount = await this.templateRepository.count({
-        where: this.ACTIVE_STATUSES.map(s => ({
-          tenantId, triggerEvent, status: s as any,
-        })),
+        where: this.activeTemplateWhere(tenantId, triggerEvent),
       });
 
       const ch    = await this.findActiveWhatsAppChannel(storeId, tenantId);
@@ -1692,13 +1722,13 @@ export class TemplateDispatcherService {
       if (tplCount === 0) {
         const allTemplates = await this.templateRepository.find({
           where: { tenantId },
-          select: ['id', 'name', 'triggerEvent', 'status'] as any,
-          order: { updatedAt: 'DESC' } as any,
+          select: TEMPLATE_DIAGNOSTIC_SELECT,
+          order: NEWEST_TEMPLATE_FIRST,
           take: 20,
         });
 
         diag['❌_reason']      = `لا يوجد قالب بـ triggerEvent="${triggerEvent}" وstatus=approved/active`;
-        diag['tenant_templates'] = allTemplates.map((t: any) => ({
+        diag['tenant_templates'] = allTemplates.map(t => ({
           name:    t.name,
           trigger: t.triggerEvent,
           status:  t.status,
@@ -1749,9 +1779,7 @@ export class TemplateDispatcherService {
 
       // 1️⃣ البحث عن القوالب المفعّلة بنفس triggerEvent
       const templates = await this.templateRepository.find({
-        where: this.ACTIVE_STATUSES.map(s => ({
-          tenantId, triggerEvent, status: s as any,
-        })),
+        where: this.activeTemplateWhere(tenantId, triggerEvent),
       });
 
       // ✅ LOG level بدل DEBUG - لازم يظهر في الـ production logs
@@ -1820,8 +1848,7 @@ export class TemplateDispatcherService {
         await this.templateSchedulerService.scheduleDelayedSend({
           template, tenantId, storeId, customerPhone,
           customerName: String(
-            (raw.customer as any)?.first_name ||
-            (raw.customer as any)?.name ||
+            getJsonValue(asJsonRecord(raw.customer), 'first_name', 'name') ||
             raw.customerName || '',
           ),
           referenceId: orderId || undefined,
@@ -2036,7 +2063,7 @@ export class TemplateDispatcherService {
         const refId = data.reference_id || data.referenceId;
         if (refId) {
           const orderByRef = await this.orderRepository.findOne({
-            where: { storeId, referenceId: String(refId) } as any,
+            where: { storeId, referenceId: String(refId) },
             relations: ['customer'],
           });
           if (orderByRef?.customer?.phone) {
@@ -2067,9 +2094,9 @@ export class TemplateDispatcherService {
       }
 
       // محاولة أخيرة: البحث في metadata.sallaData (الـ snapshot الأصلي من سلة)
-      const sallaData = (order.metadata as any)?.sallaData as Record<string, unknown> | undefined;
+      const sallaData = getNestedJsonRecord(asJsonRecord(order.metadata), 'sallaData');
       if (sallaData) {
-        const sallaCustomer = sallaData.customer as Record<string, unknown> | undefined;
+        const sallaCustomer = getNestedJsonRecord(sallaData, 'customer');
 
         if (sallaCustomer) {
           // ✅ FIX: استخدام buildFullPhone لبناء الرقم الكامل من mobile_code + mobile
@@ -2083,14 +2110,14 @@ export class TemplateDispatcherService {
         }
 
         // Fallback: رقم مباشر في sallaData
-        const directPhone = (sallaData as any).customer_phone;
+        const directPhone = getJsonValue(sallaData, 'customer_phone');
         if (directPhone) {
           this.logger.log(`📞 Phone found from sallaData.customer_phone: ${directPhone}`);
           return this.normalizePhone(String(directPhone));
         }
 
         // Fallback: عنوان الشحن
-        const sallaShipping = sallaData.shipping_address as Record<string, unknown> | undefined;
+        const sallaShipping = getNestedJsonRecord(sallaData, 'shipping_address');
         if (sallaShipping?.phone) {
           this.logger.log(`📞 Phone found from sallaData shipping: ${sallaShipping.phone}`);
           return this.normalizePhone(String(sallaShipping.phone));
@@ -2227,7 +2254,7 @@ export class TemplateDispatcherService {
     if (!phone) return '';
 
     // ─── تنظيف: إزالة المسافات، الشرطات، الأقواس، وعلامة +
-    let n = phone.replace(/[\s\-\(\)]/g, '').replace(/^\+/, '');
+    let n = phone.replace(/[\s()-]/g, '').replace(/^\+/, '');
 
     // ─── إصلاح ناتج buildFullPhone القديم (تراكم صفر):
     // "9660501234567" (13 رقم) → "966501234567" (12 رقم صحيح)
@@ -2278,9 +2305,9 @@ export class TemplateDispatcherService {
     };
 
     // ✅ v5: استخراج البيانات من كل المستويات (top-level + nested order)
-    const orderObj = (data.order || {}) as Record<string, unknown>;
-    const customer = (data.customer || orderObj.customer || {}) as Record<string, unknown>;
-    const urls = (data.urls || orderObj.urls || {}) as Record<string, unknown>;
+    const orderObj = asJsonRecord(data.order) || {};
+    const customer = asJsonRecord(data.customer) || getNestedJsonRecord(orderObj, 'customer') || {};
+    const urls = asJsonRecord(data.urls) || getNestedJsonRecord(orderObj, 'urls') || {};
 
     // ✅ v16: DEBUG log لقيمة total
     const rawTotal = data.total || orderObj.total;
@@ -2295,7 +2322,7 @@ export class TemplateDispatcherService {
       customer_phone: safeStr(customer.mobile || customer.phone || data.mobile || data.phone || data.telephone),
       customer_email: safeStr(customer.email || data.email),
       order_id: safeStr(data.reference_id || orderObj.reference_id || data.order_number || orderObj.order_number || data.order_id || data.id || orderObj.id || data.orderId),
-      order_total: this.formatAmount(data.total || data.order_total || orderObj.total || (data.amounts as any)?.total || (orderObj.amounts as any)?.total),
+      order_total: this.formatAmount(data.total || data.order_total || orderObj.total || getJsonValue(getNestedJsonRecord(data, 'amounts'), 'total') || getJsonValue(getNestedJsonRecord(orderObj, 'amounts'), 'total')),
       order_status: safeStr(data.status || data.newStatus || orderObj.status),
       order_date: new Date().toLocaleDateString('ar-SA'),
       order_tracking: safeStr(urls.tracking || data.tracking_url || data.order_tracking || orderObj.tracking_url),
@@ -2310,8 +2337,8 @@ export class TemplateDispatcherService {
       payment_link: safeStr(data.payment_url || data.checkout_url || orderObj.payment_url),
 
       // ✅ v19: متغيرات إضافية للقوالب الجاهزة
-      delivery_date: safeStr(data.delivery_date || data.deliveryDate || orderObj.delivery_date || (data.shipment as any)?.delivery_date),
-      download_link: safeStr(data.download_url || data.downloadLink || orderObj.download_url || (data.digital as any)?.url),
+      delivery_date: safeStr(data.delivery_date || data.deliveryDate || orderObj.delivery_date || getJsonValue(getNestedJsonRecord(data, 'shipment'), 'delivery_date')),
+      download_link: safeStr(data.download_url || data.downloadLink || orderObj.download_url || getJsonValue(getNestedJsonRecord(data, 'digital'), 'url')),
       invoice_link: safeStr(urls.invoice || data.invoice_url || data.invoiceLink || orderObj.invoice_url),
       rating_url: safeStr(urls.customer || urls.rating || data.rating_url || data.review_url || data.store_url),
     };

@@ -35,6 +35,7 @@ import {
 
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { User } from '../../database/entities/user.entity';
 
 import { AnalyticsService, DateRange } from './analytics.service';
 
@@ -62,7 +63,7 @@ export class AnalyticsController {
   @ApiQuery({ name: 'startDate', required: false })
   @ApiQuery({ name: 'endDate', required: false })
   async getOverview(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Query('startDate') startDate?: string,
     @Query('endDate') endDate?: string,
   ) {
@@ -89,7 +90,7 @@ export class AnalyticsController {
   @ApiQuery({ name: 'startDate', required: false })
   @ApiQuery({ name: 'endDate', required: false })
   async getConversationStats(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Query('startDate') startDate?: string,
     @Query('endDate') endDate?: string,
   ) {
@@ -110,7 +111,7 @@ export class AnalyticsController {
   @ApiQuery({ name: 'startDate', required: false })
   @ApiQuery({ name: 'endDate', required: false })
   async getTeamPerformance(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Query('startDate') startDate?: string,
     @Query('endDate') endDate?: string,
   ) {
@@ -131,7 +132,7 @@ export class AnalyticsController {
   @ApiQuery({ name: 'startDate', required: false })
   @ApiQuery({ name: 'endDate', required: false })
   async getCampaignStats(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Query('startDate') startDate?: string,
     @Query('endDate') endDate?: string,
   ) {
@@ -151,7 +152,7 @@ export class AnalyticsController {
   })
   @ApiQuery({ name: 'days', required: false, type: Number })
   async getTrends(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Param('metric') metric: 'conversations' | 'messages' | 'customers',
     @Query('days', new ParseIntPipe({ optional: true })) days = 30,
   ) {
@@ -177,7 +178,7 @@ export class AnalyticsController {
   @ApiQuery({ name: 'startDate', required: false })
   @ApiQuery({ name: 'endDate', required: false })
   async exportReport(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Query('type') type: string,
     @Query('format') format: 'csv' | 'json' = 'json',
     @Query('startDate') startDate?: string,

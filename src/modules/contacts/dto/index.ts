@@ -131,6 +131,11 @@ export class UpdateContactDto {
   @IsString()
   phone?: string;
 
+  @ApiPropertyOptional({ description: 'القناة الأساسية للتواصل' })
+  @IsOptional()
+  @IsString()
+  channel?: string;
+
   @ApiPropertyOptional({ description: 'البريد الإلكتروني' })
   @IsOptional()
   @IsEmail()

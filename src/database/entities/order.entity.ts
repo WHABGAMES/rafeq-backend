@@ -72,7 +72,7 @@ export interface OrderItem {
   discount?: number;
   imageUrl?: string;
   options?: Array<{ name: string; value: string }>;
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
 }
 
 export interface ShippingAddress {
@@ -108,8 +108,8 @@ export interface OrderMetadata {
   internalNotes?: string;
   ipAddress?: string;
   userAgent?: string;
-  sallaData?: Record<string, any>;
-  zidData?: Record<string, any>;     // ✅ v4: بيانات زد الخام
+  sallaData?: Record<string, unknown>;
+  zidData?: Record<string, unknown>;     // ✅ v4: بيانات زد الخام
 }
 
 /**

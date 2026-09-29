@@ -29,7 +29,7 @@ import { firstValueFrom } from 'rxjs';
 // Services
 import { StoresService } from './stores.service';
 import { SallaApiService } from './salla-api.service';
-import { ZidApiService } from './zid-api.service';
+import { ZidApiService, ZidStoreProfile } from './zid-api.service';
 
 // DTOs
 import { ConnectApiStoreDto } from './dto/connect-api-store.dto';
@@ -40,6 +40,11 @@ import { User } from '@database/entities';
 
 // Entities
 import { StorePlatform } from './entities/store.entity';
+import { getErrorCode, getHttpErrorDetails } from '@common/utils/error.util';
+import { asJsonRecord, getJsonNumber, getJsonString, getNestedJsonRecord } from '@common/utils/json-record.util';
+import { assertPublicHttpsUrl, publicHttpsAgent } from '@common/utils/public-url.util';
+
+type SallaStoreProfile = Awaited<ReturnType<SallaApiService['getStoreInfo']>>['data'];
 
 interface RequestWithUser extends Request {
   user: User;
@@ -108,18 +113,19 @@ export class ApiConnectController {
     this.logger.log(`Validating Salla API key for tenant: ${tenantId}`);
 
     // ✅ التحقق بإرسال طلب لـ Salla API
-    let storeInfo: any;
+    let storeInfo: SallaStoreProfile;
     try {
       const response = await this.sallaApiService.getStoreInfo(dto.apiKey);
       storeInfo = response.data;
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const details = getHttpErrorDetails(error, 'Salla API key validation failed');
       this.logger.warn(`Invalid Salla API key`, {
         tenantId,
-        error: error?.message || error?.status,
+        error: details.message,
       });
 
       // رسائل خطأ واضحة حسب نوع الخطأ
-      const status = error?.status || error?.response?.status;
+      const status = details.status;
       if (status === 401 || status === 403) {
         throw new BadRequestException(
           'مفتاح الـ API غير صالح أو منتهي الصلاحية. تأكد من نسخه بشكل صحيح من لوحة تحكم سلة.',
@@ -178,16 +184,17 @@ export class ApiConnectController {
     this.logger.log(`Validating Zid API key for tenant: ${tenantId}`);
 
     // ✅ التحقق بإرسال طلب لـ Zid API
-    let storeInfo: any;
+    let storeInfo: ZidStoreProfile;
     try {
       storeInfo = await this.zidApiService.getStoreInfo({ managerToken: dto.apiKey });
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const details = getHttpErrorDetails(error, 'Zid API key validation failed');
       this.logger.warn(`Invalid Zid API key`, {
         tenantId,
-        error: error?.message || error?.status,
+        error: details.message,
       });
 
-      const status = error?.status || error?.response?.status;
+      const status = details.status;
       if (status === 401 || status === 403) {
         throw new BadRequestException(
           'مفتاح الـ API غير صالح أو منتهي الصلاحية. تأكد من نسخه بشكل صحيح من لوحة تحكم زد.',
@@ -258,17 +265,19 @@ export class ApiConnectController {
     }
 
     // ✅ تنظيف رابط API
-    const apiBaseUrl = dto.apiBaseUrl.trim().replace(/\/+$/, '');
+    const requestedApiUrl = dto.apiBaseUrl.trim().replace(/\/+$/, '');
+    let apiBaseUrl: string;
 
-    // ✅ التحقق أن الرابط URL صالح
+    // ✅ التحقق أن الرابط عام ومشفّر قبل إرسال المفتاح
     try {
-      new URL(apiBaseUrl);
+      const safeUrl = await assertPublicHttpsUrl(requestedApiUrl);
+      apiBaseUrl = safeUrl.toString().replace(/\/+$/, '');
     } catch {
-      throw new BadRequestException('رابط API غير صالح. يجب أن يبدأ بـ https://');
+      throw new BadRequestException('رابط API يجب أن يكون HTTPS عاماً ولا يشير إلى شبكة داخلية.');
     }
 
     // ✅ التحقق من صحة المفتاح بإرسال طلب تجريبي
-    let validationResponse: any = null;
+    let validationResponse: unknown;
     try {
       // نجرّب عدة أنماط شائعة لإرسال الـ API Key
       const headers: Record<string, string> = {
@@ -285,6 +294,8 @@ export class ApiConnectController {
         this.httpService.get(apiBaseUrl, {
           headers,
           timeout: 15000,
+          maxRedirects: 0,
+          httpsAgent: publicHttpsAgent,
           validateStatus: (status) => status < 500, // نقبل أي response غير 5xx
         }),
       );
@@ -302,6 +313,12 @@ export class ApiConnectController {
         );
       }
 
+      if (response.status >= 300 && response.status < 400) {
+        throw new BadRequestException(
+          'رابط API يعيد التوجيه. استخدم رابط HTTPS النهائي مباشرة لحماية مفتاح API.',
+        );
+      }
+
       if (response.status >= 400) {
         throw new BadRequestException(
           `المنصة ردّت بخطأ (${response.status}). تأكد من صحة الرابط والمفتاح.`,
@@ -314,27 +331,29 @@ export class ApiConnectController {
         platformName: dto.platformName,
       });
 
-    } catch (error: any) {
+    } catch (error: unknown) {
       // إذا كان الخطأ BadRequestException من عندنا — نمررها كما هي
       if (error instanceof BadRequestException) {
         throw error;
       }
 
+      const details = getHttpErrorDetails(error, 'Other platform API validation failed');
+      const code = getErrorCode(error);
       this.logger.warn(`Failed to validate Other Platform API key`, {
         tenantId,
         platformName: dto.platformName,
         apiBaseUrl,
-        error: error?.message || 'Unknown',
-        code: error?.code,
+        error: details.message,
+        code,
       });
 
       // أخطاء اتصال
-      if (error?.code === 'ECONNREFUSED' || error?.code === 'ENOTFOUND') {
+      if (code === 'ECONNREFUSED' || code === 'ENOTFOUND') {
         throw new BadRequestException(
           'تعذر الاتصال بالمنصة. تأكد من صحة رابط API وأنه يعمل.',
         );
       }
-      if (error?.code === 'ECONNABORTED' || error?.code === 'ETIMEDOUT') {
+      if (code === 'ECONNABORTED' || code === 'ETIMEDOUT') {
         throw new BadRequestException(
           'انتهت مهلة الاتصال بالمنصة. حاول مرة أخرى أو تأكد من أن المنصة تعمل.',
         );
@@ -389,22 +408,24 @@ export class ApiConnectController {
   // 🔧 Helper: استخراج معلومات المتجر من استجابة API عامة
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  private extractStoreInfo(data: any): {
+  private extractStoreInfo(data: unknown): {
     name?: string;
     url?: string;
     id?: string;
   } {
-    if (!data || typeof data !== 'object') {
-      return {};
-    }
-
     // محاولة استخراج من بنى مختلفة (REST APIs شائعة)
-    const source = data.data || data.store || data.shop || data.result || data;
+    const root = asJsonRecord(data);
+    const source = getNestedJsonRecord(root, 'data')
+      ?? getNestedJsonRecord(root, 'store')
+      ?? getNestedJsonRecord(root, 'shop')
+      ?? getNestedJsonRecord(root, 'result')
+      ?? root;
+    const numericId = getJsonNumber(source, 'id', 'store_id');
 
     return {
-      name: source.name || source.store_name || source.shop_name || source.title || undefined,
-      url: source.url || source.domain || source.shop_url || source.website || undefined,
-      id: source.id ? String(source.id) : (source.store_id ? String(source.store_id) : undefined),
+      name: getJsonString(source, 'name', 'store_name', 'shop_name', 'title'),
+      url: getJsonString(source, 'url', 'domain', 'shop_url', 'website'),
+      id: getJsonString(source, 'id', 'store_id') ?? numericId?.toString(),
     };
   }
 }

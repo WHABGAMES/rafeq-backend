@@ -42,7 +42,7 @@ import {
 import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
 
 // Services
-import { BillingService } from './billing.service';
+import { BillingService, UsageResource } from './billing.service';
 
 // ✅ Tenant fallback for trial subscriptions
 import { InjectRepository } from '@nestjs/typeorm';
@@ -350,7 +350,7 @@ export class BillingController {
   })
   @ApiParam({
     name: 'resource',
-    enum: ['messages', 'stores', 'users', 'channels', 'campaigns', 'templates', 'storage'],
+    enum: ['messages', 'stores', 'users', 'storage'],
   })
   @ApiQuery({ name: 'amount', required: false, type: Number })
   @ApiResponse({ status: 200, description: 'الحصة متاحة' })
@@ -361,14 +361,11 @@ export class BillingController {
     @Query('amount', new ParseIntPipe({ optional: true })) amount?: number,
   ) {
     // Map resource name to UsageStats key
-    const resourceMap: Record<string, string> = {
+    const resourceMap: Record<string, UsageResource> = {
       messages: 'messagesUsed',
-      stores: 'storesUsed',
-      users: 'usersUsed',
-      channels: 'channelsUsed',
-      campaigns: 'campaignsUsed',
-      templates: 'templatesUsed',
-      storage: 'storageUsedMb',
+      stores: 'storesCount',
+      users: 'usersCount',
+      storage: 'storageUsed',
     };
 
     const resourceKey = resourceMap[resource];
@@ -379,7 +376,7 @@ export class BillingController {
     try {
       await this.billingService.checkQuota(
         req.user.tenantId,
-        resourceKey as any,
+        resourceKey,
         amount || 1,
       );
       return { available: true };

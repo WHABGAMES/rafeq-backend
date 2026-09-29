@@ -12,6 +12,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { AuditService } from '../services/audit.service';
 import { AuditAction } from '../entities/audit-log.entity';
+import { getErrorMessage } from '@common/utils/error.util';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Event Payload Types
@@ -94,8 +95,8 @@ export class AuditEventListener {
         ipAddress: data.ipAddress,
         userAgent: data.userAgent,
       });
-    } catch (e: any) {
-      this.logger.warn(`Failed to log login failure: ${e?.message}`);
+    } catch (error: unknown) {
+      this.logger.warn(`Failed to log login failure: ${getErrorMessage(error)}`);
     }
   }
 
@@ -112,8 +113,8 @@ export class AuditEventListener {
         ipAddress: data.ipAddress,
         userAgent: data.userAgent,
       });
-    } catch (e: any) {
-      this.logger.warn(`Failed to log password reset request: ${e?.message}`);
+    } catch (error: unknown) {
+      this.logger.warn(`Failed to log password reset request: ${getErrorMessage(error)}`);
     }
   }
 
@@ -139,8 +140,8 @@ export class AuditEventListener {
           durationMs: data.durationMs,
         },
       });
-    } catch (e: any) {
-      this.logger.warn(`Failed to log WhatsApp send: ${e?.message}`);
+    } catch (error: unknown) {
+      this.logger.warn(`Failed to log WhatsApp send: ${getErrorMessage(error)}`);
     }
   }
 
@@ -161,8 +162,8 @@ export class AuditEventListener {
           error: data.error?.slice(0, 200),
         },
       });
-    } catch (e: any) {
-      this.logger.warn(`Failed to log WhatsApp failure: ${e?.message}`);
+    } catch (error: unknown) {
+      this.logger.warn(`Failed to log WhatsApp failure: ${getErrorMessage(error)}`);
     }
   }
 
@@ -181,8 +182,8 @@ export class AuditEventListener {
           phoneNumber: data.phoneNumber ? this.maskPhone(data.phoneNumber) : undefined,
         },
       });
-    } catch (e: any) {
-      this.logger.warn(`Failed to log WhatsApp connect: ${e?.message}`);
+    } catch (error: unknown) {
+      this.logger.warn(`Failed to log WhatsApp connect: ${getErrorMessage(error)}`);
     }
   }
 
@@ -199,8 +200,8 @@ export class AuditEventListener {
         targetId: data.channelId,
         metadata: { reason: data.reason },
       });
-    } catch (e: any) {
-      this.logger.warn(`Failed to log WhatsApp disconnect: ${e?.message}`);
+    } catch (error: unknown) {
+      this.logger.warn(`Failed to log WhatsApp disconnect: ${getErrorMessage(error)}`);
     }
   }
 
@@ -227,8 +228,8 @@ export class AuditEventListener {
           durationMs: data.durationMs,
         },
       });
-    } catch (e: any) {
-      this.logger.warn(`Failed to log webhook: ${e?.message}`);
+    } catch (error: unknown) {
+      this.logger.warn(`Failed to log webhook: ${getErrorMessage(error)}`);
     }
   }
 
@@ -252,8 +253,8 @@ export class AuditEventListener {
           error: data.error?.slice(0, 200),
         },
       });
-    } catch (e: any) {
-      this.logger.warn(`Failed to log webhook failure: ${e?.message}`);
+    } catch (error: unknown) {
+      this.logger.warn(`Failed to log webhook failure: ${getErrorMessage(error)}`);
     }
   }
 

@@ -37,6 +37,7 @@ import { SallaOAuthService, SallaAppAuthorizeData } from '../stores/salla-oauth.
 import { SallaWebhookDto, SallaWebhookJobDto } from './dto/salla-webhook.dto';
 import { WebhookIpGuard } from './guards/webhook-ip.guard';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { getErrorMessage } from '@common/utils/error.util';
 
 @ApiTags('Webhooks - Salla')
 @Controller('webhooks/salla')
@@ -223,9 +224,10 @@ export class SallaWebhooksController {
       this.logger.log(`✅ app.store.authorize processed for merchant ${payload.merchant}`);
 
       return { success: true, message: 'Store authorized successfully' };
-    } catch (error: any) {
-      this.logger.error(`❌ Failed to process app.store.authorize`, error.message);
-      return { success: false, message: error.message };
+    } catch (error: unknown) {
+      const message = getErrorMessage(error);
+      this.logger.error('❌ Failed to process app.store.authorize', message);
+      return { success: false, message };
     }
   }
 
@@ -243,9 +245,10 @@ export class SallaWebhooksController {
       this.logger.log(`✅ app.uninstalled processed for merchant ${payload.merchant}`);
 
       return { success: true, message: 'App uninstalled processed' };
-    } catch (error: any) {
-      this.logger.error(`❌ Failed to process app.uninstalled`, error.message);
-      return { success: false, message: error.message };
+    } catch (error: unknown) {
+      const message = getErrorMessage(error);
+      this.logger.error('❌ Failed to process app.uninstalled', message);
+      return { success: false, message };
     }
   }
 

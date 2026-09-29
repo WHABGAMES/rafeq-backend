@@ -37,7 +37,6 @@ import {
   HttpCode,
   HttpStatus,
   UseGuards,
-  Req,
   BadRequestException,
 } from '@nestjs/common';
 import {
@@ -49,6 +48,8 @@ import {
 } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
+import { User } from '@database/entities';
+import { CurrentUser } from '@common/decorators/current-user.decorator';
 import { AIService, SearchPriority } from './ai.service';
 import { AILearningService } from './ai-learning.service';
 import { UnansweredStatus } from './entities/unanswered-question.entity';
@@ -59,7 +60,9 @@ import {
   IsNumber,
   IsArray,
   IsEnum,
+  ValidateNested,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DTOs
@@ -81,6 +84,24 @@ class AnalyzeDto {
 class TestResponseDto {
   @IsString()
   message: string;
+}
+
+class WebsiteProductDto {
+  @IsString()
+  name: string;
+
+  @IsString()
+  price: string;
+
+  @IsBoolean()
+  available: boolean;
+
+  @IsString()
+  url: string;
+
+  @IsOptional()
+  @IsString()
+  description?: string;
 }
 
 class UpdateAISettingsDto {
@@ -221,7 +242,9 @@ class UpdateAISettingsDto {
   websiteUrl?: string;
 
   @IsOptional() @IsArray()
-  websiteProducts?: any[];
+  @ValidateNested({ each: true })
+  @Type(() => WebsiteProductDto)
+  websiteProducts?: WebsiteProductDto[];
 
   @IsOptional() @IsString()
   websiteScrapedAt?: string;
@@ -370,11 +393,11 @@ export class AiController {
   @Get('settings')
   @ApiOperation({ summary: 'جلب إعدادات البوت' })
   async getSettings(
-    @Req() req: any,
+    @CurrentUser() user: User,
     @Headers('x-store-id') storeIdHeader?: string,
     @Query('storeId') storeIdQuery?: string,
   ) {
-    const tenantId = req.user.tenantId;
+    const tenantId = user.tenantId;
     const storeId = this.getStoreId(storeIdHeader, storeIdQuery);
     return this.aiService.getSettings(tenantId, storeId);
   }
@@ -382,12 +405,12 @@ export class AiController {
   @Put('settings')
   @ApiOperation({ summary: 'تحديث إعدادات البوت' })
   async updateSettings(
-    @Req() req: any,
+    @CurrentUser() user: User,
     @Body() dto: UpdateAISettingsDto,
     @Headers('x-store-id') storeIdHeader?: string,
     @Query('storeId') storeIdQuery?: string,
   ) {
-    const tenantId = req.user.tenantId;
+    const tenantId = user.tenantId;
     const storeId = this.getStoreId(storeIdHeader, storeIdQuery);
     return this.aiService.updateSettings(tenantId, storeId, dto);
   }
@@ -401,47 +424,47 @@ export class AiController {
   @ApiQuery({ name: 'category', required: false })
   @ApiQuery({ name: 'search', required: false })
   async getKnowledge(
-    @Req() req: any,
+    @CurrentUser() user: User,
     @Query('category') category?: string,
     @Query('search') search?: string,
   ) {
-    return this.aiService.getKnowledge(req.user.tenantId, { category, search });
+    return this.aiService.getKnowledge(user.tenantId, { category, search });
   }
 
   @Post('knowledge')
   @ApiOperation({ summary: 'إضافة معرفة جديدة' })
   async addKnowledge(
-    @Req() req: any,
+    @CurrentUser() user: User,
     @Body() dto: AddKnowledgeDto,
   ) {
-    return this.aiService.addKnowledge(req.user.tenantId, dto);
+    return this.aiService.addKnowledge(user.tenantId, dto);
   }
 
   @Put('knowledge/:id')
   @ApiOperation({ summary: 'تحديث معرفة' })
   async updateKnowledge(
-    @Req() req: any,
+    @CurrentUser() user: User,
     @Param('id') id: string,
     @Body() dto: UpdateKnowledgeDto,
   ) {
-    return this.aiService.updateKnowledge(req.user.tenantId, id, dto);
+    return this.aiService.updateKnowledge(user.tenantId, id, dto);
   }
 
   @Delete('knowledge/:id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'حذف معرفة' })
   async deleteKnowledge(
-    @Req() req: any,
+    @CurrentUser() user: User,
     @Param('id') id: string,
   ) {
-    return this.aiService.deleteKnowledge(req.user.tenantId, id);
+    return this.aiService.deleteKnowledge(user.tenantId, id);
   }
 
   @Post('knowledge/reindex')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'إعادة توليد Embeddings لكل المكتبة (RAG)' })
-  async reindexEmbeddings(@Req() req: any) {
-    return this.aiService.reindexEmbeddings(req.user.tenantId);
+  async reindexEmbeddings(@CurrentUser() user: User) {
+    return this.aiService.reindexEmbeddings(user.tenantId);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -451,16 +474,16 @@ export class AiController {
   @Post('train')
   @ApiOperation({ summary: 'تدريب البوت' })
   async trainBot(
-    @Req() req: any,
+    @CurrentUser() user: User,
     @Body() dto: TrainBotDto,
   ) {
-    return this.aiService.trainBot(req.user.tenantId, dto);
+    return this.aiService.trainBot(user.tenantId, dto);
   }
 
   @Get('training-status')
   @ApiOperation({ summary: 'حالة التدريب' })
-  async getTrainingStatus(@Req() req: any) {
-    return this.aiService.getTrainingStatus(req.user.tenantId);
+  async getTrainingStatus(@CurrentUser() user: User) {
+    return this.aiService.getTrainingStatus(user.tenantId);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -471,16 +494,16 @@ export class AiController {
   @ApiOperation({ summary: 'تحليلات أداء البوت' })
   @ApiQuery({ name: 'period', required: false, enum: ['day', 'week', 'month'] })
   async getAnalytics(
-    @Req() req: any,
+    @CurrentUser() user: User,
     @Query('period') period = 'week',
   ) {
-    return this.aiService.getAnalytics(req.user.tenantId, period);
+    return this.aiService.getAnalytics(user.tenantId, period);
   }
 
   @Get('stats')
   @ApiOperation({ summary: 'إحصائيات الـ AI' })
-  async getStats(@Req() req: any) {
-    return this.aiService.getStats(req.user.tenantId);
+  async getStats(@CurrentUser() user: User) {
+    return this.aiService.getStats(user.tenantId);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -492,11 +515,11 @@ export class AiController {
   @ApiOperation({ summary: 'إنشاء رد على رسالة' })
   @ApiResponse({ status: 200, description: 'الرد المولّد' })
   async respond(
-    @Req() req: any,
+    @CurrentUser() user: User,
     @Body() dto: RespondDto,
   ) {
     return this.aiService.generateResponse({
-      tenantId: req.user.tenantId,
+      tenantId: user.tenantId,
       conversationId: dto.conversationId,
       message: dto.message,
     });
@@ -513,14 +536,14 @@ export class AiController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'اختبار رد البوت (بدون حفظ)' })
   async testResponse(
-    @Req() req: any,
+    @CurrentUser() user: User,
     @Body() dto: TestResponseDto,
     @Headers('x-store-id') storeIdHeader?: string,
     @Query('storeId') storeIdQuery?: string,
   ) {
     const storeId = this.getStoreId(storeIdHeader, storeIdQuery);
     return this.aiService.testResponse(
-      req.user.tenantId,
+      user.tenantId,
       dto.message,
       storeId,
     );
@@ -534,13 +557,13 @@ export class AiController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'إنشاء معلومات المتجر بالذكاء الاصطناعي' })
   async generateStoreInfo(
-    @Req() req: any,
+    @CurrentUser() user: User,
     @Body() dto: { description: string },
   ) {
     if (!dto.description?.trim()) {
       throw new BadRequestException('يرجى إدخال وصف المتجر');
     }
-    return this.aiService.generateStoreInfo(req.user.tenantId, dto.description.trim());
+    return this.aiService.generateStoreInfo(user.tenantId, dto.description.trim());
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -595,12 +618,12 @@ export class AiController {
   @Get('learning/unanswered')
   @ApiOperation({ summary: 'قائمة الأسئلة بدون إجابة — مرتبة بالتكرار' })
   async getUnanswered(
-    @Req() req: any,
+    @CurrentUser() user: User,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('source') source?: string,
   ) {
-    const tenantId = req.user?.tenantId;
+    const tenantId = user.tenantId;
     if (!tenantId) return { items: [], total: 0, page: 1, limit: 50 };
     return this.learningService.getUnanswered(
       tenantId,
@@ -613,8 +636,8 @@ export class AiController {
 
   @Get('learning/stats')
   @ApiOperation({ summary: 'إحصائيات الأسئلة بدون إجابة' })
-  async getLearningStats(@Req() req: any) {
-    const tenantId = req.user?.tenantId;
+  async getLearningStats(@CurrentUser() user: User) {
+    const tenantId = user.tenantId;
     if (!tenantId) return { pendingCount: 0, totalHits: 0, topQuestion: null };
     return this.learningService.getStats(tenantId);
   }
@@ -622,11 +645,11 @@ export class AiController {
   @Put('learning/unanswered/:id/resolve')
   @ApiOperation({ summary: 'تحديث حالة سؤال — resolved (تم إضافة الجواب)' })
   async resolveQuestion(
-    @Req() req: any,
+    @CurrentUser() user: User,
     @Param('id') questionId: string,
     @Body() body: { knowledgeId?: string },
   ) {
-    const tenantId = req.user?.tenantId;
+    const tenantId = user.tenantId;
     if (!tenantId) return null;
     return this.learningService.updateStatus(
       tenantId,
@@ -639,10 +662,10 @@ export class AiController {
   @Put('learning/unanswered/:id/dismiss')
   @ApiOperation({ summary: 'تجاهل سؤال — غير مهم' })
   async dismissQuestion(
-    @Req() req: any,
+    @CurrentUser() user: User,
     @Param('id') questionId: string,
   ) {
-    const tenantId = req.user?.tenantId;
+    const tenantId = user.tenantId;
     if (!tenantId) return { success: false };
     const result = await this.learningService.dismiss(tenantId, questionId);
     return { success: result };
@@ -651,10 +674,10 @@ export class AiController {
   @Delete('learning/unanswered/clear')
   @ApiOperation({ summary: 'حذف جميع الأسئلة المعلّقة' })
   async clearAllUnanswered(
-    @Req() req: any,
+    @CurrentUser() user: User,
     @Query('source') source?: string,
   ) {
-    const tenantId = req.user?.tenantId;
+    const tenantId = user.tenantId;
     if (!tenantId) return { deleted: 0 };
     const deleted = await this.learningService.clearAll(tenantId, source || undefined);
     return { deleted };
@@ -662,8 +685,8 @@ export class AiController {
 
   @Get('learning/resolved')
   @ApiOperation({ summary: 'الأسئلة اللي تم الرد عليها' })
-  async getResolved(@Req() req: any) {
-    const tenantId = req.user?.tenantId;
+  async getResolved(@CurrentUser() user: User) {
+    const tenantId = user.tenantId;
     if (!tenantId) return { items: [], total: 0, page: 1, limit: 50 };
     return this.learningService.getUnanswered(tenantId, UnansweredStatus.RESOLVED, 50);
   }
@@ -675,11 +698,11 @@ export class AiController {
   @Put('learning/unanswered/:id/answer')
   @ApiOperation({ summary: 'تعديل جواب التاجر على سؤال' })
   async setMerchantAnswer(
-    @Req() req: any,
+    @CurrentUser() user: User,
     @Param('id') questionId: string,
     @Body() body: { answer: string },
   ) {
-    const tenantId = req.user?.tenantId;
+    const tenantId = user.tenantId;
     if (!tenantId) return null;
     return this.learningService.setMerchantAnswer(tenantId, questionId, body.answer);
   }
@@ -687,11 +710,11 @@ export class AiController {
   @Post('learning/unanswered/:id/add-to-library')
   @ApiOperation({ summary: 'إضافة سؤال + جواب التاجر للمكتبة مباشرة' })
   async addToLibraryFromLearning(
-    @Req() req: any,
+    @CurrentUser() user: User,
     @Param('id') questionId: string,
     @Body() body: { answer?: string },
   ) {
-    const tenantId = req.user?.tenantId;
+    const tenantId = user.tenantId;
     if (!tenantId) return { success: false };
 
     // 1. جلب السؤال

@@ -40,6 +40,7 @@ import { ZidWebhooksService } from './zid-webhooks.service';
 import { ZidWebhookJobDto } from './dto/zid-webhook.dto';
 import { WebhookIpGuard } from './guards/webhook-ip.guard';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { asJsonRecord, getJsonString } from '@common/utils/json-record.util';
 
 @ApiTags('Webhooks - Zid')
 @Controller('webhooks/zid')
@@ -101,7 +102,7 @@ export class ZidWebhooksController {
    *   ...
    * }
    *
-   * 🔑 نستخدم Record<string, any> بدل DTO class
+   * 🔑 نستخدم Record<string, unknown> بدل DTO class
    * لأن NestJS Global ValidationPipe يتخطى Object types
    * وبالتالي لا يرفض الحقول الزائدة من زد
    */
@@ -111,7 +112,7 @@ export class ZidWebhooksController {
   @ApiHeader({ name: 'x-zid-signature', description: 'HMAC signature', required: false })
   async handleWebhook(
     @Req() req: RawBodyRequest<Request>,
-    @Body() body: Record<string, any>,
+    @Body() body: Record<string, unknown>,
     @Headers('x-zid-signature') signature?: string,
     @Headers('x-zid-delivery-id') deliveryId?: string,
   ): Promise<{ success: boolean; message: string; jobId?: string }> {
@@ -243,7 +244,7 @@ export class ZidWebhooksController {
    *
    * مصادر: Zid API Docs - Webhook Events + Payload Schemas
    */
-  private detectEventType(body: Record<string, any>): string {
+  private detectEventType(body: Record<string, unknown>): string {
 
     // ══════════════════════════════════════════════════════════════════
     // 0. App Market events — تُرسل مع event_name (12 حدث رسمي من زد)
@@ -304,9 +305,9 @@ export class ZidWebhooksController {
       // استخراج كود الحالة — زد يُرسله كـ object { code, name } أو string
       const orderStatus = body.order_status;
       const statusCode = (
-        typeof orderStatus === 'object' && orderStatus !== null
-          ? (orderStatus.code || orderStatus.slug || '')
-          : (typeof orderStatus === 'string' ? orderStatus : '')
+        typeof orderStatus === 'string'
+          ? orderStatus
+          : getJsonString(asJsonRecord(orderStatus), 'code', 'slug') ?? ''
       ).toLowerCase();
 
       // 'new' أو 'جديد' → طلب جديد
@@ -345,8 +346,8 @@ export class ZidWebhooksController {
       // إذا created_at !== updated_at ولا يوجد تغيير واضح → customer.login
       if (body.is_active !== undefined && body.created_at !== undefined && body.updated_at !== undefined) {
         // إذا كانت الحسابات مختلفة وهناك is_active فقط → login
-        const createdAt = new Date(body.created_at).getTime();
-        const updatedAt = new Date(body.updated_at).getTime();
+        const createdAt = new Date(getJsonString(body, 'created_at') ?? '').getTime();
+        const updatedAt = new Date(getJsonString(body, 'updated_at') ?? '').getTime();
         // تسجيل دخول: الفرق بين created_at و updated_at كبير جداً (حساب قديم)
         if (!isNaN(createdAt) && !isNaN(updatedAt) && (updatedAt - createdAt) > 86400000 /* 24h */) {
           // ملاحظة: customer.login يُرسل نفس payload Customer
@@ -488,7 +489,7 @@ export class ZidWebhooksController {
    * Regular events (orders/customers) → content-based hash (لم يتغير)
    *   → يمنع معالجة نفس تحديث الطلب مرتين إذا أعاد زد الإرسال بنفس البيانات ✅
    */
-  private generateIdempotencyKey(body: Record<string, any>, eventType: string, deliveryId: string): string {
+  private generateIdempotencyKey(body: Record<string, unknown>, eventType: string, deliveryId: string): string {
     // App Market events → deliveryId-based (فريد لكل إرسال من زد)
     if (body.event_name) {
       const data = `zid_${body.event_name}_${body.store_id || ''}_${deliveryId}`;
@@ -496,9 +497,9 @@ export class ZidWebhooksController {
     }
     // Merchant events (orders/customers/products) → content-based hash
     const orderId = body.id || '';
-    const status = typeof body.order_status === 'object' && body.order_status !== null
-      ? (body.order_status.code || body.order_status.slug || '')
-      : (body.order_status || '');
+    const status = typeof body.order_status === 'string'
+      ? body.order_status
+      : getJsonString(asJsonRecord(body.order_status), 'code', 'slug') ?? '';
     const storeId = body.store_id || '';
     const updatedAt = body.updated_at || '';
     const data = `zid_${eventType}_${storeId}_${orderId}_${status}_${updatedAt}`;

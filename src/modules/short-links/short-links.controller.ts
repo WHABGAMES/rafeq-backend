@@ -37,6 +37,7 @@ import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ShortLinksService } from './short-links.service';
+import { User } from '@database/entities/user.entity';
 
 // ═══════════════════════════════════════════════════════════════
 // 🌐 PUBLIC — Redirect endpoint (no auth)
@@ -91,7 +92,7 @@ export class ShortLinksController {
   @Get()
   @ApiOperation({ summary: 'List all short links' })
   async list(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Query('page', new ParseIntPipe({ optional: true })) page = 1,
     @Query('limit', new ParseIntPipe({ optional: true })) limit = 20,
   ) {
@@ -109,7 +110,7 @@ export class ShortLinksController {
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Create short link' })
   async create(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Body() body: { url: string; title?: string; customCode?: string; expiresAt?: string },
   ) {
     if (!body.url) throw new BadRequestException('الرابط مطلوب');
@@ -136,7 +137,7 @@ export class ShortLinksController {
    */
   @Get(':id/stats')
   @ApiOperation({ summary: 'Link analytics' })
-  async stats(@CurrentUser() user: any, @Param('id') id: string) {
+  async stats(@CurrentUser() user: User, @Param('id') id: string) {
     return this.service.getAnalytics(user.tenantId, id);
   }
 
@@ -146,7 +147,7 @@ export class ShortLinksController {
   @Patch(':id')
   @ApiOperation({ summary: 'Update link' })
   async update(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Param('id') id: string,
     @Body() body: { title?: string; originalUrl?: string; isActive?: boolean },
   ) {
@@ -159,7 +160,7 @@ export class ShortLinksController {
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'Delete link' })
-  async delete(@CurrentUser() user: any, @Param('id') id: string) {
+  async delete(@CurrentUser() user: User, @Param('id') id: string) {
     await this.service.delete(user.tenantId, id);
   }
 }

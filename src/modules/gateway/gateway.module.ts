@@ -9,6 +9,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AppGateway } from './app.gateway';
 import { Conversation } from '@database/entities/conversation.entity';
+import { normalizeJwtDuration } from '@common/utils/jwt-expiration.util';
 
 @Global()
 @Module({
@@ -28,7 +29,7 @@ import { Conversation } from '@database/entities/conversation.entity';
         return {
           secret,
           signOptions: {
-            expiresIn: configService.get<string>('JWT_EXPIRES_IN', '7d'),
+            expiresIn: normalizeJwtDuration(configService.get('JWT_EXPIRES_IN'), '7d'),
           },
         };
       },

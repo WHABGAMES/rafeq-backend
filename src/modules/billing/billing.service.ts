@@ -16,16 +16,20 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, LessThan } from 'typeorm';
+import { Repository, LessThan, In } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 
 // Entities
 import { Subscription, SubscriptionStatus, BillingInterval, PaymentProvider } from '@database/entities/subscription.entity';
-import { SubscriptionPlan } from '@database/entities/subscription-plan.entity';
+import {
+  PlanStatus,
+  SubscriptionPlan,
+} from '@database/entities/subscription-plan.entity';
 
 // DTOs
 import {
@@ -36,6 +40,9 @@ import {
 
 // Interfaces
 import { UsageStats } from '@database/entities/subscription.entity';
+
+export type UsageResource = 'messagesUsed' | 'storesCount' | 'usersCount' | 'storageUsed';
+type NumericPlanLimit = 'monthlyMessages' | 'maxStores' | 'maxUsers' | 'storageLimit';
 
 /**
  * 🎯 BillingService
@@ -88,8 +95,13 @@ export class BillingService {
     return this.subscriptionRepo.findOne({
       where: {
         tenantId,
-        status: SubscriptionStatus.ACTIVE,
-      } as any,
+        status: In([
+          SubscriptionStatus.TRIALING,
+          SubscriptionStatus.ACTIVE,
+          SubscriptionStatus.PAST_DUE,
+          SubscriptionStatus.CANCELLING,
+        ]),
+      },
       relations: ['plan'],
     });
   }
@@ -120,7 +132,7 @@ export class BillingService {
 
     // 2. الحصول على الخطة
     const plan = await this.planRepo.findOne({
-      where: { id: planId, status: 'active' as any },
+      where: { id: planId, status: PlanStatus.ACTIVE },
     });
     if (!plan) {
       throw new NotFoundException('الخطة غير موجودة أو غير متاحة');
@@ -130,12 +142,17 @@ export class BillingService {
     const now = new Date();
     const trialEndsAt = plan.trialDays > 0
       ? new Date(now.getTime() + plan.trialDays * 24 * 60 * 60 * 1000)
-      : null;
+      : undefined;
     
     const periodEnd = this.calculatePeriodEnd(now, billingInterval);
 
     // 4. حساب السعر
     const pricing = this.calculatePricing(plan, billingInterval);
+    if (!trialEndsAt && pricing.amount > 0) {
+      throw new ServiceUnavailableException(
+        'بوابة الدفع غير مهيأة بعد؛ لا يمكن تفعيل خطة مدفوعة قبل التحقق من الدفع.',
+      );
+    }
 
     // 5. إنشاء الاشتراك
     const subscriptionData = {
@@ -150,12 +167,21 @@ export class BillingService {
       currency: pricing.currency,
       amount: pricing.amount,
       paymentProvider: paymentProvider || PaymentProvider.STRIPE,
-      billingInfo: billingInfo || {},
+      billingInfo: billingInfo ? {
+        companyName: billingInfo.companyName,
+        taxId: billingInfo.taxNumber,
+        billingEmail: billingInfo.billingEmail,
+        address: {
+          street: billingInfo.address,
+          city: billingInfo.city,
+          country: billingInfo.country,
+        },
+      } : undefined,
       usageStats: this.initializeUsageStats(),
       autoRenew: true,
     };
     
-    const subscription = this.subscriptionRepo.create(subscriptionData as unknown as Subscription);
+    const subscription = this.subscriptionRepo.create(subscriptionData);
 
     await this.subscriptionRepo.save(subscription);
 
@@ -198,36 +224,26 @@ export class BillingService {
     }
 
     const newPlan = await this.planRepo.findOne({
-      where: { id: dto.newPlanId, status: 'active' as any },
+      where: { id: dto.newPlanId, status: PlanStatus.ACTIVE },
     });
     if (!newPlan) {
       throw new NotFoundException('الخطة الجديدة غير موجودة');
     }
 
     const currentPlan = await this.planRepo.findOne({
-      where: { id: subscription.planId } as any,
+      where: { id: subscription.planId },
     });
 
     // حساب الفرق
     const isUpgrade = (newPlan.pricing?.monthlyPrice || 0) > (currentPlan?.pricing?.monthlyPrice || 0);
 
     if (isUpgrade) {
-      // Upgrade فوري
-      subscription.planId = newPlan.id;
-      subscription.amount = this.calculatePricing(
-        newPlan,
-        subscription.billingInterval,
-      ).amount;
-
-      // جدولة الدفع للفرق
-      await this.billingQueue.add('process-proration', {
-        subscriptionId: subscription.id,
-        oldPlanId: currentPlan?.id,
-        newPlanId: newPlan.id,
-      });
+      throw new ServiceUnavailableException(
+        'ترقية الخطة المدفوعة متوقفة حتى يتم ربط بوابة الدفع والتحقق من العملية.',
+      );
     } else {
       // Downgrade في نهاية الفترة
-      (subscription as any).metadata = {
+      subscription.metadata = {
         ...subscription.metadata,
         scheduledPlanChange: {
           newPlanId: newPlan.id,
@@ -280,7 +296,7 @@ export class BillingService {
       subscription.autoRenew = false;
     }
 
-    (subscription as any).metadata = {
+    subscription.metadata = {
       ...subscription.metadata,
       cancellationReason: dto.reason,
       notes: dto.feedback,
@@ -320,11 +336,11 @@ export class BillingService {
    */
   async checkQuota(
     tenantId: string,
-    resource: keyof UsageStats,
+    resource: UsageResource,
     requested: number = 1,
   ): Promise<boolean> {
     const subscription = await this.subscriptionRepo.findOne({
-      where: { tenantId } as any as any,
+      where: { tenantId },
       relations: ['plan'],
     });
 
@@ -381,9 +397,13 @@ export class BillingService {
    */
   async recordUsage(
     tenantId: string,
-    resource: keyof UsageStats,
+    resource: UsageResource,
     amount: number = 1,
   ): Promise<void> {
+    if (!Number.isInteger(amount) || amount <= 0) {
+      throw new BadRequestException('قيمة الاستخدام يجب أن تكون عدداً صحيحاً موجباً');
+    }
+
     await this.subscriptionRepo
       .createQueryBuilder()
       .update()
@@ -392,7 +412,7 @@ export class BillingService {
           `jsonb_set(
             COALESCE(usage_stats, '{}'::jsonb),
             '{${resource}}',
-            (COALESCE((usage_stats->>'${resource}')::int, 0) + ${amount})::text::jsonb
+            (COALESCE((usage_stats->>'${resource}')::int, 0) + :usageAmount)::text::jsonb
           )`,
       })
       .where('tenant_id = :tenantId', { tenantId })
@@ -403,6 +423,7 @@ export class BillingService {
           SubscriptionStatus.PAST_DUE,
         ],
       })
+      .setParameter('usageAmount', amount)
       .execute();
   }
 
@@ -418,7 +439,7 @@ export class BillingService {
     percentages: Record<string, number>;
   }> {
     const subscription = await this.subscriptionRepo.findOne({
-      where: { tenantId } as any,
+      where: { tenantId },
       relations: ['plan'],
     });
 
@@ -434,7 +455,7 @@ export class BillingService {
     const limits: Record<string, number> = {};
     const percentages: Record<string, number> = {};
 
-    const resources: (keyof UsageStats)[] = [
+    const resources: UsageResource[] = [
       'messagesUsed',
       'storesCount',
       'usersCount',
@@ -469,7 +490,7 @@ export class BillingService {
    */
   async renewSubscription(subscriptionId: string): Promise<void> {
     const subscription = await this.subscriptionRepo.findOne({
-      where: { id: subscriptionId } as any,
+      where: { id: subscriptionId },
       relations: ['plan'],
     });
 
@@ -485,8 +506,14 @@ export class BillingService {
       return;
     }
 
-    // معالجة الدفع (سيتم تنفيذها في PaymentService)
-    // هنا نفترض أن الدفع تم بنجاح
+    if (Number(subscription.amount) > 0) {
+      subscription.status = SubscriptionStatus.PAST_DUE;
+      await this.subscriptionRepo.save(subscription);
+      this.eventEmitter.emit('subscription.payment_required', { subscription });
+      throw new ServiceUnavailableException(
+        'لم يتم تجديد الاشتراك لأن بوابة الدفع غير مهيأة للتحقق من عملية الدفع.',
+      );
+    }
 
     const now = new Date();
     const newPeriodEnd = this.calculatePeriodEnd(now, subscription.billingInterval);
@@ -516,11 +543,12 @@ export class BillingService {
       where: {
         status: SubscriptionStatus.TRIALING,
         trialEndsAt: LessThan(now),
-      } as any,
+      },
+      relations: ['plan'],
     });
 
     for (const subscription of endedTrials) {
-      if (subscription.paymentMethods?.length > 0) {
+      if (Number(subscription.amount) <= 0) {
         subscription.status = SubscriptionStatus.ACTIVE;
       } else {
         subscription.status = SubscriptionStatus.EXPIRED;
@@ -534,7 +562,7 @@ export class BillingService {
       where: {
         status: SubscriptionStatus.CANCELLING,
         endsAt: LessThan(now),
-      } as any,
+      },
     });
 
     for (const subscription of toCancel) {
@@ -548,7 +576,7 @@ export class BillingService {
       where: {
         status: SubscriptionStatus.PAST_DUE,
         currentPeriodEnd: LessThan(sevenDaysAgo),
-      } as any,
+      },
     });
 
     for (const subscription of toSuspend) {
@@ -574,6 +602,12 @@ export class BillingService {
     switch (interval) {
       case BillingInterval.MONTHLY:
         date.setMonth(date.getMonth() + 1);
+        break;
+      case BillingInterval.QUARTERLY:
+        date.setMonth(date.getMonth() + 3);
+        break;
+      case BillingInterval.SEMI_ANNUAL:
+        date.setMonth(date.getMonth() + 6);
         break;
       case BillingInterval.YEARLY:
         date.setFullYear(date.getFullYear() + 1);
@@ -612,14 +646,14 @@ export class BillingService {
    */
   private getResourceLimit(
     plan: SubscriptionPlan,
-    resource: keyof UsageStats,
+    resource: UsageResource,
   ): number {
     const features = plan.features;
     if (!features) {
       return 0;
     }
 
-    const resourceMap: Partial<Record<keyof UsageStats, string>> = {
+    const resourceMap: Record<UsageResource, NumericPlanLimit> = {
       messagesUsed: 'monthlyMessages',
       storesCount: 'maxStores',
       usersCount: 'maxUsers',
@@ -627,9 +661,7 @@ export class BillingService {
     };
 
     const key = resourceMap[resource];
-    if (!key) return 0;
-    
-    const limit = (features as any)[key];
+    const limit = features[key];
 
     return limit ?? 0;
   }
@@ -637,8 +669,8 @@ export class BillingService {
   /**
    * 📝 الحصول على اسم المورد بالعربية
    */
-  private getResourceName(resource: keyof UsageStats): string {
-    const names: Partial<Record<keyof UsageStats, string>> = {
+  private getResourceName(resource: UsageResource): string {
+    const names: Record<UsageResource, string> = {
       messagesUsed: 'الرسائل الشهرية',
       storesCount: 'المتاجر',
       usersCount: 'المستخدمين',

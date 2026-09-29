@@ -50,6 +50,7 @@ import {
 } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
+import { User } from '@database/entities';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AutomationsService } from './automations.service';
 import {
@@ -461,7 +462,7 @@ export class AutomationsController {
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
   async findAll(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Query('status') status?: string,
     @Query('trigger') trigger?: string,
     @Query('page', new ParseIntPipe({ optional: true })) page = 1,
@@ -476,7 +477,7 @@ export class AutomationsController {
     summary: 'إنشاء أتمتة',
     description: 'إنشاء أتمتة جديدة',
   })
-  async create(@CurrentUser() user: any,
+  async create(@CurrentUser() user: User,
     @Body() dto: CreateAutomationDto) {
     const tenantId = user.tenantId;
     return this.automationsService.create(tenantId, dto);
@@ -484,7 +485,7 @@ export class AutomationsController {
 
   @Get(':id')
   @ApiOperation({ summary: 'تفاصيل أتمتة' })
-  async findOne(@CurrentUser() user: any,
+  async findOne(@CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string) {
     const tenantId = user.tenantId;
     return this.automationsService.findById(id, tenantId);
@@ -493,7 +494,7 @@ export class AutomationsController {
   @Put(':id')
   @ApiOperation({ summary: 'تحديث أتمتة' })
   async update(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateAutomationDto,
   ) {
@@ -504,7 +505,7 @@ export class AutomationsController {
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'حذف أتمتة' })
-  async remove(@CurrentUser() user: any,
+  async remove(@CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string) {
     const tenantId = user.tenantId;
     await this.automationsService.delete(id, tenantId);
@@ -512,7 +513,7 @@ export class AutomationsController {
 
   @Post(':id/activate')
   @ApiOperation({ summary: 'تفعيل أتمتة' })
-  async activate(@CurrentUser() user: any,
+  async activate(@CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string) {
     const tenantId = user.tenantId;
     return this.automationsService.activate(id, tenantId);
@@ -520,7 +521,7 @@ export class AutomationsController {
 
   @Post(':id/deactivate')
   @ApiOperation({ summary: 'تعطيل أتمتة' })
-  async deactivate(@CurrentUser() user: any,
+  async deactivate(@CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string) {
     const tenantId = user.tenantId;
     return this.automationsService.deactivate(id, tenantId);
@@ -529,7 +530,7 @@ export class AutomationsController {
   @Get(':id/logs')
   @ApiOperation({ summary: 'سجلات الأتمتة' })
   async getLogs(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string,
     @Query('page', new ParseIntPipe({ optional: true })) page = 1,
     @Query('limit', new ParseIntPipe({ optional: true })) limit = 50,
@@ -540,7 +541,7 @@ export class AutomationsController {
 
   @Get(':id/stats')
   @ApiOperation({ summary: 'إحصائيات الأتمتة' })
-  async getStats(@CurrentUser() user: any,
+  async getStats(@CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string) {
     const tenantId = user.tenantId;
     return this.automationsService.getStats(id, tenantId);
@@ -556,7 +557,7 @@ export class AutomationsController {
     description: 'الـ Workflows هي سلاسل أتمتة متقدمة بخطوات متعددة',
   })
   async getWorkflows(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Query('page', new ParseIntPipe({ optional: true })) page = 1,
     @Query('limit', new ParseIntPipe({ optional: true })) limit = 20,
   ) {
@@ -566,7 +567,7 @@ export class AutomationsController {
 
   @Post('workflows')
   @ApiOperation({ summary: 'إنشاء Workflow' })
-  async createWorkflow(@CurrentUser() user: any,
+  async createWorkflow(@CurrentUser() user: User,
     @Body() dto: CreateWorkflowDto) {
     const tenantId = user.tenantId;
     return this.automationsService.createWorkflow(tenantId, dto);
@@ -574,7 +575,7 @@ export class AutomationsController {
 
   @Get('workflows/:id')
   @ApiOperation({ summary: 'تفاصيل Workflow' })
-  async getWorkflow(@CurrentUser() user: any,
+  async getWorkflow(@CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string) {
     const tenantId = user.tenantId;
     return this.automationsService.getWorkflowById(id, tenantId);
@@ -583,7 +584,7 @@ export class AutomationsController {
   @Put('workflows/:id')
   @ApiOperation({ summary: 'تحديث Workflow' })
   async updateWorkflow(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateWorkflowDto,
   ) {
@@ -594,7 +595,7 @@ export class AutomationsController {
   @Delete('workflows/:id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'حذف Workflow' })
-  async deleteWorkflow(@CurrentUser() user: any,
+  async deleteWorkflow(@CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string) {
     const tenantId = user.tenantId;
     await this.automationsService.deleteWorkflow(id, tenantId);

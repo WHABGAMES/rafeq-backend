@@ -529,7 +529,7 @@ export class InboxService {
       }
 
       return map;
-    } catch (error) {
+    } catch {
       // fallback إذا فشل DISTINCT ON
       this.logger.warn('Failed to batch-load last messages, using fallback');
 
@@ -641,7 +641,7 @@ export class InboxService {
   // ═══ حذف جميع المحادثات للمتجر ═══
   async deleteAllConversations(tenantId: string): Promise<{ deleted: number }> {
     // عد قبل الحذف — أضمن من parsing نتيجة DELETE
-    const count = await this.conversationRepository.count({ where: { tenantId } as any });
+    const count = await this.conversationRepository.count({ where: { tenantId } });
     if (count === 0) return { deleted: 0 };
 
     await this.conversationRepository.manager.query(

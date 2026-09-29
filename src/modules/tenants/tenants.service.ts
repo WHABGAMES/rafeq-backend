@@ -87,12 +87,11 @@ export class TenantsService {
     let i = 1;
 
     // في حال تضارب slug (نادر) نضيف suffix
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      const found = await this.tenantRepository.findOne({ where: { slug } });
-      if (!found) break;
+    let found = await this.tenantRepository.findOne({ where: { slug } });
+    while (found) {
       i += 1;
       slug = `${baseSlug}-${i}`;
+      found = await this.tenantRepository.findOne({ where: { slug } });
     }
 
     const tenant = this.tenantRepository.create({

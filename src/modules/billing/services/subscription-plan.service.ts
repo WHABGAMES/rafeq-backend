@@ -10,7 +10,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
-import { SubscriptionPlan } from '@database/entities/subscription-plan.entity';
+import { PlanStatus, SubscriptionPlan } from '@database/entities/subscription-plan.entity';
 
 @Injectable()
 export class SubscriptionPlanService {
@@ -24,8 +24,8 @@ export class SubscriptionPlanService {
    */
   async findAll(): Promise<SubscriptionPlan[]> {
     return this.planRepository.find({
-      where: { status: 'active' } as any,
-      order: { displayOrder: 'ASC' } as any,
+      where: { status: PlanStatus.ACTIVE },
+      order: { displayOrder: 'ASC' },
     });
   }
 
@@ -34,7 +34,7 @@ export class SubscriptionPlanService {
    */
   async findById(id: string): Promise<SubscriptionPlan> {
     const plan = await this.planRepository.findOne({
-      where: { id } as any,
+      where: { id },
     });
 
     if (!plan) {
@@ -49,7 +49,7 @@ export class SubscriptionPlanService {
    */
   async findBySlug(slug: string): Promise<SubscriptionPlan> {
     const plan = await this.planRepository.findOne({
-      where: { slug } as any,
+      where: { slug },
     });
 
     if (!plan) {

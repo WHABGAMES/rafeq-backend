@@ -27,6 +27,8 @@ import { AuditAction } from '../entities/audit-log.entity';
 import { AdminUser } from '../entities/admin-user.entity';
 import { MergeHistory, MergeStatus } from '../entities/merge-history.entity';
 import { MailService } from '../../mail/mail.service';
+import { getErrorMessage } from '@common/utils/error.util';
+import { asJsonRecord, getJsonValue } from '@common/utils/json-record.util';
 
 @Injectable()
 export class AdminUsersService {
@@ -59,7 +61,7 @@ export class AdminUsersService {
 
     // ✅ WHERE conditions مبنية بشكل منفصل لتُطبَّق على query و count
     const whereConditions: string[] = ['1=1'];
-    const params: any[] = [];
+    const params: unknown[] = [];
     let idx = 1;
 
     if (filters.search) {
@@ -339,8 +341,8 @@ export class AdminUsersService {
         isNewUser: false,
       });
       this.logger.log(`✅ Password reset email sent to ${user.email}`);
-    } catch (e: any) {
-      this.logger.warn(`⚠️ Failed to send email to ${user.email}: ${e.message}`);
+    } catch (error: unknown) {
+      this.logger.warn(`⚠️ Failed to send email to ${user.email}: ${getErrorMessage(error)}`);
     }
 
     return { tempPassword, emailSent: true };
@@ -432,17 +434,17 @@ export class AdminUsersService {
       throw new NotFoundException(`Tenant ${tenantId} not found`);
     }
 
-    const tenantUsers = await this.dataSource.query(
+    const tenantUsers = await this.dataSource.query<Array<{ id: string }>>(
       `SELECT id, email, role FROM users WHERE tenant_id = $1`,
       [tenantId],
     );
-    const tenantStores = await this.dataSource.query(
+    const tenantStores = await this.dataSource.query<Array<{ id: string }>>(
       `SELECT id, name, platform FROM stores WHERE tenant_id = $1`,
       [tenantId],
     );
 
-    const userIds: string[] = tenantUsers.map((u: any) => u.id);
-    const storeIds: string[] = tenantStores.map((s: any) => s.id);
+    const userIds = tenantUsers.map((user) => user.id);
+    const storeIds = tenantStores.map((store) => store.id);
 
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
@@ -540,7 +542,10 @@ export class AdminUsersService {
       };
     } catch (err) {
       await queryRunner.rollbackTransaction();
-      this.logger.error(`Hard delete failed for tenant ${tenantId}`, err as any);
+      this.logger.error(
+        `Hard delete failed for tenant ${tenantId}`,
+        err instanceof Error ? err.stack : getErrorMessage(err),
+      );
       throw err;
     } finally {
       await queryRunner.release();
@@ -628,13 +633,13 @@ export class AdminUsersService {
       );
 
       // نقل المتاجر من tenant المصدر → tenant الهدف
-      const transferredStores = await queryRunner.query(
+      const transferredStores: Array<{ id: string }> = await queryRunner.query(
         `UPDATE stores SET tenant_id = $1, updated_at = NOW()
          WHERE tenant_id = $2 RETURNING id`,
         [targetUser.tenant_id, sourceUser.tenant_id],
       );
 
-      const transferredIds: string[] = transferredStores.map((s: any) => s.id);
+      const transferredIds = transferredStores.map((store) => store.id);
 
       // إلغاء تفعيل حساب المصدر وأنونيمايزيشن إيميله
       await queryRunner.query(
@@ -739,8 +744,9 @@ export class AdminUsersService {
     return `"${name.replace(/"/g, '""')}"`;
   }
 
-  private readDeletedCount(result: any): number {
-    const rawCount = Array.isArray(result) ? result[0]?.deleted_count : 0;
+  private readDeletedCount(result: unknown): number {
+    const firstRow = Array.isArray(result) ? asJsonRecord(result[0]) : undefined;
+    const rawCount = getJsonValue(firstRow, 'deleted_count');
     const count = Number(rawCount ?? 0);
     return Number.isFinite(count) ? count : 0;
   }

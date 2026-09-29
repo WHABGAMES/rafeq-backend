@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-var-requires */
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════╗
  * ║     RAFIQ PLATFORM — Telegram OTP Client Service                              ║
@@ -7,26 +6,42 @@
  * ║                                                                               ║
  * ║  ✅ Mutex per bot — طلب واحد فقط لكل بوت في نفس الوقت                         ║
  * ║  ✅ Rate limiting — حماية من حظر Telegram                                     ║
- * ║  ✅ Dynamic import — ما يكرش إذا gramjs مو مثبت                               ║
+ * ║  ✅ اعتماد صريح — Telegram مطلوب ومتحقق منه عند البناء                         ║
  * ║  ✅ Graceful shutdown + cleanup                                               ║
  * ║                                                                               ║
- * ║  ⚠️ npm install telegram                                                      ║
  * ║  ⚠️ ENV: TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_SESSION                ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
 import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Api, TelegramClient } from 'telegram';
+import { StringSession } from 'telegram/sessions';
+import { NewMessage, NewMessageEvent } from 'telegram/events';
+import type { Entity } from 'telegram/define';
+import { getErrorMessage } from '@common/utils/error.util';
+import {
+  asJsonRecord,
+  getJsonArray,
+  getJsonString,
+} from '@common/utils/json-record.util';
 
-let TelegramClient: any;
-let StringSession: any;
-let Api: any;
-let NewMessage: any;
+interface TelegramAuthSession {
+  client: TelegramClient;
+  session: StringSession;
+  phone: string;
+}
+
+interface ResponseWaiter {
+  botUsername: string;
+  resolve: (message: Api.Message | null) => void;
+  timeout: NodeJS.Timeout;
+}
 
 @Injectable()
 export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger('TelegramOtpClient');
-  private client: any = null;
+  private client: TelegramClient | null = null;
   private connected = false;
   private available = false;
   private readonly apiId: number;
@@ -37,7 +52,8 @@ export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
   private botLocks = new Map<string, Promise<void>>();
 
   // ── Response listener ──
-  private responseWaiter: { botUsername: string; resolve: (msg: any) => void; timeout: NodeJS.Timeout } | null = null;
+  private responseWaiter: ResponseWaiter | null = null;
+  private authTemp: TelegramAuthSession | null = null;
 
   constructor(private readonly config: ConfigService) {
     this.apiId = Number(this.config.get<string>('TELEGRAM_API_ID') || '0');
@@ -51,17 +67,10 @@ export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
       return;
     }
     try {
-      const tg = require('telegram');
-      const sess = require('telegram/sessions');
-      const events = require('telegram/events');
-      TelegramClient = tg.TelegramClient;
-      StringSession = sess.StringSession;
-      Api = tg.Api;
-      NewMessage = events.NewMessage;
       this.available = true;
       await this.connect();
-    } catch (e: any) {
-      this.logger.warn(`⚠️ gramjs not available: ${e?.message}. Run: npm install telegram`);
+    } catch (error: unknown) {
+      this.logger.warn(`⚠️ Telegram OTP initialization failed: ${getErrorMessage(error)}`);
     }
   }
 
@@ -71,7 +80,11 @@ export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
       this.responseWaiter = null;
     }
     if (this.client && this.connected) {
-      try { await this.client.disconnect(); } catch {}
+      try {
+        await this.client.disconnect();
+      } catch (error: unknown) {
+        this.logger.debug(`Telegram disconnect failed during shutdown: ${getErrorMessage(error)}`);
+      }
     }
   }
 
@@ -92,12 +105,12 @@ export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
       this.connected = true;
 
       // Listen for messages
-      this.client.addEventHandler((event: any) => this.onMessage(event), new NewMessage({}));
+      this.client.addEventHandler((event: NewMessageEvent) => this.onMessage(event), new NewMessage({}));
 
       const me = await this.client.getMe();
       this.logger.log(`✅ Telegram connected: ${me.phone || me.username}`);
-    } catch (e: any) {
-      this.logger.error(`❌ Telegram connect failed: ${e?.message}`);
+    } catch (error: unknown) {
+      this.logger.error(`❌ Telegram connect failed: ${getErrorMessage(error)}`);
       this.connected = false;
     }
   }
@@ -134,13 +147,18 @@ export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async executeFlowInternal(botUsername: string, flow: BotFlowStep[]): Promise<BotFlowResult> {
+    const client = this.client;
+    if (!client) {
+      return { success: false, error: 'Telegram client not initialized' };
+    }
+
     try {
-      const botEntity = await this.client.getEntity(botUsername);
+      const botEntity = await client.getEntity(botUsername);
       if (!botEntity) return { success: false, error: `Bot @${botUsername} not found` };
 
       this.logger.log(`🤖 Flow start: @${botUsername} (${flow.length} steps)`);
 
-      let lastResponse: any = null;
+      let lastResponse: Api.Message | null = null;
 
       for (let i = 0; i < flow.length; i++) {
         const step = flow[i];
@@ -151,7 +169,7 @@ export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
             // ✅ FIX: إذا الخطوة التالية wait_response → جهّز المستمع قبل الإرسال
             if (nextStep?.action === 'wait_response') {
               const responsePromise = this.waitForBotResponse(botUsername, nextStep.timeout || 15000);
-              await this.client.sendMessage(botEntity, { message: step.text! });
+              await client.sendMessage(botEntity, { message: step.text! });
               this.logger.debug(`  [${i + 1}] sent: "${step.text}"`);
               // انتظر الرد (المستمع جاهز من قبل الإرسال)
               if (step.delayAfter) await this.sleep(step.delayAfter);
@@ -160,7 +178,7 @@ export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
               this.logger.debug(`  [${i + 2}] received: ${(lastResponse.text || '').slice(0, 50)}...`);
               i++; // تخطّي الـ wait_response لأنه تم
             } else {
-              await this.client.sendMessage(botEntity, { message: step.text! });
+              await client.sendMessage(botEntity, { message: step.text! });
               this.logger.debug(`  [${i + 1}] sent: "${step.text}"`);
             }
             break;
@@ -193,7 +211,7 @@ export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
             }
             break;
 
-          case 'extract_code':
+          case 'extract_code': {
             if (!lastResponse?.text) return { success: false, error: 'No text to extract from' };
             const re = new RegExp(step.regex || '(\\d{4,8})', 'i');
             const m = lastResponse.text.match(re);
@@ -202,6 +220,7 @@ export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
               return { success: true, code: m[1], fullResponse: lastResponse.text };
             }
             return { success: false, error: 'Code not found in response', fullResponse: lastResponse.text };
+          }
         }
 
         // Rate limit: delay between steps (only if not already handled above)
@@ -211,9 +230,10 @@ export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
       }
 
       return { success: false, error: 'Flow ended without code' };
-    } catch (e: any) {
-      this.logger.error(`❌ Flow error @${botUsername}: ${e?.message}`);
-      return { success: false, error: e?.message };
+    } catch (error: unknown) {
+      const message = getErrorMessage(error);
+      this.logger.error(`❌ Flow error @${botUsername}: ${message}`);
+      return { success: false, error: message };
     }
   }
 
@@ -221,11 +241,11 @@ export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
   // MESSAGE HANDLING
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  private onMessage(event: any): void {
+  private onMessage(event: NewMessageEvent): void {
     try {
-      const msg = event?.message;
+      const msg = event.message;
       if (!msg) return;
-      const senderUsername = (msg._sender?.username || '').toLowerCase();
+      const senderUsername = getJsonString(asJsonRecord(msg._sender), 'username')?.toLowerCase();
       if (!senderUsername || !this.responseWaiter) return;
 
       if (this.responseWaiter.botUsername === senderUsername) {
@@ -234,17 +254,19 @@ export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
         this.responseWaiter = null;
         waiter.resolve(msg);
       }
-    } catch {}
+    } catch (error: unknown) {
+      this.logger.debug(`Telegram message listener ignored malformed event: ${getErrorMessage(error)}`);
+    }
   }
 
-  private waitForBotResponse(botUsername: string, timeoutMs: number): Promise<any> {
+  private waitForBotResponse(botUsername: string, timeoutMs: number): Promise<Api.Message | null> {
     // Clear any stale waiter
     if (this.responseWaiter) {
       clearTimeout(this.responseWaiter.timeout);
       this.responseWaiter = null;
     }
 
-    return new Promise(resolve => {
+    return new Promise<Api.Message | null>(resolve => {
       const timeout = setTimeout(() => {
         this.responseWaiter = null;
         resolve(null);
@@ -258,29 +280,37 @@ export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  private async clickButton(botEntity: any, message: any, buttonText: string): Promise<boolean> {
-    try {
-      const rows = message.replyMarkup?.rows || [];
-      for (const row of rows) {
-        for (const button of (row.buttons || [])) {
-          if (!(button.text || '').includes(buttonText)) continue;
+  private async clickButton(botEntity: Entity, message: Api.Message, buttonText: string): Promise<boolean> {
+    const client = this.client;
+    if (!client) return false;
 
-          if (button.data) {
+    try {
+      const replyMarkup = asJsonRecord(message.replyMarkup);
+      const rows = getJsonArray(replyMarkup, 'rows') ?? [];
+      for (const rowValue of rows) {
+        const buttons = getJsonArray(asJsonRecord(rowValue), 'buttons') ?? [];
+        for (const buttonValue of buttons) {
+          const button = asJsonRecord(buttonValue);
+          const text = getJsonString(button, 'text');
+          if (!text?.includes(buttonText)) continue;
+
+          const data = button?.data;
+          if (Buffer.isBuffer(data)) {
             // Inline callback button
-            await this.client.invoke(new Api.messages.GetBotCallbackAnswer({
+            await client.invoke(new Api.messages.GetBotCallbackAnswer({
               peer: botEntity,
               msgId: message.id,
-              data: button.data,
+              data,
             }));
           } else {
             // Keyboard text button
-            await this.client.sendMessage(botEntity, { message: button.text });
+            await client.sendMessage(botEntity, { message: text });
           }
           return true;
         }
       }
-    } catch (e: any) {
-      this.logger.warn(`Button click failed: ${e?.message}`);
+    } catch (error: unknown) {
+      this.logger.warn(`Button click failed: ${getErrorMessage(error)}`);
     }
     return false;
   }
@@ -290,16 +320,6 @@ export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   async startAuth(apiId: number, apiHash: string, phone: string): Promise<{ phoneCodeHash: string }> {
-    if (!TelegramClient) {
-      try {
-        const tg = require('telegram');
-        const sess = require('telegram/sessions');
-        TelegramClient = tg.TelegramClient;
-        StringSession = sess.StringSession;
-        Api = tg.Api;
-      } catch { throw new Error('npm install telegram first'); }
-    }
-
     const session = new StringSession('');
     const tempClient = new TelegramClient(session, apiId, apiHash, {});
     await tempClient.connect();
@@ -311,12 +331,17 @@ export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
       settings: new Api.CodeSettings({}),
     }));
 
-    (this as any)._authTemp = { client: tempClient, phone };
+    if (!('phoneCodeHash' in result) || typeof result.phoneCodeHash !== 'string') {
+      await tempClient.disconnect();
+      throw new Error('Telegram did not return a phone-code challenge');
+    }
+
+    this.authTemp = { client: tempClient, session, phone };
     return { phoneCodeHash: result.phoneCodeHash };
   }
 
   async completeAuth(code: string, phoneCodeHash: string): Promise<{ sessionString: string }> {
-    const temp = (this as any)._authTemp;
+    const temp = this.authTemp;
     if (!temp) throw new Error('Call startAuth first');
 
     await temp.client.invoke(new Api.auth.SignIn({
@@ -325,9 +350,9 @@ export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
       phoneCode: code,
     }));
 
-    const sessionStr = temp.client.session.save() as string;
+    const sessionStr = temp.session.save();
     await temp.client.disconnect();
-    delete (this as any)._authTemp;
+    this.authTemp = null;
 
     this.logger.log('✅ Auth done — save to TELEGRAM_SESSION env');
     return { sessionString: sessionStr };

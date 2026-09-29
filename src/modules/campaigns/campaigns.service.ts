@@ -33,7 +33,10 @@ import {
   CampaignChannel,
   AudienceFilter,
   SegmentRule,
+  MessageTemplate,
+  TriggerConfig,
 } from '@database/entities/campaign.entity';
+import { getErrorMessage } from '@common/utils/error.util';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DTOs
@@ -49,19 +52,8 @@ export interface CreateCampaignDto {
   channel: CampaignChannel;
   scheduledAt?: Date;
   audienceFilter?: AudienceFilter;
-  messageTemplate?: {
-    type: 'text' | 'image' | 'document' | 'template';
-    body: string;
-    mediaUrl?: string;
-    header?: { type: string; value: string };
-    buttons?: Array<{ type: string; text: string; value?: string }>;
-    variables?: string[];
-  };
-  triggerConfig?: {
-    type: string;
-    delayMinutes?: number;
-    conditions?: SegmentRule[];
-  };
+  messageTemplate?: MessageTemplate;
+  triggerConfig?: TriggerConfig;
   rateLimit?: number;
   stopOnErrorThreshold?: number;
 }
@@ -185,15 +177,17 @@ export class CampaignsService {
       throw new BadRequestException('لا يمكن تعديل حملة نشطة أو مكتملة');
     }
 
-    const allowed: (keyof CreateCampaignDto)[] = [
-      'name', 'description', 'channel', 'type', 'scheduledAt',
-      'messageTemplate', 'audienceFilter', 'triggerConfig',
-      'rateLimit', 'stopOnErrorThreshold', 'storeId',
-    ];
-
-    for (const key of allowed) {
-      if (dto[key] !== undefined) (campaign as any)[key] = dto[key];
-    }
+    if (dto.name !== undefined) campaign.name = dto.name;
+    if (dto.description !== undefined) campaign.description = dto.description;
+    if (dto.channel !== undefined) campaign.channel = dto.channel;
+    if (dto.type !== undefined) campaign.type = dto.type;
+    if (dto.scheduledAt !== undefined) campaign.scheduledAt = dto.scheduledAt;
+    if (dto.messageTemplate !== undefined) campaign.messageTemplate = dto.messageTemplate;
+    if (dto.audienceFilter !== undefined) campaign.audienceFilter = dto.audienceFilter;
+    if (dto.triggerConfig !== undefined) campaign.triggerConfig = dto.triggerConfig;
+    if (dto.rateLimit !== undefined) campaign.rateLimit = dto.rateLimit;
+    if (dto.stopOnErrorThreshold !== undefined) campaign.stopOnErrorThreshold = dto.stopOnErrorThreshold;
+    if (dto.storeId !== undefined) campaign.storeId = dto.storeId;
 
     const saved = await this.campaignRepository.save(campaign);
 
@@ -268,7 +262,7 @@ export class CampaignsService {
     await this.campaignRepository.update(id, {
       status: CampaignStatus.ACTIVE,
       startedAt: new Date(),
-    } as any);
+    });
 
     // ✅ FIX 4: Streaming cursor — دفعات 500 بدل تحميل الكل
     const BATCH_SIZE = 500;
@@ -277,14 +271,16 @@ export class CampaignsService {
     let totalQueued = 0;
     let offset = 0;
 
-    while (true) {
+    let hasMoreTargets = true;
+    while (hasMoreTargets) {
       const batch = await this.buildTargetQuery(campaign)
         .orderBy('customer.id', 'ASC')
         .skip(offset)
         .take(BATCH_SIZE)
         .getMany();
 
-      if (batch.length === 0) break;
+      hasMoreTargets = batch.length === BATCH_SIZE;
+      if (batch.length === 0) continue;
 
       for (let i = 0; i < batch.length; i++) {
         const globalIndex = totalQueued + i;
@@ -494,16 +490,18 @@ export class CampaignsService {
           whereClauses.push(`${dbField} NOT ILIKE :${paramKey}`);
           params[paramKey] = `%${rule.value}%`;
           break;
-        case 'in':
+        case 'in': {
           const inArr = Array.isArray(rule.value) ? rule.value : [rule.value];
           whereClauses.push(`${dbField} IN (:...${paramKey})`);
           params[paramKey] = inArr;
           break;
-        case 'not_in':
+        }
+        case 'not_in': {
           const notInArr = Array.isArray(rule.value) ? rule.value : [rule.value];
           whereClauses.push(`${dbField} NOT IN (:...${paramKey})`);
           params[paramKey] = notInArr;
           break;
+        }
       }
     }
 
@@ -580,8 +578,8 @@ export class CampaignsService {
       this.eventEmitter.on(event, async (payload: Record<string, unknown>) => {
         try {
           await this.handleTrigger(event, payload);
-        } catch (err: any) {
-          this.logger.error(`❌ Trigger handler error for ${event}: ${err.message}`);
+        } catch (error: unknown) {
+          this.logger.error(`❌ Trigger handler error for ${event}: ${getErrorMessage(error)}`);
         }
       });
     }
@@ -592,8 +590,8 @@ export class CampaignsService {
       if (eventType) {
         try {
           await this.handleTrigger(eventType, payload);
-        } catch (err: any) {
-          this.logger.error(`❌ Trigger handler error for ${eventType}: ${err.message}`);
+        } catch (error: unknown) {
+          this.logger.error(`❌ Trigger handler error for ${eventType}: ${getErrorMessage(error)}`);
         }
       }
     });

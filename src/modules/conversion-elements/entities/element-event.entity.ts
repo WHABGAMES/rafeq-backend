@@ -119,7 +119,9 @@ export class ElementEvent {
 
   // ─── Extra metadata ───────────────────────────────────────────
   @Column({ name: 'metadata', type: 'jsonb', nullable: true })
-  metadata?: Record<string, unknown>;
+  // TypeORM's insert partial supports an opaque JSON object but cannot safely
+  // recurse through `Record<string, unknown>`.
+  metadata?: object;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;

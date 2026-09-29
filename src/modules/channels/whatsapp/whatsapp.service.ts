@@ -16,8 +16,11 @@ import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
+import FormData from 'form-data';
 
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { getHttpErrorDetails } from '@common/utils/error.util';
+import { asJsonRecord, getJsonString } from '@common/utils/json-record.util';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 📌 INTERFACES - تعريف الأنواع
@@ -852,7 +855,6 @@ export class WhatsAppService {
 
     try {
       // إنشاء FormData
-      const FormData = require('form-data');
       const form = new FormData();
       form.append('file', file, {
         filename,
@@ -913,17 +915,22 @@ export class WhatsAppService {
       });
 
       return response.data;
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const details = getHttpErrorDetails(error, 'Failed to send WhatsApp message');
       this.logger.error('Failed to send WhatsApp message', {
-        error: error?.response?.data || error.message,
+        error: details,
         payload: { ...payload, to: '***' }, // إخفاء الرقم في اللوج
       });
 
       // استخراج رسالة الخطأ من WhatsApp
-      const whatsappError = error?.response?.data?.error;
-      if (whatsappError) {
+      const response = asJsonRecord(asJsonRecord(error)?.response);
+      const responseData = asJsonRecord(response?.data);
+      const whatsappError = asJsonRecord(responseData?.error);
+      const whatsappMessage = getJsonString(whatsappError, 'message');
+      const whatsappCode = whatsappError?.code;
+      if (whatsappMessage) {
         throw new BadRequestException(
-          `WhatsApp Error: ${whatsappError.message} (Code: ${whatsappError.code})`,
+          `WhatsApp Error: ${whatsappMessage} (Code: ${String(whatsappCode ?? 'unknown')})`,
         );
       }
 

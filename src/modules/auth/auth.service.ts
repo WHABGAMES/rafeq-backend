@@ -32,9 +32,10 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { hashPassword, verifyPassword, needsRehash } from '@common/utils/password.util';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 import * as crypto from 'crypto';
 import Redis from 'ioredis';
+import { JwtDuration, jwtDurationToSeconds, normalizeJwtDuration } from '@common/utils/jwt-expiration.util';
 
 import { User, UserStatus, UserRole, AuthProvider } from '@database/entities/user.entity';
 import { Tenant, TenantStatus, SubscriptionPlan } from '@database/entities/tenant.entity';
@@ -1554,8 +1555,8 @@ export class AuthService implements OnModuleInit {
     accessToken: string;
     refreshToken: string;
   }> {
-    const accessJti = uuidv4();
-    const refreshJti = uuidv4();
+    const accessJti = randomUUID();
+    const refreshJti = randomUUID();
 
     const basePayload: Record<string, unknown> = {
       sub: user.id,
@@ -1585,7 +1586,10 @@ export class AuthService implements OnModuleInit {
         { ...basePayload, jti: refreshJti, type: 'refresh' },
         {
           secret: refreshSecret,
-          expiresIn: this.configService.get('JWT_REFRESH_EXPIRES_IN', '7d'),
+          expiresIn: normalizeJwtDuration(
+            this.configService.get('JWT_REFRESH_EXPIRES_IN'),
+            '7d',
+          ),
         },
       ),
     ]);
@@ -1597,27 +1601,20 @@ export class AuthService implements OnModuleInit {
    * 🔧 FIX C-02: Sanitize access token expiration
    * Converts the env value and caps it at 30 minutes maximum
    */
-  private sanitizeAccessTokenExpiry(value: string): string {
-    const match = value.match(/^(\d+)(s|m|h|d)$/);
-    if (!match) return '15m'; // Invalid format → default
-
-    const num = parseInt(match[1], 10);
-    const unit = match[2];
-
-    // Convert to seconds for comparison
-    const secondsMap: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400 };
-    const totalSeconds = num * (secondsMap[unit] || 60);
+  private sanitizeAccessTokenExpiry(value: unknown): JwtDuration {
+    const duration = normalizeJwtDuration(value, '15m');
+    const totalSeconds = jwtDurationToSeconds(duration);
 
     // Cap at 30 minutes (1800 seconds)
     const MAX_ACCESS_TOKEN_SECONDS = 1800;
     if (totalSeconds > MAX_ACCESS_TOKEN_SECONDS) {
       this.logger.warn(
-        `⚠️ JWT_EXPIRES_IN=${value} exceeds max 30m. Capping to 15m for security.`,
+        `⚠️ JWT access expiration=${duration} exceeds max 30m. Capping to 15m for security.`,
       );
       return '15m';
     }
 
-    return value;
+    return duration;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -1667,7 +1664,7 @@ export class AuthService implements OnModuleInit {
       // محاولة تحديث deviceToken بشكل منفصل - إذا فشل نكمل بدونه
       try {
         if (!savedDevice.deviceToken) {
-          savedDevice.deviceToken = uuidv4();
+          savedDevice.deviceToken = randomUUID();
           await this.deviceRepository.save(savedDevice);
         }
         return savedDevice.deviceToken!;

@@ -176,8 +176,8 @@ export class EmailService {
       existing.status         = ChannelStatus.CONNECTED;
       existing.name           = `Email - ${params.fromEmail} (${params.provider})`;
       existing.connectedAt    = new Date();
-      existing.disconnectedAt = null as any;
-      existing.lastError      = null as any;
+      existing.disconnectedAt = null;
+      existing.lastError      = null;
       existing.errorCount     = 0;
       await this.channelRepository.save(existing);
       this.logger.log(`♻️ Email channel updated: ${params.provider}`, { tenantId, storeId });

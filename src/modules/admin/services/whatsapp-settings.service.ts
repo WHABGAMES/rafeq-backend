@@ -4,7 +4,7 @@
  *
  * FIX [TS2741]: sendTestMessage now explicitly maps ApiCallResult → { success, message }
  *   Previously returned `result` (ApiCallResult) directly, missing `message` field
- * FIX [TS2339]: sendViaWhatsappApi response typed as Record<string, any>
+ * FIX [TS2339]: sendViaWhatsappApi response is validated as an unknown JSON record.
  *   Previously `{}` type had no properties — data?.error?.message caused TS2339
  */
 import {
@@ -15,10 +15,11 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
-import { Repository, DataSource, IsNull } from 'typeorm';
+import { Repository, DataSource, IsNull, FindOptionsWhere } from 'typeorm';
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'crypto';
 import { WhatsappSettings, WhatsappProvider } from '../entities/whatsapp-settings.entity';
 import { MessageLog, MessageStatus } from '../entities/message-log.entity';
+import { asJsonRecord, getJsonString } from '@common/utils/json-record.util';
 
 /**
  * ✅ FIX [TS2741]: Interface مفصولة لكل return type
@@ -27,8 +28,21 @@ import { MessageLog, MessageStatus } from '../entities/message-log.entity';
  */
 interface ApiCallResult {
   success: boolean;
-  response?: Record<string, any>;
+  response?: Record<string, unknown>;
   error?: string;
+}
+
+interface MessageHistoryRow {
+  id: string;
+  recipientPhone: string | null;
+  content: string | null;
+  direction: string;
+  status: string;
+  attempts: number | string | null;
+  errorMessage: string | null;
+  sentAt: Date | string | null;
+  createdAt: Date | string;
+  triggerEvent: string | null;
 }
 
 @Injectable()
@@ -239,9 +253,7 @@ export class WhatsappSettingsService implements OnModuleInit {
     // tenantId موجود → إعدادات هذا التاجر فقط
     // tenantId غير موجود → الإعدادات العامة القديمة (tenant_id IS NULL) فقط
     // بدون هذا الفلتر: findOne({ where: {} }) يرجع سجل عشوائي = تسريب بيانات!
-    const where = tenantId
-      ? { tenantId }
-      : { tenantId: IsNull() as any };
+    const where = this.settingsWhere(tenantId);
 
     const settings = await this.settingsRepo.findOne({ where });
     if (!settings) return null;
@@ -269,9 +281,7 @@ export class WhatsappSettingsService implements OnModuleInit {
   }): Promise<WhatsappSettings> {
     // ✅ FIX CRITICAL: فلترة حسب التاجر عند البحث عن إعدادات موجودة
     // بدون IsNull: findOne({ where: {} }) يلقط سجل أي تاجر ويكتب فوقه!
-    const where = data.tenantId
-      ? { tenantId: data.tenantId }
-      : { tenantId: IsNull() as any };
+    const where = this.settingsWhere(data.tenantId);
 
     let settings = await this.settingsRepo.findOne({ where });
     const encrypted = this.encrypt(data.accessToken);
@@ -306,9 +316,7 @@ export class WhatsappSettingsService implements OnModuleInit {
   }
 
   async toggleActive(isActive: boolean, tenantId?: string): Promise<void> {
-    const where = tenantId
-      ? { tenantId }
-      : { tenantId: IsNull() as any };
+    const where = this.settingsWhere(tenantId);
 
     const settings = await this.settingsRepo.findOne({ where });
     if (!settings) throw new NotFoundException('WhatsApp settings not configured');
@@ -324,9 +332,7 @@ export class WhatsappSettingsService implements OnModuleInit {
    * — نوعان مختلفان، نعمل explicit mapping بينهما
    */
   async sendTestMessage(phoneNumber: string, tenantId?: string): Promise<{ success: boolean; message: string }> {
-    const where = tenantId
-      ? { tenantId }
-      : { tenantId: IsNull() as any };
+    const where = this.settingsWhere(tenantId);
 
     const settings = await this.settingsRepo.findOne({ where });
 
@@ -368,9 +374,7 @@ export class WhatsappSettingsService implements OnModuleInit {
     },
   ): Promise<{ success: boolean; messageLogId: string | null; savedMessageId?: string | null }> {
     // ✅ FIX CRITICAL: فلترة حسب التاجر
-    const where = options?.tenantId
-      ? { tenantId: options.tenantId }
-      : { tenantId: IsNull() as any };
+    const where = this.settingsWhere(options?.tenantId);
 
     const settings = await this.settingsRepo.findOne({ where });
 
@@ -397,13 +401,12 @@ export class WhatsappSettingsService implements OnModuleInit {
       const token = this.decrypt(settings.accessTokenEncrypted);
       const result = await this.sendViaWhatsappApi(settings, token, recipientPhone, message);
 
-      await this.messageLogRepo.update(log.id, {
-        status: result.success ? MessageStatus.SENT : MessageStatus.FAILED,
-        attempts: 1,
-        sentAt: result.success ? new Date() : undefined,
-        responsePayload: result.response,
-        errorMessage: result.error,
-      });
+      log.status = result.success ? MessageStatus.SENT : MessageStatus.FAILED;
+      log.attempts = 1;
+      log.sentAt = result.success ? new Date() : undefined;
+      log.responsePayload = result.response;
+      log.errorMessage = result.error;
+      await this.messageLogRepo.save(log);
 
       // ✅ إنشاء/تحديث conversation في admin inbox عند نجاح الإرسال
       let savedMessageId: string | null = null;
@@ -532,7 +535,7 @@ export class WhatsappSettingsService implements OnModuleInit {
   // ─── API Call (Private) ───────────────────────────────────────────────────
 
   /**
-   * ✅ FIX [TS2339]: data typed as Record<string, any>
+   * ✅ FIX [TS2339]: data is validated before nested fields are read.
    * يدعم: META و TWILIO
    * WhatsappProvider.CUSTOM → returns error (not implemented — extend as needed)
    */
@@ -560,13 +563,11 @@ export class WhatsappSettingsService implements OnModuleInit {
           }),
         });
 
-        // ✅ FIX [TS2339]: typed as Record<string, any> → data?.error?.message works
-        const data = await resp.json() as Record<string, any>;
+        // ✅ FIX [TS2339]: read the provider error through the validated record.
+        const data = asJsonRecord(await resp.json()) ?? {};
 
         if (!resp.ok) {
-          const errorMsg = typeof data?.error?.message === 'string'
-            ? data.error.message
-            : `HTTP ${resp.status}`;
+          const errorMsg = getJsonString(asJsonRecord(data.error), 'message') ?? `HTTP ${resp.status}`;
           return { success: false, response: data, error: errorMsg };
         }
         return { success: true, response: data };
@@ -595,7 +596,7 @@ export class WhatsappSettingsService implements OnModuleInit {
           body,
         });
 
-        const data = await resp.json() as Record<string, any>;
+        const data = asJsonRecord(await resp.json()) ?? {};
         return { success: resp.ok, response: data };
       }
 
@@ -694,7 +695,7 @@ export class WhatsappSettingsService implements OnModuleInit {
       params.push(offset);
       const offsetIdx = params.length;
 
-      const rows = await this.dataSource.query<Array<Record<string, unknown>>>(
+      const rows = await this.dataSource.query<MessageHistoryRow[]>(
         `SELECT
            ml.id               AS id,
            ml.recipient_phone  AS "recipientPhone",
@@ -714,17 +715,17 @@ export class WhatsappSettingsService implements OnModuleInit {
       );
 
       return {
-        data: rows.map((r: any) => ({
+        data: rows.map((r) => ({
           id:             String(r.id),
-          recipientPhone: (r.recipientPhone as string) || null,
-          content:        (r.content        as string) || null,
-          direction:      (r.direction      as string) === 'inbound' ? 'inbound' : 'outbound',
+          recipientPhone: r.recipientPhone || null,
+          content:        r.content || null,
+          direction:      r.direction === 'inbound' ? 'inbound' : 'outbound',
           status:         String(r.status),
           attempts:       Number(r.attempts) || 0,
-          errorMessage:   (r.errorMessage   as string) || null,
-          sentAt:         r.sentAt    ? new Date(r.sentAt    as string) : null,
-          createdAt:      new Date(r.createdAt as string),
-          triggerEvent:   (r.triggerEvent   as string) || null,
+          errorMessage:   r.errorMessage || null,
+          sentAt:         r.sentAt ? new Date(r.sentAt) : null,
+          createdAt:      new Date(r.createdAt),
+          triggerEvent:   r.triggerEvent || null,
         })),
         total,
         page:  opts.page,
@@ -744,6 +745,10 @@ export class WhatsappSettingsService implements OnModuleInit {
     const cipher = createCipheriv('aes-256-cbc', this.encKey, iv);
     const encrypted = Buffer.concat([cipher.update(text, 'utf8'), cipher.final()]);
     return `${iv.toString('hex')}:${encrypted.toString('hex')}`;
+  }
+
+  private settingsWhere(tenantId?: string): FindOptionsWhere<WhatsappSettings> {
+    return tenantId ? { tenantId } : { tenantId: IsNull() };
   }
 
   private decrypt(encryptedText: string): string {

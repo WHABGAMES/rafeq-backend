@@ -33,7 +33,7 @@
 
 import {
   Controller, Get, Post, Put, Patch, Delete, Body, Param, Query,
-  Res, HttpCode, HttpStatus, UseGuards, NotFoundException,
+  Res, HttpCode, HttpStatus, UseGuards, NotFoundException, Logger,
 } from '@nestjs/common';
 import { Response } from 'express';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
@@ -42,6 +42,7 @@ import { Repository } from 'typeorm';
 
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
+import { User } from '@database/entities';
 import { ConversionElementsService } from '../services/conversion-elements.service';
 import { ElementTrackingService } from '../services/element-tracking.service';
 import { ElementAnalyticsService } from '../services/element-analytics.service';
@@ -59,6 +60,7 @@ import { ElementStatus } from '../entities/conversion-element.entity';
 @ApiTags('Conversion Elements: Public')
 @Controller({ path: 'elements', version: '1' })
 export class ElementsPublicController {
+  private readonly logger = new Logger(ElementsPublicController.name);
   constructor(
     private readonly elementsService: ConversionElementsService,
     private readonly trackingService: ElementTrackingService,
@@ -101,18 +103,19 @@ export class ElementsPublicController {
         resolvedAt: new Date().toISOString(),
         activeCount: elements.length,
         elements: elements.map(el => ({
-          id: (el as any).id,
-          type: (el as any).type,
-          position: (el as any).position,
-          targeting: (el as any).targeting,
-          behavior: (el as any).behavior,
+          id: el.id,
+          type: el.type,
+          position: el.position,
+          targeting: el.targeting,
+          behavior: el.behavior,
         })),
         hint: elements.length === 0
           ? 'لا توجد عناصر نشطة — تأكد أن العنصر بحالة active وليس draft'
           : 'العناصر موجودة — إذا لا تظهر أضف ?rfq_debug=1 لرابط المتجر',
       });
-    } catch (e: any) {
-      res.json({ error: e.message, storeId });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      res.json({ error: message, storeId });
     }
   }
 
@@ -133,7 +136,12 @@ export class ElementsPublicController {
     try {
       // storeId is resolved inside the service (supports UUID + Salla numeric IDs)
       await this.trackingService.trackEvent(storeId, dto);
-    } catch {}
+    } catch (error: unknown) {
+      this.logger.warn('Failed to track conversion element event', {
+        storeId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
 
     res.status(204).send();
   }
@@ -151,7 +159,12 @@ export class ElementsPublicController {
     try {
       // storeId is resolved inside the service (supports UUID + Salla numeric IDs)
       await this.trackingService.trackBatch(storeId, dto.events);
-    } catch {}
+    } catch (error: unknown) {
+      this.logger.warn('Failed to track conversion element event batch', {
+        storeId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
 
     res.status(204).send();
   }
@@ -193,27 +206,27 @@ export class ElementsManageController {
 
   @Get()
   @ApiOperation({ summary: 'List all conversion elements' })
-  async findAll(@CurrentUser() user: any) {
+  async findAll(@CurrentUser() user: User) {
     const storeId = await this.getStoreId(user.tenantId);
     return this.elementsService.findAll(storeId, user.tenantId);
   }
 
   @Post()
   @ApiOperation({ summary: 'Create a new conversion element' })
-  async create(@CurrentUser() user: any, @Body() dto: CreateElementDto) {
+  async create(@CurrentUser() user: User, @Body() dto: CreateElementDto) {
     const storeId = await this.getStoreId(user.tenantId);
     return this.elementsService.create(storeId, user.tenantId, dto);
   }
 
   @Get(':id')
   @ApiOperation({ summary: 'Get a conversion element' })
-  async findOne(@Param('id') id: string, @CurrentUser() user: any) {
+  async findOne(@Param('id') id: string, @CurrentUser() user: User) {
     return this.elementsService.findOne(id, user.tenantId);
   }
 
   @Put(':id')
   @ApiOperation({ summary: 'Update a conversion element' })
-  async update(@Param('id') id: string, @CurrentUser() user: any, @Body() dto: UpdateElementDto) {
+  async update(@Param('id') id: string, @CurrentUser() user: User, @Body() dto: UpdateElementDto) {
     return this.elementsService.update(id, user.tenantId, dto);
   }
 
@@ -221,7 +234,7 @@ export class ElementsManageController {
   @ApiOperation({ summary: 'Update element status' })
   async updateStatus(
     @Param('id') id: string,
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Body('status') status: ElementStatus,
   ) {
     return this.elementsService.updateStatus(id, user.tenantId, status);
@@ -229,14 +242,14 @@ export class ElementsManageController {
 
   @Post(':id/duplicate')
   @ApiOperation({ summary: 'Duplicate an element' })
-  async duplicate(@Param('id') id: string, @CurrentUser() user: any) {
+  async duplicate(@Param('id') id: string, @CurrentUser() user: User) {
     return this.elementsService.duplicate(id, user.tenantId);
   }
 
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'Delete an element' })
-  async remove(@Param('id') id: string, @CurrentUser() user: any) {
+  async remove(@Param('id') id: string, @CurrentUser() user: User) {
     await this.elementsService.remove(id, user.tenantId);
   }
 }
@@ -275,7 +288,7 @@ export class ElementsAnalyticsController {
 
   @Get('overview')
   @ApiOperation({ summary: 'Overview stats' })
-  async getOverview(@CurrentUser() user: any, @Query() query: AnalyticsQueryDto) {
+  async getOverview(@CurrentUser() user: User, @Query() query: AnalyticsQueryDto) {
     const storeId = await this.getStoreId(user.tenantId);
     const { startDate, endDate } = this.getDateRange(query);
     return this.analyticsService.getOverview(storeId, user.tenantId, startDate, endDate);
@@ -283,7 +296,7 @@ export class ElementsAnalyticsController {
 
   @Get('timeseries')
   @ApiOperation({ summary: 'Time series chart data' })
-  async getTimeSeries(@CurrentUser() user: any, @Query() query: AnalyticsQueryDto) {
+  async getTimeSeries(@CurrentUser() user: User, @Query() query: AnalyticsQueryDto) {
     const storeId = await this.getStoreId(user.tenantId);
     const { startDate, endDate } = this.getDateRange(query);
     return this.analyticsService.getTimeSeries(storeId, startDate, endDate, query.elementId);
@@ -291,7 +304,7 @@ export class ElementsAnalyticsController {
 
   @Get('performance')
   @ApiOperation({ summary: 'Per-element performance breakdown' })
-  async getPerformance(@CurrentUser() user: any, @Query() query: AnalyticsQueryDto) {
+  async getPerformance(@CurrentUser() user: User, @Query() query: AnalyticsQueryDto) {
     const storeId = await this.getStoreId(user.tenantId);
     const { startDate, endDate } = this.getDateRange(query);
     return this.analyticsService.getElementsPerformance(storeId, startDate, endDate);
@@ -299,7 +312,7 @@ export class ElementsAnalyticsController {
 
   @Get('funnel')
   @ApiOperation({ summary: 'Conversion funnel' })
-  async getFunnel(@CurrentUser() user: any, @Query() query: AnalyticsQueryDto) {
+  async getFunnel(@CurrentUser() user: User, @Query() query: AnalyticsQueryDto) {
     const storeId = await this.getStoreId(user.tenantId);
     const { startDate, endDate } = this.getDateRange(query);
     return this.analyticsService.getFunnel(storeId, startDate, endDate, query.elementId);
@@ -335,21 +348,21 @@ export class ElementsABTestController {
 
   @Post()
   @ApiOperation({ summary: 'Create A/B test' })
-  async create(@CurrentUser() user: any, @Body() dto: CreateABTestDto) {
+  async create(@CurrentUser() user: User, @Body() dto: CreateABTestDto) {
     const storeId = await this.getStoreId(user.tenantId);
     return this.elementsService.createABTest(storeId, user.tenantId, dto);
   }
 
   @Get()
   @ApiOperation({ summary: 'List A/B tests' })
-  async findAll(@CurrentUser() user: any) {
+  async findAll(@CurrentUser() user: User) {
     const storeId = await this.getStoreId(user.tenantId);
     return this.elementsService.getABTests(storeId, user.tenantId);
   }
 
   @Get(':id/results')
   @ApiOperation({ summary: 'A/B test results' })
-  async getResults(@Param('id') id: string, @CurrentUser() user: any) {
+  async getResults(@Param('id') id: string, @CurrentUser() user: User) {
     return this.analyticsService.getABTestResults(id, user.tenantId);
   }
 
@@ -357,7 +370,7 @@ export class ElementsABTestController {
   @ApiOperation({ summary: 'Complete A/B test with winner' })
   async complete(
     @Param('id') id: string,
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Body('winner') winner: 'A' | 'B',
   ) {
     return this.elementsService.completeABTest(id, user.tenantId, winner);
@@ -504,7 +517,9 @@ const ELEMENTS_EMBED_SCRIPT = `
       } else {
         fetch(API+'/'+storeId+'/track/batch',{method:'POST',body:body,headers:{'Content-Type':'application/json'},keepalive:true});
       }
-    }catch(e){}
+    }catch(e){
+      if(DEBUG) dbg('⚠️ Event batch could not be sent: '+(e&&e.message?e.message:'unknown error'));
+    }
   }
 
   // Flush on page unload

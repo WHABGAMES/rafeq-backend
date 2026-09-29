@@ -38,6 +38,7 @@ import { WhatsAppService, WhatsAppWebhookPayload } from './whatsapp.service';
 import { Channel, ChannelType, ChannelStatus } from '../entities/channel.entity';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { WhatsappSettings } from '../../admin/entities/whatsapp-settings.entity';
+import { getErrorMessage } from '@common/utils/error.util';
 
 // ── DTOs ──────────────────────────────────────────────────────────────────────
 
@@ -254,9 +255,9 @@ export class WhatsAppController {
       }
 
       this.logger.warn('No channel found for phone_number_id', { phoneNumberId });
-    } catch (error: any) {
+    } catch (error: unknown) {
       this.logger.error('Error processing WhatsApp webhook', {
-        error: error instanceof Error ? error.message : 'Unknown',
+        error: getErrorMessage(error),
       });
     }
   }
@@ -295,10 +296,10 @@ export class WhatsAppController {
 
     try {
       await this.whatsAppService.processWebhook(payload, channelId);
-    } catch (error: any) {
+    } catch (error: unknown) {
       this.logger.error('Error processing channel webhook', {
         channelId,
-        error: error instanceof Error ? error.message : 'Unknown',
+        error: getErrorMessage(error),
       });
     }
   }
@@ -319,7 +320,7 @@ export class WhatsAppController {
   private checkSignature(
     rawBody: Buffer | undefined,
     signatureHeader: string | undefined,
-    payload: any,
+    payload: WhatsAppWebhookPayload,
   ): { allowed: boolean; reason?: string; warning?: string } {
     const appSecret = this.configService.get<string>('whatsapp.appSecret');
     const isProduction = this.configService.get<string>('app.env') === 'production';
@@ -485,7 +486,7 @@ export class WhatsAppController {
       adminChannel = await this.channelRepository.findOne({
         where: [
           { type: ChannelType.WHATSAPP_OFFICIAL },
-          { type: 'whatsapp_qr' as any },
+          { type: ChannelType.WHATSAPP_QR },
         ],
         order: { connectedAt: 'DESC' },
       }) || null;

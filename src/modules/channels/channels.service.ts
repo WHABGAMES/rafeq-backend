@@ -38,6 +38,24 @@ export interface ConnectDiscordDto {
   guildId?: string;
 }
 
+interface MetaPhoneNumberResponse {
+  display_phone_number?: string;
+  verified_name?: string;
+}
+
+interface MetaInstagramUserResponse {
+  username?: string;
+}
+
+interface DiscordBotResponse {
+  id: string;
+  username?: string;
+}
+
+interface MetaSendMessageResponse {
+  messages?: Array<{ id?: string }>;
+}
+
 @Injectable()
 export class ChannelsService {
   private readonly logger = new Logger(ChannelsService.name);
@@ -122,8 +140,8 @@ export class ChannelsService {
       await this.channelRepository.update(id, {
         status: ChannelStatus.DISCONNECTED,
         disconnectedAt: new Date(),
-        whatsappAccessToken: null as any,
-        sessionData: null as any,
+        whatsappAccessToken: null,
+        sessionData: null,
       });
       this.logger.log(`✅ Channel ${id} soft-disconnected for store ${storeId} (${convCount[0].cnt} conversations preserved)`);
     } else {
@@ -157,10 +175,10 @@ export class ChannelsService {
     await this.channelRepository.update(id, {
       status: ChannelStatus.DISCONNECTED,
       disconnectedAt: new Date(),
-      whatsappAccessToken: null as any,
-      sessionData: null as any,
-      discordBotToken: null as any,
-      instagramAccessToken: null as any,
+      whatsappAccessToken: null,
+      sessionData: null,
+      discordBotToken: null,
+      instagramAccessToken: null,
     });
   }
 
@@ -194,8 +212,8 @@ export class ChannelsService {
       existingGlobal.whatsappDisplayName = phoneInfo.verified_name;
       existingGlobal.connectedAt = new Date();
       // ✅ Fix BUG#1: null يمسح القيمة في DB, undefined لا يفعل شيء
-      existingGlobal.disconnectedAt = null as any;
-      existingGlobal.lastError = null as any;
+      existingGlobal.disconnectedAt = null;
+      existingGlobal.lastError = null;
       existingGlobal.errorCount = 0;
 
       this.logger.log(`♻️ Reusing existing channel ${existingGlobal.id} for WhatsApp Official`);
@@ -220,7 +238,7 @@ export class ChannelsService {
     return this.channelRepository.save(channel);
   }
 
-  private async verifyWhatsAppCredentials(dto: ConnectWhatsAppOfficialDto): Promise<any> {
+  private async verifyWhatsAppCredentials(dto: ConnectWhatsAppOfficialDto): Promise<MetaPhoneNumberResponse> {
     try {
       const response = await firstValueFrom(
         this.httpService.get(`https://graph.facebook.com/v21.0/${dto.phoneNumberId}`, {
@@ -228,7 +246,7 @@ export class ChannelsService {
         }),
       );
       return response.data;
-    } catch (error: any) {
+    } catch {
       throw new BadRequestException('Invalid WhatsApp credentials');
     }
   }
@@ -291,10 +309,10 @@ export class ChannelsService {
 
       // إعادة تعيين القناة
       reuseChannel.status = ChannelStatus.PENDING;
-      reuseChannel.sessionData = null as any;
-      reuseChannel.lastError = null as any;
-      reuseChannel.lastErrorAt = null as any;
-      reuseChannel.disconnectedAt = null as any;
+      reuseChannel.sessionData = null;
+      reuseChannel.lastError = null;
+      reuseChannel.lastErrorAt = null;
+      reuseChannel.disconnectedAt = null;
       reuseChannel.errorCount = 0;
       await this.channelRepository.save(reuseChannel);
 
@@ -330,15 +348,16 @@ export class ChannelsService {
         });
 
         return session;
-      } catch (error: any) {
+      } catch (error: unknown) {
         // ⚠️ فشل إنشاء الجلسة — نرجّع القناة لـ DISCONNECTED (لا نحذفها!)
-        this.logger.error(`Failed to init session on reused channel ${reuseChannel.id}: ${error.message}`);
+        const errorMessage = this.getErrorMessage(error, 'فشل إنشاء جلسة QR');
+        this.logger.error(`Failed to init session on reused channel ${reuseChannel.id}: ${errorMessage}`);
         await this.channelRepository.update(reuseChannel.id, {
           status: ChannelStatus.DISCONNECTED,
-          lastError: error.message || 'فشل إنشاء جلسة QR',
+          lastError: errorMessage,
           lastErrorAt: new Date(),
         });
-        throw new BadRequestException(error.message || 'فشل إنشاء جلسة واتساب — حاول مرة أخرى');
+        throw new BadRequestException(errorMessage);
       }
     }
 
@@ -376,9 +395,7 @@ export class ChannelsService {
     const savedChannel = await this.channelRepository.save(channel);
 
     try {
-      let session: QRSessionResult;
-
-      session = await this.whatsappBaileysService.initSession(savedChannel.id);
+      const session = await this.whatsappBaileysService.initSession(savedChannel.id);
 
       await this.channelRepository.update(savedChannel.id, {
         status: session.status === 'connected' ? ChannelStatus.CONNECTED : ChannelStatus.PENDING,
@@ -386,11 +403,12 @@ export class ChannelsService {
       });
 
       return session;
-    } catch (error: any) {
+    } catch (error: unknown) {
       // ✅ Fix: حذف كامل عند الفشل (بدل ترك سجل يتيم)
       await this.channelRepository.remove(savedChannel);
-      this.logger.error('Failed to init WhatsApp session', error.message);
-      throw new BadRequestException(error.message || 'Failed to initialize WhatsApp session');
+      const errorMessage = this.getErrorMessage(error, 'Failed to initialize WhatsApp session');
+      this.logger.error('Failed to init WhatsApp session', errorMessage);
+      throw new BadRequestException(errorMessage);
     }
   }
 
@@ -547,7 +565,7 @@ export class ChannelsService {
         existing.status = ChannelStatus.CONNECTED;
         existing.sessionId = sourceChannel.sessionId;
         existing.connectedAt = new Date();
-        existing.lastError = null as any;
+        existing.lastError = null;
         existing.errorCount = 0;
         await this.channelRepository.save(existing);
         createdChannels.push(existing);
@@ -753,8 +771,9 @@ export class ChannelsService {
           { headers: { Authorization: `Bearer ${channel.whatsappAccessToken}`, 'Content-Type': 'application/json' } },
         ),
       );
-      return { messageId: response.data.messages?.[0]?.id || '' };
-    } catch (error: any) {
+      const data = response.data as MetaSendMessageResponse;
+      return { messageId: data.messages?.[0]?.id || '' };
+    } catch {
       throw new BadRequestException('Failed to send message');
     }
   }
@@ -786,7 +805,7 @@ export class ChannelsService {
     return this.channelRepository.save(channel);
   }
 
-  private async getInstagramUserInfo(accessToken: string, userId: string): Promise<any> {
+  private async getInstagramUserInfo(accessToken: string, userId: string): Promise<MetaInstagramUserResponse> {
     try {
       const response = await firstValueFrom(
         this.httpService.get(`https://graph.facebook.com/v21.0/${userId}`, {
@@ -821,7 +840,7 @@ export class ChannelsService {
     return this.channelRepository.save(channel);
   }
 
-  private async verifyDiscordBot(botToken: string): Promise<any> {
+  private async verifyDiscordBot(botToken: string): Promise<DiscordBotResponse> {
     try {
       const response = await firstValueFrom(
         this.httpService.get('https://discord.com/api/v10/users/@me', {
@@ -843,10 +862,14 @@ export class ChannelsService {
   }
 
   async updateStatus(id: string, status: ChannelStatus, error?: string): Promise<void> {
-    const updateData: any = { status };
+    const updateData: Pick<Partial<Channel>, 'status' | 'lastError' | 'lastErrorAt' | 'connectedAt' | 'errorCount'> = { status };
     if (error) { updateData.lastError = error; updateData.lastErrorAt = new Date(); }
     if (status === ChannelStatus.CONNECTED) { updateData.connectedAt = new Date(); updateData.errorCount = 0; }
     await this.channelRepository.update(id, updateData);
+  }
+
+  private getErrorMessage(error: unknown, fallback: string): string {
+    return error instanceof Error && error.message ? error.message : fallback;
   }
 
   async incrementMessageCount(id: string, type: 'sent' | 'received'): Promise<void> {

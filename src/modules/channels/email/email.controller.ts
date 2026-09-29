@@ -35,6 +35,7 @@ import {
 } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
+import { User } from '@database/entities';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { EmailService } from './email.service';
 
@@ -114,7 +115,7 @@ export class EmailController {
     description: 'ربط خدمة البريد الإلكتروني',
   })
   async connect(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Body() body: {
       provider: string;
       // SMTP
@@ -143,7 +144,7 @@ export class EmailController {
     summary: 'اختبار الإعدادات',
     description: 'إرسال بريد اختباري للتحقق من الإعدادات',
   })
-  async testConnection(@CurrentUser() user: any,
+  async testConnection(@CurrentUser() user: User,
     @Body() body: { email: string }) {
     const tenantId = user.tenantId;
     return this.emailService.testConnection(tenantId, body.email);
@@ -156,7 +157,7 @@ export class EmailController {
     summary: 'حالة الاتصال',
     description: 'التحقق من حالة اتصال البريد',
   })
-  async getStatus(@CurrentUser() user: any) {
+  async getStatus(@CurrentUser() user: User) {
     const tenantId = user.tenantId;
     return this.emailService.getStatus(tenantId);
   }
@@ -169,7 +170,7 @@ export class EmailController {
     summary: 'فصل البريد',
     description: 'فصل الربط مع خدمة البريد',
   })
-  async disconnect(@CurrentUser() user: any) {
+  async disconnect(@CurrentUser() user: User) {
     const tenantId = user.tenantId;
     await this.emailService.disconnect(tenantId);
   }
@@ -186,7 +187,7 @@ export class EmailController {
     description: 'إرسال بريد إلكتروني',
   })
   async sendEmail(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Body() body: {
       to: string | string[];
       subject: string;
@@ -216,7 +217,7 @@ export class EmailController {
     description: 'إرسال بريد لعدة مستلمين',
   })
   async sendBulk(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Body() body: {
       recipients: Array<{
         email: string;
@@ -244,7 +245,7 @@ export class EmailController {
     summary: 'قوالب البريد',
     description: 'قوالب البريد الجاهزة',
   })
-  async getTemplates(@CurrentUser() user: any) {
+  async getTemplates(@CurrentUser() user: User) {
     const tenantId = user.tenantId;
     return this.emailService.getTemplates(tenantId);
   }
@@ -261,7 +262,7 @@ export class EmailController {
     description: 'تقارير البريد المرسل',
   })
   async getReports(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('page', new ParseIntPipe({ optional: true })) page = 1,

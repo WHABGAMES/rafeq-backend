@@ -38,6 +38,7 @@ import {
 
 import { AdminJwtGuard, AdminPermissionGuard } from '@modules/admin/guards/admin.guards';
 import { CurrentAdmin } from '@modules/admin/decorators/current-admin.decorator';
+import { AdminUser } from '@modules/admin/entities/admin-user.entity';
 import { SuggestionsService } from './suggestions.service';
 import {
   AdminCreateCommentDto,
@@ -109,7 +110,7 @@ export class AdminSuggestionsController {
   @ApiOperation({ summary: 'رد رسمي من فريق رفيق' })
   async reply(
     @Param('id', ParseUUIDPipe) id: string,
-    @CurrentAdmin() admin: any,
+    @CurrentAdmin() admin: AdminUser,
     @Body() dto: AdminCreateCommentDto,
   ) {
     return this.suggestionsService.addAdminComment(id, dto, {

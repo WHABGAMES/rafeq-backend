@@ -28,6 +28,9 @@ import {
   CreateAutomationDto,
   UpdateAutomationDto,
 } from './dto';
+import { ChannelStatus, ChannelType } from '../channels/entities/channel.entity';
+import { asJsonRecord, getJsonString } from '@common/utils/json-record.util';
+import { getErrorMessage } from '@common/utils/error.util';
 
 interface PaginationOptions {
   page: number;
@@ -454,29 +457,27 @@ export class AutomationsService {
       return;
     }
 
-    const phone = (context.customerPhone as string) ||
-                  (context.phone as string) ||
-                  ((context.customer as any)?.mobile);
+    const phone = getJsonString(context, 'customerPhone', 'phone')
+      ?? getJsonString(asJsonRecord(context.customer), 'mobile', 'phone');
 
     if (!phone) {
       this.logger.warn('⚠️ No customer phone for WhatsApp action');
       return;
     }
 
-    const message = action.message || (action.config?.message as string) || '';
+    const message = action.message || getJsonString(asJsonRecord(action.config), 'message') || '';
     if (!message) {
       this.logger.warn('⚠️ No message content for WhatsApp action');
       return;
     }
 
     // البحث عن قناة واتساب متصلة للمتجر
-    const channelsResult: any = await this.channelsService.findAll(storeId);
-    const channelList: any[] = Array.isArray(channelsResult) ? channelsResult : channelsResult?.data || [];
-    const waChannel = channelList.find(
-      (c: any) =>
-        c.status === 'connected' &&
-        (c.type === 'whatsapp_qr' || c.type === 'whatsapp_official' ||
-         c.type === 'WHATSAPP_QR' || c.type === 'WHATSAPP_OFFICIAL'),
+    const channels = await this.channelsService.findAll(storeId);
+    const waChannel = channels.find(
+      (channel) =>
+        channel.status === ChannelStatus.CONNECTED &&
+        (channel.type === ChannelType.WHATSAPP_QR
+          || channel.type === ChannelType.WHATSAPP_OFFICIAL),
     );
 
     if (!waChannel) {
@@ -576,9 +577,8 @@ export class AutomationsService {
           this.logger.error(`❌ Automation ${automation.id} failed: ${err.message}`);
         });
       }
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : 'Unknown';
-      this.logger.error(`❌ triggerAutomations failed: ${msg}`);
+    } catch (error: unknown) {
+      this.logger.error(`❌ triggerAutomations failed: ${getErrorMessage(error)}`);
     }
   }
 
@@ -594,7 +594,7 @@ export class AutomationsService {
     };
   }
 
-  async createWorkflow(tenantId: string, dto: any) {
+  async createWorkflow(tenantId: string, dto: CreateAutomationDto) {
     return this.create(tenantId, dto);
   }
 
@@ -602,7 +602,7 @@ export class AutomationsService {
     return this.findById(id, tenantId);
   }
 
-  async updateWorkflow(id: string, tenantId: string, dto: any) {
+  async updateWorkflow(id: string, tenantId: string, dto: UpdateAutomationDto) {
     return this.update(id, tenantId, dto);
   }
 

@@ -38,6 +38,16 @@ import {
   ListSuggestionsQueryDto,
 } from './dto';
 
+interface DatabaseErrorWithCode {
+  code?: unknown;
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && (error as DatabaseErrorWithCode).code === '23505';
+}
+
 @Injectable()
 export class SuggestionsService {
   private readonly logger = new Logger(SuggestionsService.name);
@@ -247,8 +257,8 @@ export class SuggestionsService {
         this.followerRepo.create({ suggestionId: saved.id, merchantId: user.id }),
       );
       await this.suggestionRepo.increment({ id: saved.id }, 'followersCount', 1);
-    } catch (err: any) {
-      if (err?.code !== '23505') throw err;
+    } catch (error: unknown) {
+      if (!isUniqueViolation(error)) throw error;
     }
 
     this.logger.log(`Suggestion created: ${saved.id} by user ${user.id}`);
@@ -288,11 +298,11 @@ export class SuggestionsService {
       );
       await this.suggestionRepo.increment({ id: suggestionId }, 'likesCount', 1);
       return { liked: true, likesCount: suggestion.likesCount + 1 };
-    } catch (err: any) {
-      if (err?.code === '23505') {
+    } catch (error: unknown) {
+      if (isUniqueViolation(error)) {
         return { liked: true, likesCount: suggestion.likesCount };
       }
-      throw err;
+      throw error;
     }
   }
 
@@ -326,11 +336,11 @@ export class SuggestionsService {
       );
       await this.suggestionRepo.increment({ id: suggestionId }, 'followersCount', 1);
       return { followed: true };
-    } catch (err: any) {
-      if (err?.code === '23505') {
+    } catch (error: unknown) {
+      if (isUniqueViolation(error)) {
         return { followed: true };
       }
-      throw err;
+      throw error;
     }
   }
 
@@ -483,8 +493,8 @@ export class SuggestionsService {
         await this.likeRepo.save(
           this.likeRepo.create({ suggestionId: dto.targetId, merchantId: like.merchantId }),
         );
-      } catch (err: any) {
-        if (err?.code !== '23505') throw err;
+      } catch (error: unknown) {
+        if (!isUniqueViolation(error)) throw error;
       }
     }
 
@@ -494,8 +504,8 @@ export class SuggestionsService {
         await this.followerRepo.save(
           this.followerRepo.create({ suggestionId: dto.targetId, merchantId: follower.merchantId }),
         );
-      } catch (err: any) {
-        if (err?.code !== '23505') throw err;
+      } catch (error: unknown) {
+        if (!isUniqueViolation(error)) throw error;
       }
     }
 
@@ -562,7 +572,7 @@ export class SuggestionsService {
       take: 100,
     });
 
-    const roadmap: Record<string, any[]> = {
+    const roadmap: Record<string, Array<ReturnType<typeof this.sanitizeForPublic>>> = {
       under_study: [],
       in_progress: [],
       completed: [],

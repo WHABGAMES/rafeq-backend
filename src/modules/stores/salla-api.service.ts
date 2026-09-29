@@ -10,6 +10,18 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
+import { getErrorMessage, getHttpErrorDetails } from '@common/utils/error.util';
+
+export class SallaApiError extends Error {
+  constructor(
+    message: string,
+    readonly endpoint: string,
+    readonly status?: number,
+  ) {
+    super(message);
+    this.name = 'SallaApiError';
+  }
+}
 
 /**
  * 📌 Salla API Documentation:
@@ -72,6 +84,14 @@ export interface SallaOrder {
       name: string;
     };
   };
+  payment_method?: string | { name?: string };
+  payment_status?: string;
+  total?: number | { amount: number; currency?: string };
+  total_price?: number | { amount: number; currency?: string };
+  grand_total?: number | { amount: number; currency?: string };
+  currency?: string;
+  referenceId?: string;
+  created_at?: string;
   amounts: {
     sub_total: {
       amount: number;
@@ -93,6 +113,7 @@ export interface SallaOrder {
   customer: SallaCustomer;
   items: SallaOrderItem[];
   shipping?: {
+    method?: string;
     company?: {
       id: number;
       name: string;
@@ -108,6 +129,9 @@ export interface SallaOrder {
       block: string;
       postal_code: string;
     };
+  };
+  urls?: {
+    digital_content?: string | null;
   };
 }
 
@@ -140,6 +164,7 @@ export interface SallaOrderItem {
   };
   thumbnail: string;
   product_id: number;
+  codes?: Array<string | { code?: unknown }>;
 }
 
 export interface SallaProduct {
@@ -222,8 +247,10 @@ export class SallaApiService {
         `/orders/${orderId}/items`,
       );
       return response?.data || [];
-    } catch (e: any) {
-      this.logger.warn(`Salla API: failed to fetch items for order ${orderId}: ${e?.message}`);
+    } catch (error: unknown) {
+      this.logger.warn(
+        `Salla API: failed to fetch items for order ${orderId}: ${getErrorMessage(error)}`,
+      );
       return [];
     }
   }
@@ -443,19 +470,15 @@ export class SallaApiService {
 
       return response.data;
 
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const details = getHttpErrorDetails(error);
       this.logger.error(`Salla API Error: ${method} ${endpoint}`, {
-        status: error.response?.status,
-        message: error.response?.data?.message || error.message,
+        status: details.status,
+        message: details.message,
       });
 
-      // إعادة رمي الخطأ مع معلومات إضافية
-      throw {
-        status: error.response?.status,
-        message: error.response?.data?.message || error.message,
-        endpoint,
-        originalError: error,
-      };
+      // لا نحتفظ بجسم الاستجابة أو الطلب لأنهما قد يحتويان access token.
+      throw new SallaApiError(details.message, endpoint, details.status);
     }
   }
 }

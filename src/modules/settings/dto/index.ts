@@ -11,6 +11,7 @@ import {
   IsOptional,
   IsNumber,
   IsArray,
+  IsIn,
   Min,
   Max,
   ValidateNested,
@@ -61,6 +62,11 @@ export class UpdateGeneralSettingsDto {
   @IsOptional()
   @IsString()
   timeFormat?: string;
+
+  @ApiPropertyOptional({ example: false })
+  @IsOptional()
+  @IsBoolean()
+  autoShortenLinks?: boolean;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -145,6 +151,11 @@ export class UpdateNotificationSettingsDto {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export class DayScheduleDto {
+  @ApiProperty({ example: 'sunday', enum: ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'] })
+  @IsString()
+  @IsIn(['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'])
+  day: string;
+
   @ApiProperty({ example: true })
   @IsBoolean()
   enabled: boolean;
@@ -158,16 +169,6 @@ export class DayScheduleDto {
   end: string;
 }
 
-export class HolidayDto {
-  @ApiProperty({ example: '2024-01-01' })
-  @IsString()
-  date: string;
-
-  @ApiProperty({ example: 'رأس السنة' })
-  @IsString()
-  name: string;
-}
-
 export class UpdateWorkingHoursDto {
   @ApiPropertyOptional({ example: true })
   @IsOptional()
@@ -179,54 +180,18 @@ export class UpdateWorkingHoursDto {
   @IsString()
   timezone?: string;
 
-  @ApiPropertyOptional({ type: DayScheduleDto })
-  @IsOptional()
-  @ValidateNested()
-  @Type(() => DayScheduleDto)
-  sunday?: DayScheduleDto;
-
-  @ApiPropertyOptional({ type: DayScheduleDto })
-  @IsOptional()
-  @ValidateNested()
-  @Type(() => DayScheduleDto)
-  monday?: DayScheduleDto;
-
-  @ApiPropertyOptional({ type: DayScheduleDto })
-  @IsOptional()
-  @ValidateNested()
-  @Type(() => DayScheduleDto)
-  tuesday?: DayScheduleDto;
-
-  @ApiPropertyOptional({ type: DayScheduleDto })
-  @IsOptional()
-  @ValidateNested()
-  @Type(() => DayScheduleDto)
-  wednesday?: DayScheduleDto;
-
-  @ApiPropertyOptional({ type: DayScheduleDto })
-  @IsOptional()
-  @ValidateNested()
-  @Type(() => DayScheduleDto)
-  thursday?: DayScheduleDto;
-
-  @ApiPropertyOptional({ type: DayScheduleDto })
-  @IsOptional()
-  @ValidateNested()
-  @Type(() => DayScheduleDto)
-  friday?: DayScheduleDto;
-
-  @ApiPropertyOptional({ type: DayScheduleDto })
-  @IsOptional()
-  @ValidateNested()
-  @Type(() => DayScheduleDto)
-  saturday?: DayScheduleDto;
-
-  @ApiPropertyOptional({ type: [HolidayDto] })
+  @ApiPropertyOptional({ type: [DayScheduleDto] })
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
-  @Type(() => HolidayDto)
-  holidays?: HolidayDto[];
+  @Type(() => DayScheduleDto)
+  schedule?: DayScheduleDto[];
+
+  @ApiPropertyOptional({ type: [String], example: ['2026-09-23'] })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  holidays?: string[];
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -250,21 +215,36 @@ export class DelayedResponseDto {
   message?: string;
 }
 
+export class AutoReplyMessageDto {
+  @ApiPropertyOptional({ example: true })
+  @IsOptional()
+  @IsBoolean()
+  enabled?: boolean;
+
+  @ApiPropertyOptional({ example: 'سنرد عليك قريباً' })
+  @IsOptional()
+  @IsString()
+  message?: string;
+}
+
 export class UpdateAutoRepliesDto {
-  @ApiPropertyOptional({ example: 'مرحباً! كيف يمكنني مساعدتك؟' })
+  @ApiPropertyOptional({ type: AutoReplyMessageDto })
   @IsOptional()
-  @IsString()
-  welcomeMessage?: string;
+  @ValidateNested()
+  @Type(() => AutoReplyMessageDto)
+  welcomeMessage?: AutoReplyMessageDto;
 
-  @ApiPropertyOptional({ example: 'نحن غير متاحين حالياً' })
+  @ApiPropertyOptional({ type: AutoReplyMessageDto })
   @IsOptional()
-  @IsString()
-  awayMessage?: string;
+  @ValidateNested()
+  @Type(() => AutoReplyMessageDto)
+  awayMessage?: AutoReplyMessageDto;
 
-  @ApiPropertyOptional({ example: 'المتجر مغلق الآن. ساعات العمل من 9 صباحاً حتى 5 مساءً' })
+  @ApiPropertyOptional({ type: AutoReplyMessageDto })
   @IsOptional()
-  @IsString()
-  closedMessage?: string;
+  @ValidateNested()
+  @Type(() => AutoReplyMessageDto)
+  closedMessage?: AutoReplyMessageDto;
 
   @ApiPropertyOptional({ type: DelayedResponseDto })
   @IsOptional()

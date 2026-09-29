@@ -32,7 +32,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 import type { Redis } from 'ioredis';
 import { JwtService } from '@nestjs/jwt';
 // ✅ Requires: npm install argon2 speakeasy qrcode
@@ -390,7 +390,7 @@ export class AdminAuthController {
     //  • تسجيل الجلسة في Redis → تتبّع + إمكانية إنهائها مبكراً.
     // ═══════════════════════════════════════════════════════════════════════════
     const impersonationTtlSeconds = 30 * 60; // 30 دقيقة
-    const jti = uuidv4();
+    const jti = randomUUID();
 
     const impersonationToken = this.jwtService.sign(
       {

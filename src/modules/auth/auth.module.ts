@@ -16,6 +16,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { PassportModule } from '@nestjs/passport';
 import { HttpModule } from '@nestjs/axios';
 import Redis, { RedisOptions } from 'ioredis';
+import { normalizeJwtDuration } from '@common/utils/jwt-expiration.util';
 
 // Entities
 import { User } from '@database/entities/user.entity';
@@ -50,12 +51,19 @@ import { AdminModule } from '../admin/admin.module';
     
     JwtModule.registerAsync({
       imports: [ConfigModule],
-      useFactory: async (configService: ConfigService) => ({
-        secret: configService.get('JWT_SECRET'),
-        signOptions: {
-          expiresIn: configService.get('JWT_EXPIRES_IN', '15m'),
-        },
-      }),
+      useFactory: async (configService: ConfigService) => {
+        const secret = configService.get<string>('JWT_SECRET');
+        if (!secret) {
+          throw new Error('JWT_SECRET is required but not set');
+        }
+
+        return {
+          secret,
+          signOptions: {
+            expiresIn: normalizeJwtDuration(configService.get('JWT_EXPIRES_IN'), '15m'),
+          },
+        };
+      },
       inject: [ConfigService],
     }),
     

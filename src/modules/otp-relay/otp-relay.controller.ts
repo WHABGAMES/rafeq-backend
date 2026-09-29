@@ -1,8 +1,18 @@
-import { Controller, Get, Post, Put, Delete, Body, Param, Req, Query, UseGuards, HttpCode } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, HttpCode, Ip, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
+import { CurrentUser } from '@common/decorators/current-user.decorator';
+import { User } from '@database/entities';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { OtpRelayService } from './otp-relay.service';
 import { OtpInventoryService } from './otp-inventory.service';
 import { PREDEFINED_BOT_FLOWS } from './telegram-otp-client.service';
+import {
+  AddOtpInventoryItemDto,
+  BulkAddOtpInventoryDto,
+  CreateOtpRelayConfigDto,
+  RequestOtpCompensationDto,
+  UpdateOtpRelayConfigDto,
+  VerifyOtpRequestDto,
+} from './dto/otp-relay.dto';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Dashboard Controller (JWT-protected)
@@ -16,8 +26,8 @@ export class OtpRelayController {
     private readonly inventorySvc: OtpInventoryService,
   ) {}
 
-  private getStoreId(req: any): string {
-    return req.headers['x-store-id'] || req.user?.storeId || '';
+  private getStoreId(headerStoreId: string | undefined): string {
+    return headerStoreId || '';
   }
 
   @Get('platforms') getPlatforms() { return this.svc.getPlatforms(); }
@@ -29,49 +39,103 @@ export class OtpRelayController {
   }
 
   // ── Config CRUD ──
-  @Get('configs') getConfigs(@Req() r: any) { return this.svc.getConfigs(r.user.tenantId, this.getStoreId(r)); }
-  @Get('configs/:id') getConfig(@Param('id') id: string, @Req() r: any) { return this.svc.getConfig(id, r.user.tenantId); }
-  @Post('configs') create(@Body() b: any, @Req() r: any) { return this.svc.createConfig(r.user.tenantId, this.getStoreId(r), b); }
-  @Put('configs/:id') update(@Param('id') id: string, @Body() b: any, @Req() r: any) { return this.svc.updateConfig(id, r.user.tenantId, b); }
-  @Delete('configs/:id') delete(@Param('id') id: string, @Req() r: any) { return this.svc.deleteConfig(id, r.user.tenantId); }
-  @Post('configs/:id/test') test(@Param('id') id: string, @Req() r: any) { return this.svc.testConnection(id, r.user.tenantId); }
-  @Get('configs/:id/analytics') analytics(@Param('id') id: string, @Query('days') days: string, @Req() r: any) { return this.svc.getAnalytics(id, r.user.tenantId, Number(days) || 7); }
+  @Get('configs')
+  getConfigs(@CurrentUser() user: User, @Headers('x-store-id') storeId?: string) {
+    return this.svc.getConfigs(user.tenantId, this.getStoreId(storeId));
+  }
+
+  @Get('configs/:id')
+  getConfig(@Param('id') id: string, @CurrentUser() user: User) {
+    return this.svc.getConfig(id, user.tenantId);
+  }
+
+  @Post('configs')
+  create(
+    @Body() body: CreateOtpRelayConfigDto,
+    @CurrentUser() user: User,
+    @Headers('x-store-id') storeId?: string,
+  ) {
+    return this.svc.createConfig(user.tenantId, this.getStoreId(storeId), body);
+  }
+
+  @Put('configs/:id')
+  update(
+    @Param('id') id: string,
+    @Body() body: UpdateOtpRelayConfigDto,
+    @CurrentUser() user: User,
+  ) {
+    return this.svc.updateConfig(id, user.tenantId, body);
+  }
+
+  @Delete('configs/:id')
+  delete(@Param('id') id: string, @CurrentUser() user: User) {
+    return this.svc.deleteConfig(id, user.tenantId);
+  }
+
+  @Post('configs/:id/test')
+  test(@Param('id') id: string, @CurrentUser() user: User) {
+    return this.svc.testConnection(id, user.tenantId);
+  }
+
+  @Get('configs/:id/analytics')
+  analytics(
+    @Param('id') id: string,
+    @Query('days') days: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.svc.getAnalytics(id, user.tenantId, Number(days) || 7);
+  }
 
   // ── Inventory CRUD ──
   @Get('configs/:id/inventory')
-  listInventory(@Param('id') id: string, @Query('status') status: string, @Query('page') page: string, @Query('limit') limit: string, @Req() r: any) {
-    return this.inventorySvc.listItems(id, r.user.tenantId, { status, page: +page || 1, limit: +limit || 50 });
+  listInventory(
+    @Param('id') id: string,
+    @Query('status') status: string,
+    @Query('page') page: string,
+    @Query('limit') limit: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.inventorySvc.listItems(id, user.tenantId, { status, page: +page || 1, limit: +limit || 50 });
   }
 
   @Post('configs/:id/inventory')
-  addInventoryItem(@Param('id') id: string, @Body() b: { accountData: string; accountLabel?: string; notes?: string }, @Req() r: any) {
-    return this.inventorySvc.addItem(id, r.user.tenantId, b);
+  addInventoryItem(@Param('id') id: string, @Body() body: AddOtpInventoryItemDto, @CurrentUser() user: User) {
+    return this.inventorySvc.addItem(id, user.tenantId, body);
   }
 
   @Post('configs/:id/inventory/bulk')
-  bulkAddInventory(@Param('id') id: string, @Body() b: { accounts: string; accountLabel?: string }, @Req() r: any) {
-    return this.inventorySvc.bulkAdd(id, r.user.tenantId, b);
+  bulkAddInventory(@Param('id') id: string, @Body() body: BulkAddOtpInventoryDto, @CurrentUser() user: User) {
+    return this.inventorySvc.bulkAdd(id, user.tenantId, body);
   }
 
   @Delete('inventory/:itemId')
-  deleteInventoryItem(@Param('itemId') itemId: string, @Req() r: any) {
-    return this.inventorySvc.deleteItem(itemId, r.user.tenantId);
+  deleteInventoryItem(@Param('itemId') itemId: string, @CurrentUser() user: User) {
+    return this.inventorySvc.deleteItem(itemId, user.tenantId);
   }
 
   @Delete('configs/:id/inventory/available')
-  deleteAllAvailable(@Param('id') id: string, @Req() r: any) {
-    return this.inventorySvc.deleteAllAvailable(id, r.user.tenantId);
+  deleteAllAvailable(@Param('id') id: string, @CurrentUser() user: User) {
+    return this.inventorySvc.deleteAllAvailable(id, user.tenantId);
   }
 
   // ── Compensation Stats ──
   @Get('configs/:id/compensations')
-  listCompensations(@Param('id') id: string, @Query('page') page: string, @Query('limit') limit: string, @Req() r: any) {
-    return this.inventorySvc.listCompensations(id, r.user.tenantId, +page || 1, +limit || 30);
+  listCompensations(
+    @Param('id') id: string,
+    @Query('page') page: string,
+    @Query('limit') limit: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.inventorySvc.listCompensations(id, user.tenantId, +page || 1, +limit || 30);
   }
 
   @Get('configs/:id/compensation-stats')
-  compensationStats(@Param('id') id: string, @Query('days') days: string, @Req() r: any) {
-    return this.inventorySvc.getCompensationStats(id, r.user.tenantId, Number(days) || 30);
+  compensationStats(
+    @Param('id') id: string,
+    @Query('days') days: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.inventorySvc.getCompensationStats(id, user.tenantId, Number(days) || 30);
   }
 }
 
@@ -89,14 +153,26 @@ export class OtpPublicController {
   @Get(':slug') getPage(@Param('slug') slug: string) { return this.svc.getPublicPage(slug); }
 
   @Post(':slug/verify') @HttpCode(200)
-  verify(@Param('slug') slug: string, @Body() b: { orderNumber: string; username: string }, @Req() r: any) {
-    const ip = r.headers['x-forwarded-for']?.split(',')[0] || r.ip || 'unknown';
-    return this.svc.requestOtp(slug, b.orderNumber, b.username, ip);
+  verify(
+    @Param('slug') slug: string,
+    @Body() body: VerifyOtpRequestDto,
+    @Headers('x-forwarded-for') forwardedFor?: string,
+    @Ip() ip?: string,
+  ) {
+    return this.svc.requestOtp(slug, body.orderNumber, body.username, this.getClientIp(forwardedFor, ip));
   }
 
   @Post(':slug/compensate') @HttpCode(200)
-  compensate(@Param('slug') slug: string, @Body() b: { orderNumber: string; username?: string; reason?: string }, @Req() r: any) {
-    const ip = r.headers['x-forwarded-for']?.split(',')[0] || r.ip || 'unknown';
-    return this.inventorySvc.requestCompensation(slug, b.orderNumber, b.username || '', b.reason || '', ip);
+  compensate(
+    @Param('slug') slug: string,
+    @Body() body: RequestOtpCompensationDto,
+    @Headers('x-forwarded-for') forwardedFor?: string,
+    @Ip() ip?: string,
+  ) {
+    return this.inventorySvc.requestCompensation(slug, body.orderNumber, body.username || '', body.reason || '', this.getClientIp(forwardedFor, ip));
+  }
+
+  private getClientIp(forwardedFor?: string, ip?: string): string {
+    return forwardedFor?.split(',', 1)[0]?.trim() || ip || 'unknown';
   }
 }

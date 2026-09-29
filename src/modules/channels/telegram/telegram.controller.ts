@@ -32,6 +32,7 @@ import {
 } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
+import { User } from '@database/entities';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { TelegramService } from './telegram.service';
 
@@ -54,7 +55,7 @@ export class TelegramController {
     summary: 'ربط Telegram Bot',
     description: 'ربط بوت تيليجرام باستخدام Bot Token',
   })
-  async connect(@CurrentUser() user: any,
+  async connect(@CurrentUser() user: User,
     @Body() body: { botToken: string }) {
     const tenantId = user.tenantId;
     return this.telegramService.connect(tenantId, body.botToken);
@@ -67,7 +68,7 @@ export class TelegramController {
     summary: 'حالة الاتصال',
     description: 'التحقق من حالة بوت تيليجرام',
   })
-  async getStatus(@CurrentUser() user: any) {
+  async getStatus(@CurrentUser() user: User) {
     const tenantId = user.tenantId;
     return this.telegramService.getStatus(tenantId);
   }
@@ -80,7 +81,7 @@ export class TelegramController {
     summary: 'فصل Telegram',
     description: 'فصل الربط مع بوت تيليجرام',
   })
-  async disconnect(@CurrentUser() user: any) {
+  async disconnect(@CurrentUser() user: User) {
     const tenantId = user.tenantId;
     await this.telegramService.disconnect(tenantId);
   }
@@ -97,12 +98,12 @@ export class TelegramController {
     description: 'إرسال رسالة عبر Telegram',
   })
   async sendMessage(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Body() body: {
       chatId: string;
       text: string;
       parseMode?: 'HTML' | 'Markdown';
-      replyMarkup?: any;
+      replyMarkup?: unknown;
     },
   ) {
     const tenantId = user.tenantId;
@@ -114,7 +115,7 @@ export class TelegramController {
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'إرسال صورة' })
   async sendPhoto(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Body() body: {
       chatId: string;
       photo: string;
@@ -130,7 +131,7 @@ export class TelegramController {
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'إرسال ملف' })
   async sendDocument(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Body() body: {
       chatId: string;
       document: string;
@@ -152,9 +153,8 @@ export class TelegramController {
     description: 'استقبال التحديثات من Telegram',
   })
   async handleWebhook(
-    @CurrentUser() _user: any,
     @Param('token') token: string,
-    @Body() update: any,
+    @Body() update: Record<string, unknown>,
   ) {
     await this.telegramService.handleUpdate(token, update);
     return 'OK';
@@ -167,7 +167,7 @@ export class TelegramController {
     summary: 'تعيين Webhook',
     description: 'تعيين رابط Webhook للبوت',
   })
-  async setWebhook(@CurrentUser() user: any,
+  async setWebhook(@CurrentUser() user: User,
     @Body() body: { url: string }) {
     const tenantId = user.tenantId;
     return this.telegramService.setWebhook(tenantId, body.url);

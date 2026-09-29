@@ -24,6 +24,7 @@ import {
 import { Response } from 'express';
 
 import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
+import { User } from '@database/entities';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { InstagramService } from './instagram.service';
 
@@ -47,7 +48,7 @@ export class InstagramController {
     description: 'بدء عملية OAuth للربط مع Instagram',
   })
   async connect(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Res() res: Response,
   ) {
     const tenantId = user.tenantId;
@@ -61,7 +62,6 @@ export class InstagramController {
     description: 'معالجة رد Instagram بعد الموافقة',
   })
   async callback(
-    @CurrentUser() _user: any,
     @Query('code') code: string,
     @Query('state') state: string,
     @Res() res: Response,
@@ -86,7 +86,7 @@ export class InstagramController {
     summary: 'حالة الاتصال',
     description: 'التحقق من حالة اتصال Instagram',
   })
-  async getStatus(@CurrentUser() user: any) {
+  async getStatus(@CurrentUser() user: User) {
     const tenantId = user.tenantId;
     return this.instagramService.getConnectionStatus(tenantId);
   }
@@ -99,7 +99,7 @@ export class InstagramController {
     summary: 'فصل Instagram',
     description: 'فصل الربط مع Instagram',
   })
-  async disconnect(@CurrentUser() user: any) {
+  async disconnect(@CurrentUser() user: User) {
     const tenantId = user.tenantId;
     await this.instagramService.disconnect(tenantId);
   }
@@ -116,7 +116,7 @@ export class InstagramController {
     description: 'إرسال رسالة عبر Instagram DM',
   })
   async sendMessage(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Body() body: {
       recipientId: string;
       message: string;
@@ -155,8 +155,7 @@ export class InstagramController {
     summary: 'استقبال Webhook',
     description: 'استقبال الرسائل والأحداث من Instagram',
   })
-  async handleWebhook(@CurrentUser() _user: any,
-    @Body() body: unknown) {
+  async handleWebhook(@Body() body: unknown) {
     await this.instagramService.handleWebhook(body);
     return 'OK';
   }

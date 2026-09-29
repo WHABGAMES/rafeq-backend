@@ -112,7 +112,7 @@ export interface SegmentRule {
   /** العملية */
   operator: 'equals' | 'not_equals' | 'greater_than' | 'less_than' | 'contains' | 'not_contains' | 'in' | 'not_in';
   /** القيمة */
-  value: any;
+  value: unknown;
 }
 
 /**

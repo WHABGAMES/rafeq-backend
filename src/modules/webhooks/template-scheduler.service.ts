@@ -12,7 +12,8 @@
 
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, In } from 'typeorm';
+import { FindOptionsWhere, In, Repository } from 'typeorm';
+import { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialEntity';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { OnEvent } from '@nestjs/event-emitter';
@@ -179,7 +180,7 @@ export class TemplateSchedulerService {
   }): Promise<number> {
     const { tenantId, referenceId, reason, sequenceGroupKey } = params;
 
-    const whereClause: any = {
+    const whereClause: FindOptionsWhere<ScheduledTemplateSend> = {
       tenantId,
       status: ScheduledSendStatus.PENDING,
     };
@@ -286,7 +287,7 @@ export class TemplateSchedulerService {
 
     const cancelled = await this.cancelSequenceSends({
       tenantId,
-      customerPhone: phone.replace(/[\s\-\(\)\+]/g, ''),
+      customerPhone: phone.replace(/[\s()+-]/g, ''),
       sequenceGroupKey: 'cart_abandoned',
       reason: 'العميل أكمل الطلب',
     });
@@ -394,7 +395,7 @@ export class TemplateSchedulerService {
       const templateIds = templates.map(t => t.id);
       const orderId = String(rawData.id || rawData.orderId || rawData.order_id || '');
       const customer = (rawData.customer || {}) as Record<string, unknown>;
-      const phone = String(customer.mobile || customer.phone || rawData.customerPhone || '').replace(/[\s\-\(\)\+]/g, '');
+      const phone = String(customer.mobile || customer.phone || rawData.customerPhone || '').replace(/[\s()+-]/g, '');
 
       // البحث عن الإرسال المعلّق لهذه القوالب
       const qb = this.scheduledSendRepo
@@ -455,7 +456,7 @@ export class TemplateSchedulerService {
     customerPhone: string,
     referenceId?: string,
   ): Promise<boolean> {
-    const where: any = {
+    const where: FindOptionsWhere<ScheduledTemplateSend> = {
       tenantId,
       templateId,
       customerPhone,
@@ -529,23 +530,25 @@ export class TemplateSchedulerService {
    * ✅ تحديث حالة الإرسال بعد النجاح
    */
   async markAsSent(scheduledSendId: string, finalMessage?: string): Promise<void> {
-    await this.scheduledSendRepo.update(scheduledSendId, {
+    const update: QueryDeepPartialEntity<ScheduledTemplateSend> = {
       status: ScheduledSendStatus.SENT,
       sentAt: new Date(),
       finalMessage,
       attempts: () => 'attempts + 1',
-    } as any);
+    };
+    await this.scheduledSendRepo.update(scheduledSendId, update);
   }
 
   /**
    * ✅ تحديث حالة الإرسال بعد الفشل
    */
   async markAsFailed(scheduledSendId: string, errorMessage: string): Promise<void> {
-    await this.scheduledSendRepo.update(scheduledSendId, {
+    const update: QueryDeepPartialEntity<ScheduledTemplateSend> = {
       status: ScheduledSendStatus.FAILED,
       errorMessage,
       attempts: () => 'attempts + 1',
-    } as any);
+    };
+    await this.scheduledSendRepo.update(scheduledSendId, update);
   }
 
   /**

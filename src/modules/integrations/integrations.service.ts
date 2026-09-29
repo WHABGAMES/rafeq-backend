@@ -4,8 +4,12 @@
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
-import { Injectable, NotFoundException, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import {
+  Injectable,
+  NotFoundException,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConnectShopifyDto, ConnectWooCommerceDto } from './dto';
 
 interface PaginationOptions {
@@ -14,13 +18,39 @@ interface PaginationOptions {
   status?: string;
 }
 
+type IntegrationPlatform = 'salla' | 'zid' | 'shopify' | 'woocommerce';
+
+export interface IntegrationRecord {
+  id: string;
+  tenantId: string;
+  platform: IntegrationPlatform;
+  storeName: string;
+  status: 'active';
+  createdAt: Date;
+  storeId?: string;
+  domain?: string;
+  storeUrl?: string;
+  siteUrl?: string;
+  apiKey?: string;
+  apiSecret?: string;
+  accessToken?: string;
+  refreshToken?: string;
+  consumerKey?: string;
+  consumerSecret?: string;
+  expiresAt?: Date;
+}
+
+interface OAuthCallbackResult {
+  success: true;
+  storeName: string;
+  integrationId: string;
+}
+
 @Injectable()
 export class IntegrationsService {
   private readonly logger = new Logger(IntegrationsService.name);
 
-  private integrations: Map<string, any> = new Map();
-
-  constructor(private readonly configService: ConfigService) {}
+  private readonly integrations = new Map<string, IntegrationRecord>();
 
   // ═══════════════════════════════════════════════════════════════════════════════
   // General
@@ -52,52 +82,16 @@ export class IntegrationsService {
   // SALLA
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  async getSallaAuthUrl(tenantId: string): Promise<string> {
-    const clientId = this.configService.get('SALLA_CLIENT_ID');
-    const redirectUri = this.configService.get('SALLA_REDIRECT_URI');
-    const scope = 'offline_access';
-    const state = Buffer.from(JSON.stringify({ tenantId })).toString('base64');
-
-    return `https://accounts.salla.sa/oauth2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${scope}&state=${state}`;
+  async getSallaAuthUrl(_tenantId: string): Promise<string> {
+    throw new ServiceUnavailableException(
+      'مسار تكامل سلة القديم متوقف؛ استخدم مسار OAuth الآمن المعتمد.',
+    );
   }
 
-  async handleSallaCallback(_code: string, state: string) {
-    const { tenantId } = JSON.parse(Buffer.from(state, 'base64').toString());
-
-    const tokens = {
-      access_token: 'salla_access_token',
-      refresh_token: 'salla_refresh_token',
-      expires_in: 3600,
-    };
-
-    const merchantInfo = {
-      id: 'merchant-id',
-      name: 'متجر سلة',
-      domain: 'store.salla.sa',
-    };
-
-    const integrationId = `int-salla-${Date.now()}`;
-    this.integrations.set(integrationId, {
-      id: integrationId,
-      tenantId,
-      platform: 'salla',
-      storeName: merchantInfo.name,
-      storeId: merchantInfo.id,
-      domain: merchantInfo.domain,
-      accessToken: tokens.access_token,
-      refreshToken: tokens.refresh_token,
-      expiresAt: new Date(Date.now() + tokens.expires_in * 1000),
-      status: 'active',
-      createdAt: new Date(),
-    });
-
-    this.logger.log(`Salla integration created`, { tenantId, storeId: merchantInfo.id });
-
-    return {
-      success: true,
-      storeName: merchantInfo.name,
-      integrationId,
-    };
+  async handleSallaCallback(_code: string, _state: string): Promise<OAuthCallbackResult> {
+    throw new ServiceUnavailableException(
+      'مسار callback القديم لسلة متوقف لأنه لا يتحقق من state أو يستبدل code بتوكن حقيقي.',
+    );
   }
 
   async getSallaOrders(_tenantId: string, options: PaginationOptions) {
@@ -152,51 +146,16 @@ export class IntegrationsService {
   // ZID
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  async getZidAuthUrl(tenantId: string): Promise<string> {
-    const clientId = this.configService.get('ZID_CLIENT_ID');
-    const redirectUri = this.configService.get('ZID_REDIRECT_URI');
-    const state = Buffer.from(JSON.stringify({ tenantId })).toString('base64');
-
-    return `https://oauth.zid.sa/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&state=${state}`;
+  async getZidAuthUrl(_tenantId: string): Promise<string> {
+    throw new ServiceUnavailableException(
+      'مسار تكامل زد القديم متوقف؛ استخدم مسار OAuth الآمن المعتمد.',
+    );
   }
 
-  async handleZidCallback(_code: string, state: string) {
-    const { tenantId } = JSON.parse(Buffer.from(state, 'base64').toString());
-
-    const tokens = {
-      access_token: 'zid_access_token',
-      refresh_token: 'zid_refresh_token',
-      expires_in: 3600,
-    };
-
-    const storeInfo = {
-      id: 'store-id',
-      name: 'متجر زد',
-      domain: 'store.zid.sa',
-    };
-
-    const integrationId = `int-zid-${Date.now()}`;
-    this.integrations.set(integrationId, {
-      id: integrationId,
-      tenantId,
-      platform: 'zid',
-      storeName: storeInfo.name,
-      storeId: storeInfo.id,
-      domain: storeInfo.domain,
-      accessToken: tokens.access_token,
-      refreshToken: tokens.refresh_token,
-      expiresAt: new Date(Date.now() + tokens.expires_in * 1000),
-      status: 'active',
-      createdAt: new Date(),
-    });
-
-    this.logger.log(`Zid integration created`, { tenantId, storeId: storeInfo.id });
-
-    return {
-      success: true,
-      storeName: storeInfo.name,
-      integrationId,
-    };
+  async handleZidCallback(_code: string, _state: string): Promise<OAuthCallbackResult> {
+    throw new ServiceUnavailableException(
+      'مسار callback القديم لزد متوقف لأنه لا يتحقق من state أو يستبدل code بتوكن حقيقي.',
+    );
   }
 
   async getZidOrders(_tenantId: string, options: PaginationOptions) {

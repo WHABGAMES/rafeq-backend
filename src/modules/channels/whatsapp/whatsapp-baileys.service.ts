@@ -34,9 +34,16 @@ import * as fs from 'fs';
 import { encrypt, decryptSafe, isEncrypted } from '@common/utils/encryption.util';
 
 import makeWASocket, {
+  AuthenticationState,
+  BaileysEventMap,
+  CacheStore,
+  Contact,
   DisconnectReason,
+  proto,
+  UserFacingSocketConfig,
   useMultiFileAuthState,
   WASocket,
+  WAMessageKey,
   ConnectionState,
   MessageUpsertType,
   WAMessage,
@@ -48,12 +55,42 @@ import * as QRCode from 'qrcode';
 import { Channel, ChannelType, ChannelStatus } from '../entities/channel.entity';
 
 // ── Silent Logger ─────────────────────────────────────────────────────────────
-const noopFn = () => {};
-const silentLogger = {
+interface BaileysLogger {
+  level: string;
+  child(bindings: Record<string, unknown>): BaileysLogger;
+  trace(data: unknown, message?: string): void;
+  debug(data: unknown, message?: string): void;
+  info(data: unknown, message?: string): void;
+  warn(data: unknown, message?: string): void;
+  error(data: unknown, message?: string): void;
+}
+
+const noopFn = (_data?: unknown, _message?: string): void => undefined;
+const silentLogger: BaileysLogger = {
   level: 'silent', child: () => silentLogger,
   trace: noopFn, debug: noopFn, info: noopFn,
-  warn: noopFn, error: noopFn, fatal: noopFn,
-} as any;
+  warn: noopFn, error: noopFn,
+};
+
+class MessageRetryCounterCache implements CacheStore {
+  private readonly values = new Map<string, unknown>();
+
+  get<T>(key: string): T | undefined {
+    return this.values.get(key) as T | undefined;
+  }
+
+  set<T>(key: string, value: T): void {
+    this.values.set(key, value);
+  }
+
+  del(key: string): void {
+    this.values.delete(key);
+  }
+
+  flushAll(): void {
+    this.values.clear();
+  }
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -91,6 +128,27 @@ interface StoredSessionData {
   lidMappings?: Record<string, string>;
 }
 
+type ContactWithJid = Partial<Contact> & { jid?: string };
+type HistorySync = BaileysEventMap['messaging-history.set'];
+type HistoryChatWithLid = HistorySync['chats'][number] & {
+  lidJid?: string;
+  lid?: string;
+};
+
+export interface WhatsAppDiagnostics {
+  sessionsPath: string;
+  activeSessions: number;
+  sessions: Array<{
+    id: string;
+    status: WhatsAppSession['status'];
+    method: WhatsAppSession['connectionMethod'];
+    hasQR: boolean;
+    phoneNumber?: string;
+    retryCount: number;
+    lidMappings: number;
+  }>;
+}
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 const MAX_RETRIES = 3;
 const QR_TIMEOUT_MS = 120_000;
@@ -118,8 +176,8 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
    * msgCache: يحفظ الرسائل المرسلة مؤقتاً — واتساب يطلبها عند فشل التشفير
    * msgRetryCounters: يمنع retry loops — بعد 5 محاولات يتوقف
    */
-  private readonly msgCache = new Map<string, { msg: any; ts: number }>();
-  private readonly msgRetryCounters = new Map<string, number>();
+  private readonly msgCache = new Map<string, { msg: proto.IMessage; ts: number }>();
+  private readonly msgRetryCounterCache = new MessageRetryCounterCache();
 
   /** FIX-1: debounce timers لحفظ lid mappings في DB */
   private readonly lidPersistTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -347,9 +405,9 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
     sock.ev.on('creds.update', async () => { await saveCreds(); await this.saveSessionToDB(channelId, sessionPath); });
     sock.ev.on('connection.update', async (update: Partial<ConnectionState>) => { await this.handleConnectionUpdate(channelId, update); });
     sock.ev.on('messages.upsert', async (update: MessageUpsert) => { await this.handleIncomingMessages(channelId, update); });
-    sock.ev.on('contacts.upsert', (contacts: any[]) => { this.handleContactsUpsert(channelId, contacts); });
-    sock.ev.on('messaging-history.set', (data: any) => { this.handleHistorySet(channelId, data); });
-    sock.ev.on('contacts.update', (updates: any[]) => { this.handleContactsUpsert(channelId, updates); });
+    sock.ev.on('contacts.upsert', contacts => { this.handleContactsUpsert(channelId, contacts); });
+    sock.ev.on('messaging-history.set', data => { this.handleHistorySet(channelId, data); });
+    sock.ev.on('contacts.update', updates => { this.handleContactsUpsert(channelId, updates); });
   }
 
   /**
@@ -403,7 +461,7 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
   // ─────────────────────────────────────────────────────────────────────────────
 
   /** حفظ رسالة مرسلة في الكاش للـ retry */
-  private cacheMessage(msgId: string, message: any): void {
+  private cacheMessage(msgId: string, message: proto.IMessage): void {
     // تنظيف الكاش القديم إذا تجاوز الحد
     if (this.msgCache.size > MSG_CACHE_MAX_SIZE) {
       const now = Date.now();
@@ -413,8 +471,8 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
   }
 
   /** استرجاع رسالة من الكاش — يُستدعى من Baileys عند طلب retry */
-  private async getMessageFromCache(key: any): Promise<any | undefined> {
-    const id = key?.id;
+  private async getMessageFromCache(key: WAMessageKey): Promise<proto.IMessage | undefined> {
+    const id = key.id;
     if (!id) return undefined;
     const cached = this.msgCache.get(id);
     if (cached) {
@@ -426,7 +484,10 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
   }
 
   /** بناء إعدادات Socket المشتركة — DRY بدل تكرار الكود */
-  private buildSocketConfig(state: any, version: [number, number, number]): any {
+  private buildSocketConfig(
+    state: AuthenticationState,
+    version: [number, number, number],
+  ): UserFacingSocketConfig {
     return {
       auth: {
         creds: state.creds,
@@ -443,9 +504,9 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
       logger: silentLogger,
       syncFullHistory: false,
       // ✅ FIX: getMessage — حل "في انتظار هذه الرسالة"
-      getMessage: async (key: any) => this.getMessageFromCache(key),
+      getMessage: async key => this.getMessageFromCache(key),
       // ✅ FIX: msgRetryCounterCache — يمنع retry loops (max 5 per message)
-      msgRetryCounterMap: this.msgRetryCounters,
+      msgRetryCounterCache: this.msgRetryCounterCache,
     };
   }
 
@@ -462,7 +523,7 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
     await Promise.allSettled(Array.from(this.sessions.keys()).map(id => this.closeSession(id)));
     this.sessions.clear();
     this.msgCache.clear();
-    this.msgRetryCounters.clear();
+    this.msgRetryCounterCache.flushAll();
   }
 
   // ── Session Init ──────────────────────────────────────────────────────────
@@ -501,9 +562,9 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
       sock.ev.on('creds.update', async () => { await saveCreds(); await this.saveSessionToDB(channelId, sessionPath); });
       sock.ev.on('connection.update', async (update: Partial<ConnectionState>) => { await this.handleConnectionUpdate(channelId, update); });
       sock.ev.on('messages.upsert', async (update: MessageUpsert) => { await this.handleIncomingMessages(channelId, update); });
-      sock.ev.on('contacts.upsert', (contacts: any[]) => { this.handleContactsUpsert(channelId, contacts); });
-      sock.ev.on('messaging-history.set', (data: any) => { this.handleHistorySet(channelId, data); });
-      sock.ev.on('contacts.update', (updates: any[]) => { this.handleContactsUpsert(channelId, updates); });
+      sock.ev.on('contacts.upsert', contacts => { this.handleContactsUpsert(channelId, contacts); });
+      sock.ev.on('messaging-history.set', data => { this.handleHistorySet(channelId, data); });
+      sock.ev.on('contacts.update', updates => { this.handleContactsUpsert(channelId, updates); });
 
       return new Promise<QRSessionResult>((resolve, reject) => {
         const timeout = setTimeout(() => {
@@ -566,7 +627,9 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
           existing.socket.ev.removeAllListeners('messaging-history.set');
           existing.socket.end(undefined);
         }
-      } catch {}
+      } catch (error) {
+        this.logger.warn(`Failed to close WhatsApp session ${channelId}: ${this.errorMessage(error)}`);
+      }
       this.sessions.delete(channelId);
       // ✅ نحتفظ بـ lidToPhone عند cleanupSession — تُمحى فقط عند fullCleanup
       await this.delay(1000);
@@ -588,7 +651,11 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
 
     // مسح lid mappings من الذاكرة فقط عند الجلسة الجديدة
     this.lidToPhone.delete(channelId);
-    try { await this.channelRepository.update(channelId, { sessionData: null as any }); } catch {}
+    try {
+      await this.channelRepository.update(channelId, { sessionData: null });
+    } catch (error) {
+      this.logger.warn(`Failed to clear WhatsApp session data for ${channelId}: ${this.errorMessage(error)}`);
+    }
 
     await this.delay(500);
   }
@@ -619,9 +686,9 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
       this.logger.log(`✅ Sent: messageId=${messageId} to=${resolvedJid}`);
       this.eventEmitter.emit('audit.whatsapp.sent', { channelId, to, messageType: 'text', messageId, durationMs: Date.now() - startMs });
       return { messageId };
-    } catch (err: any) {
-      this.eventEmitter.emit('audit.whatsapp.failed', { channelId, to, messageType: 'text', error: err?.message, durationMs: Date.now() - startMs });
-      throw err;
+    } catch (error) {
+      this.eventEmitter.emit('audit.whatsapp.failed', { channelId, to, messageType: 'text', error: this.errorMessage(error), durationMs: Date.now() - startMs });
+      throw error;
     }
   }
 
@@ -636,9 +703,9 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
       this.cacheMessage(messageId, { imageMessage: { url: imageUrl, caption } });
       this.eventEmitter.emit('audit.whatsapp.sent', { channelId, to, messageType: 'image', messageId, durationMs: Date.now() - startMs });
       return { messageId };
-    } catch (err: any) {
-      this.eventEmitter.emit('audit.whatsapp.failed', { channelId, to, messageType: 'image', error: err?.message, durationMs: Date.now() - startMs });
-      throw err;
+    } catch (error) {
+      this.eventEmitter.emit('audit.whatsapp.failed', { channelId, to, messageType: 'image', error: this.errorMessage(error), durationMs: Date.now() - startMs });
+      throw error;
     }
   }
 
@@ -653,9 +720,9 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
       this.cacheMessage(messageId, { documentMessage: { url: documentUrl, fileName, mimetype: mimeType } });
       this.eventEmitter.emit('audit.whatsapp.sent', { channelId, to, messageType: 'document', messageId, durationMs: Date.now() - startMs });
       return { messageId };
-    } catch (err: any) {
-      this.eventEmitter.emit('audit.whatsapp.failed', { channelId, to, messageType: 'document', error: err?.message, durationMs: Date.now() - startMs });
-      throw err;
+    } catch (error) {
+      this.eventEmitter.emit('audit.whatsapp.failed', { channelId, to, messageType: 'document', error: this.errorMessage(error), durationMs: Date.now() - startMs });
+      throw error;
     }
   }
 
@@ -712,10 +779,10 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
           status: ChannelStatus.CONNECTED,
           whatsappPhoneNumber: session.phoneNumber || undefined,
           connectedAt: new Date(),
-          lastError: null as any,
-          lastErrorAt: null as any,
+          lastError: null,
+          lastErrorAt: null,
           errorCount: 0,
-          disconnectedAt: null as any,
+          disconnectedAt: null,
         });
       } catch (e) {
         this.logger.warn(`Failed to update channel DB status on connect: ${e instanceof Error ? e.message : 'Unknown'}`);
@@ -737,7 +804,9 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
           lastError: `WhatsApp disconnected${statusCode ? ` (code: ${statusCode})` : ''}`,
           lastErrorAt: new Date(),
         });
-      } catch {}
+      } catch (error) {
+        this.logger.warn(`Failed to persist WhatsApp disconnect state for ${channelId}: ${this.errorMessage(error)}`);
+      }
 
       if (statusCode === DisconnectReason.loggedOut) {
         session.status = 'disconnected';
@@ -808,7 +877,7 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
           channelId,
           from: jid,
           fromPhone: realPhone,
-          pushName: (msg as any).pushName || undefined,
+          pushName: msg.pushName || undefined,
           messageId: msg.key.id || '',
           text: msg.message?.conversation || msg.message?.extendedTextMessage?.text || '',
           timestamp: msg.messageTimestamp ? new Date(Number(msg.messageTimestamp) * 1000) : new Date(),
@@ -825,13 +894,17 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
 
   // ── Contacts Handler — FIX-1 ──────────────────────────────────────────────
 
-  private handleContactsUpsert(channelId: string, contacts: any[]): void {
+  private handleContactsUpsert(channelId: string, contacts: ReadonlyArray<ContactWithJid>): void {
     if (!this.lidToPhone.has(channelId)) this.lidToPhone.set(channelId, new Map());
     const map = this.lidToPhone.get(channelId)!;
     let newMappings = 0;
 
     for (const contact of contacts) {
-      try { newMappings += this.extractLidMapping(map, contact); } catch {}
+      try {
+        newMappings += this.extractLidMapping(map, contact);
+      } catch (error) {
+        this.logger.debug(`Skipped invalid WhatsApp contact on ${channelId}: ${this.errorMessage(error)}`);
+      }
     }
 
     if (newMappings > 0) {
@@ -843,7 +916,7 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
   /**
    * FIX-1: استخراج lid→phone من contact object — يتعامل مع جميع الحالات
    */
-  private extractLidMapping(map: Map<string, string>, contact: any): number {
+  private extractLidMapping(map: Map<string, string>, contact: ContactWithJid): number {
     let count = 0;
     const id = contact.id || '';
     const lid = contact.lid || '';
@@ -865,10 +938,10 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
     }
     // حالة 4: id = @lid — بحث في كل الحقول
     if (id.includes('@lid') && !map.has(id)) {
-      for (const key of Object.keys(contact)) {
-        const val = contact[key];
-        if (typeof val === 'string' && val.includes('@s.whatsapp.net')) {
-          const phone = val.split('@')[0].replace(/\D/g, '');
+      const possibleJids = [contact.jid, contact.name, contact.notify, contact.verifiedName];
+      for (const value of possibleJids) {
+        if (typeof value === 'string' && value.includes('@s.whatsapp.net')) {
+          const phone = value.split('@')[0].replace(/\D/g, '');
           if (phone) { map.set(id, phone); count++; break; }
         }
       }
@@ -877,13 +950,13 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
     return count;
   }
 
-  private handleHistorySet(channelId: string, data: any): void {
+  private handleHistorySet(channelId: string, data: HistorySync): void {
     if (!this.lidToPhone.has(channelId)) this.lidToPhone.set(channelId, new Map());
     const map = this.lidToPhone.get(channelId)!;
     let newMappings = 0;
 
     try {
-      const chats = data?.chats || [];
+      const chats = data.chats as HistoryChatWithLid[];
       for (const chat of chats) {
         const chatId = chat.id || '';
         const lidJid = chat.lidJid || chat.lid || '';
@@ -896,7 +969,7 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
           if (phone && !map.has(chatId)) { map.set(chatId, phone); newMappings++; }
         }
       }
-      if (data?.contacts?.length > 0) this.handleContactsUpsert(channelId, data.contacts);
+      if (data.contacts.length > 0) this.handleContactsUpsert(channelId, data.contacts);
     } catch (error) {
       this.logger.error(`Error processing messaging-history.set: ${error instanceof Error ? error.message : 'Unknown'}`);
     }
@@ -961,6 +1034,10 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
+  private errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : 'Unknown error';
+  }
+
   private mapStatus(status: WhatsAppSession['status']): 'pending' | 'scanning' | 'connected' | 'expired' {
     switch (status) {
       case 'qr_ready': return 'pending';
@@ -978,7 +1055,7 @@ export class WhatsAppBaileysService implements OnModuleDestroy, OnModuleInit {
     return Array.from(this.sessions.entries()).filter(([, s]) => s.status === 'connected').map(([id]) => id);
   }
 
-  getDiagnostics(): Record<string, any> {
+  getDiagnostics(): WhatsAppDiagnostics {
     return {
       sessionsPath: this.sessionsPath,
       activeSessions: this.sessions.size,

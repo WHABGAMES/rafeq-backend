@@ -7,18 +7,47 @@
 
 import { Injectable, NotFoundException, BadRequestException, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { MessageTemplate, TemplateStatus, TemplateChannel } from '@database/entities';
+import { In, Repository } from 'typeorm';
+import {
+  ButtonType,
+  MessageTemplate,
+  SendingMode,
+  TemplateButton,
+  TemplateChannel,
+  TemplateLanguage,
+  TemplateSendSettings,
+  TemplateStatus,
+} from '@database/entities/message-template.entity';
 import {
   CreateTemplateDto,
   UpdateTemplateDto,
   TemplateFiltersDto,
   SubmitWhatsAppTemplateDto,
 } from './dto';
+import { getErrorMessage, isUniqueConstraintError } from '@common/utils/error.util';
+import { asJsonRecord, getJsonNumber, getJsonString } from '@common/utils/json-record.util';
 
 interface PaginationOptions {
   page: number;
   limit: number;
+}
+
+interface PresetButtonMigration {
+  where: string;
+  updates: Array<{
+    nameMatch: string;
+    displayMatch: string;
+    button: TemplateButton;
+  }>;
+  fallbackButton?: TemplateButton;
+  replaceInButtons?: { from: string; to: string };
+  replaceInBody?: { from: string; to: string };
+}
+
+interface TemplateMigrationRow {
+  id: string;
+  name: string;
+  display_name: string | null;
 }
 
 @Injectable()
@@ -43,16 +72,16 @@ export class TemplatesService implements OnModuleInit {
    * يشتغل مرة واحدة عند بدء السيرفر — آمن ولا يعدّل قوالب مخصصة
    */
   private async migratePresetButtons(): Promise<void> {
-    const migrations = [
+    const migrations: PresetButtonMigration[] = [
       // ── سلة متروكة: أضف زر cart_link لو مافيه ──
       {
         where: `trigger_event = 'abandoned.cart' AND (buttons IS NULL OR buttons::text = '[]' OR buttons::text = 'null' OR buttons::text NOT LIKE '%cart_link%')`,
         updates: [
-          { nameMatch: 'cart_abandoned_1', displayMatch: '%التذكير الأول%', button: { type: 'url', text: 'أكمل الطلب 🛒', url: '{{cart_link}}' } },
-          { nameMatch: 'cart_abandoned_2', displayMatch: '%حافز%',           button: { type: 'url', text: 'استفد من العرض 🎁', url: '{{cart_link}}' } },
-          { nameMatch: 'cart_abandoned_3', displayMatch: '%الأخير%',         button: { type: 'url', text: 'اطلب الآن 🛒', url: '{{cart_link}}' } },
+          { nameMatch: 'cart_abandoned_1', displayMatch: '%التذكير الأول%', button: { type: ButtonType.URL, text: 'أكمل الطلب 🛒', url: '{{cart_link}}' } },
+          { nameMatch: 'cart_abandoned_2', displayMatch: '%حافز%',           button: { type: ButtonType.URL, text: 'استفد من العرض 🎁', url: '{{cart_link}}' } },
+          { nameMatch: 'cart_abandoned_3', displayMatch: '%الأخير%',         button: { type: ButtonType.URL, text: 'اطلب الآن 🛒', url: '{{cart_link}}' } },
         ],
-        fallbackButton: { type: 'url', text: 'أكمل طلبك 🛒', url: '{{cart_link}}' },
+        fallbackButton: { type: ButtonType.URL, text: 'أكمل طلبك 🛒', url: '{{cart_link}}' },
       },
       // ── طلب تقييم: حدّث store_url → rating_url ──
       {
@@ -80,30 +109,30 @@ export class TemplatesService implements OnModuleInit {
       try {
         if (migration.replaceInButtons) {
           // استبدال نص داخل الأزرار
-          const result = await this.templateRepository.query(
+          const result: unknown = await this.templateRepository.query(
             `UPDATE message_templates SET buttons = REPLACE(buttons::text, $1, $2)::jsonb WHERE ${migration.where}`,
             [migration.replaceInButtons.from, migration.replaceInButtons.to],
           );
-          const count = result?.[1] || 0;
+          const count = this.getAffectedRows(result);
           if (count > 0) {
             this.logger.log(`🔄 Migrated ${count} template(s): ${migration.replaceInButtons.from} → ${migration.replaceInButtons.to}`);
             totalUpdated += count;
           }
-        } else if ((migration as any).replaceInBody) {
+        } else if (migration.replaceInBody) {
           // إضافة رابط في نص الرسالة
-          const rep = (migration as any).replaceInBody;
-          const result = await this.templateRepository.query(
+          const rep = migration.replaceInBody;
+          const result: unknown = await this.templateRepository.query(
             `UPDATE message_templates SET body = REPLACE(body, $1, $2) WHERE ${migration.where}`,
             [rep.from, rep.to],
           );
-          const count = result?.[1] || 0;
+          const count = this.getAffectedRows(result);
           if (count > 0) {
             this.logger.log(`🔄 Migrated ${count} template body(s): added cart_link`);
             totalUpdated += count;
           }
         } else if (migration.updates.length > 0) {
           // إضافة أزرار للقوالب اللي ما عندها
-          const templates = await this.templateRepository.query(
+          const templates: TemplateMigrationRow[] = await this.templateRepository.query(
             `SELECT id, name, display_name FROM message_templates WHERE ${migration.where}`,
           );
 
@@ -121,8 +150,8 @@ export class TemplatesService implements OnModuleInit {
             }
           }
         }
-      } catch (err) {
-        this.logger.warn(`⚠️ Template migration skipped: ${(err as Error).message}`);
+      } catch (error: unknown) {
+        this.logger.warn(`⚠️ Template migration skipped: ${getErrorMessage(error)}`);
       }
     }
 
@@ -131,6 +160,72 @@ export class TemplatesService implements OnModuleInit {
     } else {
       this.logger.log(`✅ Template auto-migration: all templates up-to-date`);
     }
+  }
+
+  private getAffectedRows(result: unknown): number {
+    if (!Array.isArray(result)) return 0;
+    const count = result[1];
+    return typeof count === 'number' && Number.isInteger(count) ? count : 0;
+  }
+
+  private normalizeChannel(value?: string): TemplateChannel {
+    return Object.values(TemplateChannel).includes(value as TemplateChannel)
+      ? value as TemplateChannel
+      : TemplateChannel.WHATSAPP;
+  }
+
+  private normalizeLanguage(value?: string): TemplateLanguage {
+    return Object.values(TemplateLanguage).includes(value as TemplateLanguage)
+      ? value as TemplateLanguage
+      : TemplateLanguage.AR;
+  }
+
+  private normalizeButtons(buttons: CreateTemplateDto['buttons']): TemplateButton[] {
+    if (!buttons) return [];
+    return buttons.map((button) => ({
+      type: button.type === 'phone' ? ButtonType.PHONE : button.type as ButtonType,
+      text: button.text,
+      url: button.url,
+      phoneNumber: button.phone,
+      code: button.payload,
+    }));
+  }
+
+  private normalizeSendSettings(value: Record<string, unknown>): TemplateSendSettings {
+    const mode = getJsonString(value, 'sendingMode');
+    if (!mode || !Object.values(SendingMode).includes(mode as SendingMode)) {
+      throw new BadRequestException('sendingMode غير صالح');
+    }
+
+    const delayMinutes = getJsonNumber(value, 'delayMinutes');
+    if (delayMinutes !== undefined && delayMinutes < 0) {
+      throw new BadRequestException('delayMinutes يجب أن يكون رقم موجب');
+    }
+
+    const trigger = asJsonRecord(value.triggerCondition);
+    const sequence = asJsonRecord(value.sequence);
+    const maxSends = asJsonRecord(value.maxSendsPerCustomer);
+    const cancelOnEvents = Array.isArray(value.cancelOnEvents)
+      ? value.cancelOnEvents.filter((event): event is string => typeof event === 'string')
+      : undefined;
+
+    return {
+      sendingMode: mode as SendingMode,
+      delayMinutes,
+      triggerCondition: trigger ? {
+        orderStatus: getJsonString(trigger, 'orderStatus'),
+        paymentMethod: getJsonString(trigger, 'paymentMethod'),
+      } : undefined,
+      sequence: sequence ? {
+        order: getJsonNumber(sequence, 'order') ?? 1,
+        groupKey: getJsonString(sequence, 'groupKey') ?? '',
+      } : undefined,
+      cancelOnEvents,
+      maxSendsPerCustomer: maxSends ? {
+        count: Math.max(1, getJsonNumber(maxSends, 'count') ?? 1),
+        periodDays: Math.max(1, getJsonNumber(maxSends, 'periodDays') ?? 7),
+      } : undefined,
+    };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -249,7 +344,7 @@ export class TemplatesService implements OnModuleInit {
 
     // ✅ تحقق إذا القالب موجود بنفس الاسم (حتى لو محذوف soft delete)
     const existingTemplate = await this.templateRepository.findOne({
-      where: { tenantId: tenantId as any, name: dto.name },
+      where: { tenantId, name: dto.name },
       withDeleted: true,
     });
 
@@ -263,7 +358,7 @@ export class TemplatesService implements OnModuleInit {
 
         // ⚠️ FIX الجذري: مسح deletedAt من الكائن في الذاكرة
         // بدون هذا السطر، save() يكتب القيمة القديمة ويعيد الحذف!
-        existingTemplate.deletedAt = undefined as any;
+        existingTemplate.deletedAt = undefined;
       }
 
       // تحديث القالب
@@ -271,8 +366,8 @@ export class TemplatesService implements OnModuleInit {
       existingTemplate.body = dto.content || existingTemplate.body;
       existingTemplate.triggerEvent = dto.triggerEvent ?? existingTemplate.triggerEvent;
       existingTemplate.category = dto.category || existingTemplate.category;
-      if (dto.buttons) existingTemplate.buttons = dto.buttons as any;
-      if (dto.sendSettings) existingTemplate.sendSettings = dto.sendSettings as any;
+      if (dto.buttons) existingTemplate.buttons = this.normalizeButtons(dto.buttons);
+      if (dto.sendSettings) existingTemplate.sendSettings = this.normalizeSendSettings(dto.sendSettings);
 
       const updated = await this.templateRepository.save(existingTemplate);
 
@@ -299,24 +394,24 @@ export class TemplatesService implements OnModuleInit {
     this.logger.log(`📝 Creating NEW: name="${dto.name}", mappedStatus=${status}, sendSettings=${JSON.stringify(dto.sendSettings || null)}`);
 
     const templateData: Partial<MessageTemplate> = {
-      tenantId: tenantId as any,
+      tenantId,
       name: dto.name,
       displayName: dto.name,
       description: dto.description,
       category: dto.category || 'general',
-      channel: (dto.channel as TemplateChannel) || TemplateChannel.WHATSAPP,
-      language: (dto.language || 'ar') as any,
+      channel: this.normalizeChannel(dto.channel),
+      language: this.normalizeLanguage(dto.language),
       body: dto.content,
       status,
       triggerEvent: dto.triggerEvent ?? undefined,
-      buttons: (dto.buttons as any) || [],
-      variables: [] as any,
-      stats: { usageCount: 0 } as any,
+      buttons: this.normalizeButtons(dto.buttons),
+      variables: [],
+      stats: { usageCount: 0 },
       // ✅ v15: حفظ sendSettings عند الإنشاء — كان مفقوداً وسبّب ضياع الإعدادات!
-      sendSettings: dto.sendSettings ? (dto.sendSettings as any) : undefined,
+      sendSettings: dto.sendSettings ? this.normalizeSendSettings(dto.sendSettings) : undefined,
     };
 
-    const template = this.templateRepository.create(templateData as any);
+    const template = this.templateRepository.create(templateData);
 
     try {
       const result = await this.templateRepository.save(template);
@@ -336,10 +431,11 @@ export class TemplatesService implements OnModuleInit {
       return this.mapToResponse(saved);
 
     } catch (error: unknown) {
-      const err = error as Record<string, unknown>;
-      this.logger.error(`❌ create failed: ${err.message || err}`, { code: err.code, detail: err.detail });
+      const err = asJsonRecord(error);
+      const detail = getJsonString(err, 'detail');
+      this.logger.error(`❌ create failed: ${getErrorMessage(error)}`, { code: err?.code, detail });
 
-      if (err.code === '23505' || (typeof err.detail === 'string' && err.detail.includes('already exists'))) {
+      if (isUniqueConstraintError(error) || detail?.includes('already exists')) {
         throw new BadRequestException(`قالب بنفس الاسم "${dto.name}" موجود بالفعل`);
       }
       throw error;
@@ -371,7 +467,7 @@ export class TemplatesService implements OnModuleInit {
       if (settings.sendingMode && !validModes.includes(String(settings.sendingMode))) {
         throw new BadRequestException(`sendingMode غير صالح`);
       }
-      template.sendSettings = dto.sendSettings as any;
+      template.sendSettings = this.normalizeSendSettings(dto.sendSettings);
       this.logger.log(`📝 SendSettings updated for "${template.name}" (id=${id}): mode=${settings.sendingMode}, delay=${settings.delayMinutes || 'none'}`);
     }
 
@@ -398,7 +494,7 @@ export class TemplatesService implements OnModuleInit {
    */
   async bulkToggle(ids: string[], tenantId: string, enable: boolean) {
     const templates = await this.templateRepository.find({
-      where: { id: { $in: ids } as any, tenantId },
+      where: { id: In(ids), tenantId },
     });
 
     if (templates.length === 0) throw new NotFoundException('لم يتم العثور على قوالب');
@@ -475,7 +571,7 @@ export class TemplatesService implements OnModuleInit {
 
     this.logger.log(`⚙️ updateSendSettings: id=${id}, name="${template.name}", mode=${sendSettings.sendingMode}`, sendSettings);
 
-    template.sendSettings = sendSettings as any;
+    template.sendSettings = this.normalizeSendSettings(sendSettings);
     const saved = await this.templateRepository.save(template);
 
     return {

@@ -35,6 +35,7 @@ import {
 
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { User } from '@database/entities';
 
 import {
   InboxService,
@@ -72,7 +73,7 @@ export class InboxController {
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'limit', required: false, type: Number })
   async getConversations(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Query('status') status?: ConversationStatus,
     @Query('channel') channel?: string,
     @Query('assignedTo') assignedTo?: string,
@@ -108,7 +109,7 @@ export class InboxController {
     summary: 'إحصائيات الـ Inbox',
     description: 'إجماليات المحادثات وأوقات الرد',
   })
-  async getStats(@CurrentUser() user: any) {
+  async getStats(@CurrentUser() user: User) {
     const tenantId = user.tenantId;
     const userId = user.id;
     return this.inboxService.getStats(tenantId, userId);
@@ -120,7 +121,7 @@ export class InboxController {
 
   @Get('channel-status')
   @ApiOperation({ summary: 'حالة قناة الواتساب للمتجر' })
-  async getChannelStatus(@CurrentUser() user: any) {
+  async getChannelStatus(@CurrentUser() user: User) {
     return this.inboxService.getWhatsAppStatus(user.tenantId);
   }
 
@@ -131,7 +132,7 @@ export class InboxController {
   @Delete('conversations')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'حذف جميع المحادثات' })
-  async deleteAllConversations(@CurrentUser() user: any) {
+  async deleteAllConversations(@CurrentUser() user: User) {
     return this.inboxService.deleteAllConversations(user.tenantId);
   }
 
@@ -145,7 +146,7 @@ export class InboxController {
     description: 'جلب محادثة مع الرسائل',
   })
   async getConversation(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Param('id') id: string,
   ) {
     const tenantId = user.tenantId;
@@ -168,7 +169,7 @@ export class InboxController {
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'limit', required: false, type: Number })
   async getMessages(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Param('id') id: string,
     @Query('page', new ParseIntPipe({ optional: true })) page = 1,
     @Query('limit', new ParseIntPipe({ optional: true })) limit = 50,
@@ -187,7 +188,7 @@ export class InboxController {
     description: 'إرسال رسالة جديدة في المحادثة',
   })
   async sendMessage(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Param('id') id: string,
     @Body() body: { content: string },
   ) {
@@ -206,7 +207,7 @@ export class InboxController {
     summary: 'تعيين المحادثة لموظف',
   })
   async assign(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Param('id') id: string,
     @Body() body: { agentId: string },
   ) {
@@ -220,7 +221,7 @@ export class InboxController {
     summary: 'إلغاء تعيين المحادثة',
   })
   async unassign(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Param('id') id: string,
   ) {
     const tenantId = user.tenantId;
@@ -232,7 +233,7 @@ export class InboxController {
     summary: 'تغيير حالة المحادثة',
   })
   async updateStatus(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Param('id') id: string,
     @Body() body: { status: ConversationStatus },
   ) {
@@ -245,7 +246,7 @@ export class InboxController {
     summary: 'تغيير أولوية المحادثة',
   })
   async updatePriority(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Param('id') id: string,
     @Body() body: { priority: ConversationPriority },
   ) {
@@ -259,7 +260,7 @@ export class InboxController {
     summary: 'إضافة tags للمحادثة',
   })
   async addTags(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Param('id') id: string,
     @Body() body: { tags: string[] },
   ) {
@@ -273,7 +274,7 @@ export class InboxController {
     summary: 'وضع علامة مقروء',
   })
   async markAsRead(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Param('id') id: string,
   ) {
     const tenantId = user.tenantId;
@@ -286,7 +287,7 @@ export class InboxController {
     summary: 'إضافة ملاحظة داخلية',
   })
   async addNote(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Param('id') id: string,
     @Body() body: { note: string },
   ) {
@@ -302,7 +303,7 @@ export class InboxController {
     description: 'يحذف المحادثة مع جميع رسائلها من قاعدة البيانات',
   })
   async deleteConversation(
-    @CurrentUser() user: any,
+    @CurrentUser() user: User,
     @Param('id') id: string,
   ) {
     const tenantId = user.tenantId;

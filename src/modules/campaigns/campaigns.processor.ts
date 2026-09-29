@@ -23,6 +23,7 @@ import { Channel, ChannelType, ChannelStatus } from '@modules/channels/entities/
 // ✅ FIX 1: نستخدم الخدمتين — Official + Baileys
 import { WhatsAppService } from '@modules/channels/whatsapp/whatsapp.service';
 import { WhatsAppBaileysService } from '@modules/channels/whatsapp/whatsapp-baileys.service';
+import { getErrorMessage } from '@common/utils/error.util';
 
 interface SendCampaignMessageJobData {
   campaignId: string;
@@ -78,11 +79,11 @@ export class CampaignsProcessor extends WorkerHost {
               ...(campaign.metadata || {}),
               lastError: `Paused: error threshold ${campaign.stopOnErrorThreshold} reached`,
               changelog: [
-                ...((campaign.metadata as any)?.changelog || []),
+                ...(campaign.metadata?.changelog || []),
                 { action: 'auto_paused_error_threshold', timestamp: new Date().toISOString() },
               ],
             },
-          } as any);
+          });
           return;
         }
       }
@@ -128,9 +129,9 @@ export class CampaignsProcessor extends WorkerHost {
       // ═══ 7. Check completion ═══
       await this.checkCompletion(campaignId);
 
-    } catch (error: any) {
+    } catch (error: unknown) {
       this.logger.error(
-        `📣 Campaign ${campaignId} → customer ${customerId} FAILED: ${error.message}`,
+        `📣 Campaign ${campaignId} → customer ${customerId} FAILED: ${getErrorMessage(error)}`,
       );
       await this.incrementStat(campaignId, 'failed');
       await this.checkCompletion(campaignId);
@@ -296,7 +297,7 @@ export class CampaignsProcessor extends WorkerHost {
         await this.campaignRepo.update(campaignId, {
           status: CampaignStatus.COMPLETED,
           completedAt: new Date(),
-        } as any);
+        });
         this.logger.log(`📣 Campaign ${campaignId} COMPLETED: ${stats.sent} sent, ${stats.failed} failed`);
       }
     } catch {

@@ -12,6 +12,21 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { StoreSettings } from './entities/store-settings.entity';
+import {
+  UpdateAutoRepliesDto,
+  UpdateGeneralSettingsDto,
+  UpdateNotificationSettingsDto,
+  UpdateTeamSettingsDto,
+  UpdateWorkingHoursDto,
+} from './dto';
+
+type SettingsRecord = Record<string, unknown>;
+
+interface NotificationSettings extends SettingsRecord {
+  email: Required<NonNullable<UpdateNotificationSettingsDto['email']>>;
+  push: Required<NonNullable<UpdateNotificationSettingsDto['push']>>;
+  sound: Required<NonNullable<UpdateNotificationSettingsDto['sound']>>;
+}
 
 @Injectable()
 export class SettingsService {
@@ -100,7 +115,11 @@ export class SettingsService {
     return this.getSetting(tenantId, storeId, 'general', defaults);
   }
 
-  async updateGeneralSettings(tenantId: string, data: any, storeId?: string) {
+  async updateGeneralSettings(
+    tenantId: string,
+    data: UpdateGeneralSettingsDto,
+    storeId?: string,
+  ) {
     if (!storeId) {
       this.logger.warn('updateGeneralSettings called without storeId');
       return data;
@@ -138,10 +157,17 @@ export class SettingsService {
     return this.getSetting(tenantId, storeId, 'notifications', defaults);
   }
 
-  async updateNotificationSettings(tenantId: string, data: any, storeId?: string) {
+  async updateNotificationSettings(
+    tenantId: string,
+    data: UpdateNotificationSettingsDto,
+    storeId?: string,
+  ) {
     if (!storeId) return data;
 
-    const current = await this.getNotificationSettings(tenantId, storeId) as any;
+    const current = await this.getNotificationSettings(
+      tenantId,
+      storeId,
+    ) as NotificationSettings;
     const updated = {
       email: { ...current.email, ...data.email },
       push: { ...current.push, ...data.push },
@@ -174,7 +200,11 @@ export class SettingsService {
     return this.getSetting(tenantId, storeId, 'working_hours', defaults);
   }
 
-  async updateWorkingHours(tenantId: string, data: any, storeId?: string) {
+  async updateWorkingHours(
+    tenantId: string,
+    data: UpdateWorkingHoursDto,
+    storeId?: string,
+  ) {
     if (!storeId) return data;
 
     const current = await this.getWorkingHours(tenantId, storeId);
@@ -211,7 +241,11 @@ export class SettingsService {
     return this.getSetting(tenantId, storeId, 'auto_replies', defaults);
   }
 
-  async updateAutoReplies(tenantId: string, data: any, storeId?: string) {
+  async updateAutoReplies(
+    tenantId: string,
+    data: UpdateAutoRepliesDto,
+    storeId?: string,
+  ) {
     if (!storeId) return data;
 
     const current = await this.getAutoReplies(tenantId, storeId);
@@ -243,7 +277,11 @@ export class SettingsService {
     return this.getSetting(tenantId, storeId, 'team', defaults);
   }
 
-  async updateTeamSettings(tenantId: string, data: any, storeId?: string) {
+  async updateTeamSettings(
+    tenantId: string,
+    data: UpdateTeamSettingsDto,
+    storeId?: string,
+  ) {
     if (!storeId) return data;
 
     const current = await this.getTeamSettings(tenantId, storeId);
