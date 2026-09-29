@@ -36,8 +36,23 @@
 
 # أحدث التحديثات
 
+### [2026-09-29] — BE-061 — v36 — توثيق دمج ونشر حزمة تدقيق الخادم
+- **الحالة:** منشور في الإنتاج — اكتمل الدمج والنشر والفحص الحي.
+- **النسخة:** `UPDATE_HISTORY.md` v36.
+- **المشكلة:** بقيت حالات BE-033 حتى BE-060 تصف مراحلها بأنها محلية أو بانتظار الدمج، رغم دمج الحزمة فعلياً ونشرها، ما يجعل سجل التشغيل مضللاً للمطور التالي.
+- **السبب الجذري:** سُجلت كل مرحلة عند إنجازها محلياً ولم تكن النتيجة التشغيلية النهائية معروفة قبل اكتمال PR وفحص النشر.
+- **طريقة الحل:** حُدثت حالات BE-033 حتى BE-060 إلى «منشور في الإنتاج»، وربطت جميعها بطلب السحب #36 ودمج `b3a1e59`. سُجل دليل التشغيل من فحص الصحة بعد أن أعاد DigitalOcean تشغيل الخدمة.
+- **الأثر التشغيلي:** توثيق فقط؛ لا يتغير كود التشغيل أو API أو قاعدة البيانات.
+- **أثر سلة/زد:** لا تغيير في OAuth أو Webhooks أو الأحداث أو المفاتيح أو البيانات؛ هذا commit توثيقي فقط.
+- **الرأي الهندسي:** حالة السجل جزء من جاهزية الإصدار، ويجب أن تتبع الانتقال الفعلي بدلاً من الاحتفاظ بلقطة محلية قديمة.
+- **المخاطر/الملاحظات:** لا توجد مخاطرة تشغيلية من تعديل Markdown. الدمج المنتج للحزمة هو `b3a1e59f0fa640a30eb0ad261e1fa9c2a5021ccb`، بينما commit هذا السجل يأتي بعده وسيُوثق SHA الخاص به بعد الرفع.
+- **التحقق:** GitHub CI لطلب #36 نجح (1/1)؛ طلب `/api/health` أعاد HTTP 200 و`healthy`؛ وانخفض `uptime` من 75,272 ثانية إلى 23 ثانية، ما يثبت تشغيل النسخة الجديدة.
+- **رسالة الـcommit:** `docs(BE-061): v36 record production deployment status` مع ملخص: مزامنة حالات BE-033..BE-060 مع الدمج، تسجيل دليل health وإعادة التشغيل، وتأكيد عدم تغير عقود سلة وزد.
+- **PR / Commit:** PR #36 · merge `b3a1e59f0fa640a30eb0ad261e1fa9c2a5021ccb` · commit التوثيق يُملأ بعد الرفع.
+- **خطة التراجع:** إعادة commit التوثيق فقط إذا كان دليل النشر غير صحيح؛ لا حاجة لتراجع تشغيلي.
+
 ### [2026-09-29] — BE-060 — v35 — تدقيق ما قبل النشر وإزالة إسكات ESLint المخفي
-- **الحالة:** محلياً — التدقيق والإصلاح مكتملان؛ لم تُرفع أو تُنشر الملفات.
+- **الحالة:** منشور في الإنتاج — دُمج عبر PR #36 وشُغّل بنجاح على الخادم؛ فحص الصحة HTTP 200 وحالة `healthy` بعد إعادة التشغيل.
 - **النسخة:** `src/modules/otp-relay/otp-relay.service.ts` v4 · `src/modules/analytics/analytics.service.ts` v2 · `src/modules/tenants/tenants.service.ts` v1 · `src/common/decorators/current-user.decorator.ts` v1 · `src/modules/admin/services/whatsapp-settings.service.ts` v2 · `src/modules/webhooks/dto/zid-webhook.dto.ts` v1 · `package.json` v5 · `UPDATE_HISTORY.md` v35.
 - **المشكلة:** أظهر ESLint صفراً بعد BE-059، لكن التدقيق النصي المستقل كشف تعطيل `no-explicit-any` على كامل خدمة OTP Relay وتعطيلاً موضعياً في analytics وحلقة إنشاء tenant. لذلك كانت نتيجة lint ناجحة تقنياً لكنها لا تثبت نظافة هذه المسارات. كما بقيت تعليقات قديمة تدّعي استعمال `Record<string, any>` رغم أن التنفيذ أصبح آمناً.
 - **السبب الجذري:** تعطيلات lint قديمة سبقت مراحل التنظيف وكانت تمنع المحلل من الإبلاغ عن عشرات العقود المفتوحة داخل خدمة OTP Relay، بينما اقتصر القياس السابق على حصيلة ESLint ولم يتضمن بوابة مستقلة تمنع escape hatches نفسها.
@@ -52,7 +67,7 @@
 - **خطة التراجع:** تُعاد ملفات BE-060 كوحدة واحدة دون migration. عند مشكلة تشغيلية في OTP Relay يُقارن request تجريبي مع السجل السابق، ولا يعاد التعطيل الشامل؛ يُصلح العقد المتأثر مباشرة.
 
 ### [2026-09-29] — BE-059 — v34 — المرحلة العاشرة: إغلاق تحذيرات الأنواع المتبقية
-- **الحالة:** محلياً — المرحلة العاشرة مكتملة التحقق؛ لم تُرفع أو تُنشر.
+- **الحالة:** منشور في الإنتاج — ضمن PR #36 والدمج `b3a1e59`.
 - **النسخة:** `src/database/entities/customer.entity.ts` v1 · `src/database/entities/order.entity.ts` v1 · `src/modules/campaigns/campaigns.processor.ts` v1 · `src/modules/campaigns/campaigns.scheduler.ts` v1 · `src/modules/campaigns/campaigns.service.ts` v2 · `src/modules/channels/whatsapp/whatsapp.controller.ts` v1 · `src/modules/conversion-elements/entities/element-event.entity.ts` v1 · `src/modules/conversion-elements/services/conversion-elements.service.ts` v1 · `src/modules/conversion-elements/services/element-tracking.service.ts` v1 · `src/modules/messaging/services/message.service.ts` v1 · `src/modules/ai/ai.service.ts` v4 · `UPDATE_HISTORY.md` v34.
 - **المشكلة:** بقيت 34 تحذيراً في metadata الكيانات، معالجة وجدولة الحملات، webhook واتساب، عناصر التحويل، تجميع إحصاءات الرسائل، وإثراء الطلب من سلة. كانت العقود تعتمد `any` وcasts في حدود JSON وTypeORM وصفوف SQL الخام، ما يخفي القيم الناقصة أو غير الصحيحة ويصعّب التطوير الآمن.
 - **السبب الجذري:** لم تكن أنواع JSON المخزن، DTO الحملات، payload واتساب، نتائج التجميع، وتحديث الطلب المركب ممثلة بعقود المصدر الفعلية. كما أن TypeORM لا يستطيع تمثيل `Record<string, unknown>` متداخل داخل SQL partial update/insert بصورة آمنة.
@@ -67,7 +82,7 @@
 - **خطة التراجع:** تُعاد ملفات BE-059 كوحدة واحدة؛ لا migration أو حذف بيانات. إذا ظهر اختلاف في إثراء طلبات سلة، يُوقف مسار الإثراء مؤقتاً ويُقارن سجل طلب تجريبي قبل التفكير في إعادة partial update غير الآمن.
 
 ### [2026-09-29] — BE-058 — v33 — المرحلة التاسعة: عقود Webhooks وتصحيح هوية سجلات زد
-- **الحالة:** محلياً — المرحلة التاسعة مكتملة التحقق؛ لم تُرفع أو تُنشر.
+- **الحالة:** منشور في الإنتاج — ضمن PR #36 والدمج `b3a1e59`.
 - **النسخة:** `src/modules/webhooks/processors/salla/salla-order.handler.ts` v1 · `src/modules/webhooks/processors/salla/salla-misc.handler.ts` v1 · `src/modules/webhooks/processors/zid-webhook.processor.ts` v1 · `src/modules/webhooks/processors/__tests__/zid-webhook.processor.spec.ts` v1 · `src/modules/webhooks/salla-webhooks.controller.ts` v1 · `src/modules/webhooks/zid-webhooks.controller.ts` v3 · `src/modules/stores/salla-store.service.ts` v1 · `src/modules/stores/stores.service.ts` v1 · `src/modules/stores/zid-oauth.controller.ts` v1 · `src/modules/auth/auto-registration.service.ts` v3 · `UPDATE_HISTORY.md` v33.
 - **المشكلة:** بقيت 50 تحذيراً في حدود OAuth وWebhooks والمزامنة والتسجيل التلقائي لسلة وزد بسبب أخطاء وpayloads وmetadata ونتائج توكن غير محددة. كشف التدقيق أن معالج زد كان يخزن ويبحث عن معرف الطلب والعميل الخارجيين في حقلي سلة `sallaOrderId` و`sallaCustomerId` رغم وجود حقول زد المخصصة، ولذلك قد تتداخل هوية المنصتين أو تفشل تحديثات حالة زد عند اعتماد الحقل الصحيح في أجزاء أخرى.
 - **السبب الجذري:** أُعيد استخدام منطق مزامنة سلة عند بناء معالج زد من دون فصل حقول الهوية وmetadata الخاصة بالمنصة، بينما اعتمدت حدود HTTP وwebhook على `any` للوصول المباشر إلى أجسام غير موثوقة.
@@ -82,7 +97,7 @@
 - **خطة التراجع:** تُعاد ملفات BE-058 كوحدة واحدة؛ لا migration جماعي ولا حذف بيانات. التراجع يعيد خلط معرفات زد في حقول سلة ولذلك لا يُنصح به؛ عند مشكلة تشغيلية يُوقف معالج زد مؤقتاً ويُفحص سجل متأثر قبل أي تعديل بيانات.
 
 ### [2026-09-29] — BE-057 — v32 — المرحلة الثامنة: عقود الهوية والتدقيق وإدارة واتساب
-- **الحالة:** محلياً — المرحلة الثامنة مكتملة التحقق؛ لم تُرفع أو تُنشر.
+- **الحالة:** منشور في الإنتاج — ضمن PR #36 والدمج `b3a1e59`.
 - **النسخة:** `src/main.ts` v4 · `src/modules/csat/csat.controller.ts` v2 · `src/modules/admin/listeners/audit-event.listener.ts` v1 · `src/modules/users/users.service.ts` v3 · `src/modules/admin/interceptors/tenant-audit.interceptor.ts` v1 · `src/modules/admin/services/admin-users.service.ts` v3 · `src/modules/admin/services/whatsapp-settings.service.ts` v1 · `UPDATE_HISTORY.md` v32.
 - **المشكلة:** بقيت 50 تحذيراً في إقلاع التطبيق وواجهات CSAT ودعوات الموظفين وتدقيق عمليات التجار وإدارة المستخدمين وإعدادات واتساب، ناتجة عن `any` في الأخطاء وطلبات HTTP وJSON المخزن ونتائج SQL وردود المزود. كان interceptor التدقيق يعدّل كائن route mapping العام عند تفعيل/تعطيل AI، ما يسمح بتسرب نوع الإجراء إلى طلبات لاحقة داخل العملية نفسها.
 - **السبب الجذري:** لم تكن حدود Express وTypeORM وJSON والدعوات وردود Meta/Twilio ممثلة بعقود وقت التشغيل، واستُخدمت casts للوصول المباشر للحقول. كما عوملت خريطة المسارات الثابتة كحالة قابلة للتغيير لكل طلب.
@@ -97,7 +112,7 @@
 - **خطة التراجع:** تُعاد ملفات BE-057 كوحدة واحدة؛ لا migration ولا تغيير مخطط أو بيانات. إذا ظهرت دعوات legacy ناقصة يُعاد إرسال الدعوة بدلاً من تخفيف parser أو إعادة casts غير آمنة.
 
 ### [2026-09-29] — BE-056 — v31 — المرحلة السابعة: عقود القوالب والعملاء وTelegram وإيقاف OAuth الوهمي
-- **الحالة:** محلياً — المرحلة السابعة مكتملة التحقق؛ لم تُرفع أو تُنشر.
+- **الحالة:** منشور في الإنتاج — ضمن PR #36 والدمج `b3a1e59`.
 - **النسخة:** `src/modules/otp-relay/telegram-otp-client.service.ts` v3 · `src/modules/templates/templates.service.ts` v1 · `src/modules/contacts/contacts.service.ts` v1 · `src/modules/contacts/dto/index.ts` v1 · `src/modules/integrations/integrations.service.ts` v1 · `src/modules/integrations/integrations.controller.ts` v1 · `src/modules/integrations/integrations.service.spec.ts` v1 · `src/modules/channels/whatsapp/whatsapp.service.ts` v2 · `src/modules/stores/salla-api.service.ts` v3 · `UPDATE_HISTORY.md` v31.
 - **المشكلة:** بقيت 50 تحذيراً في عميل Telegram OTP وخدمة القوالب والعملاء والتكاملات وإرسال WhatsApp بسبب `any` وعمليات catch صامتة وعقود JSON/SQL ضمنية. كشف التدقيق أيضاً أن endpoints قديمة موازية لربط سلة وزد كانت تولد `state` غير موقّع ثم تنشئ تكاملاً وتوكنات وهمية في الذاكرة دون استبدال OAuth code حقيقي.
 - **السبب الجذري:** استُخدمت مكتبات Telegram وTypeORM وردود سلة وMeta من دون عقود المصدر، ونشأ `IntegrationsService` كـplaceholder لكنه بقي متاحاً عبر controller بعد اكتمال مسارات OAuth الحقيقية.
@@ -112,7 +127,7 @@
 - **خطة التراجع:** تُعاد ملفات BE-056 كوحدة واحدة؛ لا migration ولا تغيير بيانات. لا يُعاد OAuth الوهمي؛ إذا تبين اعتماد واجهة قديمة عليه تُحوّل للمسار الحقيقي أو يضاف redirect داخلي آمن يولد state بالخدمة المعتمدة بدلاً من إعادة placeholder.
 
 ### [2026-09-29] — BE-055 — v30 — المرحلة السادسة: عقود الفوترة والأتمتة والإشعارات ومنع التفعيل الوهمي
-- **الحالة:** محلياً — المرحلة السادسة مكتملة التحقق؛ لم تُرفع أو تُنشر.
+- **الحالة:** منشور في الإنتاج — ضمن PR #36 والدمج `b3a1e59`.
 - **النسخة:** `src/modules/billing/billing.service.ts` v1 · `src/modules/billing/billing.controller.ts` v3 · `src/modules/billing/services/subscription-management.service.ts` v1 · `src/modules/billing/services/payment.service.ts` v1 · `src/modules/billing/services/payment.service.spec.ts` v1 · `src/database/entities/subscription.entity.ts` v1 · `src/modules/automations/automations.service.ts` v1 · `src/modules/employee-notifications/employee-notifications.service.ts` v1 · `src/modules/stores/salla-api.service.ts` v2 · `UPDATE_HISTORY.md` v30.
 - **المشكلة:** احتوت خدمات الفوترة وإدارة الاشتراك والأتمتة وإشعارات الموظفين على 50 تحذيراً بسبب `any` وعقود raw SQL وبيانات أحداث غير متحققة. وكشف التدقيق خللاً أخطر من التحذيرات: كان مسار الدفع يعيد جلسة وهمية في الإنتاج، وكانت بعض مسارات إنشاء وتجديد الخطط المدفوعة قادرة على تفعيل الاشتراك أو تمديده بلا تحقق من تحصيل حقيقي.
 - **السبب الجذري:** كانت بوابة الدفع مجرد placeholder لكن سلوك النجاح الوهمي بقي متاحاً في الإنتاج، بينما اعتمدت حدود قاعدة البيانات وبيانات الأتمتة وسلة على casts بدلاً من العقود الفعلية للكيانات والاستجابات.
@@ -127,7 +142,7 @@
 - **خطة التراجع:** تُعاد ملفات BE-055 كوحدة واحدة؛ لا migration ولا تغيير مخطط قاعدة بيانات. لا يُنصح بإعادة نجاح الدفع الوهمي؛ عند الحاجة التشغيلية تُربط بوابة الدفع الفعلية ويضاف تحقق webhook/idempotency واختبار تكاملي قبل إزالة `503`.
 
 ### [2026-09-29] — BE-054 — v29 — المرحلة الخامسة: عقود اتصال سلة وزد وحماية مفاتيح المنصات العامة
-- **الحالة:** محلياً — المرحلة الخامسة مكتملة التحقق؛ لم تُرفع أو تُنشر.
+- **الحالة:** منشور في الإنتاج — ضمن PR #36 والدمج `b3a1e59`.
 - **النسخة:** `src/modules/stores/zid-oauth.service.ts` v3 · `src/modules/stores/salla-oauth.service.ts` v1 · `src/modules/stores/zid-api.service.ts` v1 · `src/modules/stores/zid-store.service.ts` v1 · `src/modules/stores/api-connect.controller.ts` v1 · `src/common/utils/public-url.util.ts` v2 · `src/common/utils/__tests__/public-url.util.spec.ts` v2 · `src/modules/stores/__tests__/store-integration.parsers.spec.ts` v1 · `UPDATE_HISTORY.md` v29.
 - **المشكلة:** احتوت حدود اتصال المتاجر على 50 تحذيراً بسبب `any` في ردود OAuth وملفات المتجر وwebhooks وأخطاء HTTP وإعدادات توكن زد. كانت القيم الخارجية تُعامل كعقود صحيحة قبل فحص بنيتها. وكشف التدقيق أن خيار ربط «منصة أخرى» يرسل API key إلى URL يحدده المستخدم مع قبول HTTP وredirects، ما قد يكشف المفتاح على نقل غير مشفر أو يسمح بطلب عنوان داخلي من الخادم.
 - **السبب الجذري:** لم تكن استجابات سلة وزد تمر عبر parsers صريحة، وكانت طبقة الاتصال العامة تتحقق من صياغة URL فقط ولا تربط سياسة SSRF/TLS بعملية DNS والاتصال الفعلية.
@@ -142,7 +157,7 @@
 - **خطة التراجع:** تُعاد ملفات BE-054 كوحدة واحدة؛ لا migration ولا تغيير بيانات. لا يُعاد السماح بإرسال المفاتيح عبر HTTP أو redirects؛ عند حاجة منصة شرعية يضاف شكل موثق واختبار موجّه دون تخفيف حماية الشبكات الداخلية.
 
 ### [2026-09-28] — BE-053 — v28 — المرحلة الرابعة: عقود AI وسلة وحماية جلب الروابط
-- **الحالة:** محلياً — المرحلة الرابعة مكتملة التحقق؛ لم تُرفع أو تُنشر.
+- **الحالة:** منشور في الإنتاج — ضمن PR #36 والدمج `b3a1e59`.
 - **النسخة:** `src/modules/ai/ai.service.ts` v3 · `src/modules/stores/salla-api.service.ts` v1 · `src/common/utils/error.util.ts` v2 · `src/common/utils/__tests__/error.util.spec.ts` v2 · `src/common/utils/public-url.util.ts` v1 · `src/common/utils/__tests__/public-url.util.spec.ts` v1 · `UPDATE_HISTORY.md` v28.
 - **المشكلة:** احتوت خدمة AI على 53 تحذيراً وخدمة Salla API على تحذيرين بسبب عقود ضمنية و`any` لردود OpenAI وأدوات المالك وطلبات سلة ونتائج scraping وتحديثات الطلبات. كما كانت سلسلة intent قديمة غير مستخدمة مخفية بـ`@ts-ignore`. وكشف التدقيق أن فحص URL قبل scraping لا يمنع DNS rebinding ولا يعيد التحقق من وجهة redirect، ما يسمح نظرياً بمحاولة الوصول إلى عنوان داخلي.
 - **السبب الجذري:** نمت خدمة AI حول payloads خارجية متغيرة من دون طبقة parsing موحدة، واعتمد جلب المواقع على تحقق نصي أولي مع redirects تلقائية بدلاً من تثبيت سياسة الشبكة في كل عملية DNS واتصال.
@@ -157,7 +172,7 @@
 - **خطة التراجع:** تُعاد ملفات BE-053 كوحدة واحدة؛ لا migration ولا تغيير بيانات. لا يُنصح بإعادة redirects التلقائية أو DNS غير المحمي، وعند رفض وجهة شرعية تُوسع السياسة باختبار محدد من دون السماح بالشبكات الخاصة.
 
 ### [2026-09-28] — BE-052 — v27 — المرحلة الثالثة: عقود الأنواع الداخلية والتحقق من مهام الخلفية
-- **الحالة:** محلياً — المرحلة الثالثة مكتملة التحقق؛ لم تُرفع أو تُنشر.
+- **الحالة:** منشور في الإنتاج — ضمن PR #36 والدمج `b3a1e59`.
 - **النسخة:** `src/common/interceptors/active-subscription.interceptor.ts` v1 · `src/common/redis/redis.module.ts` v2 · `src/database/data-source.ts` v1 · `src/database/entities/campaign.entity.ts` v1 · `src/modules/admin/controllers/admin-inbox.controller.ts` v2 · `src/modules/admin/controllers/maintenance.controller.ts` v1 · `src/modules/admin/guards/admin.guards.ts` v1 · `src/modules/admin/services/admin-alerts.service.ts` v1 · `src/modules/admin/services/notification.service.ts` v1 · `src/modules/analytics/analytics.service.ts` v1 · `src/modules/auth/whatsapp-otp.service.ts` v1 · `src/modules/billing/processors/billing.processor.ts` v1 · `src/modules/billing/services/subscription-plan.service.ts` v1 · `src/modules/billing/services/usage-tracking.service.ts` v1 · `src/modules/billing/billing.controller.ts` v2 · `src/modules/inbox/inbox.service.ts` v1 · `src/modules/messaging/processors/messaging.processor.ts` v1 · `src/modules/suggestions/admin-suggestions.controller.ts` v1 · `src/modules/short-links/short-links.controller.ts` v2 · `src/modules/widget/widget.controller.ts` v1 · `src/modules/widget/widget.service.ts` v1 · `src/modules/channels/discord/discord.service.ts` v1 · `src/modules/channels/email/email.service.ts` v1 · `src/modules/channels/sms/sms.service.ts` v1 · `UPDATE_HISTORY.md` v27.
 - **المشكلة:** بقيت الحدود الداخلية تعتمد على `any` في Redis وBullMQ وطلبات الأدمن والمستخدم وTypeORM وإعدادات القنوات، وكانت بعض casts تخفي تعارضات حقيقية: سجل الصيانة يقرأ `request.user` رغم أن حارس الأدمن يضع الهوية في `request.admin`، ومفاتيح quota في الـcontroller لا تطابق `UsageStats` الفعلية، وفشل قراءة مسار CA المحدد كان يُبتلع ثم يسمح بهبوط TLS غير متحقق.
 - **السبب الجذري:** كانت عقود المكتبات والكيانات متاحة لكن لم تُستخدم، كما لم تكن بيانات مهام الفوترة غير الموثوقة تتحقق وقت التشغيل قبل تمريرها للخدمات.
@@ -172,7 +187,7 @@
 - **خطة التراجع:** إعادة ملفات BE-052 كوحدة واحدة تعيد العقود السابقة؛ لا migration ولا تغيير بيانات. لا يُنصح بإعادة الهبوط الصامت لشهادة CA أو مفاتيح quota غير الصحيحة؛ عند تعارض تشغيلي يُصحح الإعداد أو العقد المحدد باختبار.
 
 ### [2026-09-28] — BE-051 — v26 — أدوات الأنواع المشتركة لتنظيف الحدود الخارجية
-- **الحالة:** محلياً — المرحلة الثانية مكتملة التحقق؛ لم تُرفع أو تُنشر.
+- **الحالة:** منشور في الإنتاج — ضمن PR #36 والدمج `b3a1e59`.
 - **النسخة:** `src/common/utils/json-record.util.ts` v2 · `src/common/utils/error.util.ts` v1 · `src/common/utils/__tests__/json-record.util.spec.ts` v2 · `src/common/utils/__tests__/error.util.spec.ts` v1 · `UPDATE_HISTORY.md` v26.
 - **المشكلة:** جرد 389 تحذيراً كشف تكرار قراءة كائنات JSON وأخطاء HTTP/PostgreSQL غير الموثوقة بعقود موضعية و`any` في عشرات الخدمات، ما يشجع casts مختلفة وتسجيلاً محتملاً لبيانات استجابة حساسة.
 - **السبب الجذري:** لم توجد طبقة مشتركة تقرأ القيم من `unknown` حسب نوعها أو تستخرج فقط حقول الخطأ الآمنة (`message`, `code`, `status`).
@@ -186,7 +201,7 @@
 - **خطة التراجع:** إزالة الأداتين واختباراتهما فقط قبل بدء اعتماد الخدمات عليهما؛ لا migration ولا تغيير بيانات.
 
 ### [2026-09-28] — BE-050 — v25 — الدفعة السابعة لتنظيف حدود القنوات والتقارير
-- **الحالة:** محلياً — مكتملة التحقق؛ المتبقي 436 تحذيراً، وبانتظار الدفعة التالية.
+- **الحالة:** منشور في الإنتاج — ضمن PR #36 والدمج `b3a1e59`؛ أُغلقت التحذيرات المتبقية في المراحل اللاحقة.
 - **النسخة:** `src/modules/channels/channels.service.ts` v1 · `src/modules/channels/entities/channel.entity.ts` v2 · `src/common/utils/structured-logger.ts` v1 · `src/modules/analytics/analytics.controller.ts` v1 · `src/modules/suggestions/suggestions.controller.ts` v1 · `src/modules/suggestions/suggestions.service.ts` v1 · `UPDATE_HISTORY.md` v25.
 - **المشكلة:** احتوت حدود قنوات Meta/Discord وواجهات analytics/الاقتراحات وlogger على 50 تحذيراً: `any` لردود مزودين خارجيين ولمستخدم JWT وأخطاء قاعدة البيانات، وقيم nullable لا يعكسها كيان القناة، وتعبير emoji غير صحيح منطقياً.
 - **السبب الجذري:** بقيت عقود HTTP ومزودي القنوات ضمنية من مرحلة مبكرة، بينما قاعدة البيانات تسمح فعلياً بمسح بعض token/error/session fields بقيمة `NULL` من دون أن تعلن أنواع الكيان ذلك.
@@ -200,7 +215,7 @@
 - **خطة التراجع:** إعادة الملفات الستة معاً تعيد annotations فقط؛ لا migration ولا بيانات ولا تكامل متجر. لا يُعاد `any`؛ عند اختلاف رد مزود حي يُوسّع العقد المحدد مع اختبار.
 
 ### [2026-09-28] — BE-049 — v24 — مراجعة شاملة لدفعات تنظيف التحذيرات
-- **الحالة:** محلياً — مكتملة التحقق.
+- **الحالة:** منشور في الإنتاج — ضمن PR #36 والدمج `b3a1e59`.
 - **النسخة:** `src/modules/conversion-elements/controllers/index.ts` v6 · `UPDATE_HISTORY.md` v24.
 - **المشكلة:** المراجعة الشاملة لملفات BE-040 إلى BE-047 وجدت catch صامتاً داخل سكربت embed المضمّن؛ كان يخفي فشل إرسال دفعة قياس من المتصفح.
 - **طريقة الحل:** أصبح الفشل يظهر في debug mode فقط برسالة آمنة، مع الإبقاء على عدم تعطيل واجهة المتجر أو تغيير استجابة tracking العامة. راجعت أيضاً عدم وجود تعطيل ESLint أو `ts-ignore` أو `any` في نطاق الملفات المعالجة، وبقاء fallbacks سلة/زد وBaileys كما هي.
@@ -209,7 +224,7 @@
 - **PR / Commit:** محلياً — يُملأ بعد الرفع فقط.
 
 ### [2026-09-28] — BE-048 — v23 — مراجعة تأكيدية بعد 104 تحذيرات
-- **الحالة:** محلياً — مكتملة؛ بوابة المئة التالية اجتازت التحقق.
+- **الحالة:** منشور في الإنتاج — ضمن PR #36 والدمج `b3a1e59`.
 - **النسخة:** `UPDATE_HISTORY.md` v23.
 - **المشكلة:** بعد BE-046 وBE-047 أُزيلت 104 تحذيرات، فلا يكفي انخفاض عداد ESLint وحده كدليل جودة.
 - **طريقة الحل:** راجعت حدود المستخدم وDTO المنتج وعقود عناصر التحويل، وتحققت من عدم وجود تعطيل lint أو `ts-ignore` أو `any` في نطاق الدفعتين. راجعت خصوصاً بقاء حل رقم متجر سلة البديل داخل الخدمة العامة دون تغيير.
@@ -218,7 +233,7 @@
 - **PR / Commit:** محلياً — يُملأ بعد الرفع فقط.
 
 ### [2026-09-28] — BE-047 — v22 — الدفعة السادسة لعقود AI وعناصر التحويل
-- **الحالة:** محلياً — مكتملة التحقق.
+- **الحالة:** منشور في الإنتاج — ضمن PR #36 والدمج `b3a1e59`.
 - **النسخة:** `src/modules/ai/ai.controller.ts` v33 · `src/modules/conversion-elements/controllers/index.ts` v5 · `src/modules/conversion-elements/services/element-analytics.service.ts` v2 · `UPDATE_HISTORY.md` v22.
 - **المشكلة:** احتوى نطاق AI وعناصر التحويل على 50 تحذيراً من `any` وcatch فارغ. كما كان DTO منتجات AI عاماً رغم أن خدمة AI تفرض حقولاً محددة.
 - **طريقة الحل:** استُخدم `User` و`CurrentUser` بدلاً من Request العام، وأضيف DTO متحقق لمنتج AI (`name`, `price`, `available`, `url`). أصبحت إحصاءات A/B بعقد `VariantStats` وحالات العناصر من enum. تحوّلت catch العامة إلى تسجيل آمن مع استمرار استجابة tracking ذات 204 المقصودة.
@@ -228,7 +243,7 @@
 - **PR / Commit:** محلياً — يُملأ بعد الرفع فقط.
 
 ### [2026-09-28] — BE-046 — v21 — الدفعة الخامسة لتنظيف عقود الحملات والقنوات
-- **الحالة:** محلياً — مكتملة التحقق؛ أُزيل 256 تحذيراً إجمالاً، وبانتظار مراجعة المئة التالية بعد الدفعة القادمة.
+- **الحالة:** منشور في الإنتاج — ضمن PR #36 والدمج `b3a1e59`؛ اكتملت المراجعات اللاحقة حتى صفر تحذيرات.
 - **النسخة:** `src/modules/campaigns/campaigns.controller.ts` v9 · `src/modules/quick-replies/quick-replies.controller.ts` v6 · `src/modules/channels/email/email.controller.ts` v5 · `src/modules/channels/sms/sms.controller.ts` v5 · `src/modules/channels/telegram/telegram.controller.ts` v5 · `src/modules/channels/instagram/instagram.controller.ts` v6 · `UPDATE_HISTORY.md` v21.
 - **المشكلة:** احتوت Controllers الحملات والردود السريعة وقنوات البريد وSMS وTelegram وInstagram على 54 استعمالاً لـ`any` لمسار المستخدم الموثق أو لبيانات Telegram. وفي callback عام لـTelegram وInstagram كان يطلب `@CurrentUser()` رغم عدم وجود JWT أو استعمال المستخدم أصلاً.
 - **السبب الجذري:** بقيت controllers من مرحلة أولية تعتمد على عقد مستخدم ضمني، كما نُسخ decorator المستخدم إلى callbacks المزود الخارجية مع أنه ليس جزءاً من مصادقتها.
@@ -242,7 +257,7 @@
 - **خطة التراجع:** إعادة ملفات BE-046 تعيد annotations فقط؛ لا توجد migration أو بيانات أو تعديل لمزود متجر. لا يُعاد `@CurrentUser()` إلى callback عام إلا إذا أصبح endpoint محمياً فعلياً وبعقد JWT موثق.
 
 ### [2026-09-28] — BE-045 — v20 — مراجعة تأكيدية لدفعة عقود الإعدادات
-- **الحالة:** محلياً — مكتملة التحقق؛ بانتظار الدفعة التالية للوصول إلى بوابة مراجعة 100 تحذير.
+- **الحالة:** منشور في الإنتاج — ضمن PR #36 والدمج `b3a1e59`.
 - **النسخة:** `src/modules/settings/dto/index.ts` v6 · `UPDATE_HISTORY.md` v20.
 - **المشكلة:** في المراجعة المستقلة لـBE-044 ظهر أن DTO ساعات العمل، رغم تصحيح حقل `schedule`، لا يعلن `day` داخل كل عنصر. كما يعرّف العطلات ككائنات بينما عقد الواجهة الفعلي هو قائمة تواريخ نصية. مع `ValidationPipe` العالمي (`whitelist` و`forbidNonWhitelisted`) كان payload صحيح من الواجهة سيُرفض.
 - **السبب الجذري:** كان DTO يمثل تصميماً أقدم لم يُطابق بعد مع عقود الواجهة والخدمة، ولم يكن فحص lint وحده كافياً لاكتشاف اختلاف الحقول وقت التشغيل.
@@ -255,7 +270,7 @@
 - **خطة التراجع:** لا تراجع إلى DTO غير مطابق. عند إضافة نوع عطلة جديد مستقبلاً، يضاف بعقد متوافق واختبارات ترحيل بدلاً من قبول بنية عامة.
 
 ### [2026-09-28] — BE-044 — v19 — الدفعة الرابعة لتنظيف عقود الإعدادات والقوالب والأتمتة
-- **الحالة:** محلياً — مكتملة التحقق؛ بانتظار الانتقال إلى الدفعة التالية أو أمر الرفع.
+- **الحالة:** منشور في الإنتاج — ضمن PR #36 والدمج `b3a1e59`.
 - **النسخة:** `src/modules/settings/dto/index.ts` v5 (ثم v6 في BE-045) · `src/modules/settings/settings.controller.ts` v4 · `src/modules/settings/settings.service.ts` v4 · `src/modules/templates/templates.controller.ts` v30 · `src/modules/automations/automations.controller.ts` v5 · `UPDATE_HISTORY.md` v19.
 - **المشكلة:** احتوت طبقة الإعدادات والقوالب والأتمتة على 51 تحذيراً من `any` عند قراءة مستخدم JWT أو تمرير إعدادات غير محددة البنية. كما أن DTO لساعات العمل والردود التلقائية لا يطابقان شكل البيانات الفعلي الذي يستهلكه الخادم وترسله الواجهة.
 - **السبب الجذري:** استمر استعمال `@Req() req: any` و`@CurrentUser() user: any` بدلاً من العقد الموحد للمستخدم. وجرى تعريف DTO قديم حول أيام منفصلة ونصوص، في حين أن العقد الحقيقي هو `schedule` مصفوفة ورسائل ردود مركبة تحوي `enabled` و`message`.
@@ -269,7 +284,7 @@
 - **خطة التراجع:** إعادة ملفات BE-044 معاً تعيد أنواع controllers وDTOs السابقة فقط؛ لا توجد migration. لا يُفضّل إعادة DTO غير المطابق؛ عند خطأ في payload حي يوسّع العقد مع اختبار بدلاً من إرجاع `any`.
 
 ### [2026-09-28] — BE-043 — v18 — الدفعة الثالثة لتنظيف عقود Controllers الداخلية
-- **الحالة:** محلياً — الدفعة 3 مكتملة التحقق؛ بانتظار الانتقال إلى الدفعة التالية أو أمر الرفع.
+- **الحالة:** منشور في الإنتاج — ضمن PR #36 والدمج `b3a1e59`.
 - **النسخة:** `src/modules/contacts/contacts.controller.ts` v10 · `src/modules/inbox/inbox.controller.ts` v8 · `src/modules/tags/tags.controller.ts` v5 · `UPDATE_HISTORY.md` v18.
 - **المشكلة:** احتوت Controllers جهات الاتصال وInbox والتصنيفات على 50 استعمالاً لـ`any` عند استخراج مستخدم JWT، وفي endpoint الاستيراد كان نوع الملف عاماً رغم أن الخدمة تستخدم منه خاصية واحدة فقط.
 - **السبب الجذري:** لم يُستخدم `User` المشترك الذي يعيده `@CurrentUser()` في هذه controllers، وبقي النوع العام باقياً من مرحلة بناء endpoints الأولى.
@@ -283,7 +298,7 @@
 - **خطة التراجع:** إعادة ملفات BE-043 تعيد annotations فقط؛ لا توجد migration أو بيانات أو تغيير لعقود سلة/زد.
 
 ### [2026-09-28] — BE-042 — v17 — مراجعة تأكيدية بعد أول 101 تحذير ESLint
-- **الحالة:** محلياً — مكتملة؛ لا تغييرات تشغيلية في هذه المراجعة.
+- **الحالة:** منشور في الإنتاج — ضمن PR #36 والدمج `b3a1e59`.
 - **النسخة:** `UPDATE_HISTORY.md` v17.
 - **المشكلة:** بعد معالجة دفعتين (52 ثم 49 تحذيراً)، يلزم فحص مستقل لا يفترض أن انخفاض الرقم وحده يعني جودة الحل.
 - **السبب الجذري:** عدّاد التحذيرات لا يكشف وحده حلولاً شكلية مثل تعطيل القواعد أو casts واسعة أو تعارضاً صامتاً مع عقود مزود خارجي.
@@ -296,7 +311,7 @@
 - **خطة التراجع:** توثيق فقط؛ لا يلزم تراجع تشغيلي.
 
 ### [2026-09-28] — BE-041 — v16 — الدفعة الثانية لتنظيف عقود WhatsApp وOTP relay
-- **الحالة:** محلياً — الدفعة 2 مكتملة التحقق؛ بانتظار الانتقال إلى الدفعة التالية أو أمر الرفع.
+- **الحالة:** منشور في الإنتاج — ضمن PR #36 والدمج `b3a1e59`.
 - **النسخة:** `src/modules/channels/whatsapp/whatsapp-baileys.service.ts` v1 · `src/modules/channels/entities/channel.entity.ts` v1 · `src/modules/otp-relay/otp-relay.controller.ts` v1 · `src/modules/otp-relay/dto/otp-relay.dto.ts` v1 · `src/modules/otp-relay/dto/__tests__/otp-relay.dto.spec.ts` v1 · `UPDATE_HISTORY.md` v16.
 - **المشكلة:** احتوت خدمة Baileys وواجهة OTP relay على 49 تحذيراً: عقود مكتبة WhatsApp وطلبات HTTP كانت تمر عبر `any`، بعض حالات فشل الإغلاق/الحفظ كانت تُبتلع، واسم مخزن عداد إعادة الإرسال لا يطابق عقد Baileys.
 - **السبب الجذري:** لم تكن حدود المكتبة الخارجية ممثلة بأنواعها المصدّرة، ولم تكن inputs لوحة OTP ممثلة بـDTOs قابلة للتحقق وقت التشغيل. سمح ذلك بتعطيل فحص TypeScript/ESLint بدلاً من وصف البيانات المقبولة صراحة.
@@ -310,7 +325,7 @@
 - **خطة التراجع:** إعادة ملفات BE-041 معاً تعيد حدود الأنواع السابقة فقط ولا تحتاج migration. إذا ظهر اختلاف فعلي في event من Baileys، يضاف إلى العقد الضيق مع اختبار قبل التراجع؛ لا يُعاد `any` لإخفاء الفرق.
 
 ### [2026-09-28] — BE-040 — v15 — الدفعة الأولى لتنظيف عقود القوالب والإشعارات
-- **الحالة:** محلياً — اجتازت المراجعة التأكيدية المشتركة BE-042؛ بانتظار الانتقال إلى الدفعة التالية أو أمر الرفع.
+- **الحالة:** منشور في الإنتاج — ضمن PR #36 والدمج `b3a1e59`.
 - **النسخة:** `src/common/utils/json-record.util.ts` v1 · `src/common/utils/__tests__/json-record.util.spec.ts` v1 · `src/modules/webhooks/template-dispatcher.service.ts` v1 · `src/modules/webhooks/template-scheduler.service.ts` v1 · `src/modules/platform-notifications/dto/platform-notification.dto.ts` v1 · `src/modules/platform-notifications/dto/__tests__/platform-notification.dto.spec.ts` v1 · `src/modules/platform-notifications/platform-notifications.service.ts` v2 · `src/modules/platform-notifications/admin-platform-notifications.controller.ts` v1 · `src/modules/platform-notifications/platform-notifications-public.controller.ts` v1 · `UPDATE_HISTORY.md` v15.
 - **المشكلة:** أول دفعة منتقاة كانت تضم 50 تحذيراً في مسار القوالب والإشعارات؛ مصدرها قراءة JSON من قاعدة البيانات/سلة بـ`any`، شروط TypeORM عامة، وطلبات إدارة الإشعارات غير الممثلة كـDTO وقت التشغيل. كشف تنظيف خدمة الإشعارات تحذيرين مجاورين من النوع نفسه، فعولجا معها بدلاً من تركهما.
 - **السبب الجذري:** لم توجد طبقة موحدة وآمنة لفحص كائنات JSON قبل قراءة حقولها المتغيرة، فانتشر `as any` في مواضع متعددة. كما استُخدمت interfaces وقت الطلب HTTP، وهي لا تنتج تحققاً وقت التشغيل.
@@ -324,7 +339,7 @@
 - **خطة التراجع:** إعادة ملفات BE-040 معاً تعيد سلوك القراءة السابق؛ لا توجد migrations أو بيانات دائمة. عند ظهور اختلاف حقل سلة حي، أضف الاسم الجديد إلى قارئ JSON مع اختبار قبل أي تراجع.
 
 ### [2026-09-28] — BE-039 — v14 — توحيد والتحقق من مدد JWT وبيئة الفحص
-- **الحالة:** محلياً — اجتاز بوابة التحقق الكاملة؛ بانتظار أمر الرفع.
+- **الحالة:** منشور في الإنتاج — ضمن PR #36 والدمج `b3a1e59`.
 - **النسخة:** `package.json` v4 · `package-lock.json` v2 · `src/common/utils/jwt-expiration.util.ts` v1 · `src/common/utils/__tests__/jwt-expiration.util.spec.ts` v1 · `src/modules/auth/auth.service.ts` v10 · `src/modules/auth/auth.module.ts` v3 · `src/modules/auth/strategies/jwt.strategy.ts` v3 · `src/modules/gateway/gateway.module.ts` v1 · `UPDATE_HISTORY.md` v14.
 - **المشكلة:** كشف التثبيت النظيف بعد ترقية Nest 11 أن مدد JWT كانت تدخل كتسلسل نصي غير متحقق منه في ثلاث وحدات، وأن بعض مواضع JWT تقبل مفتاحاً سرياً مفقوداً حتى يظهر العطل لاحقاً. كما أن سكربت البناء كان يستخدم `rm -rf`، فلا يعمل محلياً على Windows.
 - **السبب الجذري:** لم تكن صلاحية مدة JWT مركزية أو ممثلة بنوع Nest الفعلي، واعتمد البناء على أمر خاص بنظام Linux. أثناء الفحص ظهر أيضاً أن `node_modules` المحلي غير متزامن ويحتوي Nest 12 رغم أن القفل يطلب Nest 11؛ لذلك لا تصلح نتائجه كدليل نشر.
@@ -338,7 +353,7 @@
 - **خطة التراجع:** إعادة ملفات BE-039 معاً تعيد قبول إعدادات JWT النصية والسلوك السابق للبناء؛ لا ترجعها إلا إذا منع إعداد إنتاج معروف وصحيح، ثم صحح الإعداد وأعد التغيير فوراً.
 
 ### [2026-09-28] — BE-038 — v13 — بوابة تحقق إصدار كاملة قبل الرفع
-- **الحالة:** محلياً — قاعدة عمل سارية قبل أي رفع لاحق.
+- **الحالة:** منشور في الإنتاج — ضمن PR #36 والدمج `b3a1e59`.
 - **النسخة:** `AGENTS.md` v4 · `Dockerfile` v2 · `src/modules/otp-relay/telegram-otp-client.service.ts` v2 · `UPDATE_HISTORY.md` v13.
 - **المشكلة:** كان التحقق السابق في بعض المرات مقتصراً على ملفات متأثرة، ما يسمح لخطأ قديم في جزء آخر بأن لا يظهر إلا بعد تغيير التبعيات أو داخل CI.
 - **السبب الجذري:** لا توجد بوابة مكتوبة تلزم بالتثبيت النظيف وفحص المشروع كاملاً قبل الرفع.
@@ -350,7 +365,7 @@
 - **خطة التراجع:** إعادة التوثيق فقط؛ لا أثر تشغيلي.
 
 ### [2026-09-28] — BE-037 — v12 — إزالة ثغرات تبعيات الخادم وتحسين عميل IMAP
-- **الحالة:** محلياً — اجتاز التحقق الكامل، بانتظار الرفع.
+- **الحالة:** منشور في الإنتاج — ضمن PR #36 والدمج `b3a1e59`.
 - **النسخة:** `package.json` v3 · `package-lock.json` v1 · `Dockerfile` v1 · `.github/workflows/ci.yml` v3 · `README.md` v1 · `src/modules/otp-relay/otp-relay.service.ts` v3 · `src/modules/otp-relay/telegram-otp-client.service.ts` v1 · `src/config/typeorm.config.ts` v3 · `src/common/middleware/request-logger.middleware.ts` v1 · `src/modules/auth/auth.service.ts` v9 · `src/modules/admin/controllers/admin-auth.controller.ts` v4 · `src/modules/campaigns/campaigns.service.ts` v1 · `src/modules/channels/whatsapp/whatsapp.service.ts` v1 · `src/modules/short-links/short-links.service.ts` v3 · `src/modules/platform-notifications/platform-notifications.service.ts` v1 · `src/modules/stores/dto/update-store-settings.dto.ts` v1 · `src/modules/webhooks/dto/salla-webhook.dto.ts` v1 · `UPDATE_HISTORY.md` v12.
 - **المشكلة:** كان تدقيق CI يفشل بثغرات عالية/حرجة ضمن شجرة التبعيات، وأبرزها عميل `imap` غير المدعوم. كما أن تحديثاً مباشراً إلى Nest 12 يجعل بعض الحزم ESM ويكسر اختبارات المشروع CommonJS، فلا يصلح كترقية آمنة.
 - **السبب الجذري:** قفل تبعيات قديم وتبعيات تطوير قديمة، مع اعتماد على مكتبة IMAP متروكة وخيار TLS كان يعطّل تحقق شهادة البريد. لم يكن إصدار Node في Docker أو CI موحداً مع متطلبات التبعيات الحديثة.
@@ -365,7 +380,7 @@
 - **خطة التراجع:** لا تُرجع التبعيات الضعيفة. عند عطل طارئ في IMAP، أصلح إعداد شهادة مزود البريد أو توافق ImapFlow في إصدار متابعة؛ لا تعطل تحقق TLS.
 
 ### [2026-09-28] — BE-036 — v11 — فصل parsers مزودي OAuth عن خدمة المصادقة
-- **الحالة:** مرفوع إلى GitHub — بانتظار الدمج والنشر المتزامن مع الواجهة.
+- **الحالة:** منشور في الإنتاج — ضمن PR #36 والدمج `b3a1e59`.
 - **النسخة:** `src/modules/auth/oauth-response.parsers.ts` v1 · `src/modules/auth/auth.service.ts` v8 · `src/modules/auth/__tests__/oauth-response.parsers.spec.ts` v2 · `UPDATE_HISTORY.md` v11.
 - **المشكلة:** كانت parsers التحقق من ردود Google وسلة وزد صحيحة وظيفياً لكنها موضوعة داخل `AuthService` الكبيرة، فتخلط منطق الجلسات والحسابات مع عقد مزودي HTTP وتضعف وضوح الصيانة.
 - **السبب الجذري:** أضيفت طبقة التحقق داخل الملف الموجود بسرعة مع معالجة التحذيرات بدلاً من إعطائها وحدة مستقلة.
@@ -378,7 +393,7 @@
 - **خطة التراجع:** إعادة الملفات الثلاثة فقط تعيد التنظيم السابق ولا تمس بيانات أو إعدادات OAuth.
 
 ### [2026-09-28] — BE-035 — v10 — تحقق وقت التشغيل من حدود OAuth الخارجية
-- **الحالة:** مرفوع إلى GitHub — بانتظار الدمج والنشر المتزامن مع الواجهة.
+- **الحالة:** منشور في الإنتاج — ضمن PR #36 والدمج `b3a1e59`.
 - **النسخة:** `src/modules/auth/auth.service.ts` v7 · `src/modules/auth/__tests__/oauth-response.parsers.spec.ts` v1 · `UPDATE_HISTORY.md` v10.
 - **المشكلة:** أنواع TypeScript وحدها لا تثبت أن JSON القادم من Google أو سلة أو زد يطابق العقد فعلياً وقت التشغيل؛ assertion مثل `as Type` قد يخفي رد مزود ناقصاً حتى يصل إلى منطق الحسابات.
 - **السبب الجذري:** حدود HTTP الخارجية كانت تحول JSON مباشرة إلى أنواع تطبيق داخلية بلا parser يفحص البنية والحقول الأساسية.
@@ -392,7 +407,7 @@
 - **خطة التراجع:** إعادة ملف الخدمة واختبار parser فقط تعيد الاعتماد السابق على assertions غير الموثوقة؛ لا migrations أو بيانات دائمة.
 
 ### [2026-09-28] — BE-034 — v9 — إزالة تحذيرات ESLint من طبقة المصادقة
-- **الحالة:** مرفوع إلى GitHub — بانتظار الدمج والنشر المتزامن مع الواجهة.
+- **الحالة:** منشور في الإنتاج — ضمن PR #36 والدمج `b3a1e59`.
 - **النسخة:** `src/modules/auth/auth.controller.ts` v4 · `src/modules/auth/auth.module.ts` v2 · `src/modules/auth/auth.service.ts` v6 · `src/modules/auth/dto/index.ts` v4 · `UPDATE_HISTORY.md` v9.
 - **المشكلة:** كانت ملفات المصادقة المتأثرة تحوي 37 تحذيراً (35 استخداماً لـ`any` وتحذيري `catch` فارغين)، فتخفي عقود الطلبات والاستجابات وأعطالاً تشغيلية محتملة.
 - **السبب الجذري:** نمت طبقة المصادقة حول استجابات خارجية وطلبات Express وJWT من دون أنواع مشتركة، واستُخدمت عمليات تحويل عامة لتجاوز المترجم.
@@ -406,7 +421,7 @@
 - **خطة التراجع:** إعادة ملفات BE-034 فقط تعيد التحذيرات والسلوك السابق؛ لا توجد migrations أو تعديلات دائمة على بيانات سلة أو زد.
 
 ### [2026-09-28] — BE-033 — v8 — ربط تدفقات OAuth بالجلسة ومنع إعادة الاستخدام
-- **الحالة:** مرفوع إلى GitHub — بانتظار الدمج والنشر المتزامن مع الواجهة.
+- **الحالة:** منشور في الإنتاج — ضمن PR #36 والدمج `b3a1e59`؛ يلزم إبقاء الواجهة المتوافقة منشورة لمسارات OAuth الجديدة.
 - **النسخة:** `src/modules/auth/oauth-state.service.ts` v1 · `src/modules/auth/auth.controller.ts` v3 · `src/modules/auth/auth.service.ts` v5 · `src/modules/auth/auth.module.ts` v1 · `src/modules/auth/dto/index.ts` v3 · `src/modules/auth/otp.service.ts` v1 · `src/modules/auth/__tests__/oauth-state.service.spec.ts` v1 · `src/modules/auth/__tests__/otp.service.spec.ts` v1 · `UPDATE_HISTORY.md` v8.
 - **المشكلة:** كانت حالة OAuth في سلة/زد موقعة فقط وليست مرتبطة بطلب المتصفح ولا تُستهلك مرة واحدة. كما أن Google يستخدم تدفقاً يعيد `id_token` إلى المتصفح، والتحقق من OTP يتكون من قراءات وكتابات Redis منفصلة تسمح لطلبين متزامنين بقبول الرمز نفسه.
 - **السبب الجذري:** خُلطت سلامة محتوى state مع مفهوم معاملة OAuth قصيرة العمر، وعاد اعتماد Google على بيانات حساسة داخل رابط المتصفح، ولم تكن عملية استهلاك OTP ذرية.
@@ -703,7 +718,7 @@
 | `backend/src/modules/admin/services/whatsapp-settings.service.ts` | v2 | BE-060 |
 | `backend/src/modules/webhooks/dto/zid-webhook.dto.ts` | v1 | BE-060 |
 | `backend/package.json` | v5 | BE-060 |
-| `backend/UPDATE_HISTORY.md` | v35 | BE-060 |
+| `backend/UPDATE_HISTORY.md` | v36 | BE-061 |
 | `backend/src/database/entities/customer.entity.ts` | v1 | BE-059 |
 | `backend/src/database/entities/order.entity.ts` | v1 | BE-059 |
 | `backend/src/modules/campaigns/campaigns.processor.ts` | v1 | BE-059 |
