@@ -5,7 +5,7 @@
  * ║  🔧 SECURITY FIXES:                                                            ║
  * ║  C-01: DB_SYNCHRONIZE → ALWAYS false in production (hardcoded safeguard)       ║
  * ║  M-01: SSL rejectUnauthorized → true with CA cert support                      ║
- * ║  L-03: Connection pool → increased to 50 with proper tuning                    ║
+ * ║  DB pool: bounded defaults safe for rolling deployments and small DB plans      ║
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -54,6 +54,22 @@ const entities = [
   PlatformFeature,
 ];
 
+const parsePoolLimit = (
+  configService: ConfigService,
+  key: 'DB_POOL_MIN' | 'DB_POOL_MAX',
+  fallback: number,
+): number => {
+  const rawValue = configService.get<string>(key);
+  if (rawValue === undefined || rawValue.trim() === '') return fallback;
+
+  const parsedValue = Number(rawValue);
+  if (!Number.isSafeInteger(parsedValue) || parsedValue < 0) {
+    throw new Error(`${key} must be a non-negative integer`);
+  }
+
+  return parsedValue;
+};
+
 /**
  * 🔧 FIX M-01: Load CA certificate for SSL verification
  * Only from explicit user config — NOT system defaults (system CA doesn't include DO's DB CA)
@@ -76,7 +92,7 @@ function loadCACertificate(configService: ConfigService): Buffer | undefined {
   return undefined;
 }
 
-const buildConfig = (configService: ConfigService): TypeOrmModuleOptions => {
+export const buildTypeOrmOptions = (configService: ConfigService): TypeOrmModuleOptions => {
   const nodeEnv = configService.get<string>('app.env', 'development');
   const isProduction = nodeEnv === 'production';
   const isDevelopment = nodeEnv === 'development';
@@ -85,6 +101,16 @@ const buildConfig = (configService: ConfigService): TypeOrmModuleOptions => {
   // 🔧 FIX C-01: HARDCODED SAFEGUARD — synchronize is ALWAYS false in production
   // ═══════════════════════════════════════════════════════════════════════════
   const synchronize = isProduction ? false : configService.get<boolean>('database.synchronize', false);
+
+  // Keep the default pool deliberately small. During a rolling deployment both
+  // the old and new containers are alive at once, so every configured minimum is
+  // doubled. A large minimum can exhaust a small managed PostgreSQL plan before
+  // the replacement container becomes ready.
+  const poolMin = isProduction ? parsePoolLimit(configService, 'DB_POOL_MIN', 0) : 1;
+  const poolMax = isProduction ? parsePoolLimit(configService, 'DB_POOL_MAX', 8) : 5;
+  if (poolMax < 1 || poolMin > poolMax) {
+    throw new Error('Invalid database pool configuration: require DB_POOL_MAX >= 1 and DB_POOL_MIN <= DB_POOL_MAX');
+  }
 
   if (isProduction && configService.get<string>('DB_SYNCHRONIZE') === 'true') {
     console.error('🚨 SECURITY: DB_SYNCHRONIZE=true is IGNORED in production. Use TypeORM migrations.');
@@ -150,10 +176,11 @@ const buildConfig = (configService: ConfigService): TypeOrmModuleOptions => {
       : configService.get<boolean>('database.logging', false)
         ? ['error', 'warn', 'migration']
         : ['error'],
-    // 🔧 FIX L-03: Increased connection pool
+    // Bounded pool: environment values may increase these limits only after the
+    // database connection budget has been sized for all concurrent instances.
     extra: {
-      max: isProduction ? parseInt(configService.get('DB_POOL_MAX', '50'), 10) : 5,
-      min: isProduction ? parseInt(configService.get('DB_POOL_MIN', '10'), 10) : 1,
+      max: poolMax,
+      min: poolMin,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: isProduction ? 5000 : 10000,
       keepAlive: true,
@@ -168,7 +195,7 @@ const buildConfig = (configService: ConfigService): TypeOrmModuleOptions => {
 
 export const typeOrmConfig: TypeOrmModuleAsyncOptions = {
   imports: [ConfigModule],
-  useFactory: buildConfig,
+  useFactory: buildTypeOrmOptions,
   inject: [ConfigService],
 };
 
