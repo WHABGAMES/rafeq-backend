@@ -36,6 +36,21 @@
 
 # أحدث التحديثات
 
+### [2026-10-01] — BE-074 — v48 — ترقية BullMQ وفصل فحص Redis عن تفاصيل الطابور
+- **الحالة:** محلياً — اكتملت الترقية والفحص، بانتظار المراجعة والرفع.
+- **النسخة:** تكامل BullMQ وRedis health v2 · اختبار صحة النظام v1 · `package.json` v6 · `package-lock.json` v3 · `UPDATE_HISTORY.md` v48.
+- **المشكلة:** BullMQ v5 يسحب `cron-parser` v4 غير المصانة، كما أن فحص صحة الإدارة كان يصل إلى الخاصية الداخلية `Queue.client` للحصول على Redis؛ أزالت BullMQ v6 هذه الخاصية فأظهر البناء أن صفحة الصحة مرتبطة بتفصيل داخلي غير مضمون.
+- **السبب الجذري:** بقيت مكتبة الطوابير على الجيل الخامس رغم دعم Nest BullMQ للجيل السادس، واستُخدمت الطوابير سابقاً كطريق غير مباشر إلى Redis بدلاً من الاعتماد على مزود Redis المشترك في التطبيق.
+- **طريقة الحل:** رُقّيت BullMQ إلى 6.3.11، بعد جرد كامل أثبت عدم وجود أي استعمال لواجهات repeatable jobs المحذوفة في v6 أو لاستدعاء `Queue.resume()`. فُصل فحص الصحة عن BullMQ بحقن `REDIS_CLIENT` الرسمي المشترك مباشرة. أصبح `INFO` يقرأ جميع الأقسام لأن الإصدار موجود في قسم server والذاكرة في قسم memory، وأضيف اختبار يثبت `PING` واستخراج الإصدار والذاكرة. لم تتغير أسماء الطوابير أو job names أو payloads أو retry/delay.
+- **الأثر التشغيلي:** تزال `cron-parser` v4 المهملة، ويظل Redis health مستقراً عند ترقيات BullMQ اللاحقة. تحافظ جميع المهام الحالية على تنسيقها وسلوكها لأنها مهام عادية وليست repeatable jobs قديمة.
+- **أثر سلة/زد:** دُققت طوابير `salla-webhooks` و`zid-webhooks` تحديداً؛ لا تستخدمان API محذوفة ولم تتغير عقودهما أو أحداثهما أو retries أو payloads. نجحت اختبارات معالج زد، ويلزم بعد النشر مراقبة معالجة حدث تجريبي أو أول حدث طبيعي لكل منصة.
+- **الملفات:** `package.json` و`package-lock.json` · `src/modules/admin/controllers/system-health.controller.ts` و`system-health.controller.spec.ts` · `UPDATE_HISTORY.md` (v48).
+- **المخاطر/الملاحظات:** لم ينشئ الكود الحالي repeatable jobs إطلاقاً. إن كانت قاعدة Redis تحمل metadata قديمة أُنشئت يدوياً من نسخة تاريخية، فيجب حذفها أو ترحيلها قبل استعمال جدولة BullMQ مستقبلاً؛ لا تؤثر في المهام العادية الحالية. تحذير `glob@10.5.0` المتبقي يأتي من TypeORM/Jest/Nest CLI، وهو الإصدار المصحح أمنياً ولا توجد ترقية مدعومة أعلى في هذه الاعتمادات حالياً، لذلك لم يُفرض override غير متوافق.
+- **التحقق:** ESLint كامل بلا أخطاء أو تحذيرات؛ بناء Nest ناجح؛ المجموعة الكاملة 30/30 و153/153 اختباراً ناجحة بعد إضافة اختبار الصحة، واختبار معالج زد 2/2 ناجح منفرداً بعد الترقية؛ `npm audit` الكامل ونسخة الإنتاج يعيدان 0 ثغرات؛ `cron-parser` أصبح 5.10.1؛ و`git diff --check` نظيف.
+- **رسالة الـcommit:** `chore(BE-074): v48 upgrade BullMQ and decouple Redis health`.
+- **PR / Commit:** محلياً — بانتظار الرفع.
+- **خطة التراجع:** إعادة BE-074 تعيد BullMQ v5 وعميل صحة Redis عبر Queue؛ لا توجد migration لقاعدة البيانات. لا ينصح بالتراجع إلا عند عطل موثق في معالجة queue، لأنه يعيد اعتماداً غير مصاناً واقتراناً داخلياً.
+
 ### [2026-10-01] — BE-073 — v47 — ترقية OpenAI SDK وإزالة polyfill المهمل
 - **الحالة:** محلياً — اكتملت الترقية والفحص، بانتظار المراجعة والرفع.
 - **النسخة:** OpenAI SDK وتكامل tool calls v2 · الاعتمادات v4 · `UPDATE_HISTORY.md` v47.
@@ -876,14 +891,17 @@
 
 | الملف | آخر نسخة | آخر إصلاح |
 |---|---|---|
+| `backend/src/modules/admin/controllers/system-health.controller.ts` | v2 | BE-074 |
+| `backend/src/modules/admin/controllers/system-health.controller.spec.ts` | v1 | BE-074 |
+| `backend/package.json` | v6 | BE-074 |
+| `backend/package-lock.json` | v3 | BE-074 |
+| `backend/UPDATE_HISTORY.md` | v48 | BE-074 |
 | `backend/src/modules/otp-relay/otp-relay.service.ts` | v4 | BE-060 |
 | `backend/src/modules/analytics/analytics.service.ts` | v2 | BE-060 |
 | `backend/src/modules/tenants/tenants.service.ts` | v1 | BE-060 |
 | `backend/src/common/decorators/current-user.decorator.ts` | v1 | BE-060 |
 | `backend/src/modules/admin/services/whatsapp-settings.service.ts` | v2 | BE-060 |
 | `backend/src/modules/webhooks/dto/zid-webhook.dto.ts` | v1 | BE-060 |
-| `backend/package.json` | v5 | BE-060 |
-| `backend/UPDATE_HISTORY.md` | v38 | BE-063 |
 | `backend/src/app.module.ts` | v4 | BE-062 |
 | `backend/src/modules/billing/controllers/payment-webhooks.controller.ts` | v1 | BE-062 |
 | `backend/src/modules/otp-relay/telegram-otp-client.service.ts` | v4 | BE-062 |
@@ -898,7 +916,6 @@
 | `backend/src/modules/conversion-elements/services/element-tracking.service.ts` | v1 | BE-059 |
 | `backend/src/modules/messaging/services/message.service.ts` | v1 | BE-059 |
 | `backend/src/modules/ai/ai.service.ts` | v4 | BE-059 |
-| `backend/UPDATE_HISTORY.md` | v34 | BE-059 |
 | `backend/src/modules/otp-relay/telegram-otp-client.service.ts` | v3 | BE-056 |
 | `backend/src/modules/templates/templates.service.ts` | v1 | BE-056 |
 | `backend/src/modules/contacts/contacts.service.ts` | v1 | BE-056 |
@@ -919,7 +936,6 @@
 | `backend/src/modules/stores/salla-store.service.ts` | v1 | BE-058 |
 | `backend/src/modules/stores/stores.service.ts` | v1 | BE-058 |
 | `backend/src/modules/stores/zid-oauth.controller.ts` | v1 | BE-058 |
-| `backend/UPDATE_HISTORY.md` | v33 | BE-058 |
 | `backend/src/modules/billing/billing.service.ts` | v1 | BE-055 |
 | `backend/src/modules/billing/billing.controller.ts` | v3 | BE-055 |
 | `backend/src/modules/billing/services/subscription-management.service.ts` | v1 | BE-055 |
@@ -929,7 +945,6 @@
 | `backend/src/modules/automations/automations.service.ts` | v1 | BE-055 |
 | `backend/src/modules/employee-notifications/employee-notifications.service.ts` | v1 | BE-055 |
 | `backend/src/modules/stores/salla-api.service.ts` | v2 | BE-055 |
-| `backend/UPDATE_HISTORY.md` | v30 | BE-055 |
 | `backend/src/modules/stores/zid-oauth.service.ts` | v3 | BE-054 |
 | `backend/src/modules/stores/salla-oauth.service.ts` | v1 | BE-054 |
 | `backend/src/modules/stores/zid-api.service.ts` | v1 | BE-054 |
@@ -938,14 +953,12 @@
 | `backend/src/common/utils/public-url.util.ts` | v2 | BE-054 |
 | `backend/src/common/utils/__tests__/public-url.util.spec.ts` | v2 | BE-054 |
 | `backend/src/modules/stores/__tests__/store-integration.parsers.spec.ts` | v1 | BE-054 |
-| `backend/UPDATE_HISTORY.md` | v29 | BE-054 |
 | `backend/src/modules/ai/ai.service.ts` | v3 | BE-053 |
 | `backend/src/modules/stores/salla-api.service.ts` | v1 | BE-053 |
 | `backend/src/common/utils/error.util.ts` | v2 | BE-053 |
 | `backend/src/common/utils/__tests__/error.util.spec.ts` | v2 | BE-053 |
 | `backend/src/common/utils/public-url.util.ts` | v1 | BE-053 |
 | `backend/src/common/utils/__tests__/public-url.util.spec.ts` | v1 | BE-053 |
-| `backend/UPDATE_HISTORY.md` | v28 | BE-053 |
 | `backend/src/common/interceptors/active-subscription.interceptor.ts` | v1 | BE-052 |
 | `backend/src/common/redis/redis.module.ts` | v2 | BE-052 |
 | `backend/src/database/data-source.ts` | v1 | BE-052 |
@@ -1004,7 +1017,6 @@
 | `backend/src/modules/csat/csat.service.ts` | v2 | F-12 |
 | `backend/src/modules/admin/controllers/admin-auth.controller.ts` | v4 | BE-037 |
 | `backend/AGENTS.md` | v4 | BE-038 |
-| `backend/UPDATE_HISTORY.md` | v15 | BE-040 |
 | `backend/src/modules/contacts/contacts.controller.ts` | v10 | BE-043 |
 | `backend/src/modules/inbox/inbox.controller.ts` | v8 | BE-043 |
 | `backend/src/modules/tags/tags.controller.ts` | v5 | BE-043 |
@@ -1014,9 +1026,6 @@
 | `backend/src/modules/conversion-elements/controllers/index.ts` | v5 | BE-047 |
 | `backend/src/modules/conversion-elements/services/element-analytics.service.ts` | v2 | BE-047 |
 | `backend/src/modules/conversion-elements/controllers/index.ts` | v6 | BE-049 |
-| `backend/UPDATE_HISTORY.md` | v24 | BE-049 |
-| `backend/UPDATE_HISTORY.md` | v25 | BE-050 |
-| `backend/UPDATE_HISTORY.md` | v26 | BE-051 |
 | `backend/src/common/utils/json-record.util.ts` | v2 | BE-051 |
 | `backend/src/common/utils/error.util.ts` | v1 | BE-051 |
 | `backend/src/common/utils/__tests__/json-record.util.spec.ts` | v2 | BE-051 |
@@ -1027,28 +1036,21 @@
 | `backend/src/modules/analytics/analytics.controller.ts` | v1 | BE-050 |
 | `backend/src/modules/suggestions/suggestions.controller.ts` | v1 | BE-050 |
 | `backend/src/modules/suggestions/suggestions.service.ts` | v1 | BE-050 |
-| `backend/UPDATE_HISTORY.md` | v23 | BE-048 |
 | `backend/src/modules/campaigns/campaigns.controller.ts` | v9 | BE-046 |
 | `backend/src/modules/quick-replies/quick-replies.controller.ts` | v6 | BE-046 |
 | `backend/src/modules/channels/email/email.controller.ts` | v5 | BE-046 |
 | `backend/src/modules/channels/sms/sms.controller.ts` | v5 | BE-046 |
 | `backend/src/modules/channels/telegram/telegram.controller.ts` | v5 | BE-046 |
 | `backend/src/modules/channels/instagram/instagram.controller.ts` | v6 | BE-046 |
-| `backend/UPDATE_HISTORY.md` | v21 | BE-046 |
 | `backend/src/modules/settings/settings.controller.ts` | v4 | BE-044 |
 | `backend/src/modules/settings/settings.service.ts` | v4 | BE-044 |
 | `backend/src/modules/templates/templates.controller.ts` | v30 | BE-044 |
 | `backend/src/modules/automations/automations.controller.ts` | v5 | BE-044 |
-| `backend/UPDATE_HISTORY.md` | v19 | BE-044 |
-| `backend/UPDATE_HISTORY.md` | v20 | BE-045 |
-| `backend/UPDATE_HISTORY.md` | v18 | BE-043 |
-| `backend/UPDATE_HISTORY.md` | v17 | BE-042 |
 | `backend/src/modules/channels/whatsapp/whatsapp-baileys.service.ts` | v1 | BE-041 |
 | `backend/src/modules/channels/entities/channel.entity.ts` | v1 | BE-041 |
 | `backend/src/modules/otp-relay/otp-relay.controller.ts` | v1 | BE-041 |
 | `backend/src/modules/otp-relay/dto/otp-relay.dto.ts` | v1 | BE-041 |
 | `backend/src/modules/otp-relay/dto/__tests__/otp-relay.dto.spec.ts` | v1 | BE-041 |
-| `backend/UPDATE_HISTORY.md` | v16 | BE-041 |
 | `backend/.dockerignore` | v1 | F-27 |
 | `backend/src/modules/admin/services/admin-users.service.ts` | v3 | BE-057 |
 | `backend/src/modules/users/users.service.ts` | v3 | BE-057 |
@@ -1056,8 +1058,6 @@
 | `backend/src/database/entities/user.entity.ts` | v2 | F-21 |
 | `backend/src/database/migrations/1706800000000-AddSourceToWebhookEvents.ts` | v1 | F-15 |
 | `backend/.env.example` | v2 | F-11 |
-| `backend/package.json` | v4 | BE-039 |
-| `backend/package-lock.json` | v2 | BE-039 |
 | `backend/Dockerfile` | v2 | BE-038 |
 | `backend/README.md` | v1 | BE-037 |
 | `backend/.github/workflows/ci.yml` | v3 | BE-037 |

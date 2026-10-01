@@ -6,12 +6,11 @@
  * Any missing table (message_logs, stores, subscriptions) returns 0 gracefully
  * instead of crashing the entire /metrics endpoint with 500.
  */
-import { Controller, Get, Logger, UseGuards } from '@nestjs/common';
+import { Controller, Get, Inject, Logger, UseGuards } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
-import { InjectQueue } from '@nestjs/bullmq';
-import { Queue } from 'bullmq';
 import type Redis from 'ioredis';
+import { REDIS_CLIENT } from '../../../common/redis/redis.module';
 import { AdminJwtGuard, AdminPermissionGuard, RequirePermissions } from '../guards/admin.guards';
 import { PERMISSIONS } from '../entities/admin-user.entity';
 
@@ -24,8 +23,8 @@ export class SystemHealthController {
     @InjectDataSource()
     private readonly dataSource: DataSource,
 
-    @InjectQueue('notifications')
-    private readonly notificationQueue: Queue,
+    @Inject(REDIS_CLIENT)
+    private readonly redisClient: Redis,
   ) {}
 
   // ─── GET /admin/system/health ─────────────────────────────────────────────
@@ -86,13 +85,11 @@ export class SystemHealthController {
   private async checkRedis() {
     const start = Date.now();
     try {
-      // BullMQ exposes its connection through the narrower IRedisClient type,
-      // while this application uses ioredis, whose client supports health
-      // commands such as PING and INFO.
-      const client = (await this.notificationQueue.client) as unknown as Redis;
-      await client.ping();
+      await this.redisClient.ping();
 
-      const info = await client.info('server');
+      // Request all sections because the version belongs to `server`, while
+      // used_memory_human belongs to `memory`.
+      const info = await this.redisClient.info();
       const version = info.match(/redis_version:(.+)/)?.[1]?.trim();
       const memory = info.match(/used_memory_human:(.+)/)?.[1]?.trim();
 
