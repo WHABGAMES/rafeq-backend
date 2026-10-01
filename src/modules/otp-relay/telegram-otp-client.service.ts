@@ -28,12 +28,6 @@ import {
   getJsonString,
 } from '@common/utils/json-record.util';
 
-interface TelegramAuthSession {
-  client: TelegramClient;
-  session: StringSession;
-  phone: string;
-}
-
 interface ResponseWaiter {
   botUsername: string;
   resolve: (message: Api.Message | null) => void;
@@ -85,7 +79,6 @@ export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
 
   // ── Response listener ──
   private responseWaiter: ResponseWaiter | null = null;
-  private authTemp: TelegramAuthSession | null = null;
 
   constructor(
     private readonly config: ConfigService,
@@ -458,49 +451,6 @@ export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
       this.logger.warn(`Button click failed: ${getErrorMessage(error)}`);
     }
     return false;
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════════
-  // AUTH SETUP (one-time admin)
-  // ═══════════════════════════════════════════════════════════════════════════════
-
-  async startAuth(apiId: number, apiHash: string, phone: string): Promise<{ phoneCodeHash: string }> {
-    const session = new StringSession('');
-    const tempClient = new TelegramClient(session, apiId, apiHash, {});
-    await tempClient.connect();
-
-    const result = await tempClient.invoke(new Api.auth.SendCode({
-      phoneNumber: phone,
-      apiId,
-      apiHash,
-      settings: new Api.CodeSettings({}),
-    }));
-
-    if (!('phoneCodeHash' in result) || typeof result.phoneCodeHash !== 'string') {
-      await tempClient.disconnect();
-      throw new Error('Telegram did not return a phone-code challenge');
-    }
-
-    this.authTemp = { client: tempClient, session, phone };
-    return { phoneCodeHash: result.phoneCodeHash };
-  }
-
-  async completeAuth(code: string, phoneCodeHash: string): Promise<{ sessionString: string }> {
-    const temp = this.authTemp;
-    if (!temp) throw new Error('Call startAuth first');
-
-    await temp.client.invoke(new Api.auth.SignIn({
-      phoneNumber: temp.phone,
-      phoneCodeHash,
-      phoneCode: code,
-    }));
-
-    const sessionStr = temp.session.save();
-    await temp.client.disconnect();
-    this.authTemp = null;
-
-    this.logger.log('✅ Auth done — save to TELEGRAM_SESSION env');
-    return { sessionString: sessionStr };
   }
 
   private sleep(ms: number): Promise<void> {

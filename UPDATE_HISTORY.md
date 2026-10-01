@@ -36,8 +36,23 @@
 
 # أحدث التحديثات
 
+### [2026-10-01] — BE-078 — v52 — أداة آمنة لتدوير جلسة Telegram المبطلة
+- **الحالة:** محلياً — الأداة مكتملة ومفحوصة؛ تنتظر تشغيلها التفاعلي وإدخال رمز Telegram ثم حفظ الناتج مشفراً في DigitalOcean.
+- **النسخة:** مولد جلسة Telegram v1 · اختبار الإعداد v1 · عميل Telegram OTP v4 · اختباراته v5 · `package.json` v7 · `UPDATE_HISTORY.md` v52.
+- **المشكلة:** Telegram أبطل مفتاح الجلسة الحالي بسبب استعمال متزامن، ولا يمكن للكود إصلاحه أو إعادة استعماله. كما احتوت الخدمة على دوال مصادقة جزئية غير موصولة بواجهة إدارية ولا تعالج 2FA بصورة كاملة.
+- **السبب الجذري:** لم توجد آلية تشغيلية واحدة وآمنة لإنشاء `StringSession` جديدة من اتصال وحيد ثم نقلها إلى مخزن أسرار DigitalOcean.
+- **طريقة الحل:** أضيف أمر CLI تفاعلي يبدأ دائماً من جلسة فارغة، يقرأ `TELEGRAM_API_ID/HASH` من البيئة، يطلب الهاتف والرمز و2FA عند الحاجة، يتحقق من الهوية ومن أن الجلسة غير فارغة، ويفصل العميل في `finally` قبل عرض القيمة مرة واحدة. كلمة 2FA لا تظهر على الشاشة. حُذفت دوال المصادقة الجزئية من خدمة التشغيل حتى لا توجد آليتان متنافستان أو حالة جلسة مؤقتة داخل الخادم.
+- **الأثر التشغيلي:** يمكن تدوير الجلسة مرة واحدة دون وضع الهاتف أو الرمز أو كلمة 2FA أو الجلسة في Git. لا يتغير تشغيل Telegram حتى تُولّد القيمة فعلياً وتُحفظ مشفرة في DigitalOcean.
+- **أثر سلة/زد:** لا تغيير في OAuth أو Webhooks أو events أو queues أو payloads لسلة وزد.
+- **الملفات:** `src/cli/generate-telegram-session.ts` (v1) · `generate-telegram-session.spec.ts` (v1) · `src/modules/otp-relay/telegram-otp-client.service.ts` (v4) · اختباراته (v5) · `package.json` (v7) · `UPDATE_HISTORY.md` (v52).
+- **المخاطر/الملاحظات:** قيمة الجلسة تمنح صلاحية الحساب ويجب عدم إرسالها في الدردشة أو حفظها في صور/ملفات/سجل Git. يجب إنهاء مولد الجلسة قبل تشغيل القيمة في الإنتاج وعدم استعمالها في أي جهاز آخر.
+- **التحقق:** فحص الإعداد يغطي المفاتيح الصحيحة وجميع قيم API ID غير الصالحة وغياب API hash، كما تُفحص المجموعة الكاملة وTypeScript وESLint قبل الرفع. الاختبار الحي يحتاج رمز Telegram من مالك الحساب.
+- **رسالة الـcommit:** `feat(BE-078): v52 add secure Telegram session rotation CLI`.
+- **PR / Commit:** محلياً — بانتظار الرفع بعد المراجعة.
+- **خطة التراجع:** إعادة BE-078 تحذف أداة التشغيل فقط ولا تغيّر البيانات أو الجلسة الموجودة في DigitalOcean.
+
 ### [2026-10-01] — BE-077 — v51 — توحيد فحص الجاهزية على اتصال Redis الإنتاجي
-- **الحالة:** مرفوع — بانتظار نشر DigitalOcean والتحقق الحي.
+- **الحالة:** منشور — Live Deployment ناجح وفحص الجاهزية الحي يعيد 200.
 - **النسخة:** `src/health.controller.ts` v2 · `UPDATE_HISTORY.md` v51.
 - **المشكلة:** بعد نجاح نشر تحديثات الاعتمادات، أعاد `/api/health/ready` استجابة 503 من DigitalOcean بينما بقي `/api/health` و`/api/health/live` سليمين وكانت طلبات سلة الفعلية تنجح. كان فحص الجاهزية ينشئ اتصال Redis ثانياً بإعدادات ناقصة لا تدعم TLS أو `REDIS_URL`.
 - **السبب الجذري:** تكرار منطق إنشاء Redis داخل `HealthController` جعله ينحرف عن مزود `REDIS_CLIENT` المركزي والمجرّب الذي تستخدمه المنصة.
@@ -48,7 +63,7 @@
 - **المخاطر/الملاحظات:** إذا تعطل مزود Redis الحقيقي فسيظل readiness يعيد 503 كما ينبغي؛ لم يعد هناك عميل فحص مستقل قد يعطي نتيجة مختلفة.
 - **التحقق:** ESLint بلا أخطاء أو تحذيرات؛ بناء Nest ناجح؛ 30/30 مجموعة و157/157 اختباراً ناجحة؛ ويلزم إثبات `/api/health/ready` بحالة 200 بعد النشر.
 - **رسالة الـcommit:** `fix(BE-077): v51 share production Redis in readiness check`.
-- **PR / Commit:** بانتظار إنشاء commit والرفع.
+- **PR / Commit:** `188a75feea5d6dee356a5ca53838087d53392089` · نشر DigitalOcean `c88a7dd2-3cc9-4e78-993d-039135976dec` ناجح.
 - **خطة التراجع:** إعادة BE-077 تعيد عميل Redis المكرر وفشل readiness في بيئة TLS، لذلك لا ينصح بالتراجع.
 
 ### [2026-10-01] — BE-076 — v50 — إيقاف إعادة محاولة جلسة Telegram المبطلة بعد ترقية teleproto
@@ -1163,5 +1178,11 @@
 | `backend/src/modules/suggestions/admin-suggestions.controller.ts` | v(+1) | F-16 |
 | `backend/src/modules/templates/templates.controller.ts` | v(+1) | F-16 |
 | `backend/src/modules/webhooks/webhooks.controller.ts` | v(+1) | F-16 |
+| `backend/src/cli/generate-telegram-session.ts` | v1 | BE-078 |
+| `backend/src/cli/generate-telegram-session.spec.ts` | v1 | BE-078 |
+| `backend/src/modules/otp-relay/telegram-otp-client.service.ts` | v4 | BE-078 |
+| `backend/src/modules/otp-relay/telegram-otp-client.service.spec.ts` | v5 | BE-078 |
+| `backend/package.json` | v7 | BE-078 |
+| `backend/UPDATE_HISTORY.md` | v52 | BE-078 |
 
 > ملاحظة: `v(+1)` تعني زيادة نسخة واحدة عن آخر نسخة معروفة للملف (معظم الـ controllers كانت v1 → صارت v2؛ إن سبق تعديل ملف، احسب من نسخته الأخيرة).

@@ -47,7 +47,8 @@
     "docker:up": "docker-compose up -d",
     "docker:down": "docker-compose down",
     "docker:logs": "docker-compose logs -f",
-    "migration:show": "npm run typeorm -- migration:show -d src/database/data-source.ts"
+    "migration:show": "npm run typeorm -- migration:show -d src/database/data-source.ts",
+    "telegram:session:generate": "ts-node src/cli/generate-telegram-session.ts"
   },
   "dependencies": {
     "@hapi/boom": "^10.0.1",

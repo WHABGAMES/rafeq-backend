@@ -20,12 +20,6 @@ describe('TelegramOtpClientService teleproto integration', () => {
     expect(redis.set).not.toHaveBeenCalled();
   });
 
-  it('supports an empty StringSession for the existing admin sign-in flow', () => {
-    const session = new StringSession('');
-
-    expect(session.save()).toBe('');
-  });
-
   it('round-trips the persisted GramJS StringSession wire format', async () => {
     const dcId = Buffer.from([2]);
     const address = Buffer.from('149.154.167.51');
