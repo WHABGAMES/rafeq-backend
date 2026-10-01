@@ -139,6 +139,27 @@ export class PlatformCapabilitiesService implements OnModuleInit {
     return feature;
   }
 
+  async requireAccessibleFeature(featureKey: string, storeId: string, user: User): Promise<PlatformFeature> {
+    const feature = await this.requireUsableFeature(featureKey, storeId, user.tenantId);
+    if (!this.isPermittedForUser(feature, user)) {
+      throw new ForbiddenException({
+        code: 'FEATURE_PERMISSION_REQUIRED',
+        message: 'لا تملك صلاحية استخدام هذه الميزة.',
+      });
+    }
+    if (feature.requiredPlanFeature) {
+      const subscription = await this.subscriptions.getSubscriptionInfo(user.tenantId);
+      const planValue = subscription.features[feature.requiredPlanFeature as keyof PlanFeatureSet];
+      if (planValue !== true) {
+        throw new ForbiddenException({
+          code: 'FEATURE_PLAN_REQUIRED',
+          message: 'هذه الميزة غير متاحة ضمن باقتك الحالية.',
+        });
+      }
+    }
+    return feature;
+  }
+
   private isAvailableWithParents(
     feature: PlatformFeature,
     featureMap: Map<string, PlatformFeature>,

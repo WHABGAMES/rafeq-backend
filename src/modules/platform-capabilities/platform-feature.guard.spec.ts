@@ -1,13 +1,12 @@
-import { BadRequestException, ExecutionContext, ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ExecutionContext } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { UserRole } from '../../database/entities/user.entity';
 import { PlatformFeatureGuard } from './platform-feature.guard';
 
 describe('PlatformFeatureGuard', () => {
   const reflector = { getAllAndOverride: jest.fn().mockReturnValue('campaigns') } as unknown as Reflector;
-  const capabilities = { requireUsableFeature: jest.fn() };
-  const subscriptions = { getSubscriptionInfo: jest.fn() };
-  const guard = new PlatformFeatureGuard(reflector, capabilities as never, subscriptions as never);
+  const capabilities = { requireAccessibleFeature: jest.fn() };
+  const guard = new PlatformFeatureGuard(reflector, capabilities as never);
 
   const context = (request: Record<string, unknown>) => ({
     getHandler: () => null,
@@ -23,28 +22,23 @@ describe('PlatformFeatureGuard', () => {
   });
 
   it('passes tenant and active store to the ownership-aware capability service', async () => {
-    capabilities.requireUsableFeature.mockResolvedValue({ requiredPermission: null, requiredPlanFeature: null });
+    capabilities.requireAccessibleFeature.mockResolvedValue({});
     await expect(guard.canActivate(context({
       headers: { 'x-store-id': 'store' }, params: {},
       user: { tenantId: 'tenant', role: UserRole.OWNER, preferences: {} },
     }))).resolves.toBe(true);
-    expect(capabilities.requireUsableFeature).toHaveBeenCalledWith('campaigns', 'store', 'tenant');
+    expect(capabilities.requireAccessibleFeature).toHaveBeenCalledWith(
+      'campaigns',
+      'store',
+      expect.objectContaining({ tenantId: 'tenant' }),
+    );
   });
 
-  it('enforces user permission independently from platform targeting', async () => {
-    capabilities.requireUsableFeature.mockResolvedValue({ requiredPermission: 'campaigns', requiredPlanFeature: null });
-    await expect(guard.canActivate(context({
-      headers: { 'x-store-id': 'store' }, params: {},
-      user: { tenantId: 'tenant', role: UserRole.AGENT, preferences: { permissions: {} } },
-    }))).rejects.toBeInstanceOf(ForbiddenException);
-  });
-
-  it('enforces plan features independently from platform targeting', async () => {
-    capabilities.requireUsableFeature.mockResolvedValue({ requiredPermission: null, requiredPlanFeature: 'campaigns' });
-    subscriptions.getSubscriptionInfo.mockResolvedValue({ features: { campaigns: false } });
+  it('delegates permission and plan enforcement to the capability service', async () => {
+    capabilities.requireAccessibleFeature.mockRejectedValue(new Error('denied'));
     await expect(guard.canActivate(context({
       headers: { 'x-store-id': 'store' }, params: {},
       user: { tenantId: 'tenant', role: UserRole.OWNER, preferences: {} },
-    }))).rejects.toBeInstanceOf(ForbiddenException);
+    }))).rejects.toThrow('denied');
   });
 });

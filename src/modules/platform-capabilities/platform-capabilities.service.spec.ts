@@ -112,4 +112,25 @@ describe('PlatformCapabilitiesService workspace isolation', () => {
     await expect(service.requireUsableFeature('templates.edit', 'store-id', 'tenant-id'))
       .rejects.toMatchObject({ response: { code: 'PLATFORM_FEATURE_UNAVAILABLE' } });
   });
+
+  it('enforces user permission through the exported capability service', async () => {
+    jest.spyOn(service, 'requireUsableFeature').mockResolvedValueOnce({
+      requiredPermission: 'campaigns', requiredPlanFeature: null,
+    } as PlatformFeature);
+
+    await expect(service.requireAccessibleFeature('campaigns', 'store-id', {
+      tenantId: 'tenant-id', role: UserRole.AGENT, preferences: { permissions: {} },
+    } as unknown as User)).rejects.toMatchObject({ response: { code: 'FEATURE_PERMISSION_REQUIRED' } });
+  });
+
+  it('enforces subscription plan through the exported capability service', async () => {
+    jest.spyOn(service, 'requireUsableFeature').mockResolvedValueOnce({
+      requiredPermission: null, requiredPlanFeature: 'aiBot',
+    } as PlatformFeature);
+    subscriptions.getSubscriptionInfo.mockResolvedValueOnce({ features: { aiBot: false } });
+
+    await expect(service.requireAccessibleFeature('ai', 'store-id', {
+      tenantId: 'tenant-id', role: UserRole.OWNER, preferences: {},
+    } as unknown as User)).rejects.toMatchObject({ response: { code: 'FEATURE_PLAN_REQUIRED' } });
+  });
 });
