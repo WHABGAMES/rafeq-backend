@@ -36,6 +36,21 @@
 
 # أحدث التحديثات
 
+### [2026-10-01] — BE-076 — v50 — إيقاف إعادة محاولة جلسة Telegram المبطلة بعد ترقية teleproto
+- **الحالة:** محلياً — الإصلاح قيد الفحص قبل الرفع وإعادة النشر.
+- **النسخة:** عميل Telegram OTP v3 · اختباراته v4 · `UPDATE_HISTORY.md` v50.
+- **المشكلة:** نجح نشر BE-071..BE-075، لكن سجل الإنتاج أظهر أن `teleproto` يعبّر عن إبطال الجلسة برسالة وصفية جديدة بدلاً من النص القديم `AUTH_KEY_DUPLICATED`. لم يتعرف المصنف عليها كخطأ دائم، فحاول الاتصال كل 10 ثوانٍ بجلسة لا يمكن إصلاحها بالمحاولة.
+- **السبب الجذري:** كان قرار retry مربوطاً بنص خطأ GramJS واحد، بينما احتفظت المكتبة الجديدة بمعنى الخطأ وغيرت عرضه النصي.
+- **طريقة الحل:** استُخرج مصنف صريح لأخطاء إبطال الجلسة يدعم رمز GramJS القديم وصيغتي teleproto المشاهدتين في الإنتاج. عند الخطأ الدائم تُحرر ملكية Redis، تتعطل الخدمة بوضوح، وتُكتب رسالة تشغيلية تطلب تدوير `TELEGRAM_SESSION` دون جدولة retry. تبقى أخطاء الشبكة المؤقتة قابلة لإعادة المحاولة.
+- **الأثر التشغيلي:** يتوقف ضجيج الاتصال المتكرر ولا تُستهلك اتصالات Telegram بجلسة ميتة. Telegram OTP يبقى معطلاً بأمان إلى أن تُنشأ جلسة جديدة؛ بقية المنصة تستمر بالعمل.
+- **أثر سلة/زد:** لا تغيير في OAuth أو Webhooks أو الطوابير أو الأحداث أو payloads؛ سجل الإنتاج أكد طلبات widget لمتجر سلة بحالة 200 بعد النشر.
+- **الملفات:** `src/modules/otp-relay/telegram-otp-client.service.ts` (v3) · `telegram-otp-client.service.spec.ts` (v4) · `UPDATE_HISTORY.md` (v50).
+- **المخاطر/الملاحظات:** لا يستطيع الكود إصلاح مفتاح أبطلته خوادم Telegram؛ يلزم تدوير الجلسة لاحقاً عبر تدفق الإدارة ورمز تحقق فعلي. المصنف محافظ ولا يحول timeouts أو أخطاء النقل إلى تعطيل دائم.
+- **التحقق:** ESLint كامل بلا أخطاء أو تحذيرات؛ بناء Nest ناجح؛ 30/30 مجموعة و157/157 اختباراً ناجحة، منها حالتا النص القديم والجديد وخطأ نقل مؤقت؛ و`git diff --check` نظيف. يبقى إثبات توقف retry من سجل الإنتاج بعد إعادة النشر.
+- **رسالة الـcommit:** `fix(BE-076): v50 stop retries for invalidated Telegram sessions`.
+- **PR / Commit:** محلياً — بانتظار الفحص والرفع.
+- **خطة التراجع:** إعادة BE-076 تعيد retry كل 10 ثوانٍ للجلسة المبطلة ولا تصلح Telegram؛ لذلك لا ينصح بالتراجع.
+
 ### [2026-10-01] — BE-075 — v49 — تدقيق مستقل لحزمة تحديث الاعتمادات قبل النشر
 - **الحالة:** محلياً — اكتمل التدقيق وإغلاق فجوة اختبار الجلسة، بانتظار الرفع وتشغيل CI على Node 22.
 - **النسخة:** اختبار توافق جلسة Telegram v3 · `UPDATE_HISTORY.md` v49.
@@ -906,8 +921,9 @@
 
 | الملف | آخر نسخة | آخر إصلاح |
 |---|---|---|
-| `backend/src/modules/otp-relay/telegram-otp-client.service.spec.ts` | v3 | BE-075 |
-| `backend/UPDATE_HISTORY.md` | v49 | BE-075 |
+| `backend/src/modules/otp-relay/telegram-otp-client.service.ts` | v3 | BE-076 |
+| `backend/src/modules/otp-relay/telegram-otp-client.service.spec.ts` | v4 | BE-076 |
+| `backend/UPDATE_HISTORY.md` | v50 | BE-076 |
 | `backend/src/modules/admin/controllers/system-health.controller.ts` | v2 | BE-074 |
 | `backend/src/modules/admin/controllers/system-health.controller.spec.ts` | v1 | BE-074 |
 | `backend/package.json` | v6 | BE-074 |

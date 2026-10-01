@@ -1,7 +1,10 @@
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import { StringSession } from 'teleproto/sessions';
-import { TelegramOtpClientService } from './telegram-otp-client.service';
+import {
+  isPermanentTelegramSessionError,
+  TelegramOtpClientService,
+} from './telegram-otp-client.service';
 
 describe('TelegramOtpClientService teleproto integration', () => {
   it('keeps the client disabled when the MTProto credentials are incomplete', async () => {
@@ -43,5 +46,16 @@ describe('TelegramOtpClientService teleproto integration', () => {
     await session.load();
 
     expect(session.save()).toBe(persistedSession);
+  });
+
+  it.each([
+    '406: AUTH_KEY_DUPLICATED (caused by InvokeWithLayer)',
+    'Concurrent usage of the current session from multiple connections was detected, the current session was invalidated by the server for security reasons!',
+  ])('classifies an invalidated session as permanent: %s', (message) => {
+    expect(isPermanentTelegramSessionError(message)).toBe(true);
+  });
+
+  it('keeps transient transport failures retryable', () => {
+    expect(isPermanentTelegramSessionError('TIMEOUT while connecting')).toBe(false);
   });
 });

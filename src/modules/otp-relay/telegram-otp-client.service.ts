@@ -40,6 +40,15 @@ interface ResponseWaiter {
   timeout: NodeJS.Timeout;
 }
 
+export function isPermanentTelegramSessionError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes('auth_key_duplicated') ||
+    normalized.includes('concurrent usage of the current session') ||
+    normalized.includes('session was invalidated by the server')
+  );
+}
+
 @Injectable()
 export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
   private static readonly LEASE_KEY = 'rafeq:telegram-otp:connection-owner';
@@ -147,7 +156,14 @@ export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
     }
 
     await this.releaseLease();
-    if (result === 'failed') this.scheduleLeaseRetry();
+    if (result === 'failed') {
+      this.scheduleLeaseRetry();
+    } else {
+      this.available = false;
+      this.logger.error(
+        'Telegram OTP disabled because TELEGRAM_SESSION was permanently invalidated; rotate the session before re-enabling it',
+      );
+    }
   }
 
   private async acquireLease(): Promise<boolean> {
@@ -240,7 +256,7 @@ export class TelegramOtpClientService implements OnModuleInit, OnModuleDestroy {
       this.client = null;
       // Telegram permanently invalidates a duplicated auth key. Retrying the
       // same value only creates log noise; an operator must rotate the session.
-      return message.includes('AUTH_KEY_DUPLICATED') ? 'duplicate' : 'failed';
+      return isPermanentTelegramSessionError(message) ? 'duplicate' : 'failed';
     }
   }
 
