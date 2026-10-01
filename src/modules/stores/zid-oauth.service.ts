@@ -403,7 +403,7 @@ export class ZidOAuthService {
           if (!existingStore) {
             // This shouldn't happen, but handle it anyway
             this.logger.error(`❌ Duplicate key but store not found: ${zidStoreId}`);
-            throw new Error('Database inconsistency detected');
+            throw new Error('Database inconsistency detected', { cause: saveError });
           }
           
           // ♻️ Restore soft-deleted store if needed

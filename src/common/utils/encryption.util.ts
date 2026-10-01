@@ -81,7 +81,7 @@ export function encrypt(plainText: string | null | undefined): string | null {
     return `${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted}`;
   } catch (error) {
     console.error('Encryption failed:', error);
-    throw new Error('Failed to encrypt data');
+    throw new Error('Failed to encrypt data', { cause: error });
   }
 }
 
@@ -137,7 +137,7 @@ export function decrypt(encryptedText: string | null | undefined): string | null
     // 🔧 FIX M-05: NEVER return the raw value — it could be a plaintext token
     const message = error instanceof Error ? error.message : 'Unknown decryption error';
     console.error(`Decryption failed: ${message}`);
-    throw new Error(`DECRYPT_FAILED: ${message}`);
+    throw new Error(`DECRYPT_FAILED: ${message}`, { cause: error });
   }
 }
 

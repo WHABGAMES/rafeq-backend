@@ -190,7 +190,7 @@ export class OtpService implements OnModuleInit, OnModuleDestroy {
 
     } catch (error) {
       this.logger.error('❌ Failed to initialize Redis for OTP Service', error);
-      throw new Error('OTP Service requires Redis connection');
+      throw new Error('OTP Service requires Redis connection', { cause: error });
     }
   }
 

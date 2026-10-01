@@ -134,14 +134,13 @@ export class SallaOrderHandler {
 
       const hasPreviousStatus = previousStatus !== undefined && previousStatus !== null;
       let hasRealStatusTransition = false;
-      let existingStatusSignature = '';
 
       if (context.storeId && normalizedOrderId !== undefined) {
         try {
           const existingOrder = await this.orderRepository.findOne({
             where: { storeId: context.storeId, sallaOrderId: String(normalizedOrderId) },
           });
-          existingStatusSignature = getJsonString(
+          const existingStatusSignature = getJsonString(
             getNestedJsonRecord(asJsonRecord(existingOrder?.metadata), 'sallaData'),
             'lastStatusSignature',
           ) ?? '';

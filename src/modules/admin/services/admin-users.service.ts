@@ -810,8 +810,8 @@ export class AdminUsersService {
 
     for (const row of scopedTables) {
       const columns: string[] = Array.isArray(row.columns) ? row.columns : [];
-      let condition = '';
-      let params: unknown[] = [];
+      let condition: string;
+      let params: unknown[];
 
       if (columns.includes('tenant_id')) {
         condition = `"tenant_id" = $1`;
