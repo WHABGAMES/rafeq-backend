@@ -24,6 +24,7 @@ import axios from 'axios';
 import type {
   ChatCompletion,
   ChatCompletionCreateParamsNonStreaming,
+  ChatCompletionMessageFunctionToolCall,
   ChatCompletionMessageParam,
   ChatCompletionTool,
 } from 'openai/resources/chat/completions';
@@ -1066,7 +1067,13 @@ export class AIService {
 
       // تنفيذ الأدوات (request_human_agent, get_order_status)
       if (assistantMsg.tool_calls?.length) {
-        const toolResults = await this.executeToolCalls(assistantMsg.tool_calls, context, settings);
+        const functionToolCalls = assistantMsg.tool_calls.map((toolCall) => {
+          if (toolCall.type !== 'function') {
+            throw new Error(`Unsupported OpenAI tool call type: ${toolCall.type}`);
+          }
+          return toolCall;
+        });
+        const toolResults = await this.executeToolCalls(functionToolCalls, context, settings);
         toolsUsed.push(...toolResults.map((r) => r.name));
 
         const handoffTool = toolResults.find((r) => r.name === 'request_human_agent');
@@ -2732,11 +2739,7 @@ If there is no store identity above AND no information relates to the customer's
    * ✅ BUG-2 FIX: executeToolCalls يستدعي handleHandoff فعلياً
    */
   private async executeToolCalls(
-    toolCalls: Array<{
-      id: string;
-      type: string;
-      function: { name: string; arguments: string };
-    }>,
+    toolCalls: ChatCompletionMessageFunctionToolCall[],
     context: ConversationContext,
     settings: AISettings,
   ): Promise<
@@ -4005,6 +4008,9 @@ ${storeData ? '🏪 ' + storeData : ''}`;
         gptMessages.push(choice.message);
 
         for (const toolCall of choice.message.tool_calls) {
+          if (toolCall.type !== 'function') {
+            throw new Error(`Unsupported OpenAI owner tool call type: ${toolCall.type}`);
+          }
           const fnName = toolCall.function.name;
           let result = '';
           try {
