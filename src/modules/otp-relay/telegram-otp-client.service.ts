@@ -17,10 +17,10 @@ import { Inject, Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nest
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import Redis from 'ioredis';
-import { Api, TelegramClient } from 'telegram';
-import { StringSession } from 'telegram/sessions';
-import { NewMessage, NewMessageEvent } from 'telegram/events';
-import type { Entity } from 'telegram/define';
+import { Api, TelegramClient } from 'teleproto';
+import { StringSession } from 'teleproto/sessions';
+import { NewMessage, NewMessageEvent } from 'teleproto/events';
+import type { Entity } from 'teleproto/define';
 import { getErrorMessage } from '@common/utils/error.util';
 import {
   asJsonRecord,
