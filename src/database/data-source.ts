@@ -38,9 +38,11 @@ function buildSslConfig(): boolean | Record<string, unknown> {
   if (!isProduction && process.env.DB_SSL !== 'true') return false;
 
   const ca = loadCACert();
-  return ca
-    ? { rejectUnauthorized: true, ca }
-    : { rejectUnauthorized: false };
+  if (ca) return { rejectUnauthorized: true, ca };
+  if (isProduction && process.env.DB_ALLOW_INSECURE_SSL !== 'true') {
+    throw new Error('DB_CA_CERT or DB_CA_CERT_PATH is required for production migrations');
+  }
+  return { rejectUnauthorized: false };
 }
 
 // ─── DataSource ──────────────────────────────────────────────────────────────

@@ -18,6 +18,8 @@ import { SuggestionFollower } from './entities/suggestion-follower.entity';
 import { SuggestionsService } from './suggestions.service';
 import { SuggestionsController } from './suggestions.controller';
 import { AdminSuggestionsController } from './admin-suggestions.controller';
+import { SuggestionNotificationsListener } from './suggestion-notifications.listener';
+import { User } from '../../database/entities/user.entity';
 
 // ✅ AdminJwtGuard needs Repository<AdminUser> + JwtService
 import { AdminUser } from '@modules/admin/entities/admin-user.entity';
@@ -29,6 +31,7 @@ import { AdminUser } from '@modules/admin/entities/admin-user.entity';
       SuggestionLike,
       SuggestionComment,
       SuggestionFollower,
+      User,
       AdminUser, // required by AdminJwtGuard → @InjectRepository(AdminUser)
     ]),
 
@@ -40,7 +43,7 @@ import { AdminUser } from '@modules/admin/entities/admin-user.entity';
     SuggestionsController,
     AdminSuggestionsController,
   ],
-  providers: [SuggestionsService],
+  providers: [SuggestionsService, SuggestionNotificationsListener],
   exports: [SuggestionsService],
 })
 export class SuggestionsModule {}

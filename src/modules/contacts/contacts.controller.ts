@@ -38,6 +38,7 @@ import {
   UseInterceptors,
   ParseBoolPipe,
   ParseIntPipe,
+  BadRequestException,
 } from '@nestjs/common';
 import { Response } from 'express';
 import { User } from '@database/entities';
@@ -52,6 +53,8 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 
 import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
+import { PlatformFeatureGuard } from '../platform-capabilities/platform-feature.guard';
+import { RequirePlatformFeature } from '../platform-capabilities/platform-feature.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ContactsService } from './contacts.service';
 import {
@@ -65,11 +68,35 @@ import {
 /** The import service currently consumes only the original upload filename. */
 interface UploadedContactFile {
   originalname?: string;
+  mimetype?: string;
+  size?: number;
+}
+
+const CONTACT_IMPORT_MAX_BYTES = 5 * 1024 * 1024;
+const CONTACT_IMPORT_MIME_TYPES = new Set([
+  'text/csv',
+  'application/csv',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+]);
+
+function contactImportFileFilter(
+  _request: unknown,
+  file: UploadedContactFile,
+  callback: (error: Error | null, acceptFile: boolean) => void,
+): void {
+  const extensionAllowed = /\.(csv|xlsx)$/i.test(file.originalname || '');
+  if (!extensionAllowed || !file.mimetype || !CONTACT_IMPORT_MIME_TYPES.has(file.mimetype)) {
+    callback(new BadRequestException('يسمح فقط بملفات CSV أو XLSX'), false);
+    return;
+  }
+  callback(null, true);
 }
 
 @ApiTags('Contacts - إدارة العملاء (CRM)')
 @ApiBearerAuth('JWT-auth')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PlatformFeatureGuard)
+@RequirePlatformFeature('contacts')
 @Controller({
   path: 'contacts',
   version: '1',
@@ -211,7 +238,10 @@ export class ContactsController {
     description: 'استيراد عملاء من ملف CSV/Excel',
   })
   @ApiConsumes('multipart/form-data')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(FileInterceptor('file', {
+    limits: { fileSize: CONTACT_IMPORT_MAX_BYTES, files: 1 },
+    fileFilter: contactImportFileFilter,
+  }))
   async importContacts(
     @CurrentUser() user: User,
     @UploadedFile() file: UploadedContactFile,

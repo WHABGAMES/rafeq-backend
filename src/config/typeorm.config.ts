@@ -41,6 +41,7 @@ import { ShortLink, LinkClick } from '../modules/short-links/short-link.entity';
 import { TrustedDevice } from '../modules/auth/trusted-device.entity';
 import { PlatformNotification } from '../modules/platform-notifications/platform-notification.entity';
 import { PlatformNotificationUserAction } from '../modules/platform-notifications/platform-notification-user-action.entity';
+import { PlatformFeature } from '../modules/platform-capabilities/entities/platform-feature.entity';
 
 const entities = [
   User, Tenant, Store, Channel, Message, Conversation, Campaign, Customer,
@@ -50,6 +51,7 @@ const entities = [
   WidgetSettings, ShortLink, LinkClick, TrustedDevice,
   PlatformNotification,
   PlatformNotificationUserAction,
+  PlatformFeature,
 ];
 
 /**

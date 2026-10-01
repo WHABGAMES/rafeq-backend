@@ -12,10 +12,11 @@ import {
   BadRequestException,
   ParseIntPipe,
 } from '@nestjs/common';
-import { AdminJwtGuard, AdminPermissionGuard, RequirePermissions } from '../guards/admin.guards';
+import { AdminJwtGuard, AdminPermissionGuard, RequirePermissions, Require2FA } from '../guards/admin.guards';
 import { CurrentAdmin, AdminIp } from '../decorators/current-admin.decorator';
 import { AdminUser, PERMISSIONS } from '../entities/admin-user.entity';
 import { AdminUsersService } from '../services/admin-users.service';
+import { ChangeUserEmailDto, HardDeleteUserDto, MergeAccountsDto, SuspendUserDto } from '../dto/admin-security.dto';
 // ✅ AuditService is NOT injected here — all audit logging happens inside AdminUsersService
 
 @Controller('admin/users')
@@ -74,9 +75,10 @@ export class AdminUsersController {
 
   @Post('merge')
   @RequirePermissions(PERMISSIONS.USERS_MERGE)
+  @Require2FA()
   @HttpCode(HttpStatus.OK)
   mergeAccounts(
-    @Body() body: { sourceUserId: string; targetUserId: string; confirmText: string },
+    @Body() body: MergeAccountsDto,
     @CurrentAdmin() admin: AdminUser,
     @AdminIp() ip: string,
   ) {
@@ -100,10 +102,11 @@ export class AdminUsersController {
 
   @Post(':id/suspend')
   @RequirePermissions(PERMISSIONS.USERS_SUSPEND)
+  @Require2FA()
   @HttpCode(HttpStatus.OK)
   suspend(
     @Param('id', ParseUUIDPipe) id: string,
-    @Body() body: { reason: string },
+    @Body() body: SuspendUserDto,
     @CurrentAdmin() admin: AdminUser,
     @AdminIp() ip: string,
   ) {
@@ -115,6 +118,7 @@ export class AdminUsersController {
 
   @Post(':id/reactivate')
   @RequirePermissions(PERMISSIONS.USERS_SUSPEND)
+  @Require2FA()
   @HttpCode(HttpStatus.OK)
   reactivate(
     @Param('id', ParseUUIDPipe) id: string,
@@ -126,6 +130,7 @@ export class AdminUsersController {
 
   @Post(':id/reset-password')
   @RequirePermissions(PERMISSIONS.USERS_RESET_PASSWORD)
+  @Require2FA()
   @HttpCode(HttpStatus.OK)
   resetPassword(
     @Param('id', ParseUUIDPipe) id: string,
@@ -137,10 +142,11 @@ export class AdminUsersController {
 
   @Post(':id/change-email')
   @RequirePermissions(PERMISSIONS.USERS_CHANGE_EMAIL)
+  @Require2FA()
   @HttpCode(HttpStatus.OK)
   changeEmail(
     @Param('id', ParseUUIDPipe) id: string,
-    @Body() body: { newEmail: string },
+    @Body() body: ChangeUserEmailDto,
     @CurrentAdmin() admin: AdminUser,
     @AdminIp() ip: string,
   ) {
@@ -152,6 +158,7 @@ export class AdminUsersController {
 
   @Post(':id/delete')
   @RequirePermissions(PERMISSIONS.USERS_DELETE)
+  @Require2FA()
   @HttpCode(HttpStatus.OK)
   softDelete(
     @Param('id', ParseUUIDPipe) id: string,
@@ -166,10 +173,11 @@ export class AdminUsersController {
   // ⚠️ مقتصر على AdminRole.OWNER فقط — لا يمكن التراجع
   @Post(':id/hard-delete')
   @RequirePermissions(PERMISSIONS.USERS_HARD_DELETE)
+  @Require2FA()
   @HttpCode(HttpStatus.OK)
   hardDelete(
     @Param('id', ParseUUIDPipe) id: string,
-    @Body() body: { confirmText: string },
+    @Body() body: HardDeleteUserDto,
     @CurrentAdmin() admin: AdminUser,
     @AdminIp() ip: string,
   ) {

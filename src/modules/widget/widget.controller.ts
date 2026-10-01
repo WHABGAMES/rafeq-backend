@@ -26,8 +26,9 @@ import {
   UseGuards,
   NotFoundException,
   Logger,
+  Req,
 } from '@nestjs/common';
-import { Response } from 'express';
+import { Request, Response } from 'express';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -39,6 +40,8 @@ import { Store } from '../stores/entities/store.entity';
 import { User } from '@database/entities/user.entity';
 import { WidgetSettings } from './widget-settings.entity';
 import { getErrorMessage } from '../../common/utils/error.util';
+import { PlatformFeatureGuard } from '../platform-capabilities/platform-feature.guard';
+import { RequirePlatformFeature } from '../platform-capabilities/platform-feature.decorator';
 
 // ═══════════════════════════════════════════════════════════════
 // 🌐 PUBLIC CONTROLLER — no auth required
@@ -117,7 +120,8 @@ export class WidgetPublicController {
 
 @ApiTags('Widget: Settings')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PlatformFeatureGuard)
+@RequirePlatformFeature('whatsapp_widget.settings')
 @Controller({ path: 'widget/settings', version: '1' })
 export class WidgetSettingsController {
   constructor(
@@ -131,11 +135,10 @@ export class WidgetSettingsController {
    * Find the merchant's store from their tenantId
    * User entity has tenantId but NOT storeId
    */
-  private async findStoreId(tenantId: string): Promise<string> {
+  private async findStoreId(tenantId: string, storeId: string): Promise<string> {
     const store = await this.storeRepo.findOne({
-      where: { tenantId },
+      where: { id: storeId, tenantId },
       select: ['id'],
-      order: { createdAt: 'DESC' },
     });
 
     if (!store) {
@@ -147,8 +150,8 @@ export class WidgetSettingsController {
 
   @Get()
   @ApiOperation({ summary: 'Get widget settings' })
-  async getSettings(@CurrentUser() user: User) {
-    const storeId = await this.findStoreId(user.tenantId);
+  async getSettings(@CurrentUser() user: User, @Req() request: Request) {
+    const storeId = await this.findStoreId(user.tenantId, request.headers['x-store-id'] as string);
     return this.widgetService.getSettings(storeId, user.tenantId);
   }
 
@@ -156,9 +159,10 @@ export class WidgetSettingsController {
   @ApiOperation({ summary: 'Update widget settings' })
   async updateSettings(
     @CurrentUser() user: User,
+    @Req() request: Request,
     @Body() body: Partial<WidgetSettings>,
   ) {
-    const storeId = await this.findStoreId(user.tenantId);
+    const storeId = await this.findStoreId(user.tenantId, request.headers['x-store-id'] as string);
     return this.widgetService.updateSettings(storeId, user.tenantId, body);
   }
 }
@@ -188,6 +192,30 @@ const EMBED_SCRIPT = `
   }
 
   function render(c){
+    function safeText(value){
+      return String(value == null ? '' : value).replace(/[&<>"']/g,function(ch){
+        return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch];
+      });
+    }
+    function safeImageUrl(value){
+      try{ var url=new URL(String(value)); return url.protocol==='https:' ? url.href : ''; }catch(e){ return ''; }
+    }
+    function safeColor(value,fallback){
+      var candidate=String(value||'');
+      return /^(#[0-9a-f]{3,8}|rgba?\\([0-9.,% ]+\\)|hsla?\\([0-9.,% ]+\\))$/i.test(candidate) ? candidate : fallback;
+    }
+
+    // Values below are inserted into an HTML/CSS string. Normalize them once
+    // at the trust boundary so merchant-controlled widget settings cannot run
+    // script on a storefront that embeds the widget.
+    c.agent=safeText(c.agent);
+    c.welcome=safeText(c.welcome);
+    c.btnText=safeText(c.btnText);
+    c.avatar=safeImageUrl(c.avatar);
+    c.customIcon=safeImageUrl(c.customIcon);
+    c.btnColor=safeColor(c.btnColor,'#25D366');
+    c.headerColor=safeColor(c.headerColor,'#075E54');
+
     var isRight = (c.position||'bottom-right').indexOf('right')>-1;
     var sz = c.iconSize||60;
     var bOff = c.bottomOff||20;

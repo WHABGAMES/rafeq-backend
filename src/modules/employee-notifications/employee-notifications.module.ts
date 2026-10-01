@@ -32,6 +32,7 @@ import { UsersModule } from '../users/users.module';
 
 // 🏪 لجلب اسم المتجر
 import { StoresModule } from '../stores/stores.module';
+import { PlatformCapabilitiesModule } from '../platform-capabilities/platform-capabilities.module';
 
 @Module({
   imports: [
@@ -61,6 +62,7 @@ import { StoresModule } from '../stores/stores.module';
 
     // 🏪 لجلب اسم المتجر (StoresService)
     StoresModule,
+    PlatformCapabilitiesModule,
   ],
 
   controllers: [EmployeeNotificationsController],

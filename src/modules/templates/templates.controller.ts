@@ -44,6 +44,8 @@ import {
 } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
+import { PlatformFeatureGuard } from '../platform-capabilities/platform-feature.guard';
+import { RequirePlatformFeature } from '../platform-capabilities/platform-feature.decorator';
 import { User } from '@database/entities';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { TemplatesService } from './templates.service';
@@ -95,7 +97,8 @@ export enum TemplateStatus {
 
 @ApiTags('Templates - قوالب الرسائل')
 @ApiBearerAuth('JWT-auth')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PlatformFeatureGuard)
+@RequirePlatformFeature('templates')
 @Controller({
   path: 'templates',
   version: '1',
@@ -574,6 +577,7 @@ export class TemplatesController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Post()
+  @RequirePlatformFeature('templates.create')
   @ApiOperation({
     summary: 'إنشاء قالب جديد',
     description: 'إنشاء قالب رسالة جديد (نصي، صورة، فيديو، تفاعلي)',
@@ -608,6 +612,7 @@ export class TemplatesController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Put(':id')
+  @RequirePlatformFeature('templates.edit')
   @ApiOperation({
     summary: 'تحديث قالب',
     description: 'تحديث محتوى أو إعدادات قالب',
@@ -627,6 +632,7 @@ export class TemplatesController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Delete(':id')
+  @RequirePlatformFeature('templates.edit')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({
     summary: 'حذف قالب',
@@ -644,6 +650,7 @@ export class TemplatesController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Patch(':id/toggle')
+  @RequirePlatformFeature('templates.edit')
   @ApiOperation({
     summary: 'تفعيل/تعطيل قالب',
     description: 'تبديل حالة القالب بين نشط ومعطل',
@@ -660,6 +667,7 @@ export class TemplatesController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Patch(':id/send-settings')
+  @RequirePlatformFeature('templates.edit')
   @ApiOperation({
     summary: 'تحديث إعدادات الإرسال',
     description: 'تحديث إعدادات التأخير والشرط والتسلسل لكل قالب',
@@ -679,6 +687,7 @@ export class TemplatesController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Post('bulk-toggle')
+  @RequirePlatformFeature('templates.edit')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'تفعيل/تعطيل عدة قوالب دفعة واحدة',
@@ -698,6 +707,7 @@ export class TemplatesController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Post(':id/duplicate')
+  @RequirePlatformFeature('templates.create')
   @ApiOperation({
     summary: 'نسخ قالب',
     description: 'إنشاء نسخة من قالب موجود',

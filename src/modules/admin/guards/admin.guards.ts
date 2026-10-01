@@ -20,6 +20,7 @@ import { Repository } from 'typeorm';
 import { Request } from 'express';
 // ✅ FIX [TS6133]: Removed ROLE_PERMISSIONS — not used directly in guards
 import { AdminUser, AdminStatus, Permission } from '../entities/admin-user.entity';
+import { getAdminJwtSecret } from '../admin-jwt-secret';
 
 // ─── Metadata Keys ────────────────────────────────────────────────────────────
 export const PERMISSIONS_KEY = 'admin_permissions';
@@ -33,6 +34,7 @@ export const Require2FA = () => SetMetadata(REQUIRE_2FA_KEY, true);
 
 interface AdminRequest extends Request {
   admin?: AdminUser;
+  adminAuth?: { twoFaVerified?: boolean };
   ipAddress?: string;
 }
 
@@ -62,7 +64,7 @@ export class AdminJwtGuard implements CanActivate {
 
     try {
       const payload = this.jwtService.verify(token, {
-        secret: process.env.ADMIN_JWT_SECRET || process.env.JWT_SECRET,
+        secret: getAdminJwtSecret(),
       });
 
       // ✅ تحقق من نوع الـ token — يمنع استخدام platform tokens كـ admin tokens
@@ -84,6 +86,7 @@ export class AdminJwtGuard implements CanActivate {
 
       // ✅ يُضاف للـ request — يُستخدَم من @CurrentAdmin() decorator
       request.admin = admin;
+      request.adminAuth = { twoFaVerified: payload.twoFaVerified === true };
       request.ipAddress = this.extractIp(request);
       return true;
     } catch (err) {
@@ -121,14 +124,23 @@ export class AdminPermissionGuard implements CanActivate {
       [context.getHandler(), context.getClass()],
     );
 
-    // لا توجد صلاحيات مطلوبة → السماح بالمرور
-    if (!requiredPermissions?.length) return true;
+    const requiresTwoFa = this.reflector.getAllAndOverride<boolean>(
+      REQUIRE_2FA_KEY,
+      [context.getHandler(), context.getClass()],
+    );
+    if (!requiredPermissions?.length && !requiresTwoFa) return true;
 
-    const { admin } = context.switchToHttp().getRequest<AdminRequest>();
+    const { admin, adminAuth } = context.switchToHttp().getRequest<AdminRequest>();
 
     if (!admin) {
       throw new UnauthorizedException('Not authenticated as admin');
     }
+
+    if (requiresTwoFa && (!admin.twoFaEnabled || adminAuth?.twoFaVerified !== true)) {
+      throw new ForbiddenException('Two-factor authentication is required for this operation');
+    }
+
+    if (!requiredPermissions?.length) return true;
 
     // ✅ AdminUser.hasPermission() يفحص ROLE_PERMISSIONS للـ role
     const hasAll = requiredPermissions.every((permission) =>

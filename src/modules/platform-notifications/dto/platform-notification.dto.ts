@@ -10,6 +10,7 @@ import {
   IsString,
   MaxLength,
   Min,
+  Matches,
 } from 'class-validator';
 import {
   PlatformNotificationColor,
@@ -36,6 +37,8 @@ export class CreatePlatformNotificationDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(2048)
+  @Matches(/^(?:\/(?!\/)|https:\/\/)/i, { message: 'link must be an internal path or an HTTPS URL' })
   link?: string;
 
   @IsOptional()

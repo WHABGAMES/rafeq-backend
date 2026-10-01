@@ -18,10 +18,10 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { MaintenanceService } from '../services/maintenance.service';
-import { MaintenanceStyle } from '../entities/maintenance-page.entity';
-import { AdminJwtGuard } from '../guards/admin.guards';
+import { AdminJwtGuard, AdminPermissionGuard, RequirePermissions, Require2FA } from '../guards/admin.guards';
 import { CurrentAdmin } from '../decorators/current-admin.decorator';
-import { AdminUser } from '../entities/admin-user.entity';
+import { AdminUser, PERMISSIONS } from '../entities/admin-user.entity';
+import { ToggleMaintenanceDto, UpdateMaintenanceDto } from '../dto/maintenance.dto';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Public API — يُستخدم من الفرونت إند (التاجر)
@@ -58,7 +58,8 @@ export class MaintenancePublicController {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 @Controller('admin/maintenance')
-@UseGuards(AdminJwtGuard)
+@UseGuards(AdminJwtGuard, AdminPermissionGuard)
+@RequirePermissions(PERMISSIONS.MAINTENANCE_MANAGE)
 export class MaintenanceAdminController {
   constructor(private readonly maintenanceService: MaintenanceService) {}
 
@@ -76,9 +77,10 @@ export class MaintenanceAdminController {
    * ✅ تفعيل/تعطيل صيانة صفحة
    */
   @Patch(':id/toggle')
+  @Require2FA()
   async toggle(
     @Param('id') id: string,
-    @Body() body: { isActive: boolean },
+    @Body() body: ToggleMaintenanceDto,
     @CurrentAdmin() admin: AdminUser,
   ) {
     return this.maintenanceService.toggle(id, body.isActive, admin.email);
@@ -89,9 +91,10 @@ export class MaintenanceAdminController {
    * ✅ تحديث إعدادات صفحة (style, message, isActive)
    */
   @Patch(':id')
+  @Require2FA()
   async update(
     @Param('id') id: string,
-    @Body() body: { style?: MaintenanceStyle; message?: string; isActive?: boolean },
+    @Body() body: UpdateMaintenanceDto,
     @CurrentAdmin() admin: AdminUser,
   ) {
     return this.maintenanceService.update(id, body, admin.email);

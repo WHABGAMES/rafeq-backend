@@ -228,7 +228,7 @@ export class QuickRepliesService {
 
   async recordUsage(id: string, tenantId: string, _userId: string): Promise<{ success: boolean; usageCount: number }> {
     await this.repo.increment({ id, tenantId }, 'usageCount', 1);
-    const entity = await this.repo.findOne({ where: { id } });
+    const entity = await this.repo.findOne({ where: { id, tenantId } });
     return { success: true, usageCount: entity?.usageCount || 0 };
   }
 

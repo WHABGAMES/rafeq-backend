@@ -37,7 +37,7 @@ import {
   BadRequestException,
   ParseIntPipe,
 } from '@nestjs/common';
-import { AdminJwtGuard, AdminPermissionGuard, RequirePermissions } from '../guards/admin.guards';
+import { AdminJwtGuard, AdminPermissionGuard, RequirePermissions, Require2FA } from '../guards/admin.guards';
 import { CurrentAdmin, AdminIp } from '../decorators/current-admin.decorator';
 import { AdminUser, PERMISSIONS } from '../entities/admin-user.entity';
 import { AdminUsersService } from '../services/admin-users.service';
@@ -68,6 +68,7 @@ export class AdminStoresController {
 
   @Post(':id/transfer')
   @RequirePermissions(PERMISSIONS.STORES_TRANSFER)
+  @Require2FA()
   @HttpCode(HttpStatus.OK)
   transfer(
     @Param('id', ParseUUIDPipe) storeId: string,
@@ -95,6 +96,7 @@ export class WhatsappController {
 
   @Post('connect')
   @RequirePermissions(PERMISSIONS.WHATSAPP_MANAGE)
+  @Require2FA()
   @HttpCode(HttpStatus.OK)
   connect(
     @Body()
@@ -123,6 +125,7 @@ export class WhatsappController {
 
   @Post('toggle')
   @RequirePermissions(PERMISSIONS.WHATSAPP_MANAGE)
+  @Require2FA()
   @HttpCode(HttpStatus.OK)
   toggle(@Body() body: { isActive: boolean; tenantId?: string }) {
     return this.whatsappService.toggleActive(body.isActive, body.tenantId);
@@ -265,6 +268,7 @@ export class TemplatesController {
   // ─── BULK TOGGLE ──────────────────────────────────────────────────────
   @Post('bulk-toggle')
   @RequirePermissions(PERMISSIONS.TEMPLATES_MANAGE)
+  @Require2FA()
   @HttpCode(HttpStatus.OK)
   bulkToggle(
     @Body() body: { ids: string[]; isActive: boolean },
@@ -282,6 +286,7 @@ export class TemplatesController {
   // ─── CREATE ───────────────────────────────────────────────────────────
   @Post()
   @RequirePermissions(PERMISSIONS.TEMPLATES_MANAGE)
+  @Require2FA()
   create(
     @Body()
     body: {
@@ -308,6 +313,7 @@ export class TemplatesController {
   // ─── UPDATE ───────────────────────────────────────────────────────────
   @Put(':id')
   @RequirePermissions(PERMISSIONS.TEMPLATES_MANAGE)
+  @Require2FA()
   update(
     @Param('id', ParseUUIDPipe) id: string,
     @Body()
@@ -328,6 +334,7 @@ export class TemplatesController {
   // ─── DELETE (soft) ────────────────────────────────────────────────────
   @Delete(':id')
   @RequirePermissions(PERMISSIONS.TEMPLATES_MANAGE)
+  @Require2FA()
   delete(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentAdmin() admin: AdminUser,
@@ -338,6 +345,7 @@ export class TemplatesController {
   // ─── SINGLE TOGGLE ────────────────────────────────────────────────────
   @Patch(':id/toggle')
   @RequirePermissions(PERMISSIONS.TEMPLATES_MANAGE)
+  @Require2FA()
   toggle(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentAdmin() admin: AdminUser,

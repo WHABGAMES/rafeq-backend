@@ -21,7 +21,7 @@ import {
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 
 // ✅ Guards - matching actual exports from admin.guards.ts
-import { AdminJwtGuard, AdminPermissionGuard, RequirePermissions } from '../guards/admin.guards';
+import { AdminJwtGuard, AdminPermissionGuard, RequirePermissions, Require2FA } from '../guards/admin.guards';
 import { CurrentAdmin, AdminIp } from '../decorators/current-admin.decorator';
 
 // ✅ Entities - matching actual exports
@@ -38,6 +38,7 @@ import {
 
 // ✅ Subscription expiry service
 import { SubscriptionExpiryService } from '../../billing/services/subscription-expiry.service';
+import { SetSubscriptionPlanDto } from '../dto/admin-security.dto';
 
 @Controller('admin/subscriptions')
 @UseGuards(AdminJwtGuard, AdminPermissionGuard)
@@ -80,17 +81,12 @@ export class AdminSubscriptionsController {
   // ─── POST /admin/subscriptions/set-plan ──────────────────────────────────
 
   @Post('set-plan')
-  @RequirePermissions(PERMISSIONS.USERS_SUSPEND) // أقرب صلاحية لتعديل بيانات التاجر
+  @RequirePermissions(PERMISSIONS.SUBSCRIPTIONS_MANAGE)
+  @Require2FA()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'تعيين أو تغيير باقة تاجر يدوياً' })
   async setPlan(
-    @Body() body: {
-      tenantId: string;
-      plan: string;
-      reason?: string;
-      durationAmount?: number;
-      durationUnit?: 'days' | 'weeks' | 'months';
-    },
+    @Body() body: SetSubscriptionPlanDto,
     @CurrentAdmin() admin: AdminUser,
     @AdminIp() ip: string,
   ) {
@@ -102,6 +98,9 @@ export class AdminSubscriptionsController {
     }
     if (!body.tenantId) {
       throw new BadRequestException('معرف التاجر مطلوب');
+    }
+    if ((body.durationAmount === undefined) !== (body.durationUnit === undefined)) {
+      throw new BadRequestException('مدة الاشتراك ووحدتها يجب إرسالهما معاً');
     }
 
     const duration = body.durationAmount && body.durationUnit
@@ -145,7 +144,8 @@ export class AdminSubscriptionsController {
   // ✅ FIX: يجب أن يكون قبل reset-usage/:tenantId لمنع تعارض المسارات
 
   @Post('reset-all-usage')
-  @RequirePermissions(PERMISSIONS.USERS_SUSPEND)
+  @RequirePermissions(PERMISSIONS.SUBSCRIPTIONS_MANAGE)
+  @Require2FA()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'إعادة تعيين الاستخدام الشهري لكل التجار' })
   async resetAllUsage(
@@ -169,7 +169,8 @@ export class AdminSubscriptionsController {
   // ─── POST /admin/subscriptions/reset-usage/:tenantId ─────────────────────
 
   @Post('reset-usage/:tenantId')
-  @RequirePermissions(PERMISSIONS.USERS_SUSPEND)
+  @RequirePermissions(PERMISSIONS.SUBSCRIPTIONS_MANAGE)
+  @Require2FA()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'إعادة تعيين الاستخدام الشهري لتاجر' })
   async resetTenantUsage(
@@ -197,7 +198,8 @@ export class AdminSubscriptionsController {
   // تشغيل فحص الاشتراكات المنتهية يدوياً (بدل انتظار الكرون)
 
   @Post('process-expired')
-  @RequirePermissions(PERMISSIONS.USERS_SUSPEND)
+  @RequirePermissions(PERMISSIONS.SUBSCRIPTIONS_MANAGE)
+  @Require2FA()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'تشغيل فحص وإيقاف الاشتراكات المنتهية يدوياً' })
   async processExpired(
@@ -221,7 +223,8 @@ export class AdminSubscriptionsController {
   // إيقاف مميزات تاجر معين فوراً
 
   @Post('expire/:tenantId')
-  @RequirePermissions(PERMISSIONS.USERS_SUSPEND)
+  @RequirePermissions(PERMISSIONS.SUBSCRIPTIONS_MANAGE)
+  @Require2FA()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'إيقاف مميزات تاجر معين فوراً بسبب انتهاء الاشتراك' })
   async expireTenant(

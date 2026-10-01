@@ -15,7 +15,6 @@ import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { HttpModule } from '@nestjs/axios';
 import { ConfigModule } from '@nestjs/config';
-import * as https from 'https';
 import { TenantsModule } from '../tenants/tenants.module';
 import { AuthModule } from '../auth/auth.module';
 
@@ -50,7 +49,6 @@ import { Store } from './entities/store.entity';
     HttpModule.register({
       timeout: 30000,
       maxRedirects: 5,
-      httpsAgent: new https.Agent({ rejectUnauthorized: false }),
     }),
   ],
 

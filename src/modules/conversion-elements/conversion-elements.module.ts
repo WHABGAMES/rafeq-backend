@@ -53,6 +53,7 @@ import {
 
 // Processors
 import { ElementEventsProcessor } from './processors/element-events.processor';
+import { PlatformCapabilitiesModule } from '../platform-capabilities/platform-capabilities.module';
 
 @Module({
   imports: [
@@ -63,6 +64,7 @@ import { ElementEventsProcessor } from './processors/element-events.processor';
       ABTest,
       Store,
     ]),
+    PlatformCapabilitiesModule,
 
     // Queue registration
     BullModule.registerQueue({

@@ -28,6 +28,7 @@ import {
 
 import { AnalyticsService } from './analytics.service';
 import { AnalyticsController } from './analytics.controller';
+import { PlatformCapabilitiesModule } from '../platform-capabilities/platform-capabilities.module';
 
 /**
  * ═══════════════════════════════════════════════════════════════════════════════
@@ -82,6 +83,7 @@ import { AnalyticsController } from './analytics.controller';
     ]),
     
     ConfigModule,
+    PlatformCapabilitiesModule,
   ],
 
   controllers: [AnalyticsController],

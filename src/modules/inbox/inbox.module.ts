@@ -17,6 +17,7 @@ import { InboxController } from './inbox.controller';
 
 // ✅ BUG-INB3 FIX: MessagingModule يوفر MessageService لإرسال الرسائل
 import { MessagingModule } from '../messaging/messaging.module';
+import { PlatformCapabilitiesModule } from '../platform-capabilities/platform-capabilities.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { MessagingModule } from '../messaging/messaging.module';
     // ✅ MessagingModule يصدّر MessageService
     // نستخدم forwardRef لتجنب circular dependency
     forwardRef(() => MessagingModule),
+    PlatformCapabilitiesModule,
   ],
 
   controllers: [InboxController],

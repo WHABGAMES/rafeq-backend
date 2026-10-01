@@ -10,10 +10,12 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { SettingsController } from './settings.controller';
 import { SettingsService } from './settings.service';
 import { StoreSettings } from './entities/store-settings.entity';
+import { PlatformCapabilitiesModule } from '../platform-capabilities/platform-capabilities.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([StoreSettings]),
+    PlatformCapabilitiesModule,
   ],
   controllers: [SettingsController],
   providers: [SettingsService],

@@ -39,4 +39,23 @@ describe('Platform notification DTOs', () => {
     const dto = plainToInstance(UpdatePlatformNotificationDto, { isActive: false });
     expect(await validate(dto)).toHaveLength(0);
   });
+
+  it.each(['javascript:alert(1)', 'http://example.com', '//evil.example'])('rejects an unsafe notification link: %s', async link => {
+    const dto = plainToInstance(CreatePlatformNotificationDto, {
+      displayType: PlatformNotificationDisplay.POPUP,
+      message: 'تحديث مهم',
+      link,
+    });
+    const errors = await validate(dto);
+    expect(errors.some(error => error.property === 'link')).toBe(true);
+  });
+
+  it.each(['/dashboard/stores', 'https://rafeq.ai/dashboard'])('accepts a safe notification link: %s', async link => {
+    const dto = plainToInstance(CreatePlatformNotificationDto, {
+      displayType: PlatformNotificationDisplay.POPUP,
+      message: 'تحديث مهم',
+      link,
+    });
+    expect(await validate(dto)).toHaveLength(0);
+  });
 });

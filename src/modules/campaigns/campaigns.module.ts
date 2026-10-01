@@ -21,6 +21,7 @@ import { CampaignsScheduler } from './campaigns.scheduler';
 import { WhatsAppModule } from '@modules/channels/whatsapp/whatsapp.module';
 // ✅ FIX: WhatsApp QR (Baileys) — عبر ChannelsModule
 import { ChannelsModule } from '@modules/channels/channels.module';
+import { PlatformCapabilitiesModule } from '@modules/platform-capabilities/platform-capabilities.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { ChannelsModule } from '@modules/channels/channels.module';
     // ✅ FIX: ChannelsModule يُصدّر WhatsAppBaileysService
     // بدونه الـ Processor لا يقدر يرسل عبر QR channels
     ChannelsModule,
+    PlatformCapabilitiesModule,
 
     BullModule.registerQueue({
       name: 'campaigns',

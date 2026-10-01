@@ -38,6 +38,8 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ShortLinksService } from './short-links.service';
 import { User } from '@database/entities/user.entity';
+import { PlatformFeatureGuard } from '../platform-capabilities/platform-feature.guard';
+import { RequirePlatformFeature } from '../platform-capabilities/platform-feature.decorator';
 
 // ═══════════════════════════════════════════════════════════════
 // 🌐 PUBLIC — Redirect endpoint (no auth)
@@ -67,6 +69,7 @@ export class ShortLinkRedirectController {
       ip: (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip,
       userAgent: req.headers['user-agent'] || '',
       referrer: req.headers['referer'] || '',
+      country: typeof req.headers['cf-ipcountry'] === 'string' ? req.headers['cf-ipcountry'] : undefined,
     }).catch(() => {});
 
     // 302 redirect — allows tracking repeat visits
@@ -81,7 +84,8 @@ export class ShortLinkRedirectController {
 
 @ApiTags('Short Links: Management')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PlatformFeatureGuard)
+@RequirePlatformFeature('short_links')
 @Controller('short-links')
 export class ShortLinksController {
   constructor(private readonly service: ShortLinksService) {}

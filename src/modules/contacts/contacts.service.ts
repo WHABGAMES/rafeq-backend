@@ -1040,7 +1040,10 @@ export class ContactsService {
     });
 
     // Build CSV
-    const escapeCsv = (val: string) => {
+    const escapeCsv = (value: string) => {
+      // Prevent spreadsheet formula injection when an exported customer field
+      // is opened in Excel/Sheets. A leading apostrophe forces a text cell.
+      const val = /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
       if (val.includes(',') || val.includes('"') || val.includes('\n')) {
         return `"${val.replace(/"/g, '""')}"`;
       }

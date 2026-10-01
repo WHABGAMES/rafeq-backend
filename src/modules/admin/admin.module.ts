@@ -16,8 +16,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { JwtModule } from '@nestjs/jwt';
 import { ScheduleModule } from '@nestjs/schedule';
 import { EventEmitterModule } from '@nestjs/event-emitter';
-import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
-import { APP_GUARD } from '@nestjs/core';
+import { ThrottlerModule } from '@nestjs/throttler';
 
 // Entities
 import { AdminUser } from './entities/admin-user.entity';
@@ -37,6 +36,8 @@ import { WhatsappSettingsService } from './services/whatsapp-settings.service';
 import { NotificationService } from './services/notification.service';
 import { MaintenanceService } from './services/maintenance.service';
 import { AdminAlertsService } from './services/admin-alerts.service';
+import { AdminTwoFactorSecretService } from './services/admin-two-factor-secret.service';
+import { AdminLoginProtectionService } from './services/admin-login-protection.service';
 
 // Controllers
 import { AdminAuthController } from './controllers/admin-auth.controller';
@@ -76,30 +77,13 @@ import { MaintenancePublicController, MaintenanceAdminController } from './contr
 // ✅ NEW: Telegram OTP Admin
 import { AdminTelegramController } from './controllers/admin-telegram.controller';
 import { OtpRelayModule } from '../otp-relay/otp-relay.module';
+import { PlatformCapabilitiesModule } from '../platform-capabilities/platform-capabilities.module';
+import { AdminPlatformFeaturesController } from './controllers/admin-platform-features.controller';
+import { getAdminJwtSecret } from './admin-jwt-secret';
 
 // ─── [C-2] Startup Validation ─────────────────────────────────────────────────
 // يُنفَّذ قبل أي شيء عند تحميل الـ module
-const jwtSecret = process.env.ADMIN_JWT_SECRET || process.env.JWT_SECRET;
-
-if (!jwtSecret) {
-  // في production: throw → التطبيق لا يبدأ إطلاقًا
-  if (process.env.NODE_ENV === 'production') {
-    throw new Error(
-      '\n\n' +
-      '╔══════════════════════════════════════════════════════════╗\n' +
-      '║  FATAL: Admin JWT Secret is not configured!              ║\n' +
-      '║                                                          ║\n' +
-      '║  Set one of these env vars before starting:              ║\n' +
-      '║    ADMIN_JWT_SECRET=<strong-random-64-chars>             ║\n' +
-      '║    JWT_SECRET=<strong-random-64-chars>                   ║\n' +
-      '║                                                          ║\n' +
-      '║  Without this, any attacker can forge admin tokens!      ║\n' +
-      '╚══════════════════════════════════════════════════════════╝\n',
-    );
-  }
-  // في development: تحذير فقط
-  console.warn('\n⚠️  WARNING: ADMIN_JWT_SECRET / JWT_SECRET not set — using insecure fallback for development only!\n');
-}
+const jwtSecret = getAdminJwtSecret();
 
 @Module({
   imports: [
@@ -119,7 +103,7 @@ if (!jwtSecret) {
 
     // ✅ JwtModule يستخدم نفس الـ secret المُتحقَّق منه أعلاه
     JwtModule.register({
-      secret: jwtSecret || 'rafeq-dev-insecure-fallback',
+      secret: jwtSecret,
       signOptions: { expiresIn: '8h' },
     }),
 
@@ -160,6 +144,7 @@ if (!jwtSecret) {
 
     // ✅ NEW: OtpRelayModule — يوفر TelegramOtpClientService لإعدادات Telegram
     OtpRelayModule,
+    PlatformCapabilitiesModule,
   ],
 
   controllers: [
@@ -181,6 +166,7 @@ if (!jwtSecret) {
     AdminTelegramController,
     // ✅ NEW: تنبيهات الإدارة العليا (WhatsApp alerts on platform events)
     AdminAlertsController,
+    AdminPlatformFeaturesController,
   ],
 
   providers: [
@@ -195,12 +181,6 @@ if (!jwtSecret) {
     AdminJwtGuard,
     AdminPermissionGuard,
 
-    // ✅ ThrottlerGuard يطبَّق globally على كل routes في الـ app
-    {
-      provide: APP_GUARD,
-      useClass: ThrottlerGuard,
-    },
-
     // BullMQ Processor
     NotificationProcessor,
 
@@ -208,6 +188,8 @@ if (!jwtSecret) {
     NotificationEventListener,
     AdminAlertsListener,  // ✅ NEW
     AdminAlertsService,   // ✅ NEW
+    AdminTwoFactorSecretService,
+    AdminLoginProtectionService,
   ],
 
   // Exported for use in other modules (e.g., stores module, webhooks module)
@@ -216,6 +198,8 @@ if (!jwtSecret) {
     NotificationService,
     WhatsappSettingsService,
     AdminAlertsService,   // ✅ NEW — لو نحتاجها خارج الـ module
+    AdminTwoFactorSecretService,
+    AdminLoginProtectionService,
   ],
 })
 export class AdminModule {}

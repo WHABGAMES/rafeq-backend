@@ -27,12 +27,15 @@ import {
 import { ApiTags, ApiOperation, ApiQuery } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { PlatformFeatureGuard } from '../platform-capabilities/platform-feature.guard';
+import { RequirePlatformFeature } from '../platform-capabilities/platform-feature.decorator';
 
 import { ChannelsService, ConnectWhatsAppOfficialDto, ConnectDiscordDto } from './channels.service';
 import { WhatsAppBaileysService } from './whatsapp/whatsapp-baileys.service';
 
 @ApiTags('Channels')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PlatformFeatureGuard)
+@RequirePlatformFeature('channels')
 @Controller('channels')
 export class ChannelsController {
   constructor(

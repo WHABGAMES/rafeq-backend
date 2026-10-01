@@ -131,7 +131,7 @@ import { AdminModule } from '../admin/admin.module';
             port,
             db,
             password: password || undefined,
-            ...(useTls && { tls: { rejectUnauthorized: false } }),
+            ...(useTls && { tls: {} }),
             ...baseOptions,
           });
         }

@@ -36,9 +36,9 @@ import {
   ApiBearerAuth,
 } from '@nestjs/swagger';
 
-import { AdminJwtGuard, AdminPermissionGuard } from '@modules/admin/guards/admin.guards';
+import { AdminJwtGuard, AdminPermissionGuard, Require2FA, RequirePermissions } from '@modules/admin/guards/admin.guards';
 import { CurrentAdmin } from '@modules/admin/decorators/current-admin.decorator';
-import { AdminUser } from '@modules/admin/entities/admin-user.entity';
+import { AdminUser, PERMISSIONS } from '@modules/admin/entities/admin-user.entity';
 import { SuggestionsService } from './suggestions.service';
 import {
   AdminCreateCommentDto,
@@ -62,6 +62,7 @@ export class AdminSuggestionsController {
   // ═══════════════════════════════════════════════════════════
 
   @Get('stats')
+  @RequirePermissions(PERMISSIONS.SUGGESTIONS_READ)
   @ApiOperation({ summary: 'إحصائيات الاقتراحات' })
   async getStats() {
     return this.suggestionsService.getStats();
@@ -72,6 +73,7 @@ export class AdminSuggestionsController {
   // ═══════════════════════════════════════════════════════════
 
   @Get()
+  @RequirePermissions(PERMISSIONS.SUGGESTIONS_READ)
   @ApiOperation({ summary: 'قائمة الاقتراحات (مع هوية المرسل)' })
   async list(@Query() query: ListSuggestionsQueryDto) {
     // ✅ Admin gets real identity — uses separate method
@@ -83,6 +85,7 @@ export class AdminSuggestionsController {
   // ═══════════════════════════════════════════════════════════
 
   @Patch(':id/status')
+  @RequirePermissions(PERMISSIONS.SUGGESTIONS_MANAGE)
   @ApiOperation({ summary: 'تغيير حالة الاقتراح' })
   async updateStatus(
     @Param('id', ParseUUIDPipe) id: string,
@@ -96,6 +99,7 @@ export class AdminSuggestionsController {
   // ═══════════════════════════════════════════════════════════
 
   @Patch(':id/pin')
+  @RequirePermissions(PERMISSIONS.SUGGESTIONS_MANAGE)
   @ApiOperation({ summary: 'تثبيت / إلغاء تثبيت' })
   async togglePin(@Param('id', ParseUUIDPipe) id: string) {
     return this.suggestionsService.togglePin(id);
@@ -106,6 +110,7 @@ export class AdminSuggestionsController {
   // ═══════════════════════════════════════════════════════════
 
   @Post(':id/reply')
+  @RequirePermissions(PERMISSIONS.SUGGESTIONS_MANAGE)
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'رد رسمي من فريق رفيق' })
   async reply(
@@ -125,6 +130,8 @@ export class AdminSuggestionsController {
   // ═══════════════════════════════════════════════════════════
 
   @Post('merge')
+  @RequirePermissions(PERMISSIONS.SUGGESTIONS_MANAGE)
+  @Require2FA()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'دمج اقتراحات مكررة' })
   async merge(@Body() dto: MergeSuggestionsDto) {
@@ -136,13 +143,14 @@ export class AdminSuggestionsController {
   // ═══════════════════════════════════════════════════════════
 
   @Get(':id/comments')
+  @RequirePermissions(PERMISSIONS.SUGGESTIONS_READ)
   @ApiOperation({ summary: 'تعليقات الاقتراح' })
   async getComments(
     @Param('id', ParseUUIDPipe) id: string,
     @Query('page', new ParseIntPipe({ optional: true })) page?: number,
     @Query('limit', new ParseIntPipe({ optional: true })) limit?: number,
   ) {
-    return this.suggestionsService.getComments(id, Number(page) || 1, Number(limit) || 50);
+    return this.suggestionsService.getComments(id, Number(page) || 1, Number(limit) || 50, true);
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -150,6 +158,8 @@ export class AdminSuggestionsController {
   // ═══════════════════════════════════════════════════════════
 
   @Delete('comments/:id')
+  @RequirePermissions(PERMISSIONS.SUGGESTIONS_MANAGE)
+  @Require2FA()
   @ApiOperation({ summary: 'حذف تعليق' })
   async deleteComment(@Param('id', ParseUUIDPipe) id: string) {
     return this.suggestionsService.deleteComment(id);
@@ -160,6 +170,8 @@ export class AdminSuggestionsController {
   // ═══════════════════════════════════════════════════════════
 
   @Delete(':id')
+  @RequirePermissions(PERMISSIONS.SUGGESTIONS_MANAGE)
+  @Require2FA()
   @ApiOperation({ summary: 'حذف اقتراح' })
   async deleteSuggestion(@Param('id', ParseUUIDPipe) id: string) {
     return this.suggestionsService.deleteSuggestion(id);

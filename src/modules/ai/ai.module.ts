@@ -37,6 +37,7 @@ import { ProductSearchFactory } from '../../core/ports/product-search.factory';
 import { SallaProductSearchAdapter } from '../../integrations/salla/salla-product-search.adapter';
 import { ZidProductSearchAdapter } from '../../integrations/zid/zid-product-search.adapter';
 import { StoresModule } from '../stores/stores.module';
+import { PlatformCapabilitiesModule } from '../platform-capabilities/platform-capabilities.module';
 
 @Module({
   imports: [
@@ -56,6 +57,7 @@ import { StoresModule } from '../stores/stores.module';
     MailModule,
     StoresModule,
     ConfigModule,
+    PlatformCapabilitiesModule,
   ],
 
   controllers: [AiController],

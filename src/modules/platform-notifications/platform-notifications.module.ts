@@ -31,6 +31,7 @@ import { PlatformNotificationsPublicController } from './platform-notifications-
 // نُوفّرهما هنا بدلاً من استيراد AdminModule لتجنب circular dependency
 import { AdminUser } from '@modules/admin/entities/admin-user.entity';
 import { AdminJwtGuard, AdminPermissionGuard } from '@modules/admin/guards/admin.guards';
+import { getAdminJwtSecret } from '@modules/admin/admin-jwt-secret';
 
 @Module({
   imports: [
@@ -40,8 +41,8 @@ import { AdminJwtGuard, AdminPermissionGuard } from '@modules/admin/guards/admin
     // ✅ JwtModule لـ AdminJwtGuard.jwtService
     JwtModule.registerAsync({
       useFactory: () => ({
-        secret: process.env.ADMIN_JWT_SECRET || process.env.JWT_SECRET || 'rafeq-dev-insecure-fallback',
-        signOptions: { expiresIn: '8h' },
+        secret: getAdminJwtSecret(),
+        signOptions: { expiresIn: '15m' },
       }),
     }),
   ],

@@ -135,9 +135,7 @@ export class OtpService implements OnModuleInit, OnModuleDestroy {
         password: password || undefined,
         db,
         ...(useTls && {
-          tls: {
-            rejectUnauthorized: false,
-          },
+          tls: {},
         }),
         retryStrategy: (times: number) => {
           if (times > 5) {

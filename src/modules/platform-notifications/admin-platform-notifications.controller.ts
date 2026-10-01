@@ -34,13 +34,14 @@ import {
 } from './platform-notification.entity';
 
 // ✅ Admin guards — مسار صحيح من modules/platform-notifications
-import { AdminJwtGuard, AdminPermissionGuard } from '@modules/admin/guards/admin.guards';
+import { AdminJwtGuard, AdminPermissionGuard, RequirePermissions, Require2FA } from '@modules/admin/guards/admin.guards';
 import { CurrentAdmin } from '@modules/admin/decorators/current-admin.decorator';
-import { AdminUser } from '@modules/admin/entities/admin-user.entity';
+import { AdminUser, PERMISSIONS } from '@modules/admin/entities/admin-user.entity';
 
 @ApiTags('Admin: إشعارات المنصة')
 @Controller('admin/platform-notifications')
 @UseGuards(AdminJwtGuard, AdminPermissionGuard)
+@RequirePermissions(PERMISSIONS.PLATFORM_NOTIFICATIONS_MANAGE)
 export class AdminPlatformNotificationsController {
   constructor(private readonly service: PlatformNotificationsService) {}
 
@@ -67,6 +68,7 @@ export class AdminPlatformNotificationsController {
   }
 
   @Post()
+  @Require2FA()
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'إنشاء إشعار جديد' })
   async create(
@@ -77,6 +79,7 @@ export class AdminPlatformNotificationsController {
   }
 
   @Patch(':id')
+  @Require2FA()
   @ApiOperation({ summary: 'تعديل إشعار' })
   async update(
     @Param('id', ParseUUIDPipe) id: string,
@@ -86,6 +89,7 @@ export class AdminPlatformNotificationsController {
   }
 
   @Patch(':id/toggle')
+  @Require2FA()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'تفعيل/إيقاف إشعار' })
   async toggleActive(@Param('id', ParseUUIDPipe) id: string) {
@@ -93,6 +97,7 @@ export class AdminPlatformNotificationsController {
   }
 
   @Delete(':id')
+  @Require2FA()
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'حذف إشعار' })
   async delete(@Param('id', ParseUUIDPipe) id: string): Promise<void> {

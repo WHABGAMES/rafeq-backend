@@ -40,10 +40,13 @@ import {
 // Decorators (من نظام الصلاحيات الموجود)
 import { CurrentTenant, CurrentUser } from '../../common/decorators';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { PlatformFeatureGuard } from '../platform-capabilities/platform-feature.guard';
+import { RequirePlatformFeature } from '../platform-capabilities/platform-feature.decorator';
 
 @ApiTags('Employee Notifications')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PlatformFeatureGuard)
+@RequirePlatformFeature('staff_notifications')
 @Controller('employee-notifications')
 export class EmployeeNotificationsController {
   constructor(

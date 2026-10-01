@@ -17,6 +17,7 @@ import { ChannelsService } from './channels.service';
 import { ChannelsController } from './channels.controller';
 import { WhatsAppBaileysService } from './whatsapp/whatsapp-baileys.service';
 import { WhatsAppCleanupListener } from './listeners/whatsapp-cleanup.listener';
+import { PlatformCapabilitiesModule } from '../platform-capabilities/platform-capabilities.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { WhatsAppCleanupListener } from './listeners/whatsapp-cleanup.listener';
       maxRedirects: 5,
     }),
     ConfigModule,
+    PlatformCapabilitiesModule,
   ],
   controllers: [ChannelsController],
   providers: [

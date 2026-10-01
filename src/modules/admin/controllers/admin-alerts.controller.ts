@@ -36,6 +36,7 @@ import {
 import {
   AdminJwtGuard,
   AdminPermissionGuard,
+  Require2FA,
   RequirePermissions,
 } from '../guards/admin.guards';
 import { CurrentAdmin } from '../decorators/current-admin.decorator';
@@ -69,6 +70,7 @@ export class AdminAlertsController {
 
   @Post('recipients')
   @RequirePermissions(PERMISSIONS.TEMPLATES_MANAGE)
+  @Require2FA()
   createRecipient(
     @Body() body: CreateRecipientInput,
     @CurrentAdmin() admin: AdminUser,
@@ -84,6 +86,7 @@ export class AdminAlertsController {
 
   @Put('recipients/:id')
   @RequirePermissions(PERMISSIONS.TEMPLATES_MANAGE)
+  @Require2FA()
   updateRecipient(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() body: UpdateRecipientInput,
@@ -94,6 +97,7 @@ export class AdminAlertsController {
 
   @Delete('recipients/:id')
   @RequirePermissions(PERMISSIONS.TEMPLATES_MANAGE)
+  @Require2FA()
   @HttpCode(HttpStatus.NO_CONTENT)
   async deleteRecipient(@Param('id', ParseUUIDPipe) id: string) {
     await this.alertsService.deleteRecipient(id);
@@ -101,6 +105,7 @@ export class AdminAlertsController {
 
   @Patch('recipients/:id/toggle')
   @RequirePermissions(PERMISSIONS.TEMPLATES_MANAGE)
+  @Require2FA()
   toggleRecipient(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentAdmin() admin: AdminUser,

@@ -48,6 +48,8 @@ import {
 } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '@modules/auth/guards/jwt-auth.guard';
+import { PlatformFeatureGuard } from '../platform-capabilities/platform-feature.guard';
+import { RequirePlatformFeature } from '../platform-capabilities/platform-feature.decorator';
 import { User } from '@database/entities';
 import { CurrentUser } from '@common/decorators/current-user.decorator';
 import { AIService, SearchPriority } from './ai.service';
@@ -368,7 +370,8 @@ class TrainBotDto {
   path: 'ai',
   version: '1',
 })
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PlatformFeatureGuard)
+@RequirePlatformFeature('ai_assistant')
 export class AiController {
   constructor(
     private readonly aiService: AIService,
@@ -391,6 +394,7 @@ export class AiController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get('settings')
+  @RequirePlatformFeature('ai_assistant.auto_reply')
   @ApiOperation({ summary: 'جلب إعدادات البوت' })
   async getSettings(
     @CurrentUser() user: User,
@@ -403,6 +407,7 @@ export class AiController {
   }
 
   @Put('settings')
+  @RequirePlatformFeature('ai_assistant.auto_reply')
   @ApiOperation({ summary: 'تحديث إعدادات البوت' })
   async updateSettings(
     @CurrentUser() user: User,
@@ -420,6 +425,7 @@ export class AiController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get('knowledge')
+  @RequirePlatformFeature('ai_assistant.knowledge')
   @ApiOperation({ summary: 'جلب قاعدة المعرفة' })
   @ApiQuery({ name: 'category', required: false })
   @ApiQuery({ name: 'search', required: false })
@@ -432,6 +438,7 @@ export class AiController {
   }
 
   @Post('knowledge')
+  @RequirePlatformFeature('ai_assistant.knowledge')
   @ApiOperation({ summary: 'إضافة معرفة جديدة' })
   async addKnowledge(
     @CurrentUser() user: User,
@@ -441,6 +448,7 @@ export class AiController {
   }
 
   @Put('knowledge/:id')
+  @RequirePlatformFeature('ai_assistant.knowledge')
   @ApiOperation({ summary: 'تحديث معرفة' })
   async updateKnowledge(
     @CurrentUser() user: User,
@@ -451,6 +459,7 @@ export class AiController {
   }
 
   @Delete('knowledge/:id')
+  @RequirePlatformFeature('ai_assistant.knowledge')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'حذف معرفة' })
   async deleteKnowledge(
@@ -461,6 +470,7 @@ export class AiController {
   }
 
   @Post('knowledge/reindex')
+  @RequirePlatformFeature('ai_assistant.knowledge')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'إعادة توليد Embeddings لكل المكتبة (RAG)' })
   async reindexEmbeddings(@CurrentUser() user: User) {
@@ -472,6 +482,7 @@ export class AiController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Post('train')
+  @RequirePlatformFeature('ai_assistant.learning')
   @ApiOperation({ summary: 'تدريب البوت' })
   async trainBot(
     @CurrentUser() user: User,
@@ -481,6 +492,7 @@ export class AiController {
   }
 
   @Get('training-status')
+  @RequirePlatformFeature('ai_assistant.learning')
   @ApiOperation({ summary: 'حالة التدريب' })
   async getTrainingStatus(@CurrentUser() user: User) {
     return this.aiService.getTrainingStatus(user.tenantId);
@@ -511,6 +523,7 @@ export class AiController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Post('respond')
+  @RequirePlatformFeature('ai_assistant.auto_reply')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'إنشاء رد على رسالة' })
   @ApiResponse({ status: 200, description: 'الرد المولّد' })
@@ -533,6 +546,7 @@ export class AiController {
   }
 
   @Post('test')
+  @RequirePlatformFeature('ai_assistant.auto_reply')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'اختبار رد البوت (بدون حفظ)' })
   async testResponse(
@@ -616,6 +630,7 @@ export class AiController {
   // ═══════════════════════════════════════════════════════════════════════════
 
   @Get('learning/unanswered')
+  @RequirePlatformFeature('ai_assistant.learning')
   @ApiOperation({ summary: 'قائمة الأسئلة بدون إجابة — مرتبة بالتكرار' })
   async getUnanswered(
     @CurrentUser() user: User,
@@ -635,6 +650,7 @@ export class AiController {
   }
 
   @Get('learning/stats')
+  @RequirePlatformFeature('ai_assistant.learning')
   @ApiOperation({ summary: 'إحصائيات الأسئلة بدون إجابة' })
   async getLearningStats(@CurrentUser() user: User) {
     const tenantId = user.tenantId;
@@ -643,6 +659,7 @@ export class AiController {
   }
 
   @Put('learning/unanswered/:id/resolve')
+  @RequirePlatformFeature('ai_assistant.learning')
   @ApiOperation({ summary: 'تحديث حالة سؤال — resolved (تم إضافة الجواب)' })
   async resolveQuestion(
     @CurrentUser() user: User,
@@ -660,6 +677,7 @@ export class AiController {
   }
 
   @Put('learning/unanswered/:id/dismiss')
+  @RequirePlatformFeature('ai_assistant.learning')
   @ApiOperation({ summary: 'تجاهل سؤال — غير مهم' })
   async dismissQuestion(
     @CurrentUser() user: User,
@@ -672,6 +690,7 @@ export class AiController {
   }
 
   @Delete('learning/unanswered/clear')
+  @RequirePlatformFeature('ai_assistant.learning')
   @ApiOperation({ summary: 'حذف جميع الأسئلة المعلّقة' })
   async clearAllUnanswered(
     @CurrentUser() user: User,
@@ -684,6 +703,7 @@ export class AiController {
   }
 
   @Get('learning/resolved')
+  @RequirePlatformFeature('ai_assistant.learning')
   @ApiOperation({ summary: 'الأسئلة اللي تم الرد عليها' })
   async getResolved(@CurrentUser() user: User) {
     const tenantId = user.tenantId;
@@ -696,6 +716,7 @@ export class AiController {
   // ═══════════════════════════════════════════════════════════════════════════
 
   @Put('learning/unanswered/:id/answer')
+  @RequirePlatformFeature('ai_assistant.learning')
   @ApiOperation({ summary: 'تعديل جواب التاجر على سؤال' })
   async setMerchantAnswer(
     @CurrentUser() user: User,
@@ -708,6 +729,7 @@ export class AiController {
   }
 
   @Post('learning/unanswered/:id/add-to-library')
+  @RequirePlatformFeature('ai_assistant.learning')
   @ApiOperation({ summary: 'إضافة سؤال + جواب التاجر للمكتبة مباشرة' })
   async addToLibraryFromLearning(
     @CurrentUser() user: User,

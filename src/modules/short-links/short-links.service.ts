@@ -228,11 +228,11 @@ export class ShortLinksService {
   // 📈 Track click (async — non-blocking)
   // ═══════════════════════════════════════════════════════════════
 
-  async trackClick(link: ShortLink, req: { ip?: string; userAgent?: string; referrer?: string }): Promise<void> {
+  async trackClick(link: ShortLink, req: { ip?: string; userAgent?: string; referrer?: string; country?: string }): Promise<void> {
     try {
       const device = this.parseDevice(req.userAgent || '');
       const source = this.parseReferrerSource(req.referrer || '');
-      const geo = await this.resolveGeo(req.ip || '');
+      const country = /^[A-Z]{2}$/.test(req.country || '') ? req.country : undefined;
 
       // ✅ Dedup: same IP + browser + link = 1 click per 24 hours
       const visitorHash = this.hashVisitor(req.ip || '', req.userAgent || '');
@@ -254,8 +254,7 @@ export class ShortLinksService {
       await this.clickRepo.save({
         linkId: link.id,
         tenantId: link.tenantId,
-        country: geo.country,
-        city: geo.city,
+        country,
         deviceType: device.type,
         browser: device.browser,
         os: device.os,
@@ -278,25 +277,6 @@ export class ShortLinksService {
    */
   private hashVisitor(ip: string, userAgent: string): string {
     return crypto.createHash('sha256').update(`${ip}|${userAgent}`).digest('hex').substring(0, 32);
-  }
-
-  // ═══════════════════════════════════════════════════════════════
-  // 🌍 Resolve IP → Country/City (free GeoIP API)
-  // ═══════════════════════════════════════════════════════════════
-
-  private async resolveGeo(ip: string): Promise<{ country?: string; city?: string }> {
-    if (!ip || ip === '127.0.0.1' || ip === '::1') return {};
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 2000); // 2s timeout
-      const res = await fetch(`http://ip-api.com/json/${ip}?fields=country,city&lang=ar`, { signal: controller.signal });
-      clearTimeout(timeout);
-      if (!res.ok) return {};
-      const data = await res.json() as { country?: string; city?: string };
-      return { country: data.country || undefined, city: data.city || undefined };
-    } catch {
-      return {}; // API down or timeout — don't block tracking
-    }
   }
 
   // ═══════════════════════════════════════════════════════════════

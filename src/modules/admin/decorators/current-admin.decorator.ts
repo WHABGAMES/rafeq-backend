@@ -11,6 +11,12 @@ export const CurrentAdmin = createParamDecorator(
 
 export const AdminIp = createParamDecorator(
   (_: unknown, ctx: ExecutionContext): string => {
-    return ctx.switchToHttp().getRequest().ipAddress || 'unknown';
+    const request = ctx.switchToHttp().getRequest();
+    const forwarded = request.headers?.['x-forwarded-for'];
+    return request.ipAddress
+      || (Array.isArray(forwarded) ? forwarded[0] : forwarded?.split(',')[0]?.trim())
+      || request.headers?.['x-real-ip']
+      || request.ip
+      || 'unknown';
   },
 );

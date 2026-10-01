@@ -34,6 +34,8 @@ import {
 } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { PlatformFeatureGuard } from '../platform-capabilities/platform-feature.guard';
+import { RequirePlatformFeature } from '../platform-capabilities/platform-feature.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { User } from '@database/entities';
 
@@ -46,7 +48,8 @@ import {
 
 @ApiTags('Inbox')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PlatformFeatureGuard)
+@RequirePlatformFeature('inbox')
 @Controller({
   path: 'inbox',
   version: '1',

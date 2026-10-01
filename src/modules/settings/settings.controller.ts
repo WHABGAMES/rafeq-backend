@@ -19,6 +19,8 @@ import {
 import { User } from '@database/entities';
 import { CurrentUser } from '@common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { PlatformFeatureGuard } from '../platform-capabilities/platform-feature.guard';
+import { RequirePlatformFeature } from '../platform-capabilities/platform-feature.decorator';
 import { SettingsService } from './settings.service';
 import {
   UpdateAutoRepliesDto,
@@ -29,7 +31,8 @@ import {
 } from './dto';
 
 @Controller('settings')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PlatformFeatureGuard)
+@RequirePlatformFeature('settings')
 export class SettingsController {
   constructor(private readonly settingsService: SettingsService) {}
 

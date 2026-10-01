@@ -18,7 +18,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, In, IsNull } from 'typeorm';
+import { EntityManager, Repository, In, IsNull } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
 import {
@@ -348,18 +348,28 @@ export class SuggestionsService {
   // 💬 COMMENTS
   // ═══════════════════════════════════════════════════════════════════════════
 
-  async getComments(suggestionId: string, page = 1, limit = 30) {
-    const offset = (page - 1) * limit;
+  async getComments(suggestionId: string, page = 1, limit = 30, revealIdentity = false) {
+    const normalizedPage = Math.max(1, Number(page) || 1);
+    const normalizedLimit = Math.min(100, Math.max(1, Number(limit) || 30));
+    const suggestion = await this.suggestionRepo.findOne({ where: { id: suggestionId } });
+    if (!suggestion) throw new NotFoundException('الاقتراح غير موجود');
+    const offset = (normalizedPage - 1) * normalizedLimit;
 
     const [items, total] = await this.commentRepo.findAndCount({
       where: { suggestionId },
       order: { createdAt: 'ASC' },
       skip: offset,
-      take: limit,
+      take: normalizedLimit,
     });
 
-    const comments = items.map((c) => this.sanitizeComment(c));
-    return { comments, total, page, limit };
+    const comments = items.map((c) => this.sanitizeComment(c, revealIdentity));
+    return {
+      comments,
+      total,
+      page: normalizedPage,
+      limit: normalizedLimit,
+      totalPages: Math.ceil(total / normalizedLimit),
+    };
   }
 
   async addComment(
@@ -368,24 +378,29 @@ export class SuggestionsService {
     user: { id: string; firstName?: string; lastName?: string; email?: string },
     tenantName?: string,
   ) {
-    const suggestion = await this.suggestionRepo.findOne({ where: { id: suggestionId } });
-    if (!suggestion) throw new NotFoundException('الاقتراح غير موجود');
-
     const merchantDisplayName = [user.firstName, user.lastName].filter(Boolean).join(' ')
       || user.email || null;
+    const { suggestion, saved } = await this.suggestionRepo.manager.transaction(async manager => {
+      const suggestionRepo = manager.getRepository(Suggestion);
+      const commentRepo = manager.getRepository(SuggestionComment);
+      const suggestion = await suggestionRepo.findOne({
+        where: { id: suggestionId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!suggestion || suggestion.mergedIntoId) throw new NotFoundException('الاقتراح غير موجود');
 
-    const comment = this.commentRepo.create({
-      suggestionId,
-      merchantId: user.id,
-      comment: dto.comment.trim(),
-      isAdmin: false,
-      isAnonymous: dto.isAnonymous ?? false,
-      merchantName: merchantDisplayName,
-      storeName: tenantName || null,
+      const saved = await commentRepo.save(commentRepo.create({
+        suggestionId,
+        merchantId: user.id,
+        comment: dto.comment.trim(),
+        isAdmin: false,
+        isAnonymous: dto.isAnonymous ?? false,
+        merchantName: merchantDisplayName,
+        storeName: tenantName || null,
+      }));
+      await suggestionRepo.increment({ id: suggestionId }, 'commentsCount', 1);
+      return { suggestion, saved };
     });
-
-    const saved = await this.commentRepo.save(comment);
-    await this.suggestionRepo.increment({ id: suggestionId }, 'commentsCount', 1);
 
     this.eventEmitter.emit('suggestion.commented', {
       suggestionId,
@@ -406,27 +421,31 @@ export class SuggestionsService {
     dto: AdminCreateCommentDto,
     admin: { id: string; firstName?: string; lastName?: string },
   ) {
-    const suggestion = await this.suggestionRepo.findOne({ where: { id: suggestionId } });
-    if (!suggestion) throw new NotFoundException('الاقتراح غير موجود');
-
     const adminName = [admin.firstName, admin.lastName].filter(Boolean).join(' ') || 'فريق رفيق';
+    const { suggestion, saved } = await this.suggestionRepo.manager.transaction(async manager => {
+      const suggestionRepo = manager.getRepository(Suggestion);
+      const commentRepo = manager.getRepository(SuggestionComment);
+      const suggestion = await suggestionRepo.findOne({
+        where: { id: suggestionId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!suggestion || suggestion.mergedIntoId) throw new NotFoundException('الاقتراح غير موجود');
 
-    const comment = this.commentRepo.create({
-      suggestionId,
-      merchantId: null,
-      comment: dto.comment.trim(),
-      isAdmin: true,
-      adminId: admin.id,
-      adminName,
-      isAnonymous: false,
-    });
-
-    const saved = await this.commentRepo.save(comment);
-    await this.suggestionRepo.increment({ id: suggestionId }, 'commentsCount', 1);
-
-    await this.suggestionRepo.update(suggestionId, {
-      hasAdminResponse: true,
-      adminResponsePreview: dto.comment.trim().substring(0, 500),
+      const saved = await commentRepo.save(commentRepo.create({
+        suggestionId,
+        merchantId: null,
+        comment: dto.comment.trim(),
+        isAdmin: true,
+        adminId: admin.id,
+        adminName,
+        isAnonymous: false,
+      }));
+      await suggestionRepo.increment({ id: suggestionId }, 'commentsCount', 1);
+      await suggestionRepo.update(suggestionId, {
+        hasAdminResponse: true,
+        adminResponsePreview: dto.comment.trim().substring(0, 500),
+      });
+      return { suggestion, saved };
     });
 
     this.eventEmitter.emit('suggestion.admin_replied', {
@@ -447,6 +466,7 @@ export class SuggestionsService {
     if (!suggestion) throw new NotFoundException('الاقتراح غير موجود');
 
     const oldStatus = suggestion.status;
+    if (oldStatus === dto.status) return { id: suggestionId, status: dto.status };
     await this.suggestionRepo.update(suggestionId, { status: dto.status });
 
     this.eventEmitter.emit('suggestion.status_changed', {
@@ -478,55 +498,67 @@ export class SuggestionsService {
   // ═══════════════════════════════════════════════════════════════════════════
 
   async merge(dto: MergeSuggestionsDto) {
-    const [source, target] = await Promise.all([
-      this.suggestionRepo.findOne({ where: { id: dto.sourceId } }),
-      this.suggestionRepo.findOne({ where: { id: dto.targetId } }),
-    ]);
-
-    if (!source || !target) throw new NotFoundException('أحد الاقتراحات غير موجود');
-    if (source.mergedIntoId) throw new BadRequestException('الاقتراح المصدر مدمج سابقاً');
     if (dto.sourceId === dto.targetId) throw new BadRequestException('لا يمكن دمج الاقتراح مع نفسه');
-
-    const sourceLikes = await this.likeRepo.find({ where: { suggestionId: dto.sourceId } });
-    for (const like of sourceLikes) {
-      try {
-        await this.likeRepo.save(
-          this.likeRepo.create({ suggestionId: dto.targetId, merchantId: like.merchantId }),
-        );
-      } catch (error: unknown) {
-        if (!isUniqueViolation(error)) throw error;
+    const result = await this.suggestionRepo.manager.transaction(async manager => {
+      const suggestionRepo = manager.getRepository(Suggestion);
+      const likeRepo = manager.getRepository(SuggestionLike);
+      const followerRepo = manager.getRepository(SuggestionFollower);
+      const commentRepo = manager.getRepository(SuggestionComment);
+      const lockedSuggestions: Suggestion[] = [];
+      for (const id of [dto.sourceId, dto.targetId].sort()) {
+        const suggestion = await suggestionRepo.findOne({
+          where: { id },
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (suggestion) lockedSuggestions.push(suggestion);
       }
-    }
+      const source = lockedSuggestions.find(suggestion => suggestion.id === dto.sourceId);
+      const target = lockedSuggestions.find(suggestion => suggestion.id === dto.targetId);
 
-    const sourceFollowers = await this.followerRepo.find({ where: { suggestionId: dto.sourceId } });
-    for (const follower of sourceFollowers) {
-      try {
-        await this.followerRepo.save(
-          this.followerRepo.create({ suggestionId: dto.targetId, merchantId: follower.merchantId }),
-        );
-      } catch (error: unknown) {
-        if (!isUniqueViolation(error)) throw error;
+      if (!source || !target) throw new NotFoundException('أحد الاقتراحات غير موجود');
+      if (source.mergedIntoId || target.mergedIntoId) throw new BadRequestException('لا يمكن الدمج مع اقتراح مدمج');
+
+      const sourceLikes = await likeRepo.find({ where: { suggestionId: dto.sourceId } });
+      for (const like of sourceLikes) {
+        try {
+          await likeRepo.save(likeRepo.create({ suggestionId: dto.targetId, merchantId: like.merchantId }));
+        } catch (error: unknown) {
+          if (!isUniqueViolation(error)) throw error;
+        }
       }
-    }
 
-    const [newLikes, newFollowers] = await Promise.all([
-      this.likeRepo.count({ where: { suggestionId: dto.targetId } }),
-      this.followerRepo.count({ where: { suggestionId: dto.targetId } }),
-    ]);
+      const sourceFollowers = await followerRepo.find({ where: { suggestionId: dto.sourceId } });
+      for (const follower of sourceFollowers) {
+        try {
+          await followerRepo.save(followerRepo.create({ suggestionId: dto.targetId, merchantId: follower.merchantId }));
+        } catch (error: unknown) {
+          if (!isUniqueViolation(error)) throw error;
+        }
+      }
 
-    await this.suggestionRepo.update(dto.targetId, {
-      likesCount: newLikes,
-      followersCount: newFollowers,
+      await commentRepo.update({ suggestionId: dto.sourceId }, { suggestionId: dto.targetId });
+      const [newLikes, newFollowers] = await Promise.all([
+        likeRepo.count({ where: { suggestionId: dto.targetId } }),
+        followerRepo.count({ where: { suggestionId: dto.targetId } }),
+      ]);
+      const commentSummary = await this.getCommentSummary(dto.targetId, manager);
+      await suggestionRepo.update(dto.targetId, {
+        likesCount: newLikes,
+        followersCount: newFollowers,
+        ...commentSummary,
+      });
+      await suggestionRepo.update(dto.sourceId, { mergedIntoId: dto.targetId, commentsCount: 0 });
+      return { newLikes, newFollowers, commentsCount: commentSummary.commentsCount };
     });
-
-    await this.suggestionRepo.update(dto.sourceId, { mergedIntoId: dto.targetId });
 
     this.logger.log(`Merged suggestion ${dto.sourceId} → ${dto.targetId}`);
 
     return {
       mergedSuggestionId: dto.sourceId,
       targetSuggestionId: dto.targetId,
-      newLikesCount: newLikes,
+      newLikesCount: result.newLikes,
+      newFollowersCount: result.newFollowers,
+      commentsCount: result.commentsCount,
     };
   }
 
@@ -542,17 +574,34 @@ export class SuggestionsService {
   }
 
   async deleteComment(commentId: string) {
-    const comment = await this.commentRepo.findOne({ where: { id: commentId } });
-    if (!comment) throw new NotFoundException('التعليق غير موجود');
-    await this.commentRepo.softRemove(comment);
-    await this.suggestionRepo.decrement({ id: comment.suggestionId }, 'commentsCount', 1);
-    await this.suggestionRepo
-      .createQueryBuilder()
-      .update(Suggestion)
-      .set({ commentsCount: () => 'GREATEST(comments_count, 0)' })
-      .where('id = :id', { id: comment.suggestionId })
-      .execute();
-    return { deleted: true };
+    return this.suggestionRepo.manager.transaction(async manager => {
+      const commentRepo = manager.getRepository(SuggestionComment);
+      const suggestionRepo = manager.getRepository(Suggestion);
+      const comment = await commentRepo.findOne({ where: { id: commentId } });
+      if (!comment) throw new NotFoundException('التعليق غير موجود');
+      const suggestion = await suggestionRepo.findOne({
+        where: { id: comment.suggestionId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!suggestion) throw new NotFoundException('الاقتراح غير موجود');
+      await commentRepo.softRemove(comment);
+      const summary = await this.getCommentSummary(comment.suggestionId, manager);
+      await suggestionRepo.update(comment.suggestionId, summary);
+      return { deleted: true, ...summary };
+    });
+  }
+
+  private async getCommentSummary(suggestionId: string, manager: EntityManager) {
+    const commentRepo = manager.getRepository(SuggestionComment);
+    const [commentsCount, latestAdminComment] = await Promise.all([
+      commentRepo.count({ where: { suggestionId } }),
+      commentRepo.findOne({ where: { suggestionId, isAdmin: true }, order: { createdAt: 'DESC' } }),
+    ]);
+    return {
+      commentsCount,
+      hasAdminResponse: !!latestAdminComment,
+      adminResponsePreview: latestAdminComment?.comment.substring(0, 500) ?? null,
+    };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -656,15 +705,15 @@ export class SuggestionsService {
     };
   }
 
-  private sanitizeComment(c: SuggestionComment) {
+  private sanitizeComment(c: SuggestionComment, revealIdentity = false) {
     return {
       id: c.id,
       suggestionId: c.suggestionId,
       comment: c.comment,
       isAdmin: c.isAdmin,
       adminName: c.isAdmin ? (c.adminName || 'فريق رفيق') : null,
-      merchantName: c.isAnonymous ? null : c.merchantName,
-      storeName: c.isAnonymous ? null : c.storeName,
+      merchantName: c.isAnonymous && !revealIdentity ? null : c.merchantName,
+      storeName: c.isAnonymous && !revealIdentity ? null : c.storeName,
       isAnonymous: c.isAnonymous,
       createdAt: c.createdAt,
     };

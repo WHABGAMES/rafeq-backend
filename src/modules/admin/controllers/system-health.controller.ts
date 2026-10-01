@@ -6,7 +6,7 @@
  * Any missing table (message_logs, stores, subscriptions) returns 0 gracefully
  * instead of crashing the entire /metrics endpoint with 500.
  */
-import { Controller, Get, UseGuards } from '@nestjs/common';
+import { Controller, Get, Logger, UseGuards } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { InjectQueue } from '@nestjs/bullmq';
@@ -19,6 +19,7 @@ import { PERMISSIONS } from '../entities/admin-user.entity';
 @UseGuards(AdminJwtGuard, AdminPermissionGuard)
 @RequirePermissions(PERMISSIONS.SYSTEM_METRICS)
 export class SystemHealthController {
+  private readonly logger = new Logger(SystemHealthController.name);
   constructor(
     @InjectDataSource()
     private readonly dataSource: DataSource,
@@ -119,13 +120,15 @@ export class SystemHealthController {
         FROM users
       `);
       return {
+        available: true,
         total:       +result.total       || 0,
         active:      +result.active      || 0,
         suspended:   +result.suspended   || 0,
         newThisWeek: +result.new_this_week || 0,
       };
-    } catch {
-      return { total: 0, active: 0, suspended: 0, newThisWeek: 0 };
+    } catch (error) {
+      this.logger.error('Admin user metrics query failed', error instanceof Error ? error.stack : undefined);
+      return { available: false, total: 0, active: 0, suspended: 0, newThisWeek: 0 };
     }
   }
 
@@ -139,12 +142,14 @@ export class SystemHealthController {
         FROM stores
       `);
       return {
+        available: true,
         total:     +result.total     || 0,
         active:    +result.active    || 0,
         suspended: +result.suspended || 0,
       };
-    } catch {
-      return { total: 0, active: 0, suspended: 0 };
+    } catch (error) {
+      this.logger.error('Admin store metrics query failed', error instanceof Error ? error.stack : undefined);
+      return { available: false, total: 0, active: 0, suspended: 0 };
     }
   }
 
@@ -158,13 +163,14 @@ export class SystemHealthController {
         FROM message_logs
       `);
       return {
+        available: true,
         totalSent:   +result.sent    || 0,
         totalFailed: +result.failed  || 0,
         last24h:     +result.last_24h || 0,
       };
-    } catch {
-      // message_logs قد لا تكون موجودة بعد
-      return { totalSent: 0, totalFailed: 0, last24h: 0 };
+    } catch (error) {
+      this.logger.error('Admin message metrics query failed', error instanceof Error ? error.stack : undefined);
+      return { available: false, totalSent: 0, totalFailed: 0, last24h: 0 };
     }
   }
 
@@ -178,12 +184,14 @@ export class SystemHealthController {
         FROM subscriptions
       `);
       return {
+        available: true,
         active:        +result.active       || 0,
         trial:         +result.trial        || 0,
         expiringSoon:  +result.expiring_soon || 0,
       };
-    } catch {
-      return { active: 0, trial: 0, expiringSoon: 0 };
+    } catch (error) {
+      this.logger.error('Admin subscription metrics query failed', error instanceof Error ? error.stack : undefined);
+      return { available: false, active: 0, trial: 0, expiringSoon: 0 };
     }
   }
 }

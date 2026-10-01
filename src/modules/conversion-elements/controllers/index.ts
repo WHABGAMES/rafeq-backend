@@ -52,6 +52,8 @@ import {
   AnalyticsQueryDto, CreateABTestDto,
 } from '../dto';
 import { ElementStatus } from '../entities/conversion-element.entity';
+import { PlatformFeatureGuard } from '../../platform-capabilities/platform-feature.guard';
+import { RequirePlatformFeature } from '../../platform-capabilities/platform-feature.decorator';
 
 // ═══════════════════════════════════════════════════════════════
 // 🌐 PUBLIC CONTROLLER — no auth, for embed script
@@ -184,7 +186,8 @@ export class ElementsPublicController {
 
 @ApiTags('Conversion Elements: Management')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PlatformFeatureGuard)
+@RequirePlatformFeature('conversion_elements.manage')
 @Controller({ path: 'elements/manage', version: '1' })
 export class ElementsManageController {
   constructor(
@@ -260,7 +263,8 @@ export class ElementsManageController {
 
 @ApiTags('Conversion Elements: Analytics')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PlatformFeatureGuard)
+@RequirePlatformFeature('conversion_elements.analytics')
 @Controller({ path: 'elements/analytics', version: '1' })
 export class ElementsAnalyticsController {
   constructor(
@@ -325,7 +329,8 @@ export class ElementsAnalyticsController {
 
 @ApiTags('Conversion Elements: A/B Tests')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PlatformFeatureGuard)
+@RequirePlatformFeature('conversion_elements.ab_tests')
 @Controller({ path: 'elements/ab-tests', version: '1' })
 export class ElementsABTestController {
   constructor(

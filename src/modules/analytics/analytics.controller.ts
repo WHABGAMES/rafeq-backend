@@ -38,11 +38,14 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { User } from '../../database/entities/user.entity';
 
 import { AnalyticsService, DateRange } from './analytics.service';
+import { PlatformFeatureGuard } from '../platform-capabilities/platform-feature.guard';
+import { RequirePlatformFeature } from '../platform-capabilities/platform-feature.decorator';
 
 @ApiTags('Analytics')
 @ApiBearerAuth('JWT-auth')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PlatformFeatureGuard)
+@RequirePlatformFeature('analytics')
 @Controller({
   path: 'analytics',
   version: '1',
@@ -56,6 +59,7 @@ export class AnalyticsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get('overview')
+  @RequirePlatformFeature('analytics.overview')
   @ApiOperation({
     summary: 'نظرة عامة',
     description: 'إحصائيات سريعة: المحادثات، الرسائل، العملاء، وقت الرد',
@@ -83,6 +87,7 @@ export class AnalyticsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get('conversations')
+  @RequirePlatformFeature('analytics.overview')
   @ApiOperation({
     summary: 'إحصائيات المحادثات',
     description: 'المحادثات حسب اليوم، القناة، الحالة، وأوقات الذروة',
@@ -104,6 +109,7 @@ export class AnalyticsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get('team')
+  @RequirePlatformFeature('analytics.team')
   @ApiOperation({
     summary: 'أداء الفريق',
     description: 'إحصائيات كل موظف: المحادثات، وقت الرد، نسبة الحل',
@@ -125,6 +131,7 @@ export class AnalyticsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get('campaigns')
+  @RequirePlatformFeature('analytics.overview')
   @ApiOperation({
     summary: 'إحصائيات الحملات',
     description: 'الإرسال، التوصيل، القراءة، ونسب النجاح',
@@ -146,6 +153,7 @@ export class AnalyticsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get('trends/:metric')
+  @RequirePlatformFeature('analytics.overview')
   @ApiOperation({
     summary: 'الاتجاهات',
     description: 'رسم بياني للمحادثات/الرسائل/العملاء عبر الزمن',
@@ -165,6 +173,7 @@ export class AnalyticsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get('export')
+  @RequirePlatformFeature('analytics.export')
   @ApiOperation({
     summary: 'تصدير تقرير',
     description: 'تصدير التقرير كـ CSV أو JSON',

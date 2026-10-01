@@ -10,9 +10,10 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { MessageTemplate } from '@database/entities';
 import { TemplatesController } from './templates.controller';
 import { TemplatesService } from './templates.service';
+import { PlatformCapabilitiesModule } from '../platform-capabilities/platform-capabilities.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([MessageTemplate])],
+  imports: [TypeOrmModule.forFeature([MessageTemplate]), PlatformCapabilitiesModule],
   controllers: [TemplatesController],
   providers: [TemplatesService],
   exports: [

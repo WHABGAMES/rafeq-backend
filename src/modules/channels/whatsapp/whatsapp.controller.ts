@@ -39,6 +39,8 @@ import { Channel, ChannelType, ChannelStatus } from '../entities/channel.entity'
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { WhatsappSettings } from '../../admin/entities/whatsapp-settings.entity';
 import { getErrorMessage } from '@common/utils/error.util';
+import { CurrentUser } from '@common/decorators/current-user.decorator';
+import { User } from '@database/entities/user.entity';
 
 // ── DTOs ──────────────────────────────────────────────────────────────────────
 
@@ -95,14 +97,17 @@ export class WhatsAppController {
 
   // ── Helper: البحث عن القناة وبيانات الاعتماد ──────────────────────────────
 
-  private async getChannelCredentials(channelId: string): Promise<{
+  private async getChannelCredentials(channelId: string, tenantId: string): Promise<{
     phoneNumberId: string;
     accessToken: string;
     channel: Channel;
   }> {
-    const channel = await this.channelRepository.findOne({
-      where: { id: channelId, type: ChannelType.WHATSAPP_OFFICIAL },
-    });
+    const channel = await this.channelRepository
+      .createQueryBuilder('channel')
+      .innerJoin('channel.store', 'store', 'store.tenantId = :tenantId', { tenantId })
+      .where('channel.id = :channelId', { channelId })
+      .andWhere('channel.type = :type', { type: ChannelType.WHATSAPP_OFFICIAL })
+      .getOne();
 
     if (!channel) throw new NotFoundException(`Channel not found: ${channelId}`);
     if (channel.status !== ChannelStatus.CONNECTED) {
@@ -131,8 +136,8 @@ export class WhatsAppController {
   @Post('send/text')
   @ApiOperation({ summary: 'إرسال رسالة نصية عبر WhatsApp' })
   @ApiResponse({ status: 200, description: 'تم إرسال الرسالة بنجاح' })
-  async sendTextMessage(@Body() dto: SendTextMessageDto) {
-    const { phoneNumberId, accessToken } = await this.getChannelCredentials(dto.channelId);
+  async sendTextMessage(@Body() dto: SendTextMessageDto, @CurrentUser() user: User) {
+    const { phoneNumberId, accessToken } = await this.getChannelCredentials(dto.channelId, user.tenantId);
     const result = await this.whatsAppService.sendTextMessage(phoneNumberId, dto.to, dto.text, accessToken);
     await this.channelRepository.increment({ id: dto.channelId }, 'messagesSent', 1);
     await this.channelRepository.update(dto.channelId, { lastActivityAt: new Date() });
@@ -142,8 +147,8 @@ export class WhatsAppController {
   @UseGuards(JwtAuthGuard)
   @Post('send/image')
   @ApiOperation({ summary: 'إرسال صورة عبر WhatsApp' })
-  async sendImageMessage(@Body() dto: SendImageMessageDto) {
-    const { phoneNumberId, accessToken } = await this.getChannelCredentials(dto.channelId);
+  async sendImageMessage(@Body() dto: SendImageMessageDto, @CurrentUser() user: User) {
+    const { phoneNumberId, accessToken } = await this.getChannelCredentials(dto.channelId, user.tenantId);
     const result = await this.whatsAppService.sendImageMessage(phoneNumberId, dto.to, dto.imageUrl, dto.caption, accessToken);
     await this.channelRepository.increment({ id: dto.channelId }, 'messagesSent', 1);
     await this.channelRepository.update(dto.channelId, { lastActivityAt: new Date() });
@@ -153,8 +158,8 @@ export class WhatsAppController {
   @UseGuards(JwtAuthGuard)
   @Post('send/template')
   @ApiOperation({ summary: 'إرسال رسالة Template' })
-  async sendTemplateMessage(@Body() dto: SendTemplateMessageDto) {
-    const { phoneNumberId, accessToken } = await this.getChannelCredentials(dto.channelId);
+  async sendTemplateMessage(@Body() dto: SendTemplateMessageDto, @CurrentUser() user: User) {
+    const { phoneNumberId, accessToken } = await this.getChannelCredentials(dto.channelId, user.tenantId);
     const result = await this.whatsAppService.sendTemplateMessage(
       phoneNumberId, dto.to, dto.templateName, dto.languageCode, dto.components, accessToken,
     );
@@ -166,8 +171,8 @@ export class WhatsAppController {
   @UseGuards(JwtAuthGuard)
   @Post('send/buttons')
   @ApiOperation({ summary: 'إرسال رسالة بأزرار تفاعلية' })
-  async sendButtonMessage(@Body() dto: SendButtonMessageDto) {
-    const { phoneNumberId, accessToken } = await this.getChannelCredentials(dto.channelId);
+  async sendButtonMessage(@Body() dto: SendButtonMessageDto, @CurrentUser() user: User) {
+    const { phoneNumberId, accessToken } = await this.getChannelCredentials(dto.channelId, user.tenantId);
     const result = await this.whatsAppService.sendButtonMessage(
       phoneNumberId, dto.to, dto.bodyText, dto.buttons, accessToken, dto.headerText, dto.footerText,
     );

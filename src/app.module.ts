@@ -96,6 +96,7 @@ import { GatewayModule } from '@modules/gateway/gateway.module';
 import { MailModule } from '@modules/mail/mail.module';
 import { EmployeeNotificationsModule } from '@modules/employee-notifications/employee-notifications.module';
 import { AdminModule } from '@modules/admin/admin.module';
+import { PlatformCapabilitiesModule } from '@modules/platform-capabilities/platform-capabilities.module';
 import { PlatformNotificationsModule } from '@modules/platform-notifications/platform-notifications.module';
 import { SuggestionsModule } from '@modules/suggestions/suggestions.module';
 import { ConversionElementsModule } from './modules/conversion-elements/conversion-elements.module';
@@ -264,7 +265,7 @@ import { OtpRelayModule } from './modules/otp-relay/otp-relay.module';
             port: redisPort,
             password: redisPassword,
             // TLS مطلوب لـ DigitalOcean Managed Redis/Valkey
-            ...(redisTls ? { tls: { rejectUnauthorized: false } } : {}),
+            ...(redisTls ? { tls: {} } : {}),
           },
           // إعدادات افتراضية لجميع المهام
           defaultJobOptions: {
@@ -416,6 +417,7 @@ import { OtpRelayModule } from './modules/otp-relay/otp-relay.module';
     
     // 🏪 المتاجر والقنوات
     StoresModule,
+    PlatformCapabilitiesModule,
     ChannelsModule,
     WhatsAppModule,       // ✅ واتساب routes (webhook, send, etc.)
     EmailModule,          // ✅ قناة البريد الإلكتروني (SMTP, SendGrid, Mailgun, SES)

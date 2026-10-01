@@ -36,10 +36,13 @@ import { User } from '@database/entities';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { CampaignsService, CreateCampaignDto } from './campaigns.service';
 import { CampaignType, CampaignStatus, CampaignChannel, AudienceFilter } from '@database/entities/campaign.entity';
+import { PlatformFeatureGuard } from '../platform-capabilities/platform-feature.guard';
+import { RequirePlatformFeature } from '../platform-capabilities/platform-feature.decorator';
 
 @ApiTags('Campaigns')
 @ApiBearerAuth('JWT-auth')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PlatformFeatureGuard)
+@RequirePlatformFeature('campaigns')
 @Controller({ path: 'campaigns', version: '1' })
 export class CampaignsController {
   constructor(private readonly campaignsService: CampaignsService) {}
@@ -49,6 +52,7 @@ export class CampaignsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Post()
+  @RequirePlatformFeature('campaigns.create')
   @ApiOperation({ summary: 'إنشاء حملة جديدة' })
   async create(
     @CurrentUser() user: User,
@@ -160,6 +164,7 @@ export class CampaignsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Post(':id/execute')
+  @RequirePlatformFeature('campaigns.send')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'تنفيذ الحملة فوراً' })
   async execute(@CurrentUser() user: User, @Param('id') id: string) {
@@ -172,6 +177,7 @@ export class CampaignsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Post(':id/pause')
+  @RequirePlatformFeature('campaigns.schedule')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'إيقاف الحملة مؤقتاً' })
   async pause(@CurrentUser() user: User, @Param('id') id: string) {
@@ -179,6 +185,7 @@ export class CampaignsController {
   }
 
   @Post(':id/resume')
+  @RequirePlatformFeature('campaigns.schedule')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'استئناف الحملة' })
   async resume(@CurrentUser() user: User, @Param('id') id: string) {
@@ -186,6 +193,7 @@ export class CampaignsController {
   }
 
   @Post(':id/cancel')
+  @RequirePlatformFeature('campaigns.schedule')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'إلغاء الحملة' })
   async cancel(@CurrentUser() user: User, @Param('id') id: string) {
@@ -197,6 +205,7 @@ export class CampaignsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get(':id/stats')
+  @RequirePlatformFeature('campaigns.analytics')
   @ApiOperation({ summary: 'إحصائيات الحملة' })
   async getStats(@CurrentUser() user: User, @Param('id') id: string) {
     return this.campaignsService.getStats(id, user.tenantId);

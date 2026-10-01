@@ -30,14 +30,15 @@ import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
-import { AdminJwtGuard, AdminPermissionGuard } from '../guards/admin.guards';
+import { AdminJwtGuard, AdminPermissionGuard, RequirePermissions, Require2FA } from '../guards/admin.guards';
 import { CurrentAdmin } from '../decorators/current-admin.decorator';
 import { WhatsappSettings } from '../entities/whatsapp-settings.entity';
-import { AdminUser } from '../entities/admin-user.entity';
+import { AdminUser, PERMISSIONS } from '../entities/admin-user.entity';
 
 import { Conversation, Message, ConversationStatus, Channel } from '@database/entities';
 import { InboxService } from '@modules/inbox/inbox.service';
 import { WhatsappSettingsService } from '../services/whatsapp-settings.service';
+import { SendAdminMessageDto, UpdateAdminConversationStatusDto, UpdateAdminConversationTagsDto } from '../dto/admin-inbox.dto';
 
 @ApiTags('Admin: صندوق الرسائل')
 @Controller({ path: 'admin/inbox', version: '1' })
@@ -93,11 +94,24 @@ export class AdminInboxController {
     return channels.map(c => c.id);
   }
 
+  private async requireAdminConversation(id: string): Promise<Conversation> {
+    const adminChannelIds = await this.getAdminChannelIds();
+    if (adminChannelIds.length === 0) throw new NotFoundException('المحادثة غير موجودة');
+    const conversation = await this.conversationRepo
+      .createQueryBuilder('conversation')
+      .where('conversation.id = :id', { id })
+      .andWhere('conversation.channelId IN (:...channelIds)', { channelIds: adminChannelIds })
+      .getOne();
+    if (!conversation) throw new NotFoundException('المحادثة غير موجودة');
+    return conversation;
+  }
+
   // ═══════════════════════════════════════════════════════════════
   // 📋 المحادثات — فقط رقم الأدمن
   // ═══════════════════════════════════════════════════════════════
 
   @Get()
+  @RequirePermissions(PERMISSIONS.ADMIN_INBOX_READ)
   @ApiOperation({ summary: 'محادثات رقم واتساب الأدمن' })
   async getConversations(
     @Query('status') status?: string,
@@ -183,6 +197,7 @@ export class AdminInboxController {
   // ═══════════════════════════════════════════════════════════════
 
   @Get('stats')
+  @RequirePermissions(PERMISSIONS.ADMIN_INBOX_READ)
   @ApiOperation({ summary: 'إحصائيات صندوق الرسائل' })
   async getStats() {
     const adminChannelIds = await this.getAdminChannelIds();
@@ -208,14 +223,14 @@ export class AdminInboxController {
   // ═══════════════════════════════════════════════════════════════
 
   @Get(':id/messages')
+  @RequirePermissions(PERMISSIONS.ADMIN_INBOX_READ)
   @ApiOperation({ summary: 'رسائل محادثة' })
   async getMessages(
     @Param('id') id: string,
     @Query('page', new ParseIntPipe({ optional: true })) page = 1,
     @Query('limit', new ParseIntPipe({ optional: true })) limit = 50,
   ) {
-    const conv = await this.conversationRepo.findOne({ where: { id } });
-    if (!conv) throw new NotFoundException('المحادثة غير موجودة');
+    const conv = await this.requireAdminConversation(id);
 
     return this.inboxService.getMessages(id, conv.tenantId, {
       page: Number(page) || 1,
@@ -228,15 +243,16 @@ export class AdminInboxController {
   // ═══════════════════════════════════════════════════════════════
 
   @Post(':id/messages')
+  @RequirePermissions(PERMISSIONS.ADMIN_INBOX_MANAGE)
+  @Require2FA()
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'إرسال رسالة من الأدمن عبر WhatsApp Admin Settings' })
   async sendMessage(
     @Param('id') id: string,
     @CurrentAdmin() _admin: AdminUser,
-    @Body() body: { content: string },
+    @Body() body: SendAdminMessageDto,
   ) {
-    const conv = await this.conversationRepo.findOne({ where: { id } });
-    if (!conv) throw new NotFoundException('المحادثة غير موجودة');
+    const conv = await this.requireAdminConversation(id);
 
     if (!body.content?.trim()) {
       throw new BadRequestException('محتوى الرسالة مطلوب');
@@ -278,15 +294,15 @@ export class AdminInboxController {
   // ═══════════════════════════════════════════════════════════════
 
   @Patch(':id/status')
+  @RequirePermissions(PERMISSIONS.ADMIN_INBOX_MANAGE)
   @ApiOperation({ summary: 'تغيير حالة المحادثة' })
   async updateStatus(
     @Param('id') id: string,
-    @Body() body: { status: string },
+    @Body() body: UpdateAdminConversationStatusDto,
   ) {
-    const conv = await this.conversationRepo.findOne({ where: { id } });
-    if (!conv) throw new NotFoundException('المحادثة غير موجودة');
+    const conv = await this.requireAdminConversation(id);
 
-    return this.inboxService.updateStatus(id, body.status as ConversationStatus, conv.tenantId);
+    return this.inboxService.updateStatus(id, body.status, conv.tenantId);
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -294,11 +310,11 @@ export class AdminInboxController {
   // ═══════════════════════════════════════════════════════════════
 
   @Post(':id/read')
+  @RequirePermissions(PERMISSIONS.ADMIN_INBOX_MANAGE)
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'علامة مقروء' })
   async markAsRead(@Param('id') id: string) {
-    const conv = await this.conversationRepo.findOne({ where: { id } });
-    if (!conv) throw new NotFoundException('المحادثة غير موجودة');
+    const conv = await this.requireAdminConversation(id);
 
     await this.inboxService.markAsRead(id, conv.tenantId);
   }
@@ -308,14 +324,14 @@ export class AdminInboxController {
   // ═══════════════════════════════════════════════════════════════
 
   @Post(':id/tags')
+  @RequirePermissions(PERMISSIONS.ADMIN_INBOX_MANAGE)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'تحديث tags المحادثة' })
   async updateTags(
     @Param('id') id: string,
-    @Body() body: { tags: string[] },
+    @Body() body: UpdateAdminConversationTagsDto,
   ) {
-    const conv = await this.conversationRepo.findOne({ where: { id } });
-    if (!conv) throw new NotFoundException('المحادثة غير موجودة');
+    const conv = await this.requireAdminConversation(id);
 
     return this.inboxService.addTags(id, body.tags, conv.tenantId);
   }
@@ -325,11 +341,12 @@ export class AdminInboxController {
   // ═══════════════════════════════════════════════════════════════
 
   @Delete(':id')
+  @RequirePermissions(PERMISSIONS.ADMIN_INBOX_MANAGE)
+  @Require2FA()
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'حذف محادثة نهائياً' })
   async deleteConversation(@Param('id') id: string) {
-    const conv = await this.conversationRepo.findOne({ where: { id } });
-    if (!conv) throw new NotFoundException('المحادثة غير موجودة');
+    const conv = await this.requireAdminConversation(id);
 
     await this.inboxService.deleteConversation(conv.tenantId, id);
   }
