@@ -36,6 +36,21 @@
 
 # أحدث التحديثات
 
+### [2026-10-01] — BE-075 — v49 — تدقيق مستقل لحزمة تحديث الاعتمادات قبل النشر
+- **الحالة:** محلياً — اكتمل التدقيق وإغلاق فجوة اختبار الجلسة، بانتظار الرفع وتشغيل CI على Node 22.
+- **النسخة:** اختبار توافق جلسة Telegram v3 · `UPDATE_HISTORY.md` v49.
+- **المشكلة:** اختبار BE-072 أثبت إنشاء `StringSession` فارغة فقط، لكنه لم يثبت أن `teleproto` يستطيع قراءة وإعادة حفظ صيغة جلسة GramJS المخزنة في `TELEGRAM_SESSION`. كما أن بيئة الفحص المحلية Node 24 بينما Docker والإنتاج مثبتان على Node 22.
+- **السبب الجذري:** ركز الاختبار الأول على مسار تسجيل الإدارة الجديد ولم يغلق عقد ترحيل بيانات الجلسة القائمة، واعتمد الجهاز Runtime أحدث من Runtime الإنتاج.
+- **طريقة الحل:** أضيف fixture حتمي غير سري يمثل صيغة GramJS StringSession الحقيقية: رقم مركز البيانات، طول وعنوان الخادم، المنفذ، ومفتاح مصادقة وهمي بطول 256 بايت. يحمّله `teleproto` ثم يعيد حفظه مطابقاً بايتياً، ما يثبت توافق التخزين دون استعمال جلسة الإنتاج أو الاتصال بـTelegram. أعيد تدقيق تغييرات ESLint/OpenAI/BullMQ يدوياً والبحث عن suppressions وواجهات BullMQ v5 المحذوفة.
+- **الأثر التشغيلي:** لا تغيير في كود التشغيل أو البيئة أو البيانات؛ التغيير اختبار وتوثيق فقط، لكنه يمنع نشر ترحيل Telegram بناءً على اختبار فارغ غير كافٍ.
+- **أثر سلة/زد:** لا تغيير في OAuth أو Webhooks أو الطوابير أو الأحداث أو payloads. أعيد فحص الكود ولم يوجد `repeat` أو `Queue.resume()` أو وصول إلى `Queue.client` في مسارات الطوابير.
+- **الملفات:** `src/modules/otp-relay/telegram-otp-client.service.spec.ts` (v3) · `UPDATE_HISTORY.md` (v49).
+- **المخاطر/الملاحظات:** الاختبار يثبت توافق تنسيق الجلسة، لا صلاحية مفتاح Telegram الحقيقي؛ الصلاحية لا يمكن إثباتها إلا بعد النشر من السجل الحي. اختبار Node 22 النهائي سيجري في GitHub CI/DigitalOcean لأن الجهاز الحالي لا يحتوي Runtime 22 أو Docker.
+- **التحقق:** بحث مستقل عن `eslint-disable` و`@ts-ignore` و`@ts-expect-error` و`any` الصريح = 0؛ ESLint كامل بلا أخطاء أو تحذيرات؛ بناء Nest ناجح؛ 30/30 مجموعة و154/154 اختباراً ناجحة؛ `npm audit --audit-level=low` يعيد 0 ثغرات؛ و`git diff --check` نظيف.
+- **رسالة الـcommit:** `test(BE-075): v49 verify legacy Telegram session compatibility`.
+- **PR / Commit:** محلياً — بانتظار الرفع.
+- **خطة التراجع:** إعادة BE-075 تحذف الاختبار والتوثيق فقط ولا تمس كود الإنتاج.
+
 ### [2026-10-01] — BE-074 — v48 — ترقية BullMQ وفصل فحص Redis عن تفاصيل الطابور
 - **الحالة:** محلياً — اكتملت الترقية والفحص، بانتظار المراجعة والرفع.
 - **النسخة:** تكامل BullMQ وRedis health v2 · اختبار صحة النظام v1 · `package.json` v6 · `package-lock.json` v3 · `UPDATE_HISTORY.md` v48.
@@ -891,11 +906,12 @@
 
 | الملف | آخر نسخة | آخر إصلاح |
 |---|---|---|
+| `backend/src/modules/otp-relay/telegram-otp-client.service.spec.ts` | v3 | BE-075 |
+| `backend/UPDATE_HISTORY.md` | v49 | BE-075 |
 | `backend/src/modules/admin/controllers/system-health.controller.ts` | v2 | BE-074 |
 | `backend/src/modules/admin/controllers/system-health.controller.spec.ts` | v1 | BE-074 |
 | `backend/package.json` | v6 | BE-074 |
 | `backend/package-lock.json` | v3 | BE-074 |
-| `backend/UPDATE_HISTORY.md` | v48 | BE-074 |
 | `backend/src/modules/otp-relay/otp-relay.service.ts` | v4 | BE-060 |
 | `backend/src/modules/analytics/analytics.service.ts` | v2 | BE-060 |
 | `backend/src/modules/tenants/tenants.service.ts` | v1 | BE-060 |

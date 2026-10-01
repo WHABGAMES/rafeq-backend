@@ -22,4 +22,26 @@ describe('TelegramOtpClientService teleproto integration', () => {
 
     expect(session.save()).toBe('');
   });
+
+  it('round-trips the persisted GramJS StringSession wire format', async () => {
+    const dcId = Buffer.from([2]);
+    const address = Buffer.from('149.154.167.51');
+    const addressLength = Buffer.alloc(2);
+    addressLength.writeInt16BE(address.length);
+    const port = Buffer.alloc(2);
+    port.writeInt16BE(443);
+    const fakeAuthKey = Buffer.alloc(256, 0x5a);
+    const persistedSession = `1${Buffer.concat([
+      dcId,
+      addressLength,
+      address,
+      port,
+      fakeAuthKey,
+    ]).toString('base64')}`;
+
+    const session = new StringSession(persistedSession);
+    await session.load();
+
+    expect(session.save()).toBe(persistedSession);
+  });
 });
