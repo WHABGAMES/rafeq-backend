@@ -18,13 +18,14 @@ import {
   HttpCode,
   Res,
   Logger,
+  Inject,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { Response } from 'express';
 import { DataSource } from 'typeorm';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
+import { REDIS_CLIENT } from '@common/redis/redis.module';
 
 interface HealthResponse {
   status: 'healthy' | 'unhealthy';
@@ -46,36 +47,14 @@ interface ReadinessResponse {
 export class HealthController {
   private readonly startTime: Date;
   private readonly logger = new Logger(HealthController.name);
-  private redisClient: Redis | null = null;
 
   constructor(
     @InjectDataSource()
     private readonly dataSource: DataSource,
-    private readonly configService: ConfigService,
+    @Inject(REDIS_CLIENT)
+    private readonly redisClient: Redis,
   ) {
     this.startTime = new Date();
-
-    // Create a lightweight Redis client for health checks only
-    try {
-      const host = this.configService.get<string>('REDIS_HOST', 'localhost');
-      const port = this.configService.get<number>('REDIS_PORT', 6379);
-      const password = this.configService.get<string>('REDIS_PASSWORD') || undefined;
-
-      this.redisClient = new Redis({
-        host,
-        port,
-        password,
-        db: 0,
-        maxRetriesPerRequest: 1,
-        connectTimeout: 3000,
-        lazyConnect: true, // Don't connect until first use
-      });
-
-      // Suppress error events (we handle failures in readiness check)
-      this.redisClient.on('error', () => {});
-    } catch {
-      this.logger.warn('Could not create Redis client for health checks');
-    }
   }
 
   /**
@@ -140,16 +119,12 @@ export class HealthController {
 
     // ── Check Redis ──
     try {
-      if (this.redisClient) {
-        const redisStart = Date.now();
-        await this.redisClient.ping();
-        result.checks.redis = {
-          status: 'ok',
-          latencyMs: Date.now() - redisStart,
-        };
-      } else {
-        result.checks.redis = { status: 'not_configured' };
-      }
+      const redisStart = Date.now();
+      await this.redisClient.ping();
+      result.checks.redis = {
+        status: 'ok',
+        latencyMs: Date.now() - redisStart,
+      };
     } catch (error) {
       result.checks.redis = { status: 'down' };
       result.ready = false;
