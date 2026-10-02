@@ -38,6 +38,10 @@ export enum AuditAction {
   TEMPLATE_CREATED = 'template.created',
   TEMPLATE_UPDATED = 'template.updated',
   TEMPLATE_DELETED = 'template.deleted',
+  TEMPLATE_TOGGLED = 'template.toggled',
+  TEMPLATE_DUPLICATED = 'template.duplicated',
+  TEMPLATE_BULK_TOGGLED = 'template.bulk_toggled',
+  TEMPLATE_TEST_QUEUED = 'template.test_queued',
 
   // ── Admin → Notifications ──
   NOTIFICATION_SENT = 'notification.sent',

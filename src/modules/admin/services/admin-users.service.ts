@@ -29,6 +29,7 @@ import { MergeHistory, MergeStatus } from '../entities/merge-history.entity';
 import { MailService } from '../../mail/mail.service';
 import { getErrorMessage } from '@common/utils/error.util';
 import { asJsonRecord, getJsonValue } from '@common/utils/json-record.util';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 
 @Injectable()
 export class AdminUsersService {
@@ -43,6 +44,7 @@ export class AdminUsersService {
 
     private readonly auditService: AuditService,
     private readonly mailService: MailService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   // ─── User Listing ──────────────────────────────────────────────────────────
@@ -280,6 +282,14 @@ export class AdminUsersService {
       targetId: userId,
       metadata: { reason, userEmail: user.email },
       ipAddress,
+    });
+
+    this.eventEmitter.emit('account.suspended', {
+      userId,
+      email: user.email,
+      phone: user.phone || undefined,
+      reason,
+      tenantId: user.tenant_id || undefined,
     });
 
     this.logger.log(`User ${userId} suspended by admin ${admin.email}`);

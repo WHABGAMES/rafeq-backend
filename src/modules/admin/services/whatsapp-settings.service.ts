@@ -15,11 +15,13 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
+import { ConfigService } from '@nestjs/config';
 import { Repository, DataSource, IsNull, FindOptionsWhere } from 'typeorm';
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'crypto';
 import { WhatsappSettings, WhatsappProvider } from '../entities/whatsapp-settings.entity';
 import { MessageLog, MessageStatus } from '../entities/message-log.entity';
 import { asJsonRecord, getJsonString } from '@common/utils/json-record.util';
+import { MailService } from '../../mail/mail.service';
 
 /**
  * ✅ FIX [TS2741]: Interface مفصولة لكل return type
@@ -45,10 +47,21 @@ interface MessageHistoryRow {
   triggerEvent: string | null;
 }
 
+type SafeWhatsappSettings = Omit<WhatsappSettings, 'accessTokenEncrypted' | 'webhookVerifyToken'> & {
+  maskedToken: string;
+  hasAccessToken: boolean;
+  hasWebhookVerifyToken: boolean;
+};
+
+const FAILURE_THRESHOLD = 3;
+const ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+const HEALTH_MONITOR_ADVISORY_LOCK_ID = 742_610_307;
+
 @Injectable()
 export class WhatsappSettingsService implements OnModuleInit {
   private readonly logger = new Logger(WhatsappSettingsService.name);
   private readonly encKey: Buffer;
+  private healthCheckRunning = false;
 
   constructor(
     @InjectRepository(WhatsappSettings)
@@ -59,6 +72,8 @@ export class WhatsappSettingsService implements OnModuleInit {
 
     @InjectDataSource()
     private readonly dataSource: DataSource,
+    private readonly configService: ConfigService,
+    private readonly mailService: MailService,
   ) {
     const encKeySource = process.env.ENCRYPTION_KEY;
 
@@ -247,7 +262,7 @@ export class WhatsappSettingsService implements OnModuleInit {
   // ─── Settings Management ──────────────────────────────────────────────────
 
   async getSettings(tenantId?: string): Promise<
-    (Omit<WhatsappSettings, 'accessTokenEncrypted'> & { maskedToken: string }) | null
+    SafeWhatsappSettings | null
   > {
     // ✅ FIX CRITICAL: عزل تام بين التجار
     // tenantId موجود → إعدادات هذا التاجر فقط
@@ -258,61 +273,69 @@ export class WhatsappSettingsService implements OnModuleInit {
     const settings = await this.settingsRepo.findOne({ where });
     if (!settings) return null;
 
-    const { accessTokenEncrypted, ...rest } = settings;
-    return {
-      ...rest,
-      // ✅ لا نُرجع الـ token الحقيقي أبدًا — masked فقط
-      maskedToken: accessTokenEncrypted
-        ? this.maskToken(this.decrypt(accessTokenEncrypted))
-        : '****',
-    };
+    return this.toSafeSettings(settings);
   }
 
   async upsertSettings(data: {
     tenantId?: string;
     phoneNumber: string;
     provider: WhatsappProvider;
-    accessToken: string;
+    accessToken?: string;
     businessAccountId?: string;
     phoneNumberId?: string;
     webhookUrl?: string;
     webhookVerifyToken?: string;
     isActive?: boolean;
-  }): Promise<WhatsappSettings> {
+  }): Promise<SafeWhatsappSettings> {
     // ✅ FIX CRITICAL: فلترة حسب التاجر عند البحث عن إعدادات موجودة
     // بدون IsNull: findOne({ where: {} }) يلقط سجل أي تاجر ويكتب فوقه!
     const where = this.settingsWhere(data.tenantId);
 
     let settings = await this.settingsRepo.findOne({ where });
-    const encrypted = this.encrypt(data.accessToken);
+
+    if (data.provider === WhatsappProvider.CUSTOM) {
+      throw new BadRequestException('Custom WhatsApp provider is not supported');
+    }
+    if (data.provider === WhatsappProvider.META && !data.phoneNumberId?.trim()) {
+      throw new BadRequestException('phoneNumberId is required for Meta WhatsApp');
+    }
+    const accessToken = data.accessToken?.trim();
+    if (!settings && !accessToken) {
+      throw new BadRequestException('accessToken is required when creating WhatsApp settings');
+    }
 
     if (settings) {
       Object.assign(settings, {
         tenantId: data.tenantId,
         phoneNumber: data.phoneNumber,
         provider: data.provider,
-        accessTokenEncrypted: encrypted,
         businessAccountId: data.businessAccountId,
         phoneNumberId: data.phoneNumberId,
         webhookUrl: data.webhookUrl,
-        webhookVerifyToken: data.webhookVerifyToken,
         isActive: data.isActive ?? settings.isActive,
       });
+      if (accessToken) settings.accessTokenEncrypted = this.encrypt(accessToken);
+      if (data.webhookVerifyToken?.trim()) {
+        settings.webhookVerifyToken = data.webhookVerifyToken.trim();
+      }
+      settings.lastConfiguredAt = new Date();
     } else {
       settings = this.settingsRepo.create({
         tenantId: data.tenantId,
         phoneNumber: data.phoneNumber,
         provider: data.provider,
-        accessTokenEncrypted: encrypted,
+        accessTokenEncrypted: this.encrypt(accessToken as string),
         businessAccountId: data.businessAccountId,
         phoneNumberId: data.phoneNumberId,
         webhookUrl: data.webhookUrl,
         webhookVerifyToken: data.webhookVerifyToken,
         isActive: data.isActive ?? false,
+        lastConfiguredAt: new Date(),
       });
     }
 
-    return this.settingsRepo.save(settings);
+    const saved = await this.settingsRepo.save(settings);
+    return this.toSafeSettings(saved);
   }
 
   async toggleActive(isActive: boolean, tenantId?: string): Promise<void> {
@@ -321,7 +344,127 @@ export class WhatsappSettingsService implements OnModuleInit {
     const settings = await this.settingsRepo.findOne({ where });
     if (!settings) throw new NotFoundException('WhatsApp settings not configured');
     settings.isActive = isActive;
+    settings.lastConfiguredAt = new Date();
     await this.settingsRepo.save(settings);
+  }
+
+  /**
+   * Verifies active Meta connections in the background. Three consecutive
+   * failures are required before marking a connection disconnected, which
+   * avoids alerting the owner for a transient Meta/network outage.
+   */
+  async monitorConnections(): Promise<void> {
+    if (this.healthCheckRunning) return;
+    this.healthCheckRunning = true;
+    const lockRunner = this.dataSource.createQueryRunner();
+    let lockAcquired = false;
+    try {
+      await lockRunner.connect();
+      const lockResult = await lockRunner.query(
+        'SELECT pg_try_advisory_lock($1) AS acquired',
+        [HEALTH_MONITOR_ADVISORY_LOCK_ID],
+      );
+      const lockRows = lockResult as unknown as Array<{ acquired: boolean }>;
+      lockAcquired = lockRows[0]?.acquired === true;
+      if (!lockAcquired) return;
+
+      const settingsList = await this.settingsRepo.find({
+        where: {
+          isActive: true,
+          provider: WhatsappProvider.META,
+          tenantId: IsNull(),
+        },
+      });
+      for (const settings of settingsList) {
+        await this.checkMetaConnection(settings);
+      }
+    } catch (error) {
+      this.logger.error('WhatsApp connection monitor failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    } finally {
+      if (lockAcquired) {
+        await lockRunner.query('SELECT pg_advisory_unlock($1)', [HEALTH_MONITOR_ADVISORY_LOCK_ID])
+          .catch((error: unknown) => this.logger.error('Could not release WhatsApp monitor lock', {
+            error: error instanceof Error ? error.message : 'Unknown error',
+          }));
+      }
+      await lockRunner.release().catch((error: unknown) => this.logger.error(
+        'Could not release WhatsApp monitor database connection',
+        { error: error instanceof Error ? error.message : 'Unknown error' },
+      ));
+      this.healthCheckRunning = false;
+    }
+  }
+
+  private async checkMetaConnection(settings: WhatsappSettings): Promise<void> {
+    const checkedAt = new Date();
+    try {
+      if (!settings.phoneNumberId) throw new Error('Phone Number ID is missing');
+      const token = this.decrypt(settings.accessTokenEncrypted);
+      const response = await fetch(
+        `${this.graphApiBaseUrl()}/${encodeURIComponent(settings.phoneNumberId)}?fields=id,display_phone_number,verified_name,quality_rating`,
+        { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000) },
+      );
+      const payload = asJsonRecord(await response.json()) ?? {};
+      if (!response.ok) {
+        throw new Error(
+          getJsonString(asJsonRecord(payload.error), 'message') ?? `Meta HTTP ${response.status}`,
+        );
+      }
+
+      settings.connectionStatus = 'connected';
+      settings.consecutiveHealthFailures = 0;
+      settings.lastConnectionError = null;
+      settings.lastHealthCheckedAt = checkedAt;
+      await this.settingsRepo.save(settings);
+    } catch (error) {
+      const reason = this.safeConnectionError(error);
+      settings.lastHealthCheckedAt = checkedAt;
+      settings.lastConnectionError = reason;
+      settings.consecutiveHealthFailures = (settings.consecutiveHealthFailures || 0) + 1;
+
+      if (settings.consecutiveHealthFailures >= FAILURE_THRESHOLD) {
+        const wasDisconnected = settings.connectionStatus === 'disconnected';
+        settings.connectionStatus = 'disconnected';
+        const cooldownPassed = !settings.lastDisconnectAlertAt
+          || checkedAt.getTime() - settings.lastDisconnectAlertAt.getTime() >= ALERT_COOLDOWN_MS;
+        if (!wasDisconnected || cooldownPassed) {
+          const delivered = await this.sendDisconnectAlert(settings, reason, checkedAt);
+          if (delivered) settings.lastDisconnectAlertAt = checkedAt;
+        }
+      }
+      await this.settingsRepo.save(settings);
+    }
+  }
+
+  private async sendDisconnectAlert(
+    settings: WhatsappSettings,
+    reason: string,
+    detectedAt: Date,
+  ): Promise<boolean> {
+    const recipient = this.configService.get<string>('WHATSAPP_ALERT_EMAIL')
+      || this.configService.get<string>('BCC_EMAIL')
+      || 'forwahabb@gmail.com';
+    return this.mailService.sendMail({
+      to: recipient,
+      subject: 'تنبيه: انقطاع اتصال واتساب في منصة رفيق',
+      text: [
+        'تعذر التحقق من اتصال WhatsApp Business API بعد ثلاث محاولات متتالية.',
+        `الرقم: ${settings.phoneNumber}`,
+        `وقت الاكتشاف: ${detectedAt.toISOString()}`,
+        `السبب: ${reason}`,
+        'يرجى مراجعة إعدادات واتساب في لوحة الإدارة.',
+      ].join('\n'),
+      html: `<div dir="rtl" style="font-family:Arial,sans-serif;line-height:1.8">
+        <h2 style="color:#dc2626">تعذر الاتصال بواتساب</h2>
+        <p>فشل فحص WhatsApp Business API ثلاث مرات متتالية.</p>
+        <p><strong>الرقم:</strong> ${this.escapeHtml(settings.phoneNumber)}</p>
+        <p><strong>وقت الاكتشاف:</strong> ${this.escapeHtml(detectedAt.toISOString())}</p>
+        <p><strong>السبب:</strong> ${this.escapeHtml(reason)}</p>
+        <p>يرجى مراجعة صفحة إعدادات واتساب في لوحة الإدارة.</p>
+      </div>`,
+    });
   }
 
   // ─── Send Test Message ────────────────────────────────────────────────────
@@ -548,7 +691,7 @@ export class WhatsappSettingsService implements OnModuleInit {
     try {
       // ── META (Graph API) ──────────────────────────────────────────────────
       if (settings.provider === WhatsappProvider.META) {
-        const url = `https://graph.facebook.com/v18.0/${settings.phoneNumberId}/messages`;
+        const url = `${this.graphApiBaseUrl()}/${settings.phoneNumberId}/messages`;
         const resp = await fetch(url, {
           method: 'POST',
           headers: {
@@ -766,7 +909,32 @@ export class WhatsappSettingsService implements OnModuleInit {
   }
 
   private maskToken(token: string): string {
-    if (!token || token.length < 8) return '****';
-    return `${token.slice(0, 4)}${'*'.repeat(Math.max(0, token.length - 8))}${token.slice(-4)}`;
+    return token ? '•••••••• (محفوظ)' : 'غير محفوظ';
+  }
+
+  private toSafeSettings(settings: WhatsappSettings): SafeWhatsappSettings {
+    const { accessTokenEncrypted, webhookVerifyToken, ...rest } = settings;
+    return {
+      ...rest,
+      hasAccessToken: Boolean(accessTokenEncrypted),
+      hasWebhookVerifyToken: Boolean(webhookVerifyToken),
+      maskedToken: this.maskToken(accessTokenEncrypted),
+    };
+  }
+
+  private graphApiBaseUrl(): string {
+    const version = this.configService.get<string>('whatsapp.apiVersion', 'v21.0');
+    return `https://graph.facebook.com/${version}`;
+  }
+
+  private safeConnectionError(error: unknown): string {
+    const message = error instanceof Error ? error.message : 'Unknown connection error';
+    return message.slice(0, 500);
+  }
+
+  private escapeHtml(value: string): string {
+    return value.replace(/[&<>"']/g, (char) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;',
+    })[char] as string);
   }
 }

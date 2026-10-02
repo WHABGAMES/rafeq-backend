@@ -37,6 +37,7 @@ import {
   MessageLanguage,
   MessageChannel,
 } from '../entities/message-template.entity';
+import { CreateAdminTemplateDto, UpdateAdminTemplateDto } from '../dto/admin-template.dto';
 
 export interface TemplateVariables {
   merchant_name?: string;
@@ -729,7 +730,7 @@ export class NotificationService implements OnModuleInit {
 
   async sendByTriggerEvent(
     event: TriggerEvent,
-    recipientPhone: string,
+    recipientPhone: string | undefined,
     variables: TemplateVariables,
     options?: {
       recipientUserId?: string;
@@ -740,12 +741,7 @@ export class NotificationService implements OnModuleInit {
   ): Promise<void> {
     const lang = options?.language || MessageLanguage.AR;
 
-    // ✅ v3 FIX: ORDER BY createdAt ASC للسلوك الحتمي (deterministic)
-    // إذا كان هناك قالبان لنفس (event, lang) بقنوات مختلفة (مثل WhatsApp + Email
-    // بعد تركيب v3 على DB يحتوي قوالب v2)، نفضّل الأقدم الذي اعتاد النظام عليه.
-    // هذا يحافظ على backward compatibility — قوالب v2 تبقى نشطة، قوالب v3 تتولى
-    // الأحداث والقنوات الجديدة.
-    const template = await this.templateRepo.findOne({
+    const templates = await this.templateRepo.find({
       where: {
         triggerEvent: event,
         isActive: true,
@@ -755,73 +751,53 @@ export class NotificationService implements OnModuleInit {
       order: { createdAt: 'ASC' },
     });
 
-    if (!template) {
+    if (templates.length === 0) {
       this.logger.warn(`No active template for event=${event} lang=${lang}`);
       return;
     }
 
-    await this.notificationQueue.add(
-      'send-notification',
-      {
-        templateId: template.id,
-        content: this.injectVariables(template.content, variables),
-        channel: template.channel,
+    for (const template of templates) {
+      const queuedChannels = await this.enqueueTemplateDeliveries(template, variables, {
         recipientPhone,
         recipientEmail: options?.recipientEmail,
         recipientUserId: options?.recipientUserId,
         triggerEvent: event,
         tenantId: options?.tenantId,
-      },
-      {
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 5000 },
-        removeOnComplete: true,
-        removeOnFail: false,
-      },
-    );
-
-    // Update usage stats (non-blocking — fire & forget)
-    this.incrementUsage(template.id).catch((err) => {
-      this.logger.warn(`Failed to increment usage for template ${template.id}: ${err.message}`);
-    });
+      });
+      if (queuedChannels.length === 0) {
+        this.logger.warn(
+          `Template ${template.id} skipped: no recipient available for channel=${template.channel}`,
+        );
+      }
+    }
   }
 
   // ─── Manual Send ────────────────────────────────────────────────────────
 
   async sendManual(
     templateId: string,
-    recipientPhone: string,
+    recipientPhone: string | undefined,
     variables: TemplateVariables,
     options?: { recipientUserId?: string; recipientEmail?: string; tenantId?: string },
-  ): Promise<{ success: boolean; jobId: string }> {
+  ): Promise<{ success: boolean; jobId: string; jobIds: string[]; channels: MessageChannel[] }> {
     const template = await this.findTemplateOrFail(templateId);
-
-    const job = await this.notificationQueue.add(
-      'send-notification',
-      {
-        templateId,
-        content: this.injectVariables(template.content, variables),
-        channel: template.channel,
-        recipientPhone,
-        recipientEmail: options?.recipientEmail,
-        recipientUserId: options?.recipientUserId,
-        triggerEvent: TriggerEvent.CUSTOM_MANUAL_SEND,
-        tenantId: options?.tenantId,
-      },
-      { attempts: 3 },
-    );
-
-    // ✅ v3: await في sendManual (admin action — accurate stats expected).
-    // في sendByTriggerEvent نستخدم fire-and-forget (high volume, stale stats OK).
-    await this.incrementUsage(templateId);
-
-    return { success: true, jobId: job.id as string };
+    this.assertRecipientsForChannel(template.channel, recipientPhone, options?.recipientEmail);
+    const jobs = await this.enqueueTemplateDeliveries(template, variables, {
+      recipientPhone,
+      recipientEmail: options?.recipientEmail,
+      recipientUserId: options?.recipientUserId,
+      triggerEvent: TriggerEvent.CUSTOM_MANUAL_SEND,
+      tenantId: options?.tenantId,
+    });
+    const jobIds = jobs.map(({ jobId }) => jobId);
+    const channels = jobs.map(({ channel }) => channel);
+    return { success: true, jobId: jobIds[0], jobIds, channels };
   }
 
   // ─── Template CRUD ──────────────────────────────────────────────────────
 
   async createTemplate(
-    data: Partial<MessageTemplate>,
+    data: CreateAdminTemplateDto,
     adminId: string,
   ): Promise<MessageTemplate> {
     if (!data.name?.trim()) {
@@ -834,8 +810,15 @@ export class NotificationService implements OnModuleInit {
       throw new BadRequestException('حدث التفعيل مطلوب');
     }
 
+    this.validateTemplateDefinition(data);
     const template = this.templateRepo.create({
-      ...data,
+      name: data.name.trim(),
+      triggerEvent: data.triggerEvent,
+      channel: data.channel,
+      language: data.language,
+      content: data.content.trim(),
+      subject: data.subject?.trim() || null,
+      isActive: data.isActive ?? false,
       createdBy: adminId,
       version: 1,
       versionHistory: [],
@@ -847,10 +830,20 @@ export class NotificationService implements OnModuleInit {
 
   async updateTemplate(
     id: string,
-    data: Partial<MessageTemplate>,
+    data: UpdateAdminTemplateDto,
     adminId: string,
   ): Promise<MessageTemplate> {
     const template = await this.findTemplateOrFail(id);
+    const nextDefinition = {
+      name: data.name ?? template.name,
+      triggerEvent: data.triggerEvent ?? template.triggerEvent,
+      channel: data.channel ?? template.channel,
+      language: data.language ?? template.language,
+      content: data.content ?? template.content,
+      subject: data.subject !== undefined ? data.subject : template.subject,
+      isActive: data.isActive ?? template.isActive,
+    };
+    this.validateTemplateDefinition(nextDefinition);
 
     // Track version only when content actually changes
     const contentChanged = data.content !== undefined && data.content !== template.content;
@@ -867,8 +860,14 @@ export class NotificationService implements OnModuleInit {
       ].slice(-20); // Keep last 20 versions only (prevent unbounded growth)
       template.version++;
     }
+    template.name = nextDefinition.name.trim();
+    template.triggerEvent = nextDefinition.triggerEvent;
+    template.channel = nextDefinition.channel;
+    template.language = nextDefinition.language;
+    template.content = nextDefinition.content.trim();
+    template.subject = nextDefinition.subject?.trim() || null;
+    template.isActive = nextDefinition.isActive;
     template.updatedBy = adminId;
-    Object.assign(template, data);
 
     const saved = await this.templateRepo.save(template);
     this.logger.log(`📝 Template updated: id=${id}, version=${saved.version}, contentChanged=${contentChanged}`);
@@ -1084,12 +1083,106 @@ export class NotificationService implements OnModuleInit {
     return template;
   }
 
-  private async incrementUsage(id: string): Promise<void> {
-    await this.dataSource.query(
-      `UPDATE admin_notification_templates
-       SET sent_count = sent_count + 1, last_sent_at = NOW()
-       WHERE id = $1`,
-      [id],
-    );
+  private validateTemplateDefinition(data: {
+    name: string;
+    triggerEvent: TriggerEvent;
+    channel: MessageChannel;
+    language: MessageLanguage;
+    content: string;
+    subject?: string | null;
+  }): void {
+    if (!data.name.trim()) throw new BadRequestException('اسم القالب مطلوب');
+    if (!data.content.trim()) throw new BadRequestException('محتوى القالب مطلوب');
+    if ((data.channel === MessageChannel.EMAIL || data.channel === MessageChannel.BOTH) && !data.subject?.trim()) {
+      throw new BadRequestException('موضوع البريد مطلوب لقوالب البريد');
+    }
+
+    const available = new Set(AVAILABLE_VARIABLES.map(({ key }) => key));
+    const placeholders = Array.from(data.content.matchAll(/\{\{\s*([^{}]+?)\s*\}\}/g), match => match[1]);
+    if (data.subject) {
+      placeholders.push(...Array.from(data.subject.matchAll(/\{\{\s*([^{}]+?)\s*\}\}/g), match => match[1]));
+    }
+    const unknown = Array.from(new Set(placeholders.filter(key => !available.has(key))));
+    if (unknown.length > 0) {
+      throw new BadRequestException(`متغيرات غير مدعومة: ${unknown.join(', ')}`);
+    }
+  }
+
+  private assertRecipientsForChannel(
+    channel: MessageChannel,
+    recipientPhone?: string,
+    recipientEmail?: string,
+  ): void {
+    if ((channel === MessageChannel.WHATSAPP || channel === MessageChannel.BOTH) && !recipientPhone) {
+      throw new BadRequestException('رقم الجوال مطلوب لهذا القالب');
+    }
+    if ((channel === MessageChannel.EMAIL || channel === MessageChannel.BOTH) && !recipientEmail) {
+      throw new BadRequestException('البريد الإلكتروني مطلوب لهذا القالب');
+    }
+  }
+
+  private async enqueueTemplateDeliveries(
+    template: MessageTemplate,
+    variables: TemplateVariables,
+    recipient: {
+      recipientPhone?: string;
+      recipientEmail?: string;
+      recipientUserId?: string;
+      triggerEvent: TriggerEvent;
+      tenantId?: string;
+    },
+  ): Promise<Array<{ jobId: string; channel: MessageChannel }>> {
+    const content = this.injectVariables(template.content, variables);
+    const subject = template.subject
+      ? this.injectVariables(template.subject, variables)
+      : undefined;
+    const deliveries: Array<{
+      channel: MessageChannel;
+      recipientPhone?: string;
+      recipientEmail?: string;
+    }> = [];
+
+    if (
+      (template.channel === MessageChannel.WHATSAPP || template.channel === MessageChannel.BOTH)
+      && recipient.recipientPhone
+    ) {
+      deliveries.push({
+        channel: MessageChannel.WHATSAPP,
+        recipientPhone: recipient.recipientPhone,
+      });
+    }
+    if (
+      (template.channel === MessageChannel.EMAIL || template.channel === MessageChannel.BOTH)
+      && recipient.recipientEmail
+    ) {
+      deliveries.push({
+        channel: MessageChannel.EMAIL,
+        recipientEmail: recipient.recipientEmail,
+      });
+    }
+
+    return Promise.all(deliveries.map(async delivery => {
+      const job = await this.notificationQueue.add(
+        'send-notification',
+        {
+          templateId: template.id,
+          content,
+          subject,
+          channel: delivery.channel,
+          recipientPhone: delivery.recipientPhone,
+          recipientEmail: delivery.recipientEmail,
+          recipientUserId: recipient.recipientUserId,
+          triggerEvent: recipient.triggerEvent,
+          tenantId: recipient.tenantId,
+        },
+        {
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 5000 },
+          removeOnComplete: true,
+          removeOnFail: false,
+        },
+      );
+      return { jobId: String(job.id), channel: delivery.channel };
+    }));
   }
 }

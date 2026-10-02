@@ -3,10 +3,12 @@ import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { DataSource } from 'typeorm';
 import { WhatsappSettingsService } from '../services/whatsapp-settings.service';
+import { MailService } from '../../mail/mail.service';
 
 export interface NotificationJobData {
   templateId?: string;
   content: string;
+  subject?: string;
   channel: string;
   recipientPhone?: string;
   recipientEmail?: string;
@@ -23,12 +25,13 @@ export class NotificationProcessor extends WorkerHost {
   constructor(
     private readonly whatsappService: WhatsappSettingsService,
     private readonly dataSource: DataSource,
+    private readonly mailService: MailService,
   ) {
     super();
   }
 
   async process(job: Job<NotificationJobData>): Promise<void> {
-    const { content, channel, recipientPhone, templateId, triggerEvent, recipientUserId, tenantId } = job.data;
+    const { content, channel, recipientPhone, recipientEmail, templateId, triggerEvent, recipientUserId, tenantId } = job.data;
 
     this.logger.log(`Processing notification job ${job.id}`, {
       channel,
@@ -37,7 +40,10 @@ export class NotificationProcessor extends WorkerHost {
       attempt: job.attemptsMade + 1,
     });
 
-    if ((channel === 'whatsapp' || channel === 'both') && recipientPhone) {
+    let delivered = false;
+
+    if (channel === 'whatsapp') {
+      if (!recipientPhone) throw new Error('WhatsApp notification is missing recipientPhone');
       const result = await this.whatsappService.sendMessage(recipientPhone, content, {
         recipientUserId,
         templateId,
@@ -50,6 +56,7 @@ export class NotificationProcessor extends WorkerHost {
       }
 
       this.logger.log(`✅ WhatsApp sent to ${recipientPhone.slice(0, -4)}****`);
+      delivered = true;
 
       if (job.data.adminAlertRecipientId) {
         try {
@@ -72,10 +79,48 @@ export class NotificationProcessor extends WorkerHost {
       }
     }
 
-    // Email channel — delegate to mail service (not implemented here, extend as needed)
-    if ((channel === 'email' || channel === 'both') && job.data.recipientEmail) {
-      this.logger.warn('Email channel not yet implemented in this processor');
+    if (channel === 'email') {
+      if (!recipientEmail) throw new Error('Email notification is missing recipientEmail');
+      const sent = await this.mailService.sendMail({
+        to: recipientEmail,
+        subject: job.data.subject?.trim() || 'إشعار من رفيق AI',
+        html: this.renderPlainTextEmail(content),
+        text: content,
+      });
+      if (!sent) throw new Error('Email provider rejected the notification');
+      this.logger.log(`✅ Email notification sent for job ${job.id}`);
+      delivered = true;
     }
+
+    if (!delivered) {
+      throw new Error(`Unsupported notification channel: ${channel}`);
+    }
+
+    if (templateId) {
+      try {
+        await this.dataSource.query(
+          `UPDATE admin_notification_templates
+           SET sent_count = sent_count + 1, last_sent_at = NOW()
+           WHERE id = $1 AND deleted_at IS NULL`,
+          [templateId],
+        );
+      } catch (recordingError: unknown) {
+        const message = recordingError instanceof Error
+          ? recordingError.message
+          : String(recordingError);
+        this.logger.error(`Template delivered but success metric update failed: ${message}`);
+      }
+    }
+  }
+
+  private renderPlainTextEmail(content: string): string {
+    const escaped = content
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+    return `<div dir="auto" style="white-space:pre-wrap;font-family:Arial,sans-serif;line-height:1.8">${escaped}</div>`;
   }
 
   @OnWorkerEvent('failed')

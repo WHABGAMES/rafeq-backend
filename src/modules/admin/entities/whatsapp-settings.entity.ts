@@ -67,6 +67,21 @@ export class WhatsappSettings {
   @Column({ name: 'connection_status', type: 'varchar', length: 50, default: 'unknown' })
   connectionStatus: string;
 
+  @Column({ name: 'last_configured_at', type: 'timestamptz', nullable: true })
+  lastConfiguredAt?: Date | null;
+
+  @Column({ name: 'last_health_checked_at', type: 'timestamptz', nullable: true })
+  lastHealthCheckedAt?: Date | null;
+
+  @Column({ name: 'last_connection_error', type: 'text', nullable: true })
+  lastConnectionError?: string | null;
+
+  @Column({ name: 'consecutive_health_failures', type: 'integer', default: 0 })
+  consecutiveHealthFailures: number;
+
+  @Column({ name: 'last_disconnect_alert_at', type: 'timestamptz', nullable: true })
+  lastDisconnectAlertAt?: Date | null;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 

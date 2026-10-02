@@ -52,8 +52,6 @@ export class NotificationEventListener {
   async handleUserCreated(payload: UserCreatedPayload) {
     this.logger.log(`[user.created] Sending welcome message to ${payload.email}`);
 
-    if (!payload.phone) return;
-
     await this.notificationService.sendByTriggerEvent(
       TriggerEvent.NEW_MERCHANT_REGISTERED,
       payload.phone,
@@ -75,8 +73,6 @@ export class NotificationEventListener {
   async handleAccountSuspended(payload: AccountSuspendedPayload) {
     this.logger.log(`[account.suspended] Notifying ${payload.email}`);
 
-    if (!payload.phone) return;
-
     await this.notificationService.sendByTriggerEvent(
       TriggerEvent.ACCOUNT_SUSPENDED,
       payload.phone,
@@ -91,8 +87,6 @@ export class NotificationEventListener {
   @OnEvent('subscription.expiring')
   async handleSubscriptionExpiring(payload: SubscriptionExpiringPayload) {
     this.logger.log(`[subscription.expiring] Tenant ${payload.tenantId}`);
-
-    if (!payload.phone) return;
 
     await this.notificationService.sendByTriggerEvent(
       TriggerEvent.SUBSCRIPTION_EXPIRING,
@@ -120,8 +114,6 @@ export class NotificationEventListener {
     amount: string;
     planName: string;
   }) {
-    if (!payload.phone) return;
-
     await this.notificationService.sendByTriggerEvent(
       TriggerEvent.PAYMENT_RECEIVED,
       payload.phone,
@@ -131,7 +123,52 @@ export class NotificationEventListener {
         payment_amount: payload.amount,
         plan_name: payload.planName,
       },
-      { recipientUserId: payload.userId, tenantId: payload.tenantId },
+      {
+        recipientUserId: payload.userId,
+        recipientEmail: payload.email,
+        tenantId: payload.tenantId,
+      },
+    );
+  }
+
+  @OnEvent('subscription.expired')
+  async handleSubscriptionExpired(payload: { tenantId: string; expiredAt?: Date }) {
+    const rows: Array<{
+      user_id: string;
+      email: string;
+      phone: string | null;
+      first_name: string | null;
+      plan_name: string | null;
+    }> = await this.dataSource.query(
+      `SELECT u.id AS user_id, u.email, u.phone, u.first_name, sp.name AS plan_name
+       FROM users u
+       LEFT JOIN subscriptions s ON s.tenant_id = u.tenant_id
+       LEFT JOIN subscription_plans sp ON sp.id = s.plan_id
+       WHERE u.tenant_id = $1 AND u.role = 'owner'
+       ORDER BY s.updated_at DESC NULLS LAST
+       LIMIT 1`,
+      [payload.tenantId],
+    );
+    const owner = rows[0];
+    if (!owner) {
+      this.logger.warn(`[subscription.expired] No owner found for tenant ${payload.tenantId}`);
+      return;
+    }
+
+    await this.notificationService.sendByTriggerEvent(
+      TriggerEvent.SUBSCRIPTION_EXPIRED,
+      owner.phone || undefined,
+      {
+        merchant_name: owner.first_name || owner.email.split('@')[0],
+        email: owner.email,
+        plan_name: owner.plan_name || 'اشتراك رفيق',
+        expiry_date: (payload.expiredAt || new Date()).toISOString().slice(0, 10),
+      },
+      {
+        recipientUserId: owner.user_id,
+        recipientEmail: owner.email,
+        tenantId: payload.tenantId,
+      },
     );
   }
 
@@ -157,8 +194,6 @@ export class NotificationEventListener {
     this.logger.log(`Found ${expiringSubs.length} expiring subscriptions`);
 
     for (const sub of expiringSubs) {
-      if (!sub.phone) continue;
-
       await this.notificationService.sendByTriggerEvent(
         TriggerEvent.SUBSCRIPTION_EXPIRING,
         sub.phone,
@@ -168,7 +203,11 @@ export class NotificationEventListener {
           plan_name: sub.plan_name,
           expiry_date: new Date(sub.end_date).toLocaleDateString('ar-SA'),
         },
-        { recipientUserId: sub.user_id, tenantId: sub.tenant_id },
+        {
+          recipientUserId: sub.user_id,
+          recipientEmail: sub.email,
+          tenantId: sub.tenant_id,
+        },
       );
     }
   }

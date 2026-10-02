@@ -34,7 +34,6 @@ import {
   HttpCode,
   HttpStatus,
   ParseUUIDPipe,
-  BadRequestException,
   ParseIntPipe,
 } from '@nestjs/common';
 import { AdminJwtGuard, AdminPermissionGuard, RequirePermissions, Require2FA } from '../guards/admin.guards';
@@ -43,9 +42,20 @@ import { AdminUser, PERMISSIONS } from '../entities/admin-user.entity';
 import { AdminUsersService } from '../services/admin-users.service';
 import { AuditService } from '../services/audit.service';
 import { WhatsappSettingsService } from '../services/whatsapp-settings.service';
-import { NotificationService, TemplateVariables } from '../services/notification.service';
-import { WhatsappProvider } from '../entities/whatsapp-settings.entity';
-import { TriggerEvent, MessageChannel, MessageLanguage } from '../entities/message-template.entity';
+import { NotificationService } from '../services/notification.service';
+import { AuditAction } from '../entities/audit-log.entity';
+import {
+  SaveAdminWhatsappSettingsDto,
+  TestAdminWhatsappDto,
+  ToggleAdminWhatsappDto,
+} from '../dto/admin-whatsapp.dto';
+import {
+  BulkToggleAdminTemplatesDto,
+  CreateAdminTemplateDto,
+  PreviewAdminTemplateDto,
+  TestAdminTemplateDto,
+  UpdateAdminTemplateDto,
+} from '../dto/admin-template.dto';
 
 // ============================================================
 // Admin Stores Controller
@@ -99,27 +109,8 @@ export class WhatsappController {
   @Require2FA()
   @HttpCode(HttpStatus.OK)
   connect(
-    @Body()
-    body: {
-      tenantId?: string;
-      phoneNumber: string;
-      provider: WhatsappProvider;
-      accessToken: string;
-      businessAccountId?: string;
-      phoneNumberId?: string;
-      webhookUrl?: string;
-      webhookVerifyToken?: string;
-    },
+    @Body() body: SaveAdminWhatsappSettingsDto,
   ) {
-    if (!body.phoneNumber?.trim()) {
-      throw new BadRequestException('phoneNumber is required');
-    }
-    if (!body.accessToken?.trim()) {
-      throw new BadRequestException('accessToken is required — cannot encrypt an empty token');
-    }
-    if (!body.provider) {
-      throw new BadRequestException('provider is required');
-    }
     return this.whatsappService.upsertSettings(body);
   }
 
@@ -127,7 +118,7 @@ export class WhatsappController {
   @RequirePermissions(PERMISSIONS.WHATSAPP_MANAGE)
   @Require2FA()
   @HttpCode(HttpStatus.OK)
-  toggle(@Body() body: { isActive: boolean; tenantId?: string }) {
+  toggle(@Body() body: ToggleAdminWhatsappDto) {
     return this.whatsappService.toggleActive(body.isActive, body.tenantId);
   }
 
@@ -149,8 +140,9 @@ export class WhatsappController {
 
   @Post('test')
   @RequirePermissions(PERMISSIONS.WHATSAPP_MANAGE)
+  @Require2FA()
   @HttpCode(HttpStatus.OK)
-  test(@Body() body: { phoneNumber: string; tenantId?: string }) {
+  test(@Body() body: TestAdminWhatsappDto) {
     return this.whatsappService.sendTestMessage(body.phoneNumber, body.tenantId);
   }
 }
@@ -167,7 +159,10 @@ export class WhatsappController {
 @Controller('admin/templates')
 @UseGuards(AdminJwtGuard, AdminPermissionGuard)
 export class TemplatesController {
-  constructor(private readonly notificationService: NotificationService) {}
+  constructor(
+    private readonly notificationService: NotificationService,
+    private readonly auditService: AuditService,
+  ) {}
 
   // ─── META: trigger events registry ────────────────────────────────────
   @Get('meta/events')
@@ -217,10 +212,7 @@ export class TemplatesController {
   @Post('preview')
   @RequirePermissions(PERMISSIONS.TEMPLATES_MANAGE)
   @HttpCode(HttpStatus.OK)
-  preview(@Body() body: { content: string; variables?: TemplateVariables }) {
-    if (!body?.content) {
-      throw new BadRequestException('content is required');
-    }
+  preview(@Body() body: PreviewAdminTemplateDto) {
     return {
       preview: this.notificationService.previewTemplate(body.content, body.variables || {}),
     };
@@ -229,40 +221,48 @@ export class TemplatesController {
   // ─── TEST SEND ────────────────────────────────────────────────────────
   @Post('test-send')
   @RequirePermissions(PERMISSIONS.TEMPLATES_MANAGE)
+  @Require2FA()
   @HttpCode(HttpStatus.OK)
-  testSend(
-    @Body()
-    body: {
-      templateId: string;
-      recipientPhone: string;
-      variables?: TemplateVariables;
-      recipientUserId?: string;
-    },
+  async testSend(
+    @Body() body: TestAdminTemplateDto,
+    @CurrentAdmin() admin: AdminUser,
+    @AdminIp() ipAddress: string,
   ) {
-    if (!body?.templateId) throw new BadRequestException('templateId is required');
-    if (!body?.recipientPhone) throw new BadRequestException('recipientPhone is required');
-    return this.notificationService.sendManual(
+    const result = await this.notificationService.sendManual(
       body.templateId,
       body.recipientPhone,
       body.variables || {},
-      { recipientUserId: body.recipientUserId },
+      {
+        recipientUserId: body.recipientUserId,
+        recipientEmail: body.recipientEmail,
+      },
     );
+    await this.auditService.log({
+      actor: admin,
+      action: AuditAction.TEMPLATE_TEST_QUEUED,
+      targetType: 'template',
+      targetId: body.templateId,
+      metadata: {
+        channels: result.channels,
+        hasPhoneRecipient: Boolean(body.recipientPhone),
+        hasEmailRecipient: Boolean(body.recipientEmail),
+      },
+      ipAddress,
+    });
+    return result;
   }
 
   // ─── Legacy alias (for backward compat with existing frontend) ────────
   @Post('test')
   @RequirePermissions(PERMISSIONS.TEMPLATES_MANAGE)
+  @Require2FA()
   @HttpCode(HttpStatus.OK)
   testSendLegacy(
-    @Body()
-    body: {
-      templateId: string;
-      recipientPhone: string;
-      variables?: TemplateVariables;
-      recipientUserId?: string;
-    },
+    @Body() body: TestAdminTemplateDto,
+    @CurrentAdmin() admin: AdminUser,
+    @AdminIp() ipAddress: string,
   ) {
-    return this.testSend(body);
+    return this.testSend(body, admin, ipAddress);
   }
 
   // ─── BULK TOGGLE ──────────────────────────────────────────────────────
@@ -270,37 +270,47 @@ export class TemplatesController {
   @RequirePermissions(PERMISSIONS.TEMPLATES_MANAGE)
   @Require2FA()
   @HttpCode(HttpStatus.OK)
-  bulkToggle(
-    @Body() body: { ids: string[]; isActive: boolean },
+  async bulkToggle(
+    @Body() body: BulkToggleAdminTemplatesDto,
     @CurrentAdmin() admin: AdminUser,
+    @AdminIp() ipAddress: string,
   ) {
-    if (!Array.isArray(body?.ids) || body.ids.length === 0) {
-      throw new BadRequestException('ids array is required');
-    }
-    if (typeof body.isActive !== 'boolean') {
-      throw new BadRequestException('isActive boolean is required');
-    }
-    return this.notificationService.bulkToggle(body.ids, body.isActive, admin.id);
+    const result = await this.notificationService.bulkToggle(body.ids, body.isActive, admin.id);
+    await this.auditService.log({
+      actor: admin,
+      action: AuditAction.TEMPLATE_BULK_TOGGLED,
+      targetType: 'template',
+      metadata: { ids: body.ids, isActive: body.isActive, affectedCount: result.count },
+      ipAddress,
+    });
+    return result;
   }
 
   // ─── CREATE ───────────────────────────────────────────────────────────
   @Post()
   @RequirePermissions(PERMISSIONS.TEMPLATES_MANAGE)
   @Require2FA()
-  create(
-    @Body()
-    body: {
-      name: string;
-      triggerEvent: TriggerEvent;
-      channel: MessageChannel;
-      language: MessageLanguage;
-      content: string;
-      subject?: string;
-      isActive?: boolean;
-    },
+  async create(
+    @Body() body: CreateAdminTemplateDto,
     @CurrentAdmin() admin: AdminUser,
+    @AdminIp() ipAddress: string,
   ) {
-    return this.notificationService.createTemplate(body, admin.id);
+    const template = await this.notificationService.createTemplate(body, admin.id);
+    await this.auditService.log({
+      actor: admin,
+      action: AuditAction.TEMPLATE_CREATED,
+      targetType: 'template',
+      targetId: template.id,
+      metadata: {
+        name: template.name,
+        triggerEvent: template.triggerEvent,
+        channel: template.channel,
+        language: template.language,
+        isActive: template.isActive,
+      },
+      ipAddress,
+    });
+    return template;
   }
 
   // ─── GET ONE ──────────────────────────────────────────────────────────
@@ -314,53 +324,83 @@ export class TemplatesController {
   @Put(':id')
   @RequirePermissions(PERMISSIONS.TEMPLATES_MANAGE)
   @Require2FA()
-  update(
+  async update(
     @Param('id', ParseUUIDPipe) id: string,
-    @Body()
-    body: {
-      name?: string;
-      content?: string;
-      subject?: string;
-      isActive?: boolean;
-      triggerEvent?: TriggerEvent;
-      channel?: MessageChannel;
-      language?: MessageLanguage;
-    },
+    @Body() body: UpdateAdminTemplateDto,
     @CurrentAdmin() admin: AdminUser,
+    @AdminIp() ipAddress: string,
   ) {
-    return this.notificationService.updateTemplate(id, body, admin.id);
+    const template = await this.notificationService.updateTemplate(id, body, admin.id);
+    await this.auditService.log({
+      actor: admin,
+      action: AuditAction.TEMPLATE_UPDATED,
+      targetType: 'template',
+      targetId: id,
+      metadata: { changedFields: Object.keys(body), version: template.version },
+      ipAddress,
+    });
+    return template;
   }
 
   // ─── DELETE (soft) ────────────────────────────────────────────────────
   @Delete(':id')
   @RequirePermissions(PERMISSIONS.TEMPLATES_MANAGE)
   @Require2FA()
-  delete(
+  async delete(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentAdmin() admin: AdminUser,
+    @AdminIp() ipAddress: string,
   ) {
-    return this.notificationService.deleteTemplate(id, admin.id);
+    await this.notificationService.deleteTemplate(id, admin.id);
+    await this.auditService.log({
+      actor: admin,
+      action: AuditAction.TEMPLATE_DELETED,
+      targetType: 'template',
+      targetId: id,
+      ipAddress,
+    });
   }
 
   // ─── SINGLE TOGGLE ────────────────────────────────────────────────────
   @Patch(':id/toggle')
   @RequirePermissions(PERMISSIONS.TEMPLATES_MANAGE)
   @Require2FA()
-  toggle(
+  async toggle(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentAdmin() admin: AdminUser,
+    @AdminIp() ipAddress: string,
   ) {
-    return this.notificationService.toggleTemplate(id, admin.id);
+    const template = await this.notificationService.toggleTemplate(id, admin.id);
+    await this.auditService.log({
+      actor: admin,
+      action: AuditAction.TEMPLATE_TOGGLED,
+      targetType: 'template',
+      targetId: id,
+      metadata: { isActive: template.isActive },
+      ipAddress,
+    });
+    return template;
   }
 
   // ─── DUPLICATE ────────────────────────────────────────────────────────
   @Post(':id/duplicate')
   @RequirePermissions(PERMISSIONS.TEMPLATES_MANAGE)
-  duplicate(
+  @Require2FA()
+  async duplicate(
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentAdmin() admin: AdminUser,
+    @AdminIp() ipAddress: string,
   ) {
-    return this.notificationService.duplicateTemplate(id, admin.id);
+    const copy = await this.notificationService.duplicateTemplate(id, admin.id);
+    await this.auditService.log({
+      actor: admin,
+      action: AuditAction.TEMPLATE_DUPLICATED,
+      targetType: 'template',
+      targetId: copy.id,
+      metadata: { sourceTemplateId: id, name: copy.name },
+      ipAddress,
+    });
+    return copy;
   }
 
   // ─── STATS: per-template ──────────────────────────────────────────────

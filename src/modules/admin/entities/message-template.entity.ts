@@ -79,7 +79,7 @@ export class MessageTemplate {
   content: string;
 
   @Column({ name: 'subject', type: 'varchar', length: 500, nullable: true })
-  subject?: string;
+  subject: string | null;
 
   @Column({ name: 'is_active', type: 'boolean', default: true })
   @Index('idx_admin_notif_template_active')

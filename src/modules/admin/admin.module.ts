@@ -14,8 +14,6 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { BullModule } from '@nestjs/bullmq';
 import { JwtModule } from '@nestjs/jwt';
-import { ScheduleModule } from '@nestjs/schedule';
-import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ThrottlerModule } from '@nestjs/throttler';
 
 // Entities
@@ -33,6 +31,7 @@ import { Conversation, Message, Channel } from '@database/entities';
 import { AuditService } from './services/audit.service';
 import { AdminUsersService } from './services/admin-users.service';
 import { WhatsappSettingsService } from './services/whatsapp-settings.service';
+import { WhatsappConnectionMonitorService } from './services/whatsapp-connection-monitor.service';
 import { NotificationService } from './services/notification.service';
 import { MaintenanceService } from './services/maintenance.service';
 import { AdminAlertsService } from './services/admin-alerts.service';
@@ -107,16 +106,6 @@ const jwtSecret = getAdminJwtSecret();
       signOptions: { expiresIn: '8h' },
     }),
 
-    // ✅ مطلوب لـ @Cron() في NotificationEventListener
-    ScheduleModule.forRoot(),
-
-    // ✅ مطلوب لـ @OnEvent() في NotificationEventListener
-    // بدونه الإشعارات التلقائية (user.created, account.suspended...) تصمت بدون خطأ
-    EventEmitterModule.forRoot({
-      wildcard: false,
-      ignoreErrors: false, // أخطاء الـ listeners تظهر في logs
-    }),
-
     // ✅ Rate limiting: 60 طلب/دقيقة على كل endpoints الأدمن
     // Login و Refresh لهما throttle خاص بهما (@Throttle decorator)
     ThrottlerModule.forRoot([{
@@ -174,6 +163,7 @@ const jwtSecret = getAdminJwtSecret();
     AuditService,
     AdminUsersService,
     WhatsappSettingsService,
+    WhatsappConnectionMonitorService,
     NotificationService,
     MaintenanceService,
 

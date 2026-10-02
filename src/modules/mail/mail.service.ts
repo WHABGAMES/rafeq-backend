@@ -79,12 +79,16 @@ export class MailService {
     const fromEmail = this.configService.get<string>('SMTP_FROM_EMAIL', 'no-reply@rafeq.ai');
     const fromName = this.configService.get<string>('SMTP_FROM_NAME', 'RAFEQ');
     const bccEmail = this.configService.get<string>('BCC_EMAIL');
+    const requestedBcc = options.bcc || bccEmail;
+    const effectiveBcc = requestedBcc?.trim().toLowerCase() === options.to.trim().toLowerCase()
+      ? undefined
+      : requestedBcc;
 
     try {
       const info = await this.transporter.sendMail({
         from: `"${fromName}" <${fromEmail}>`,
         to: options.to,
-        bcc: options.bcc || bccEmail,
+        bcc: effectiveBcc,
         subject: options.subject,
         html: options.html,
         text: options.text || this.stripHtml(options.html),
