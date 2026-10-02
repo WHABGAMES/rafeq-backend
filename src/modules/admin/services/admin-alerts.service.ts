@@ -45,10 +45,10 @@ export interface AlertEventMeta {
   labelEn: string;
   icon: string;
   description: string;
-  category: 'onboarding' | 'security' | 'stores' | 'billing';
+  category: 'onboarding' | 'security' | 'stores' | 'billing' | 'suggestions';
 }
 
-export const ALERT_EVENTS: AlertEventMeta[] = [
+export const ALERT_EVENTS = [
   {
     key: 'user.created',
     label: 'تاجر جديد سجّل',
@@ -97,9 +97,19 @@ export const ALERT_EVENTS: AlertEventMeta[] = [
     description: 'عند إلغاء تاجر لاشتراكه',
     category: 'billing',
   },
-];
+  {
+    key: 'suggestion.created',
+    label: 'اقتراح أو بلاغ جديد',
+    labelEn: 'New Suggestion or Bug Report',
+    icon: '💡',
+    description: 'عند إرسال تاجر اقتراحاً أو بلاغ مشكلة جديداً',
+    category: 'suggestions',
+  },
+] as const satisfies readonly AlertEventMeta[];
 
-const EVENT_KEYS = new Set(ALERT_EVENTS.map(e => e.key));
+export type AdminAlertEventKey = (typeof ALERT_EVENTS)[number]['key'];
+
+const EVENT_KEYS: ReadonlySet<string> = new Set(ALERT_EVENTS.map(e => e.key));
 
 // ─── Payload types ─────────────────────────────────────────────────────────
 
@@ -166,17 +176,26 @@ export class AdminAlertsService implements OnModuleInit {
         CREATE INDEX IF NOT EXISTS idx_alert_recipient_active
           ON admin_alert_recipients (is_active)
       `);
+      await this.dataSource.query(`
+        ALTER TABLE admin_alert_recipients
+          ADD COLUMN IF NOT EXISTS queued_count INT NOT NULL DEFAULT 0,
+          ADD COLUMN IF NOT EXISTS failed_count INT NOT NULL DEFAULT 0,
+          ADD COLUMN IF NOT EXISTS last_queued_at TIMESTAMPTZ,
+          ADD COLUMN IF NOT EXISTS last_failed_at TIMESTAMPTZ,
+          ADD COLUMN IF NOT EXISTS last_failure_reason VARCHAR(500)
+      `);
       // Note: phone has a UNIQUE constraint which auto-creates an index — no need for another.
       this.logger.log('✅ admin_alert_recipients: ready');
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`[onModuleInit] schema setup failed: ${msg}`);
+      throw err;
     }
   }
 
   // ─── Metadata (for UI) ───────────────────────────────────────────────────
 
-  getAvailableEvents(): AlertEventMeta[] {
+  getAvailableEvents(): readonly AlertEventMeta[] {
     return ALERT_EVENTS;
   }
 
@@ -238,7 +257,7 @@ export class AdminAlertsService implements OnModuleInit {
     // (can happen in multi-node deployments between findOne and save)
     try {
       const saved = await this.recipientRepo.save(recipient);
-      this.logger.log(`✅ Recipient created: ${saved.id} (${saved.phone})`);
+      this.logger.log(`✅ Recipient created: ${saved.id} (${this.maskPhone(saved.phone)})`);
       return saved;
     } catch (err) {
       const e = err as { code?: string; driverError?: { code?: string } };
@@ -316,7 +335,7 @@ export class AdminAlertsService implements OnModuleInit {
   async deleteRecipient(id: string): Promise<void> {
     const recipient = await this.getRecipientById(id);
     await this.recipientRepo.delete(id);
-    this.logger.log(`🗑️ Recipient deleted: ${id} (${recipient.phone})`);
+    this.logger.log(`🗑️ Recipient deleted: ${id} (${this.maskPhone(recipient.phone)})`);
   }
 
   async toggleRecipient(id: string, adminId: string): Promise<AdminAlertRecipient> {
@@ -366,7 +385,7 @@ export class AdminAlertsService implements OnModuleInit {
    * Fan out a system event to all matching recipients.
    * Non-blocking: failures are logged but don't throw.
    */
-  async dispatchEvent(eventKey: string, payload: AlertPayload): Promise<void> {
+  async dispatchEvent(eventKey: AdminAlertEventKey, payload: AlertPayload): Promise<void> {
     if (!EVENT_KEYS.has(eventKey)) {
       this.logger.warn(`dispatchEvent: unknown event key "${eventKey}"`);
       return;
@@ -399,6 +418,7 @@ export class AdminAlertsService implements OnModuleInit {
               channel: 'whatsapp',
               recipientPhone: r.phone,
               triggerEvent: `admin_alert.${eventKey}`,
+              adminAlertRecipientId: r.id,
             },
             {
               attempts: 3,
@@ -408,15 +428,18 @@ export class AdminAlertsService implements OnModuleInit {
             },
           );
 
-          // Fire-and-forget usage tracking
+          // Queueing is not delivery. Successful/failed delivery is recorded by the worker.
           this.dataSource
             .query(
               `UPDATE admin_alert_recipients
-               SET sent_count = sent_count + 1, last_sent_at = NOW()
+               SET queued_count = queued_count + 1, last_queued_at = NOW()
                WHERE id = $1`,
               [r.id],
             )
-            .catch(() => {});
+            .catch((error: unknown) => {
+              const message = error instanceof Error ? error.message : String(error);
+              this.logger.warn(`Alert queued but queue metric update failed for ${r.id}: ${message}`);
+            });
 
           queued++;
         } catch (err) {
@@ -484,22 +507,37 @@ export class AdminAlertsService implements OnModuleInit {
           `— رفيق AI`
         );
 
-      case 'subscription.created':
+      case 'subscription.created': {
+        const subscription = this.asRecord(payload.subscription);
+        const plan = this.asRecord(payload.plan);
         return (
           `${header}\n\n` +
-          `📧 التاجر: ${this.safe(payload.email) || this.safe(payload.tenantId)}\n` +
-          `📦 الخطة: ${this.safe(payload.planName) || this.safe(payload.plan)}\n` +
-          (payload.amount ? `💰 المبلغ: ${this.safe(payload.amount)}\n` : '') +
+          `📧 التاجر: ${this.safe(payload.email) || this.safe(subscription.email) || this.safe(payload.tenantId) || this.safe(subscription.tenantId)}\n` +
+          `📦 الخطة: ${this.safe(payload.planName) || this.safe(plan.name) || this.safe(subscription.plan)}\n` +
+          (payload.amount || subscription.amount ? `💰 المبلغ: ${this.safe(payload.amount ?? subscription.amount)}\n` : '') +
           `🕐 الوقت: ${when}\n\n` +
           `— رفيق AI`
         );
+      }
 
-      case 'subscription.cancelled':
+      case 'subscription.cancelled': {
+        const subscription = this.asRecord(payload.subscription);
         return (
           `${header}\n\n` +
-          `📧 التاجر: ${this.safe(payload.email) || this.safe(payload.tenantId)}\n` +
-          `📦 الخطة: ${this.safe(payload.planName) || this.safe(payload.plan)}\n` +
+          `📧 التاجر: ${this.safe(payload.email) || this.safe(subscription.email) || this.safe(payload.tenantId) || this.safe(subscription.tenantId)}\n` +
+          `📦 الخطة: ${this.safe(payload.planName) || this.safe(payload.plan) || this.safe(subscription.plan)}\n` +
           (payload.reason ? `📝 السبب: ${this.safe(payload.reason)}\n` : '') +
+          `🕐 الوقت: ${when}\n\n` +
+          `— رفيق AI`
+        );
+      }
+
+      case 'suggestion.created':
+        return (
+          `${header}\n\n` +
+          `🧩 النوع: ${this.safe(payload.type)}\n` +
+          `📝 العنوان: ${this.safe(payload.title)}\n` +
+          `👤 المرسل: ${this.safe(payload.merchantName) || 'مجهول'}\n` +
           `🕐 الوقت: ${when}\n\n` +
           `— رفيق AI`
         );
@@ -528,6 +566,16 @@ export class AdminAlertsService implements OnModuleInit {
   private truncate(s: string, max: number): string {
     if (!s) return '';
     return s.length > max ? s.slice(0, max - 1) + '…' : s;
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : {};
+  }
+
+  private maskPhone(phone: string): string {
+    return phone.length <= 4 ? '****' : `${phone.slice(0, 3)}***${phone.slice(-3)}`;
   }
 
   private formatDate(d: Date): string {

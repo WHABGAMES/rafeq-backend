@@ -122,6 +122,7 @@ export class SallaStoreService {
       storeId: savedStore.id,
       tenantId,
       platform: StorePlatform.SALLA,
+      storeName: savedStore.name,
       merchantId: merchantInfo.id,
     });
 

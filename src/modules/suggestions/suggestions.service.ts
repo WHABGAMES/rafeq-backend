@@ -263,6 +263,14 @@ export class SuggestionsService {
 
     this.logger.log(`Suggestion created: ${saved.id} by user ${user.id}`);
 
+    this.eventEmitter.emit('suggestion.created', {
+      suggestionId: saved.id,
+      title: saved.title,
+      type: saved.type,
+      merchantName: saved.isAnonymous ? undefined : saved.merchantName,
+      tenantId: saved.tenantId,
+    });
+
     return this.sanitizeForPublic(saved);
   }
 

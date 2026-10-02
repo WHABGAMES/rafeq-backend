@@ -72,6 +72,21 @@ export class AdminAlertRecipient {
   @Column({ name: 'sent_count', type: 'int', default: 0 })
   sentCount: number;
 
+  @Column({ name: 'queued_count', type: 'int', default: 0 })
+  queuedCount: number;
+
+  @Column({ name: 'failed_count', type: 'int', default: 0 })
+  failedCount: number;
+
+  @Column({ name: 'last_queued_at', type: 'timestamptz', nullable: true })
+  lastQueuedAt?: Date;
+
+  @Column({ name: 'last_failed_at', type: 'timestamptz', nullable: true })
+  lastFailedAt?: Date;
+
+  @Column({ name: 'last_failure_reason', type: 'varchar', length: 500, nullable: true })
+  lastFailureReason?: string;
+
   /** Last successful alert timestamp */
   @Column({ name: 'last_sent_at', type: 'timestamptz', nullable: true })
   lastSentAt?: Date;

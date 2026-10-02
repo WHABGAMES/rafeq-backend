@@ -141,6 +141,7 @@ export class ZidStoreService {
       storeId: savedStore.id,
       tenantId,
       platform: StorePlatform.ZID,
+      storeName: savedStore.name,
       zidStoreId: storeInfo.id,
     });
 

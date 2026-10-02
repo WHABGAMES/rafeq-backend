@@ -169,8 +169,11 @@ export class StoresService {
     const savedStore = await this.storeRepository.save(store);
 
     this.eventEmitter.emit('store.connected', {
-      storeId: savedStore.id, tenantId, platform: StorePlatform.OTHER,
+      storeId: savedStore.id,
+      tenantId,
+      platform: StorePlatform.OTHER,
       platformName: storeInfo.platformName,
+      storeName: savedStore.name,
     });
 
     this.logger.log(`🆕 Other platform store connected: ${savedStore.name}`);

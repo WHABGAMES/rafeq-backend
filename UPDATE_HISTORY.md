@@ -36,8 +36,22 @@
 
 # أحدث التحديثات
 
+### [2026-10-02] — BE-079 — v53 — تصحيح وتنظيم تنبيهات الإدارة
+- **الحالة:** مرفوع إلى `main` — نشر DigitalOcean قيد المراقبة.
+- **النسخة:** عقود وDTO تنبيهات الإدارة v1 · خدمة التنبيهات v2 · معالج التسليم v2 · مستمع الأحداث v2 · كيان المستقبل v2 · صلاحيات الإدارة v2 · خدمة الاقتراحات v2 · المصادقة v11 · migration إحصاءات التسليم v1 · اختبارات التنبيهات v1 · `UPDATE_HISTORY.md` v53.
+- **المشكلة:** لم تكن الاقتراحات وبلاغات المشاكل تصل لتنبيهات الإدارة، وكانت رسائل الاشتراك تقرأ شكلاً مختلفاً عن payload الفعلي. عُدّ وضع الرسالة في الطابور نجاحاً، وكان فشل تحديث عدّاد النجاح بعد تسليم واتساب يعيد الـjob وقد يكرر الرسالة. وكانت صلاحية القوالب تمنح إدارة مستقبلين وإرسال اختبار، كما تكرر تنبيه فشل الدخول بعد كل محاولة وسُجلت أرقام الهواتف كاملة.
+- **السبب الجذري:** لم يوجد عقد موحد لأحداث التنبيه أو فصل بين queueing والتسليم، واستُخدمت interfaces غير قابلة للتحقق وقت التشغيل وصلاحية عامة، ولم توجد اختبارات عقد خاصة بالوحدة.
+- **طريقة الحل:** أضيف حدث الاقتراح/البلاغ الحقيقي الموصول بخدمة الاقتراحات، وطُبّع payload الاشتراك المتداخل من دون تغيير مصدره، وأصبحت تسجيلات Google/Salla/Zid الجديدة تصدر حدث التاجر مثل التسجيل المحلي، وأضيف اسم المتجر إلى أحداث الربط. أضيفت DTOs محققة وصلاحيات read/manage/test مستقلة مع 2FA وحد 3 اختبارات/دقيقة للإرسال الخارجي. أضيفت إحصاءات queued/sent/failed ويحدّث العامل النجاح والفشل النهائي؛ وعُزل فشل حفظ مقياس النجاح عن نتيجة التسليم حتى لا يعيد BullMQ رسالة وصلت فعلاً. خُفّض تكرار إنذار الدخول إلى حدين، وأُخفي الهاتف من السجلات ورسائل الخطأ. فشل تجهيز مخطط التنبيهات أصبح يمنع إقلاعاً مضللاً، وأضيفت اختبارات للعقد والصلاحيات وعدم تكرار التسليم. لم تُعرض خيارات حوادث تشغيلية/أمنية عامة قبل وجود مصادر فعلية تصدرها.
+- **الأثر التشغيلي:** تستقبل الإدارة بلاغات المشاكل والاقتراحات الجديدة، وتصبح الأرقام المعروضة أرقام تسليم فعلية. الأدوار القديمة تستمد الصلاحيات من مصفوفة الدور ولا تحتاج ترحيلاً لحسابات الإدارة.
+- **الملفات:** `src/modules/admin/dto/admin-alert-recipient.dto.ts` (v1) · `controllers/admin-alerts.controller.ts` (v2) واختباره (v1) · `services/admin-alerts.service.ts` (v2) واختباره (v1) · `listeners/admin-alerts.listener.ts` (v2) · `processors/notification.processor.ts` (v2) واختباره (v1) · `entities/admin-alert-recipient.entity.ts` (v2) · `entities/admin-user.entity.ts` (v2) · `src/modules/suggestions/suggestions.service.ts` (v2) · `src/modules/auth/auth.service.ts` (v11) · `src/modules/stores/salla-store.service.ts` (v2) · `zid-store.service.ts` (v2) · `stores.service.ts` (v2) · `src/database/migrations/AddAdminAlertDeliveryStats1790910000000.ts` (v1) · `UPDATE_HISTORY.md` (v53).
+- **المخاطر/الملاحظات:** الحوادث الأمنية العامة والأعطال التشغيلية تحتاج أولاً طبقة تجميع ومصادر موثوقة قبل إضافتها كخيارات؛ تنبيه محاولات الدخول المتعددة الحالي فعّال. لا تعديل على OAuth أو Webhooks أو payloads الواردة من سلة وزد.
+- **التحقق:** ESLint الخادم صفر تحذيرات/أخطاء؛ بناء Nest ناجح؛ 34/34 suites و176/176 اختباراً ناجحاً، بينها اختبار يمنع إعادة الإرسال عند تعطل مقياس النجاح واختبار يحسب الفشل في المحاولة النهائية فقط؛ ESLint وبناء الواجهة المقترنة ناجحان وولّد البناء 63 route؛ `git diff --check` نظيف.
+- **رسالة الـcommit:** `fix(BE-079): v53 harden admin alert delivery` — توحيد عقود الأحداث، إضافة تنبيهات الاقتراحات، فصل queue/sent/failed، وتشديد DTO والصلاحيات والاختبارات.
+- **PR / Commit:** commit بعنوان `fix(BE-079): v53 harden admin alert delivery` على `main`.
+- **خطة التراجع:** إعادة commit BE-079 وإزالة migration الإضافية فقط بعد إعادة الواجهة المقترنة؛ الأعمدة الجديدة إضافية ولا تغيّر بيانات الأعمدة القديمة.
+
 ### [2026-10-01] — BE-078 — v52 — أداة آمنة لتدوير جلسة Telegram المبطلة
-- **الحالة:** محلياً — الأداة مكتملة ومفحوصة؛ تنتظر تشغيلها التفاعلي وإدخال رمز Telegram ثم حفظ الناتج مشفراً في DigitalOcean.
+- **الحالة:** منشور في الإنتاج ضمن `d109e69` ونشر DigitalOcean `048f670e-f107-4bd2-aaf8-f3e387fa8c32`؛ أداة التوليد تعمل وتنتظر إكمال الإدخال التفاعلي وحفظ الجلسة الجديدة.
 - **النسخة:** مولد جلسة Telegram v1 · اختبار الإعداد v1 · عميل Telegram OTP v4 · اختباراته v5 · `package.json` v7 · `UPDATE_HISTORY.md` v52.
 - **المشكلة:** Telegram أبطل مفتاح الجلسة الحالي بسبب استعمال متزامن، ولا يمكن للكود إصلاحه أو إعادة استعماله. كما احتوت الخدمة على دوال مصادقة جزئية غير موصولة بواجهة إدارية ولا تعالج 2FA بصورة كاملة.
 - **السبب الجذري:** لم توجد آلية تشغيلية واحدة وآمنة لإنشاء `StringSession` جديدة من اتصال وحيد ثم نقلها إلى مخزن أسرار DigitalOcean.
@@ -1184,5 +1198,22 @@
 | `backend/src/modules/otp-relay/telegram-otp-client.service.spec.ts` | v5 | BE-078 |
 | `backend/package.json` | v7 | BE-078 |
 | `backend/UPDATE_HISTORY.md` | v52 | BE-078 |
+| `backend/src/modules/admin/dto/admin-alert-recipient.dto.ts` | v1 | BE-079 |
+| `backend/src/modules/admin/controllers/admin-alerts.controller.ts` | v2 | BE-079 |
+| `backend/src/modules/admin/controllers/admin-alerts.controller.spec.ts` | v1 | BE-079 |
+| `backend/src/modules/admin/services/admin-alerts.service.ts` | v2 | BE-079 |
+| `backend/src/modules/admin/services/admin-alerts.service.spec.ts` | v1 | BE-079 |
+| `backend/src/modules/admin/listeners/admin-alerts.listener.ts` | v2 | BE-079 |
+| `backend/src/modules/admin/processors/notification.processor.ts` | v2 | BE-079 |
+| `backend/src/modules/admin/processors/notification.processor.spec.ts` | v1 | BE-079 |
+| `backend/src/modules/admin/entities/admin-alert-recipient.entity.ts` | v2 | BE-079 |
+| `backend/src/modules/admin/entities/admin-user.entity.ts` | v2 | BE-079 |
+| `backend/src/modules/auth/auth.service.ts` | v11 | BE-079 |
+| `backend/src/modules/suggestions/suggestions.service.ts` | v2 | BE-079 |
+| `backend/src/modules/stores/salla-store.service.ts` | v2 | BE-079 |
+| `backend/src/modules/stores/zid-store.service.ts` | v2 | BE-079 |
+| `backend/src/modules/stores/stores.service.ts` | v2 | BE-079 |
+| `backend/src/database/migrations/AddAdminAlertDeliveryStats1790910000000.ts` | v1 | BE-079 |
+| `backend/UPDATE_HISTORY.md` | v53 | BE-079 |
 
 > ملاحظة: `v(+1)` تعني زيادة نسخة واحدة عن آخر نسخة معروفة للملف (معظم الـ controllers كانت v1 → صارت v2؛ إن سبق تعديل ملف، احسب من نسخته الأخيرة).

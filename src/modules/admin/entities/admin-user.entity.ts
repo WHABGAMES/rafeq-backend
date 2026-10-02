@@ -50,6 +50,9 @@ export const PERMISSIONS = {
   SUBSCRIPTIONS_MANAGE: 'subscriptions.manage',
   SUGGESTIONS_READ: 'suggestions.read',
   SUGGESTIONS_MANAGE: 'suggestions.manage',
+  ADMIN_ALERTS_READ: 'admin_alerts.read',
+  ADMIN_ALERTS_MANAGE: 'admin_alerts.manage',
+  ADMIN_ALERTS_TEST: 'admin_alerts.test',
 } as const;
 
 export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -76,12 +79,16 @@ export const ROLE_PERMISSIONS: Record<AdminRole, Permission[]> = {
     PERMISSIONS.SUBSCRIPTIONS_MANAGE,
     PERMISSIONS.SUGGESTIONS_READ,
     PERMISSIONS.SUGGESTIONS_MANAGE,
+    PERMISSIONS.ADMIN_ALERTS_READ,
+    PERMISSIONS.ADMIN_ALERTS_MANAGE,
+    PERMISSIONS.ADMIN_ALERTS_TEST,
   ],
   [AdminRole.SUPPORT]: [
     PERMISSIONS.USERS_READ,
     PERMISSIONS.AUDIT_READ,
     PERMISSIONS.IMPERSONATE_ACCESS,
     PERMISSIONS.SUGGESTIONS_READ,
+    PERMISSIONS.ADMIN_ALERTS_READ,
   ],
 };
 

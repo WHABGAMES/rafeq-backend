@@ -21,7 +21,10 @@
  */
 import { Injectable, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
-import { AdminAlertsService } from '../services/admin-alerts.service';
+import {
+  AdminAlertsService,
+  AdminAlertEventKey,
+} from '../services/admin-alerts.service';
 
 // ─── Event payload shapes (loose typing for robustness) ────────────────────
 
@@ -69,6 +72,15 @@ interface SubscriptionEventPayload {
   plan?: string;
   amount?: string | number;
   reason?: string;
+  [key: string]: unknown;
+}
+
+interface SuggestionCreatedPayload {
+  suggestionId: string;
+  title: string;
+  type: string;
+  merchantName?: string;
+  tenantId?: string;
   [key: string]: unknown;
 }
 
@@ -149,6 +161,23 @@ export class AdminAlertsListener {
       this.logger.error(
         `onSubscriptionCancelled dispatch failed: ${(err as Error).message}`,
       );
+    }
+  }
+
+  @OnEvent('suggestion.created', { async: true })
+  async onSuggestionCreated(payload: SuggestionCreatedPayload): Promise<void> {
+    await this.dispatchSafely('suggestion.created', payload);
+  }
+
+  private async dispatchSafely(
+    eventKey: AdminAlertEventKey,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      await this.alertsService.dispatchEvent(eventKey, payload);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(`${eventKey} dispatch failed: ${message}`);
     }
   }
 }

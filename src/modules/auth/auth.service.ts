@@ -338,7 +338,7 @@ export class AuthService implements OnModuleInit {
       const attempts = await this.recordFailedAttempt(email);
 
       // ✅ NEW: emit dedicated event for super-admin alerts (on 3+ attempts)
-      if (attempts >= 3) {
+      if (attempts === 3 || attempts === this.MAX_LOGIN_ATTEMPTS) {
         this.eventEmitter.emit('auth.login.multiple_failures', {
           email,
           attempts,
@@ -921,6 +921,15 @@ export class AuthService implements OnModuleInit {
 
       user = await this.userRepository.save(user);
       isNewUser = true;
+
+      this.eventEmitter.emit('user.created', {
+        userId: user.id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        tenantId: savedTenant.id,
+        authProvider: user.authProvider,
+      });
 
       this.logger.log(`✅ New user created: ${user.id}`);
     }

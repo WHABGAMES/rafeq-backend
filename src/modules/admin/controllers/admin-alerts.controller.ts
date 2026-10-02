@@ -33,6 +33,7 @@ import {
   HttpStatus,
   UseGuards,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import {
   AdminJwtGuard,
   AdminPermissionGuard,
@@ -43,9 +44,11 @@ import { CurrentAdmin } from '../decorators/current-admin.decorator';
 import { AdminUser, PERMISSIONS } from '../entities/admin-user.entity';
 import {
   AdminAlertsService,
-  CreateRecipientInput,
-  UpdateRecipientInput,
 } from '../services/admin-alerts.service';
+import {
+  CreateAdminAlertRecipientDto,
+  UpdateAdminAlertRecipientDto,
+} from '../dto/admin-alert-recipient.dto';
 
 @Controller('admin/alerts')
 @UseGuards(AdminJwtGuard, AdminPermissionGuard)
@@ -55,7 +58,7 @@ export class AdminAlertsController {
   // ─── META ────────────────────────────────────────────────────────────────
 
   @Get('meta/events')
-  @RequirePermissions(PERMISSIONS.TEMPLATES_MANAGE)
+  @RequirePermissions(PERMISSIONS.ADMIN_ALERTS_READ)
   getAvailableEvents() {
     return { events: this.alertsService.getAvailableEvents() };
   }
@@ -63,40 +66,40 @@ export class AdminAlertsController {
   // ─── Recipients CRUD ─────────────────────────────────────────────────────
 
   @Get('recipients')
-  @RequirePermissions(PERMISSIONS.TEMPLATES_MANAGE)
+  @RequirePermissions(PERMISSIONS.ADMIN_ALERTS_READ)
   listRecipients() {
     return this.alertsService.getAllRecipients();
   }
 
   @Post('recipients')
-  @RequirePermissions(PERMISSIONS.TEMPLATES_MANAGE)
+  @RequirePermissions(PERMISSIONS.ADMIN_ALERTS_MANAGE)
   @Require2FA()
   createRecipient(
-    @Body() body: CreateRecipientInput,
+    @Body() body: CreateAdminAlertRecipientDto,
     @CurrentAdmin() admin: AdminUser,
   ) {
     return this.alertsService.createRecipient(body, admin.id);
   }
 
   @Get('recipients/:id')
-  @RequirePermissions(PERMISSIONS.TEMPLATES_MANAGE)
+  @RequirePermissions(PERMISSIONS.ADMIN_ALERTS_READ)
   getRecipient(@Param('id', ParseUUIDPipe) id: string) {
     return this.alertsService.getRecipientById(id);
   }
 
   @Put('recipients/:id')
-  @RequirePermissions(PERMISSIONS.TEMPLATES_MANAGE)
+  @RequirePermissions(PERMISSIONS.ADMIN_ALERTS_MANAGE)
   @Require2FA()
   updateRecipient(
     @Param('id', ParseUUIDPipe) id: string,
-    @Body() body: UpdateRecipientInput,
+    @Body() body: UpdateAdminAlertRecipientDto,
     @CurrentAdmin() admin: AdminUser,
   ) {
     return this.alertsService.updateRecipient(id, body, admin.id);
   }
 
   @Delete('recipients/:id')
-  @RequirePermissions(PERMISSIONS.TEMPLATES_MANAGE)
+  @RequirePermissions(PERMISSIONS.ADMIN_ALERTS_MANAGE)
   @Require2FA()
   @HttpCode(HttpStatus.NO_CONTENT)
   async deleteRecipient(@Param('id', ParseUUIDPipe) id: string) {
@@ -104,7 +107,7 @@ export class AdminAlertsController {
   }
 
   @Patch('recipients/:id/toggle')
-  @RequirePermissions(PERMISSIONS.TEMPLATES_MANAGE)
+  @RequirePermissions(PERMISSIONS.ADMIN_ALERTS_MANAGE)
   @Require2FA()
   toggleRecipient(
     @Param('id', ParseUUIDPipe) id: string,
@@ -114,7 +117,9 @@ export class AdminAlertsController {
   }
 
   @Post('recipients/:id/test')
-  @RequirePermissions(PERMISSIONS.TEMPLATES_MANAGE)
+  @RequirePermissions(PERMISSIONS.ADMIN_ALERTS_TEST)
+  @Require2FA()
+  @Throttle({ default: { ttl: 60000, limit: 3 } })
   @HttpCode(HttpStatus.OK)
   sendTestAlert(@Param('id', ParseUUIDPipe) id: string) {
     return this.alertsService.sendTestAlert(id);
