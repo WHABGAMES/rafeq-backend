@@ -68,6 +68,7 @@ export class SettingsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get('general')
+  @RequirePlatformFeature('settings.general')
   async getGeneralSettings(
     @CurrentUser() user: User,
     @Headers('x-store-id') storeIdHeader?: string,
@@ -79,6 +80,7 @@ export class SettingsController {
   }
 
   @Put('general')
+  @RequirePlatformFeature('settings.general')
   async updateGeneralSettings(
     @CurrentUser() user: User,
     @Body() data: UpdateGeneralSettingsDto,
@@ -95,6 +97,7 @@ export class SettingsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get('notifications')
+  @RequirePlatformFeature('settings.notifications')
   async getNotificationSettings(
     @CurrentUser() user: User,
     @Headers('x-store-id') storeIdHeader?: string,
@@ -106,6 +109,7 @@ export class SettingsController {
   }
 
   @Put('notifications')
+  @RequirePlatformFeature('settings.notifications')
   async updateNotificationSettings(
     @CurrentUser() user: User,
     @Body() data: UpdateNotificationSettingsDto,
@@ -122,6 +126,7 @@ export class SettingsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get('working-hours')
+  @RequirePlatformFeature('settings.general')
   async getWorkingHours(
     @CurrentUser() user: User,
     @Headers('x-store-id') storeIdHeader?: string,
@@ -133,6 +138,7 @@ export class SettingsController {
   }
 
   @Put('working-hours')
+  @RequirePlatformFeature('settings.general')
   async updateWorkingHours(
     @CurrentUser() user: User,
     @Body() data: UpdateWorkingHoursDto,

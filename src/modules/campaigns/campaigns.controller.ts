@@ -52,7 +52,7 @@ export class CampaignsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Post()
-  @RequirePlatformFeature('campaigns.create')
+  @RequirePlatformFeature('campaigns')
   @ApiOperation({ summary: 'إنشاء حملة جديدة' })
   async create(
     @CurrentUser() user: User,
@@ -164,7 +164,7 @@ export class CampaignsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Post(':id/execute')
-  @RequirePlatformFeature('campaigns.send')
+  @RequirePlatformFeature('campaigns')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'تنفيذ الحملة فوراً' })
   async execute(@CurrentUser() user: User, @Param('id') id: string) {
@@ -177,7 +177,7 @@ export class CampaignsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Post(':id/pause')
-  @RequirePlatformFeature('campaigns.schedule')
+  @RequirePlatformFeature('campaigns')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'إيقاف الحملة مؤقتاً' })
   async pause(@CurrentUser() user: User, @Param('id') id: string) {
@@ -185,7 +185,7 @@ export class CampaignsController {
   }
 
   @Post(':id/resume')
-  @RequirePlatformFeature('campaigns.schedule')
+  @RequirePlatformFeature('campaigns')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'استئناف الحملة' })
   async resume(@CurrentUser() user: User, @Param('id') id: string) {
@@ -193,7 +193,7 @@ export class CampaignsController {
   }
 
   @Post(':id/cancel')
-  @RequirePlatformFeature('campaigns.schedule')
+  @RequirePlatformFeature('campaigns')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'إلغاء الحملة' })
   async cancel(@CurrentUser() user: User, @Param('id') id: string) {
@@ -205,7 +205,7 @@ export class CampaignsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get(':id/stats')
-  @RequirePlatformFeature('campaigns.analytics')
+  @RequirePlatformFeature('campaigns')
   @ApiOperation({ summary: 'إحصائيات الحملة' })
   async getStats(@CurrentUser() user: User, @Param('id') id: string) {
     return this.campaignsService.getStats(id, user.tenantId);

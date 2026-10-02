@@ -29,6 +29,9 @@ import { ApiTags, ApiOperation, ApiQuery } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PlatformFeatureGuard } from '../platform-capabilities/platform-feature.guard';
 import { RequirePlatformFeature } from '../platform-capabilities/platform-feature.decorator';
+import { PlatformCapabilitiesService } from '../platform-capabilities/platform-capabilities.service';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { User } from '../../database/entities/user.entity';
 
 import { ChannelsService, ConnectWhatsAppOfficialDto, ConnectDiscordDto } from './channels.service';
 import { WhatsAppBaileysService } from './whatsapp/whatsapp-baileys.service';
@@ -41,7 +44,20 @@ export class ChannelsController {
   constructor(
     private readonly channelsService: ChannelsService,
     private readonly whatsappBaileysService: WhatsAppBaileysService,
+    private readonly capabilitiesService: PlatformCapabilitiesService,
   ) {}
+
+  private featureKeyForChannel(type: string): string | null {
+    if (type.startsWith('whatsapp')) return 'channels.whatsapp';
+    if (type === 'instagram') return 'channels.instagram';
+    if (type === 'discord') return 'channels.discord';
+    return null;
+  }
+
+  private async requireChannelFeature(type: string, storeId: string, user: User): Promise<void> {
+    const featureKey = this.featureKeyForChannel(type);
+    if (featureKey) await this.capabilitiesService.requireAccessibleFeature(featureKey, storeId, user);
+  }
 
   // ═══════════════════════════════════════════════════════════════════════════════
   // ✅ Specific routes FIRST (before :id param)
@@ -49,6 +65,7 @@ export class ChannelsController {
 
   // 💬 WhatsApp Official
   @Post('whatsapp/official')
+  @RequirePlatformFeature('channels.whatsapp')
   @ApiOperation({ summary: 'Connect WhatsApp Business API' })
   async connectWhatsAppOfficial(
     @Body() body: ConnectWhatsAppOfficialDto & { storeId: string },
@@ -60,6 +77,7 @@ export class ChannelsController {
 
   // 📱 WhatsApp QR Init
   @Post('whatsapp/qr/init')
+  @RequirePlatformFeature('channels.whatsapp')
   @ApiOperation({ summary: 'Initialize WhatsApp QR session' })
   async initWhatsAppQR(@Body() body: { storeId: string }) {
     const session = await this.channelsService.initWhatsAppSession(body.storeId);
@@ -69,6 +87,7 @@ export class ChannelsController {
 
   // 📊 Diagnostics
   @Get('whatsapp/qr/diagnostics')
+  @RequirePlatformFeature('channels.whatsapp')
   @ApiOperation({ summary: 'WhatsApp QR diagnostics' })
   async getWhatsAppDiagnostics() {
     return { success: true, data: this.whatsappBaileysService.getDiagnostics() };
@@ -76,6 +95,7 @@ export class ChannelsController {
 
   // 📊 QR Status
   @Get('whatsapp/qr/:sessionId/status')
+  @RequirePlatformFeature('channels.whatsapp')
   @ApiOperation({ summary: 'Get WhatsApp QR/Phone session status' })
   async getWhatsAppQRStatus(@Param('sessionId') sessionId: string) {
     const status = await this.channelsService.getWhatsAppSessionStatus(sessionId);
@@ -84,6 +104,7 @@ export class ChannelsController {
 
   // 📨 Send Message
   @Post('whatsapp/send')
+  @RequirePlatformFeature('channels.whatsapp')
   @ApiOperation({ summary: 'Send WhatsApp message' })
   async sendWhatsAppMessage(
     @Body() body: { channelId: string; to: string; message: string },
@@ -94,6 +115,7 @@ export class ChannelsController {
 
   // 📸 Instagram
   @Post('instagram')
+  @RequirePlatformFeature('channels.instagram')
   @ApiOperation({ summary: 'Connect Instagram account' })
   async connectInstagram(
     @Body() body: { storeId: string; accessToken: string; userId: string; pageId: string },
@@ -104,6 +126,7 @@ export class ChannelsController {
 
   // 🎮 Discord
   @Post('discord')
+  @RequirePlatformFeature('channels.discord')
   @ApiOperation({ summary: 'Connect Discord bot' })
   async connectDiscord(@Body() body: ConnectDiscordDto & { storeId: string }) {
     const { storeId, ...dto } = body;
@@ -120,6 +143,7 @@ export class ChannelsController {
    * POST /channels/assign-store
    */
   @Post('assign-store')
+  @RequirePlatformFeature('channels.store_assignment')
   @ApiOperation({ summary: 'نقل قناة لمتجر آخر' })
   async assignToStore(
     @Body() body: { channelId: string; currentStoreId: string; newStoreId: string },
@@ -137,6 +161,7 @@ export class ChannelsController {
    * POST /channels/share
    */
   @Post('share')
+  @RequirePlatformFeature('channels.store_assignment')
   @ApiOperation({ summary: 'مشاركة القناة مع عدة متاجر' })
   async shareWithStores(
     @Body() body: { channelId: string; storeId: string; targetStoreIds: string[] },
@@ -158,6 +183,7 @@ export class ChannelsController {
    * DELETE /channels/unshare/:channelId
    */
   @Delete('unshare/:channelId')
+  @RequirePlatformFeature('channels.store_assignment')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'إزالة مشاركة القناة من متجر' })
   @ApiQuery({ name: 'storeId', required: true })
@@ -174,6 +200,7 @@ export class ChannelsController {
    * GET /channels/linked-stores?phone=971524395552
    */
   @Get('linked-stores')
+  @RequirePlatformFeature('channels.store_assignment')
   @ApiOperation({ summary: 'جلب المتاجر المرتبطة برقم واتساب' })
   @ApiQuery({ name: 'phone', required: true })
   async getLinkedStores(@Query('phone') phone: string) {
@@ -207,15 +234,28 @@ export class ChannelsController {
   @Get()
   @ApiOperation({ summary: 'Get all channels for a store' })
   @ApiQuery({ name: 'storeId', required: true })
-  async getAll(@Query('storeId') storeId: string) {
-    return { success: true, data: await this.channelsService.findAll(storeId) };
+  async getAll(@Query('storeId') storeId: string, @CurrentUser() user: User) {
+    const [channels, workspace] = await Promise.all([
+      this.channelsService.findAll(storeId),
+      this.capabilitiesService.resolveWorkspace(storeId, user),
+    ]);
+    const available = new Set(workspace.features.map(feature => feature.key));
+    return {
+      success: true,
+      data: channels.filter(channel => {
+        const featureKey = this.featureKeyForChannel(channel.type);
+        return featureKey === null || available.has(featureKey);
+      }),
+    };
   }
 
   @Get(':id')
   @ApiOperation({ summary: 'Get channel by ID' })
   @ApiQuery({ name: 'storeId', required: true })
-  async getById(@Param('id') id: string, @Query('storeId') storeId: string) {
-    return { success: true, data: await this.channelsService.findById(id, storeId) };
+  async getById(@Param('id') id: string, @Query('storeId') storeId: string, @CurrentUser() user: User) {
+    const channel = await this.channelsService.findById(id, storeId);
+    await this.requireChannelFeature(channel.type, storeId, user);
+    return { success: true, data: channel };
   }
 
   /**
@@ -227,7 +267,9 @@ export class ChannelsController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Disconnect channel without deleting (keeps record)' })
   @ApiQuery({ name: 'storeId', required: true })
-  async softDisconnect(@Param('id') id: string, @Query('storeId') storeId: string) {
+  async softDisconnect(@Param('id') id: string, @Query('storeId') storeId: string, @CurrentUser() user: User) {
+    const channel = await this.channelsService.findById(id, storeId);
+    await this.requireChannelFeature(channel.type, storeId, user);
     await this.channelsService.softDisconnect(id, storeId);
     return { success: true, message: 'Channel disconnected (record preserved)' };
   }
@@ -241,7 +283,9 @@ export class ChannelsController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Disconnect and permanently remove a channel' })
   @ApiQuery({ name: 'storeId', required: true })
-  async disconnect(@Param('id') id: string, @Query('storeId') storeId: string) {
+  async disconnect(@Param('id') id: string, @Query('storeId') storeId: string, @CurrentUser() user: User) {
+    const channel = await this.channelsService.findById(id, storeId);
+    await this.requireChannelFeature(channel.type, storeId, user);
     await this.channelsService.disconnect(id, storeId);
     return { success: true, message: 'Channel disconnected and removed' };
   }

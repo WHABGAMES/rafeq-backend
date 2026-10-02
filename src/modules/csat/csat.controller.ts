@@ -30,7 +30,9 @@ import {
   HttpStatus,
   UseGuards,
   ParseIntPipe,
+  Res,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import {
   ApiTags,
   ApiOperation,
@@ -43,6 +45,8 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { CsatService } from './csat.service';
 import { UpdateCsatSettingsDto, SubmitCsatDto } from './dto';
 import { User } from '@database/entities/user.entity';
+import { PlatformFeatureGuard } from '../platform-capabilities/platform-feature.guard';
+import { RequirePlatformFeature } from '../platform-capabilities/platform-feature.decorator';
 
 @ApiTags('CSAT - تقييم رضا العملاء')
 @Controller({
@@ -57,7 +61,8 @@ export class CsatController {
   // ═══════════════════════════════════════════════════════════
 
   @Get('settings')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, PlatformFeatureGuard)
+  @RequirePlatformFeature('csat')
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'إعدادات التقييم' })
   async getSettings(@CurrentUser() user: User) {
@@ -65,7 +70,8 @@ export class CsatController {
   }
 
   @Put('settings')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, PlatformFeatureGuard)
+  @RequirePlatformFeature('csat')
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'تحديث الإعدادات' })
   async updateSettings(
@@ -128,7 +134,8 @@ export class CsatController {
   // ═══════════════════════════════════════════════════════════
 
   @Get('surveys')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, PlatformFeatureGuard)
+  @RequirePlatformFeature('csat.responses')
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'قائمة التقييمات — يُرجع { responses, avgRating, pagination }' })
   @ApiQuery({ name: 'type',    required: false, enum: ['csat', 'nps', 'ces', 'thumbs'] })
@@ -162,7 +169,8 @@ export class CsatController {
   }
 
   @Get('surveys/:id')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, PlatformFeatureGuard)
+  @RequirePlatformFeature('csat.responses')
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'تفاصيل تقييم' })
   async getSurvey(
@@ -194,7 +202,8 @@ export class CsatController {
   // ═══════════════════════════════════════════════════════════
 
   @Get('overview')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, PlatformFeatureGuard)
+  @RequirePlatformFeature('csat.overview')
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({
     summary: 'نظرة عامة على رضا العملاء',
@@ -209,7 +218,8 @@ export class CsatController {
   // ═══════════════════════════════════════════════════════════
 
   @Get('analytics')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, PlatformFeatureGuard)
+  @RequirePlatformFeature('csat')
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'تحليلات التقييم المفصّلة' })
   @ApiQuery({ name: 'period', required: false, enum: ['day', 'week', 'month', 'quarter', 'year'] })
@@ -225,7 +235,8 @@ export class CsatController {
   }
 
   @Get('analytics/agents')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, PlatformFeatureGuard)
+  @RequirePlatformFeature('csat')
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'تقييمات الوكلاء' })
   async getAgentRatings(
@@ -237,7 +248,8 @@ export class CsatController {
   }
 
   @Get('analytics/trends')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, PlatformFeatureGuard)
+  @RequirePlatformFeature('csat')
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'اتجاهات التقييم عبر الزمن' })
   async getTrends(
@@ -253,18 +265,23 @@ export class CsatController {
   // ═══════════════════════════════════════════════════════════
 
   @Get('export')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, PlatformFeatureGuard)
+  @RequirePlatformFeature('csat.export')
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'تصدير التقييمات' })
-  @ApiQuery({ name: 'format', required: false, enum: ['csv', 'xlsx'] })
+  @ApiQuery({ name: 'format', required: false, enum: ['csv'] })
   @ApiQuery({ name: 'from',   required: false })
   @ApiQuery({ name: 'to',     required: false })
   async exportSurveys(
     @CurrentUser() user: User,
-    @Query('format') format = 'csv',
+    @Res() response: Response,
+    @Query('format') format: 'csv' = 'csv',
     @Query('from')   from?: string,
     @Query('to')     to?: string,
   ) {
-    return this.csatService.exportSurveys(user.tenantId, { format, from, to });
+    const exported = await this.csatService.exportSurveys(user.tenantId, { format, from, to });
+    response.setHeader('Content-Type', exported.contentType);
+    response.setHeader('Content-Disposition', `attachment; filename="${exported.filename}"`);
+    return response.send(exported.content);
   }
 }

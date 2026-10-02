@@ -394,7 +394,7 @@ export class AiController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get('settings')
-  @RequirePlatformFeature('ai_assistant.auto_reply')
+  @RequirePlatformFeature('ai_assistant')
   @ApiOperation({ summary: 'جلب إعدادات البوت' })
   async getSettings(
     @CurrentUser() user: User,
@@ -407,7 +407,7 @@ export class AiController {
   }
 
   @Put('settings')
-  @RequirePlatformFeature('ai_assistant.auto_reply')
+  @RequirePlatformFeature('ai_assistant')
   @ApiOperation({ summary: 'تحديث إعدادات البوت' })
   async updateSettings(
     @CurrentUser() user: User,
@@ -523,7 +523,7 @@ export class AiController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Post('respond')
-  @RequirePlatformFeature('ai_assistant.auto_reply')
+  @RequirePlatformFeature('ai_assistant')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'إنشاء رد على رسالة' })
   @ApiResponse({ status: 200, description: 'الرد المولّد' })
@@ -546,7 +546,7 @@ export class AiController {
   }
 
   @Post('test')
-  @RequirePlatformFeature('ai_assistant.auto_reply')
+  @RequirePlatformFeature('ai_assistant')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'اختبار رد البوت (بدون حفظ)' })
   async testResponse(

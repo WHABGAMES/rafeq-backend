@@ -43,10 +43,13 @@ import { User } from '@database/entities';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { QuickRepliesService } from './quick-replies.service';
 import { CreateQuickReplyDto, UpdateQuickReplyDto } from './dto';
+import { PlatformFeatureGuard } from '../platform-capabilities/platform-feature.guard';
+import { RequirePlatformFeature } from '../platform-capabilities/platform-feature.decorator';
 
 @ApiTags('Quick Replies - الردود السريعة')
 @ApiBearerAuth('JWT-auth')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PlatformFeatureGuard)
+@RequirePlatformFeature('quick_replies')
 @Controller({
   path: 'quick-replies',
   version: '1',
@@ -59,6 +62,7 @@ export class QuickRepliesController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get('categories')
+  @RequirePlatformFeature('quick_replies')
   @ApiOperation({
     summary: 'فئات الردود',
     description: 'جلب جميع فئات الردود السريعة',
@@ -69,6 +73,7 @@ export class QuickRepliesController {
   }
 
   @Post('categories')
+  @RequirePlatformFeature('quick_replies')
   @ApiOperation({
     summary: 'إنشاء فئة',
     description: 'إنشاء فئة جديدة للردود السريعة',
@@ -80,6 +85,7 @@ export class QuickRepliesController {
   }
 
   @Delete('categories/:id')
+  @RequirePlatformFeature('quick_replies')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'حذف فئة' })
   async deleteCategory(@CurrentUser() user: User,
@@ -93,6 +99,7 @@ export class QuickRepliesController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get()
+  @RequirePlatformFeature('quick_replies')
   @ApiOperation({
     summary: 'قائمة الردود السريعة',
     description: 'جلب جميع الردود السريعة مع الفلترة',
@@ -113,6 +120,7 @@ export class QuickRepliesController {
   }
 
   @Get('search')
+  @RequirePlatformFeature('quick_replies')
   @ApiOperation({
     summary: 'بحث في الردود',
     description: 'بحث سريع في الردود باستخدام الاختصار أو المحتوى',
@@ -125,6 +133,7 @@ export class QuickRepliesController {
   }
 
   @Post()
+  @RequirePlatformFeature('quick_replies')
   @ApiOperation({
     summary: 'إنشاء رد سريع',
     description: 'إنشاء رد سريع جديد',
@@ -137,6 +146,7 @@ export class QuickRepliesController {
   }
 
   @Get(':id')
+  @RequirePlatformFeature('quick_replies')
   @ApiOperation({ summary: 'تفاصيل رد سريع' })
   async findOne(@CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string) {
@@ -145,6 +155,7 @@ export class QuickRepliesController {
   }
 
   @Put(':id')
+  @RequirePlatformFeature('quick_replies')
   @ApiOperation({ summary: 'تحديث رد سريع' })
   async update(
     @CurrentUser() user: User,
@@ -156,6 +167,7 @@ export class QuickRepliesController {
   }
 
   @Delete(':id')
+  @RequirePlatformFeature('quick_replies')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'حذف رد سريع' })
   async remove(@CurrentUser() user: User,
@@ -169,6 +181,7 @@ export class QuickRepliesController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Post(':id/use')
+  @RequirePlatformFeature('quick_replies')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'تسجيل استخدام',
@@ -182,6 +195,7 @@ export class QuickRepliesController {
   }
 
   @Get('stats/popular')
+  @RequirePlatformFeature('quick_replies')
   @ApiOperation({
     summary: 'الردود الأكثر استخداماً',
     description: 'قائمة الردود السريعة الأكثر استخداماً',

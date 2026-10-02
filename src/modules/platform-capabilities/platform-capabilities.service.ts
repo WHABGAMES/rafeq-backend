@@ -1,6 +1,6 @@
-import { ForbiddenException, Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { Store } from '../stores/entities/store.entity';
 import { FEATURE_CATALOG } from './feature-catalog';
 import { FeatureTargetMode, PlatformFeature, PlatformFeatureStatus } from './entities/platform-feature.entity';
@@ -71,13 +71,32 @@ export class PlatformCapabilitiesService implements OnModuleInit {
   }
 
   list(): Promise<PlatformFeature[]> {
-    return this.featureRepository.find({ order: { displayOrder: 'ASC', name: 'ASC' } });
+    return this.featureRepository.find({
+      where: { featureKey: In(FEATURE_CATALOG.map(feature => feature.key)) },
+      order: { displayOrder: 'ASC', name: 'ASC' },
+    });
   }
 
   async update(featureKey: string, dto: UpdatePlatformFeatureDto): Promise<PlatformFeature> {
     const feature = await this.featureRepository.findOne({ where: { featureKey } });
     if (!feature) throw new NotFoundException('Feature not found');
-    Object.assign(feature, dto);
+    const { expectedUpdatedAt, ...patch } = dto;
+    if (expectedUpdatedAt) {
+      const result = await this.featureRepository.update(
+        { featureKey, updatedAt: new Date(expectedUpdatedAt) },
+        patch,
+      );
+      if (result.affected !== 1) {
+        throw new ConflictException({
+          code: 'PLATFORM_FEATURE_EDIT_CONFLICT',
+          message: 'عُدّلت الميزة من جلسة أخرى. حدّث الصفحة ثم أعد المحاولة.',
+        });
+      }
+      const updated = await this.featureRepository.findOne({ where: { featureKey } });
+      if (!updated) throw new NotFoundException('Feature not found');
+      return updated;
+    }
+    Object.assign(feature, patch);
     return this.featureRepository.save(feature);
   }
 

@@ -46,10 +46,10 @@ export class MaintenancePage {
   style: MaintenanceStyle;
 
   @Column({ type: 'varchar', length: 500, nullable: true, comment: 'رسالة مخصصة للتاجر' })
-  message?: string;
+  message: string | null;
 
   @Column({ name: 'activated_by', type: 'varchar', length: 255, nullable: true, comment: 'الأدمن الذي فعّل الصيانة' })
-  activatedBy?: string;
+  activatedBy: string | null;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;

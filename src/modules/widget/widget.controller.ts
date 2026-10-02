@@ -121,7 +121,7 @@ export class WidgetPublicController {
 @ApiTags('Widget: Settings')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, PlatformFeatureGuard)
-@RequirePlatformFeature('whatsapp_widget.settings')
+@RequirePlatformFeature('whatsapp_widget')
 @Controller({ path: 'widget/settings', version: '1' })
 export class WidgetSettingsController {
   constructor(

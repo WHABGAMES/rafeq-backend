@@ -419,7 +419,7 @@ export class CsatService {
 
   async exportSurveys(
     tenantId: string,
-    params: { format: string; from?: string; to?: string },
+    params: { format: 'csv'; from?: string; to?: string },
   ) {
     const { from, to } = this.resolveDateRange('month', params.from, params.to);
 
@@ -432,12 +432,34 @@ export class CsatService {
       order: { respondedAt: 'DESC' },
     });
 
-    // TODO: implement CSV/XLSX generation
+    const escapeCsv = (value: unknown): string => {
+      let text = value === null || value === undefined ? '' : String(value);
+      // Prevent spreadsheet formula injection when a CSV is opened in Excel.
+      if (/^[=+\-@]/.test(text)) text = `'${text}`;
+      return `"${text.replace(/"/g, '""')}"`;
+    };
+
+    const header = [
+      'id', 'type', 'rating', 'feedback', 'customer_id', 'agent_id',
+      'conversation_id', 'store_id', 'responded_at',
+    ];
+    const rows = surveys.map((survey) => [
+      survey.id,
+      survey.type,
+      survey.rating,
+      survey.feedback,
+      survey.customerId,
+      survey.agentId,
+      survey.conversationId,
+      survey.storeId,
+      survey.respondedAt?.toISOString(),
+    ].map(escapeCsv).join(','));
+
+    const date = new Date().toISOString().slice(0, 10);
     return {
-      success: true,
-      total: surveys.length,
-      message: `تصدير ${surveys.length} تقييم`,
-      downloadUrl: null,
+      content: `\uFEFF${header.join(',')}\r\n${rows.join('\r\n')}`,
+      contentType: 'text/csv; charset=utf-8',
+      filename: `rafeq-csat-${date}.csv`,
     };
   }
 

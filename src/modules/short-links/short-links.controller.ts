@@ -94,6 +94,7 @@ export class ShortLinksController {
    * قائمة الروابط
    */
   @Get()
+  @RequirePlatformFeature('short_links.manage')
   @ApiOperation({ summary: 'List all short links' })
   async list(
     @CurrentUser() user: User,
@@ -111,6 +112,7 @@ export class ShortLinksController {
    * إنشاء رابط جديد
    */
   @Post()
+  @RequirePlatformFeature('short_links.manage')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Create short link' })
   async create(
@@ -140,6 +142,7 @@ export class ShortLinksController {
    * إحصائيات رابط
    */
   @Get(':id/stats')
+  @RequirePlatformFeature('short_links.analytics')
   @ApiOperation({ summary: 'Link analytics' })
   async stats(@CurrentUser() user: User, @Param('id') id: string) {
     return this.service.getAnalytics(user.tenantId, id);
@@ -149,6 +152,7 @@ export class ShortLinksController {
    * تعديل رابط
    */
   @Patch(':id')
+  @RequirePlatformFeature('short_links.manage')
   @ApiOperation({ summary: 'Update link' })
   async update(
     @CurrentUser() user: User,
@@ -162,6 +166,7 @@ export class ShortLinksController {
    * حذف رابط
    */
   @Delete(':id')
+  @RequirePlatformFeature('short_links.manage')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'Delete link' })
   async delete(@CurrentUser() user: User, @Param('id') id: string) {

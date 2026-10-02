@@ -1,3 +1,4 @@
+import { ConflictException } from '@nestjs/common';
 import { FeatureTargetMode, PlatformFeatureStatus } from './entities/platform-feature.entity';
 import { isFeatureAvailableForPlatform } from './platform-capabilities.service';
 import { PlatformCapabilitiesService } from './platform-capabilities.service';
@@ -36,6 +37,8 @@ describe('platform feature targeting', () => {
 describe('PlatformCapabilitiesService workspace isolation', () => {
   const featureRepository = {
     find: jest.fn(),
+    findOne: jest.fn(),
+    update: jest.fn(),
   } as unknown as Repository<PlatformFeature>;
   const storeRepository = {
     findOne: jest.fn(),
@@ -51,6 +54,21 @@ describe('PlatformCapabilitiesService workspace isolation', () => {
       tenantId: 'tenant-id', role: UserRole.OWNER, preferences: {},
     } as User)).rejects.toThrow('Store not found');
     expect(storeRepository.findOne).toHaveBeenCalledWith({ where: { id: 'store-id', tenantId: 'tenant-id' } });
+  });
+
+  it('rejects a stale admin update instead of overwriting a newer change', async () => {
+    const updatedAt = new Date('2026-10-02T10:00:00.000Z');
+    (featureRepository.findOne as jest.Mock).mockResolvedValue({ featureKey: 'campaigns', updatedAt });
+    (featureRepository.update as jest.Mock).mockResolvedValue({ affected: 0 });
+
+    await expect(service.update('campaigns', {
+      enabled: false,
+      expectedUpdatedAt: updatedAt.toISOString(),
+    })).rejects.toBeInstanceOf(ConflictException);
+    expect(featureRepository.update).toHaveBeenCalledWith(
+      { featureKey: 'campaigns', updatedAt },
+      { enabled: false },
+    );
   });
 
   it('returns only features available for the owned store platform', async () => {

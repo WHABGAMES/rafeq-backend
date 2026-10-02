@@ -16,12 +16,13 @@ import {
   Body,
   Query,
   UseGuards,
+  ParseUUIDPipe,
 } from '@nestjs/common';
 import { MaintenanceService } from '../services/maintenance.service';
 import { AdminJwtGuard, AdminPermissionGuard, RequirePermissions, Require2FA } from '../guards/admin.guards';
 import { CurrentAdmin } from '../decorators/current-admin.decorator';
 import { AdminUser, PERMISSIONS } from '../entities/admin-user.entity';
-import { ToggleMaintenanceDto, UpdateMaintenanceDto } from '../dto/maintenance.dto';
+import { CheckMaintenanceRouteDto, ToggleMaintenanceDto, UpdateMaintenanceDto } from '../dto/maintenance.dto';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Public API — يُستخدم من الفرونت إند (التاجر)
@@ -37,9 +38,8 @@ export class MaintenancePublicController {
    * ✅ Cached — 30 ثانية في الذاكرة
    */
   @Get('check')
-  async checkRoute(@Query('route') route: string) {
-    if (!route) return { isActive: false, style: 'overlay' };
-    return this.maintenanceService.checkRoute(route);
+  async checkRoute(@Query() query: CheckMaintenanceRouteDto) {
+    return this.maintenanceService.checkRoute(query.route);
   }
 
   /**
@@ -79,11 +79,11 @@ export class MaintenanceAdminController {
   @Patch(':id/toggle')
   @Require2FA()
   async toggle(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() body: ToggleMaintenanceDto,
     @CurrentAdmin() admin: AdminUser,
   ) {
-    return this.maintenanceService.toggle(id, body.isActive, admin.email);
+    return this.maintenanceService.toggle(id, body.isActive, admin);
   }
 
   /**
@@ -93,10 +93,10 @@ export class MaintenanceAdminController {
   @Patch(':id')
   @Require2FA()
   async update(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() body: UpdateMaintenanceDto,
     @CurrentAdmin() admin: AdminUser,
   ) {
-    return this.maintenanceService.update(id, body, admin.email);
+    return this.maintenanceService.update(id, body, admin);
   }
 }

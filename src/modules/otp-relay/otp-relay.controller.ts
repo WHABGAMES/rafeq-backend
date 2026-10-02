@@ -13,13 +13,16 @@ import {
   UpdateOtpRelayConfigDto,
   VerifyOtpRequestDto,
 } from './dto/otp-relay.dto';
+import { PlatformFeatureGuard } from '../platform-capabilities/platform-feature.guard';
+import { RequirePlatformFeature } from '../platform-capabilities/platform-feature.decorator';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Dashboard Controller (JWT-protected)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 @Controller('otp-relay')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PlatformFeatureGuard)
+@RequirePlatformFeature('otp')
 export class OtpRelayController {
   constructor(
     private readonly svc: OtpRelayService,
@@ -40,16 +43,19 @@ export class OtpRelayController {
 
   // ── Config CRUD ──
   @Get('configs')
+  @RequirePlatformFeature('otp')
   getConfigs(@CurrentUser() user: User, @Headers('x-store-id') storeId?: string) {
     return this.svc.getConfigs(user.tenantId, this.getStoreId(storeId));
   }
 
   @Get('configs/:id')
+  @RequirePlatformFeature('otp')
   getConfig(@Param('id') id: string, @CurrentUser() user: User) {
     return this.svc.getConfig(id, user.tenantId);
   }
 
   @Post('configs')
+  @RequirePlatformFeature('otp')
   create(
     @Body() body: CreateOtpRelayConfigDto,
     @CurrentUser() user: User,
@@ -59,6 +65,7 @@ export class OtpRelayController {
   }
 
   @Put('configs/:id')
+  @RequirePlatformFeature('otp')
   update(
     @Param('id') id: string,
     @Body() body: UpdateOtpRelayConfigDto,
@@ -68,16 +75,19 @@ export class OtpRelayController {
   }
 
   @Delete('configs/:id')
+  @RequirePlatformFeature('otp')
   delete(@Param('id') id: string, @CurrentUser() user: User) {
     return this.svc.deleteConfig(id, user.tenantId);
   }
 
   @Post('configs/:id/test')
+  @RequirePlatformFeature('otp')
   test(@Param('id') id: string, @CurrentUser() user: User) {
     return this.svc.testConnection(id, user.tenantId);
   }
 
   @Get('configs/:id/analytics')
+  @RequirePlatformFeature('otp')
   analytics(
     @Param('id') id: string,
     @Query('days') days: string,
@@ -88,6 +98,7 @@ export class OtpRelayController {
 
   // ── Inventory CRUD ──
   @Get('configs/:id/inventory')
+  @RequirePlatformFeature('otp')
   listInventory(
     @Param('id') id: string,
     @Query('status') status: string,
@@ -99,27 +110,32 @@ export class OtpRelayController {
   }
 
   @Post('configs/:id/inventory')
+  @RequirePlatformFeature('otp')
   addInventoryItem(@Param('id') id: string, @Body() body: AddOtpInventoryItemDto, @CurrentUser() user: User) {
     return this.inventorySvc.addItem(id, user.tenantId, body);
   }
 
   @Post('configs/:id/inventory/bulk')
+  @RequirePlatformFeature('otp')
   bulkAddInventory(@Param('id') id: string, @Body() body: BulkAddOtpInventoryDto, @CurrentUser() user: User) {
     return this.inventorySvc.bulkAdd(id, user.tenantId, body);
   }
 
   @Delete('inventory/:itemId')
+  @RequirePlatformFeature('otp')
   deleteInventoryItem(@Param('itemId') itemId: string, @CurrentUser() user: User) {
     return this.inventorySvc.deleteItem(itemId, user.tenantId);
   }
 
   @Delete('configs/:id/inventory/available')
+  @RequirePlatformFeature('otp')
   deleteAllAvailable(@Param('id') id: string, @CurrentUser() user: User) {
     return this.inventorySvc.deleteAllAvailable(id, user.tenantId);
   }
 
   // ── Compensation Stats ──
   @Get('configs/:id/compensations')
+  @RequirePlatformFeature('otp.compensation')
   listCompensations(
     @Param('id') id: string,
     @Query('page') page: string,
@@ -130,6 +146,7 @@ export class OtpRelayController {
   }
 
   @Get('configs/:id/compensation-stats')
+  @RequirePlatformFeature('otp.compensation')
   compensationStats(
     @Param('id') id: string,
     @Query('days') days: string,

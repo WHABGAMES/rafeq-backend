@@ -577,7 +577,7 @@ export class TemplatesController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Post()
-  @RequirePlatformFeature('templates.create')
+  @RequirePlatformFeature('templates')
   @ApiOperation({
     summary: 'إنشاء قالب جديد',
     description: 'إنشاء قالب رسالة جديد (نصي، صورة، فيديو، تفاعلي)',
@@ -612,7 +612,7 @@ export class TemplatesController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Put(':id')
-  @RequirePlatformFeature('templates.edit')
+  @RequirePlatformFeature('templates')
   @ApiOperation({
     summary: 'تحديث قالب',
     description: 'تحديث محتوى أو إعدادات قالب',
@@ -632,7 +632,7 @@ export class TemplatesController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Delete(':id')
-  @RequirePlatformFeature('templates.edit')
+  @RequirePlatformFeature('templates')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({
     summary: 'حذف قالب',
@@ -650,7 +650,7 @@ export class TemplatesController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Patch(':id/toggle')
-  @RequirePlatformFeature('templates.edit')
+  @RequirePlatformFeature('templates')
   @ApiOperation({
     summary: 'تفعيل/تعطيل قالب',
     description: 'تبديل حالة القالب بين نشط ومعطل',
@@ -667,7 +667,7 @@ export class TemplatesController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Patch(':id/send-settings')
-  @RequirePlatformFeature('templates.edit')
+  @RequirePlatformFeature('templates')
   @ApiOperation({
     summary: 'تحديث إعدادات الإرسال',
     description: 'تحديث إعدادات التأخير والشرط والتسلسل لكل قالب',
@@ -687,7 +687,7 @@ export class TemplatesController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Post('bulk-toggle')
-  @RequirePlatformFeature('templates.edit')
+  @RequirePlatformFeature('templates')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'تفعيل/تعطيل عدة قوالب دفعة واحدة',
@@ -707,7 +707,7 @@ export class TemplatesController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Post(':id/duplicate')
-  @RequirePlatformFeature('templates.create')
+  @RequirePlatformFeature('templates')
   @ApiOperation({
     summary: 'نسخ قالب',
     description: 'إنشاء نسخة من قالب موجود',

@@ -187,7 +187,7 @@ export class ElementsPublicController {
 @ApiTags('Conversion Elements: Management')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, PlatformFeatureGuard)
-@RequirePlatformFeature('conversion_elements.manage')
+@RequirePlatformFeature('conversion_elements')
 @Controller({ path: 'elements/manage', version: '1' })
 export class ElementsManageController {
   constructor(
@@ -264,7 +264,7 @@ export class ElementsManageController {
 @ApiTags('Conversion Elements: Analytics')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, PlatformFeatureGuard)
-@RequirePlatformFeature('conversion_elements.analytics')
+@RequirePlatformFeature('conversion_elements')
 @Controller({ path: 'elements/analytics', version: '1' })
 export class ElementsAnalyticsController {
   constructor(
@@ -330,7 +330,7 @@ export class ElementsAnalyticsController {
 @ApiTags('Conversion Elements: A/B Tests')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, PlatformFeatureGuard)
-@RequirePlatformFeature('conversion_elements.ab_tests')
+@RequirePlatformFeature('conversion_elements')
 @Controller({ path: 'elements/ab-tests', version: '1' })
 export class ElementsABTestController {
   constructor(

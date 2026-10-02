@@ -59,7 +59,7 @@ export class AnalyticsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get('overview')
-  @RequirePlatformFeature('analytics.overview')
+  @RequirePlatformFeature('analytics')
   @ApiOperation({
     summary: 'نظرة عامة',
     description: 'إحصائيات سريعة: المحادثات، الرسائل، العملاء، وقت الرد',
@@ -87,7 +87,7 @@ export class AnalyticsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get('conversations')
-  @RequirePlatformFeature('analytics.overview')
+  @RequirePlatformFeature('analytics')
   @ApiOperation({
     summary: 'إحصائيات المحادثات',
     description: 'المحادثات حسب اليوم، القناة، الحالة، وأوقات الذروة',
@@ -109,7 +109,7 @@ export class AnalyticsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get('team')
-  @RequirePlatformFeature('analytics.team')
+  @RequirePlatformFeature('analytics')
   @ApiOperation({
     summary: 'أداء الفريق',
     description: 'إحصائيات كل موظف: المحادثات، وقت الرد، نسبة الحل',
@@ -131,7 +131,7 @@ export class AnalyticsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get('campaigns')
-  @RequirePlatformFeature('analytics.overview')
+  @RequirePlatformFeature('analytics')
   @ApiOperation({
     summary: 'إحصائيات الحملات',
     description: 'الإرسال، التوصيل، القراءة، ونسب النجاح',
@@ -153,7 +153,7 @@ export class AnalyticsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get('trends/:metric')
-  @RequirePlatformFeature('analytics.overview')
+  @RequirePlatformFeature('analytics')
   @ApiOperation({
     summary: 'الاتجاهات',
     description: 'رسم بياني للمحادثات/الرسائل/العملاء عبر الزمن',
@@ -173,7 +173,7 @@ export class AnalyticsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get('export')
-  @RequirePlatformFeature('analytics.export')
+  @RequirePlatformFeature('analytics')
   @ApiOperation({
     summary: 'تصدير تقرير',
     description: 'تصدير التقرير كـ CSV أو JSON',

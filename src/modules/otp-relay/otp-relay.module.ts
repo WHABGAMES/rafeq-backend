@@ -10,12 +10,14 @@ import { TelegramOtpClientService } from './telegram-otp-client.service';
 import { OtpRelayController, OtpPublicController } from './otp-relay.controller';
 import { StoresModule } from '../stores/stores.module';
 import { ChannelsModule } from '../channels/channels.module';
+import { PlatformCapabilitiesModule } from '../platform-capabilities/platform-capabilities.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([OtpConfig, OtpRequestLog, OtpInventoryItem, OtpCompensation, Store, Channel]),
     StoresModule,
     ChannelsModule,
+    PlatformCapabilitiesModule,
   ],
   controllers: [OtpRelayController, OtpPublicController],
   providers: [OtpRelayService, OtpInventoryService, TelegramOtpClientService],

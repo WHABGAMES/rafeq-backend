@@ -109,6 +109,7 @@ export class ContactsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get()
+  @RequirePlatformFeature('contacts.manage')
   @ApiOperation({
     summary: 'قائمة العملاء',
     description: 'جلب جميع العملاء مع الفلترة والبحث',
@@ -155,6 +156,7 @@ export class ContactsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get('stats')
+  @RequirePlatformFeature('contacts.manage')
   @ApiOperation({
     summary: 'إحصائيات العملاء',
     description: 'إحصائيات شاملة عن العملاء',
@@ -165,6 +167,7 @@ export class ContactsController {
   }
 
   @Post('sync')
+  @RequirePlatformFeature('contacts.sync')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'مزامنة العملاء من سلة',
@@ -180,6 +183,7 @@ export class ContactsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get('segments')
+  @RequirePlatformFeature('contacts')
   @ApiOperation({
     summary: 'شرائح العملاء',
     description: 'جلب جميع شرائح العملاء',
@@ -190,6 +194,7 @@ export class ContactsController {
   }
 
   @Post('segments')
+  @RequirePlatformFeature('contacts')
   @ApiOperation({
     summary: 'إنشاء شريحة',
     description: 'إنشاء شريحة عملاء جديدة بشروط محددة',
@@ -201,6 +206,7 @@ export class ContactsController {
   }
 
   @Get('segments/:id')
+  @RequirePlatformFeature('contacts')
   @ApiOperation({ summary: 'تفاصيل شريحة' })
   async getSegment(@CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string) {
@@ -209,6 +215,7 @@ export class ContactsController {
   }
 
   @Put('segments/:id')
+  @RequirePlatformFeature('contacts')
   @ApiOperation({ summary: 'تحديث شريحة' })
   async updateSegment(
     @CurrentUser() user: User,
@@ -220,6 +227,7 @@ export class ContactsController {
   }
 
   @Delete('segments/:id')
+  @RequirePlatformFeature('contacts')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'حذف شريحة' })
   async deleteSegment(@CurrentUser() user: User,
@@ -233,6 +241,7 @@ export class ContactsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Post('import')
+  @RequirePlatformFeature('contacts')
   @ApiOperation({
     summary: 'استيراد عملاء',
     description: 'استيراد عملاء من ملف CSV/Excel',
@@ -252,6 +261,7 @@ export class ContactsController {
   }
 
   @Get('export')
+  @RequirePlatformFeature('contacts.export')
   @ApiOperation({
     summary: 'تصدير عملاء',
     description: 'تصدير العملاء إلى ملف CSV (يفتح في Excel مباشرة)',
@@ -279,6 +289,7 @@ export class ContactsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Post()
+  @RequirePlatformFeature('contacts.manage')
   @ApiOperation({
     summary: 'إضافة عميل جديد',
     description: 'إنشاء عميل جديد في النظام',
@@ -295,6 +306,7 @@ export class ContactsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get(':id')
+  @RequirePlatformFeature('contacts.manage')
   @ApiOperation({
     summary: 'تفاصيل عميل',
     description: 'جلب تفاصيل عميل معين مع سجل النشاطات',
@@ -310,6 +322,7 @@ export class ContactsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Put(':id')
+  @RequirePlatformFeature('contacts.manage')
   @ApiOperation({
     summary: 'تحديث بيانات عميل',
     description: 'تحديث بيانات عميل معين',
@@ -328,6 +341,7 @@ export class ContactsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Delete(':id')
+  @RequirePlatformFeature('contacts.manage')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({
     summary: 'حذف عميل',
@@ -344,6 +358,7 @@ export class ContactsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get(':id/conversations')
+  @RequirePlatformFeature('contacts.manage')
   @ApiOperation({
     summary: 'محادثات العميل',
     description: 'جلب جميع محادثات عميل معين',
@@ -365,6 +380,7 @@ export class ContactsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get(':id/orders')
+  @RequirePlatformFeature('contacts.manage')
   @ApiOperation({
     summary: 'طلبات العميل',
     description: 'جلب جميع طلبات عميل معين من سلة/زد',
@@ -386,6 +402,7 @@ export class ContactsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get(':id/timeline')
+  @RequirePlatformFeature('contacts.manage')
   @ApiOperation({
     summary: 'سجل النشاطات',
     description: 'جميع نشاطات العميل (رسائل، طلبات، ملاحظات)',
@@ -405,6 +422,7 @@ export class ContactsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Post(':id/tags')
+  @RequirePlatformFeature('contacts.manage')
   @ApiOperation({
     summary: 'إضافة تصنيفات',
     description: 'إضافة تصنيفات للعميل',
@@ -419,6 +437,7 @@ export class ContactsController {
   }
 
   @Delete(':id/tags/:tag')
+  @RequirePlatformFeature('contacts.manage')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({
     summary: 'إزالة تصنيف',
@@ -438,6 +457,7 @@ export class ContactsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Get(':id/notes')
+  @RequirePlatformFeature('contacts.manage')
   @ApiOperation({ summary: 'ملاحظات العميل' })
   async getNotes(@CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string) {
@@ -446,6 +466,7 @@ export class ContactsController {
   }
 
   @Post(':id/notes')
+  @RequirePlatformFeature('contacts.manage')
   @ApiOperation({ summary: 'إضافة ملاحظة' })
   async addNote(
     @CurrentUser() user: User,
@@ -458,6 +479,7 @@ export class ContactsController {
   }
 
   @Delete(':id/notes/:noteId')
+  @RequirePlatformFeature('contacts.manage')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'حذف ملاحظة' })
   async deleteNote(
@@ -474,6 +496,7 @@ export class ContactsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Post(':id/merge')
+  @RequirePlatformFeature('contacts.manage')
   @ApiOperation({
     summary: 'دمج عملاء',
     description: 'دمج عميلين في سجل واحد',
@@ -492,6 +515,7 @@ export class ContactsController {
   // ═══════════════════════════════════════════════════════════════════════════════
 
   @Post(':id/block')
+  @RequirePlatformFeature('contacts.manage')
   @ApiOperation({ summary: 'حظر عميل' })
   async blockContact(
     @CurrentUser() user: User,
@@ -503,6 +527,7 @@ export class ContactsController {
   }
 
   @Post(':id/unblock')
+  @RequirePlatformFeature('contacts.manage')
   @ApiOperation({ summary: 'إلغاء حظر عميل' })
   async unblockContact(@CurrentUser() user: User,
     @Param('id', ParseUUIDPipe) id: string) {
