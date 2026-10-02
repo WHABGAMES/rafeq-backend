@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Interval } from '@nestjs/schedule';
+import { Interval, Timeout } from '@nestjs/schedule';
 import { WhatsappSettingsService } from './whatsapp-settings.service';
 
 const WHATSAPP_HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000;
@@ -8,6 +8,11 @@ const WHATSAPP_HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 @Injectable()
 export class WhatsappConnectionMonitorService {
   constructor(private readonly whatsappSettingsService: WhatsappSettingsService) {}
+
+  @Timeout(15_000)
+  initialCheck(): Promise<void> {
+    return this.whatsappSettingsService.monitorConnections();
+  }
 
   @Interval(WHATSAPP_HEALTH_CHECK_INTERVAL_MS)
   checkConnections(): Promise<void> {
