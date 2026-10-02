@@ -98,6 +98,15 @@ export interface SallaAppAuthorizeData {
   scope: string;
 }
 
+/** Easy Mode sends `expires` as a Unix timestamp; token responses use a duration. */
+export function resolveSallaWebhookExpiry(expires: number | undefined, nowMs = Date.now()): Date {
+  if (!expires || !Number.isFinite(expires) || expires <= 0) {
+    return new Date(nowMs + 60 * 60 * 1000);
+  }
+  // Durations are normally at most weeks; ten-digit values are Unix seconds.
+  return expires >= 1_000_000_000 ? new Date(expires * 1000) : new Date(nowMs + expires * 1000);
+}
+
 interface SallaStoreApiData {
   id: number;
   name: string;
@@ -794,7 +803,7 @@ export class SallaOAuthService {
 
     const merchantInfo = await this.fetchMerchantInfo(data.access_token);
     let store = await this.findStoreBySallaMerchantId(merchantId);
-    const expiresIn = data.expires || 3600;
+    const tokenExpiresAt = resolveSallaWebhookExpiry(data.expires);
 
     if (store) {
       // متجر موجود (نفس merchantId) — تحديث التوكنات
@@ -806,7 +815,7 @@ export class SallaOAuthService {
       // 🔐 تشفير التوكنات
       store.accessToken = encrypt(data.access_token) ?? undefined;
       store.refreshToken = encrypt(data.refresh_token) ?? undefined;
-      store.tokenExpiresAt = this.calculateTokenExpiry(expiresIn);
+      store.tokenExpiresAt = tokenExpiresAt;
       store.lastTokenRefreshAt = new Date();
       store.status = StoreStatus.ACTIVE;
       store.consecutiveErrors = 0;
@@ -839,7 +848,7 @@ export class SallaOAuthService {
         // 🔐 تشفير التوكنات
         accessToken: encrypt(data.access_token) ?? undefined,
         refreshToken: encrypt(data.refresh_token) ?? undefined,
-        tokenExpiresAt: this.calculateTokenExpiry(expiresIn),
+        tokenExpiresAt,
         // بيانات المتجر
         sallaStoreName: merchantInfo.name,
         sallaEmail: merchantInfo.email,

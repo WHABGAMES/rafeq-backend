@@ -5,9 +5,8 @@
  * ║  ✅ POST /connect - مع JwtAuthGuard - يرجع { redirectUrl }                    ║
  * ║  ✅ GET /callback - بدون Guard - يعالج الـ OAuth callback                     ║
  * ║                                                                                ║
- * ║  🔀 الـ callback يتعامل مع حالتين:                                             ║
- * ║     1. من الداشبورد (فيه state + tenantId) → ربط متجر لحساب موجود             ║
- * ║     2. من متجر سلة (بدون state) → إنشاء حساب + إرسال بيانات دخول             ║
+ * ║  التطبيق المنشور يستخدم Easy Mode عبر app.store.authorize.                    ║
+ * ║  callback أدناه متروك فقط لتوافق Custom Mode الموقّع القديم.                  ║
  * ║                                                                                ║
  * ║  🐛 FIX: extractTenantId كان يفشل دائماً لأن الـ state                         ║
  * ║     بصيغة base64url.hmac_hex وليس base64 عادي                                 ║
@@ -22,11 +21,11 @@ import {
   Post,
   Get,
   Query,
-  Body,
   Req,
   Res,
   UseGuards,
   Logger,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { Response, Request } from 'express';
 import { ConfigService } from '@nestjs/config';
@@ -38,10 +37,6 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { SallaOAuthService } from './salla-oauth.service';
 
 // ✅ DTOs inline
-interface SallaConnectDto {
-  state?: string;
-}
-
 interface SallaCallbackQuery {
   code?: string;
   state?: string;
@@ -60,12 +55,11 @@ export class SallaOAuthController {
 
   /**
    * ✅ POST /stores/salla/connect
-   * يبدأ عملية OAuth مع سلة — من الداشبورد
+   * يعيد رابط تثبيت التطبيق الرسمي في متجر سلة.
    */
   @Post('connect')
   @UseGuards(JwtAuthGuard)
   async connect(
-    @Body() dto: SallaConnectDto,
     @Req() req: Request,
   ): Promise<{ redirectUrl: string }> {
     const user = req.user as { id: string; tenantId: string };
@@ -73,13 +67,14 @@ export class SallaOAuthController {
     this.logger.log(`OAuth connect initiated`, {
       userId: user.id,
       tenantId: user.tenantId,
-      hasState: !!dto.state,
+      flow: 'salla-app-store-install',
     });
 
-    const redirectUrl = this.sallaOAuthService.generateAuthorizationUrl(
-      user.tenantId,
-      dto.state,
-    );
+    const appId = this.configService.get<string>('salla.appId')?.trim();
+    if (!appId || !/^\d+$/.test(appId)) {
+      throw new ServiceUnavailableException('ربط سلة غير مهيأ حالياً');
+    }
+    const redirectUrl = `https://s.salla.sa/apps/install/${appId}`;
 
     return { redirectUrl };
   }
@@ -88,9 +83,8 @@ export class SallaOAuthController {
    * ✅ GET /stores/salla/callback
    * يعالج الـ callback من سلة
    *
-   * 🔀 حالتين:
-   *   1. فيه state صالح (من الداشبورد) → ربط متجر لحساب موجود
-   *   2. بدون state أو state غير صالح (من متجر سلة) → إنشاء حساب + إرسال بيانات
+   * Custom Mode legacy callback. Missing or invalid state is rejected;
+   * Easy Mode installation is handled only by app.store.authorize.
    */
   @Get('callback')
   async callback(
@@ -159,30 +153,13 @@ export class SallaOAuthController {
         );
 
       } else {
-        // ════════════════════════════════════════════════════════════
-        // 🆕 حالة 2: تثبيت من متجر سلة — إنشاء حساب + إرسال بيانات
-        // ════════════════════════════════════════════════════════════
-        this.logger.log(`🆕 Salla store install flow — creating account`);
-
-        const result = await this.sallaOAuthService.exchangeCodeAndAutoRegister(
-          query.code,
-        );
-
-        this.logger.log(`✅ Auto-registration completed`, {
-          merchantId: result.merchantId,
-          isNewUser: result.isNewUser,
-          email: result.email,
-        });
-
-        // ✅ توجيه التاجر لصفحة تسجيل الدخول مع رسالة نجاح
-        const redirectParams = new URLSearchParams({
-          status: 'success',
-          source: 'salla_install',
-          merchant: result.merchantId.toString(),
-        });
-
+        // Published Salla apps use Easy Mode and are provisioned exclusively by
+        // the signed app.store.authorize webhook. A missing/invalid state on this
+        // legacy custom-mode callback must never become an account-registration
+        // shortcut.
+        this.logger.warn('Rejected Salla callback with missing or invalid state');
         return res.redirect(
-          `${frontendUrl}/auth/login?${redirectParams.toString()}`,
+          `${frontendUrl}${redirectPath}?status=error&reason=invalid_state`,
         );
       }
 

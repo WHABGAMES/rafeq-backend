@@ -53,7 +53,9 @@ describe('PlatformCapabilitiesService workspace isolation', () => {
     await expect(service.resolveWorkspace('store-id', {
       tenantId: 'tenant-id', role: UserRole.OWNER, preferences: {},
     } as User)).rejects.toThrow('Store not found');
-    expect(storeRepository.findOne).toHaveBeenCalledWith({ where: { id: 'store-id', tenantId: 'tenant-id' } });
+    expect(storeRepository.findOne).toHaveBeenCalledWith({
+      where: { id: 'store-id', tenantId: 'tenant-id', status: StoreStatus.ACTIVE },
+    });
   });
 
   it('rejects a stale admin update instead of overwriting a newer change', async () => {

@@ -19,13 +19,14 @@
  * ╚═══════════════════════════════════════════════════════════════════════════════╝
  */
 
-import { Injectable, Logger, UnauthorizedException, BadRequestException } from '@nestjs/common';
+import { Inject, Injectable, Logger, UnauthorizedException, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { firstValueFrom } from 'rxjs';
 import * as crypto from 'crypto';
+import Redis from 'ioredis';
 
 // Entities
 import { Store, StoreStatus, StorePlatform } from './entities/store.entity';
@@ -39,6 +40,11 @@ import { ZidApiService } from './zid-api.service';
 import { encrypt, decryptSafe } from '@common/utils/encryption.util';
 import { getErrorMessage, getHttpErrorDetails, isUniqueConstraintError } from '@common/utils/error.util';
 import { asJsonRecord, getJsonString, getNestedJsonRecord } from '@common/utils/json-record.util';
+import { REDIS_CLIENT } from '@common/redis/redis.module';
+
+export type ZidOAuthTransaction =
+  | { mode: 'dashboard'; tenantId: string }
+  | { mode: 'install' };
 
 export function extractAuthorizationToken(payload: unknown): string | undefined {
   const root = asJsonRecord(payload);
@@ -91,8 +97,8 @@ export class ZidOAuthService {
   private readonly ZID_TOKEN_URL = 'https://oauth.zid.sa/oauth/token';
   private readonly ZID_API_URL = 'https://api.zid.sa/v1';
 
-  // State storage
-  private readonly stateStorage = new Map<string, { tenantId: string; expiresAt: number }>();
+  private static readonly STATE_PREFIX = 'rafiq:store-oauth:zid:';
+  private static readonly STATE_TTL_SECONDS = 10 * 60;
 
   constructor(
     private readonly configService: ConfigService,
@@ -102,14 +108,25 @@ export class ZidOAuthService {
     private readonly tenantsService: TenantsService,
     private readonly autoRegistrationService: AutoRegistrationService,
     private readonly zidApiService: ZidApiService,
+    @Inject(REDIS_CLIENT) private readonly redis: Redis,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════════
   // 🔗 OAuth URL Generation
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  generateAuthorizationUrl(tenantId: string): string {
-    const state = this.generateState(tenantId);
+  async generateAuthorizationUrl(tenantId: string): Promise<string> {
+    const state = await this.createState({ mode: 'dashboard', tenantId });
+
+    return this.buildAuthorizationUrl(state);
+  }
+
+  async generateInstallAuthorizationUrl(): Promise<string> {
+    const state = await this.createState({ mode: 'install' });
+    return this.buildAuthorizationUrl(state);
+  }
+
+  private buildAuthorizationUrl(state: string): string {
 
     const clientId = this.configService.get<string>('zid.clientId');
     const redirectUri = this.configService.get<string>('zid.oauthCallbackUrl');
@@ -132,7 +149,7 @@ export class ZidOAuthService {
 
     const authUrl = `${this.ZID_AUTH_URL}?${params.toString()}`;
 
-    this.logger.debug('Generated Zid OAuth URL', { tenantId, state });
+    this.logger.debug('Generated Zid OAuth URL', { stateCreated: true });
 
     return authUrl;
   }
@@ -143,9 +160,8 @@ export class ZidOAuthService {
 
   async exchangeCodeForTokens(
     code: string,
-    state: string,
+    tenantId: string,
   ): Promise<{ tokens: ZidTokenResponse; tenantId: string }> {
-    const tenantId = this.validateState(state);
 
     const clientId = this.configService.get<string>('zid.clientId');
     const clientSecret = this.configService.get<string>('zid.clientSecret');
@@ -717,46 +733,34 @@ export class ZidOAuthService {
   // 🔧 State Management
   // ═══════════════════════════════════════════════════════════════════════════════
 
-  private generateState(tenantId: string): string {
-    const state = crypto.randomBytes(32).toString('hex');
-    this.stateStorage.set(state, {
-      tenantId,
-      expiresAt: Date.now() + 10 * 60 * 1000,
-    });
-    this.cleanupExpiredStates();
+  private async createState(transaction: ZidOAuthTransaction): Promise<string> {
+    const state = crypto.randomBytes(32).toString('base64url');
+    await this.redis.setex(
+      `${ZidOAuthService.STATE_PREFIX}${state}`,
+      ZidOAuthService.STATE_TTL_SECONDS,
+      JSON.stringify(transaction),
+    );
     return state;
   }
 
-  validateState(state: string): string {
-    const stored = this.stateStorage.get(state);
-    if (!stored) {
-      throw new UnauthorizedException('State غير صالح');
+  async consumeState(state: string): Promise<ZidOAuthTransaction> {
+    const key = `${ZidOAuthService.STATE_PREFIX}${state}`;
+    const serialized = await this.redis.eval(
+      "local value = redis.call('GET', KEYS[1]); if value then redis.call('DEL', KEYS[1]); end; return value",
+      1,
+      key,
+    );
+    if (typeof serialized !== 'string') {
+      throw new UnauthorizedException('جلسة ربط زد غير صالحة أو منتهية');
     }
-    if (Date.now() > stored.expiresAt) {
-      this.stateStorage.delete(state);
-      throw new UnauthorizedException('انتهت صلاحية الجلسة');
+    try {
+      const transaction = JSON.parse(serialized) as ZidOAuthTransaction;
+      if (transaction.mode === 'install') return transaction;
+      if (transaction.mode === 'dashboard' && transaction.tenantId) return transaction;
+    } catch {
+      // Invalid server-side state is rejected below.
     }
-    this.stateStorage.delete(state);
-    return stored.tenantId;
-  }
-
-  isValidState(state: string): boolean {
-    const stored = this.stateStorage.get(state);
-    if (!stored) return false;
-    if (Date.now() > stored.expiresAt) {
-      this.stateStorage.delete(state);
-      return false;
-    }
-    return true;
-  }
-
-  private cleanupExpiredStates(): void {
-    const now = Date.now();
-    for (const [state, data] of this.stateStorage.entries()) {
-      if (now > data.expiresAt) {
-        this.stateStorage.delete(state);
-      }
-    }
+    throw new UnauthorizedException('جلسة ربط زد غير صالحة أو منتهية');
   }
 
   calculateTokenExpiry(expiresIn: number): Date {

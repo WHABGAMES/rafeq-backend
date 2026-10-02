@@ -90,6 +90,7 @@ export default () => ({
   // 🛒 SALLA
   // ═══════════════════════════════════════════════════════════════════════════════
   salla: {
+    appId: process.env.SALLA_APP_ID || '',
     clientId: process.env.SALLA_CLIENT_ID || '',
     clientSecret: process.env.SALLA_CLIENT_SECRET || '',
     webhookSecret: process.env.SALLA_WEBHOOK_SECRET || '',

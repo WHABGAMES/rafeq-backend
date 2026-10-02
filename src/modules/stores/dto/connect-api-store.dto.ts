@@ -23,11 +23,11 @@ import { StorePlatform } from '../entities/store.entity';
 export class ConnectApiStoreDto {
   @ApiProperty({
     description: 'المنصة',
-    enum: [StorePlatform.SALLA, StorePlatform.ZID, StorePlatform.OTHER],
-    example: 'salla',
+    enum: [StorePlatform.OTHER],
+    example: 'other',
   })
-  @IsIn([StorePlatform.SALLA, StorePlatform.ZID, StorePlatform.OTHER], {
-    message: 'المنصة يجب أن تكون salla أو zid أو other',
+  @IsIn([StorePlatform.OTHER], {
+    message: 'الربط اليدوي مخصص للمنصات الخارجية فقط',
   })
   platform: StorePlatform;
 

@@ -1,7 +1,7 @@
 import { ConflictException, ForbiddenException, Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
-import { Store } from '../stores/entities/store.entity';
+import { Store, StoreStatus } from '../stores/entities/store.entity';
 import { FEATURE_CATALOG } from './feature-catalog';
 import { FeatureTargetMode, PlatformFeature, PlatformFeatureStatus } from './entities/platform-feature.entity';
 import { UpdatePlatformFeatureDto } from './dto/update-platform-feature.dto';
@@ -101,7 +101,9 @@ export class PlatformCapabilitiesService implements OnModuleInit {
   }
 
   async resolveWorkspace(storeId: string, user: User) {
-    const store = await this.storeRepository.findOne({ where: { id: storeId, tenantId: user.tenantId } });
+    const store = await this.storeRepository.findOne({
+      where: { id: storeId, tenantId: user.tenantId, status: StoreStatus.ACTIVE },
+    });
     if (!store) throw new NotFoundException('Store not found');
 
     const configuredFeatures = await this.list();
@@ -144,7 +146,9 @@ export class PlatformCapabilitiesService implements OnModuleInit {
   }
 
   async requireUsableFeature(featureKey: string, storeId: string, tenantId: string): Promise<PlatformFeature> {
-    const store = await this.storeRepository.findOne({ where: { id: storeId, tenantId } });
+    const store = await this.storeRepository.findOne({
+      where: { id: storeId, tenantId, status: StoreStatus.ACTIVE },
+    });
     if (!store) throw new NotFoundException('Store not found');
     const configuredFeatures = await this.list();
     const featureMap = new Map(configuredFeatures.map(item => [item.featureKey, item]));

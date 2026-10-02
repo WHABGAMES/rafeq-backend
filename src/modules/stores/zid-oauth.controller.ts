@@ -11,7 +11,7 @@
  * ║  🔀 الـ callback يتعامل مع 3 حالات:                                            ║
  * ║     0. بدون params → redirect لصفحة OAuth (install flow من زد)                ║
  * ║     1. من الداشبورد (فيه state + tenantId) → ربط متجر لحساب موجود             ║
- * ║     2. من متجر زد (بدون state) → إنشاء حساب + إرسال بيانات دخول              ║
+ * ║     2. من متجر زد (state من Redis بنمط install) → إنشاء الحساب               ║
  * ║                                                                                ║
  * ║  ✅ FIX: زد يحوّل المتصفح مباشرة للـ callback بدون code                         ║
  * ║     لازم نحوّله لصفحة OAuth عشان التاجر يوافق ويرجع بـ code                    ║
@@ -24,7 +24,6 @@ import {
   Controller,
   Get,
   Post,
-  Body,
   Query,
   Req,
   Res,
@@ -54,11 +53,6 @@ interface RequestWithUser extends ExpressRequest {
   user: User;
 }
 
-// DTO
-interface ZidConnectDto {
-  state?: string;
-}
-
 @Controller('stores/zid')
 @ApiTags('Zid OAuth')
 export class ZidOAuthController {
@@ -84,12 +78,11 @@ export class ZidOAuthController {
   })
   async connectStore(
     @Request() req: RequestWithUser,
-    @Body() _dto: ZidConnectDto,
   ): Promise<{ redirectUrl: string }> {
     const tenantId = req.user.tenantId;
 
     try {
-      const redirectUrl = this.zidOAuthService.generateAuthorizationUrl(tenantId);
+      const redirectUrl = await this.zidOAuthService.generateAuthorizationUrl(tenantId);
       
       this.logger.log(`Generated Zid OAuth URL for tenant ${tenantId}`);
       
@@ -128,23 +121,7 @@ export class ZidOAuthController {
     if (!code && !state && !error) {
       this.logger.log('🔀 Zid install flow detected → redirecting to OAuth authorize');
 
-      const clientId = this.configService.get<string>('zid.clientId');
-      const redirectUri = this.configService.get<string>('zid.oauthCallbackUrl');
-
-      if (!clientId || !redirectUri) {
-        this.logger.error('❌ Zid OAuth config missing (clientId or redirectUri)');
-        const frontendUrl = this.configService.get<string>('app.frontendUrl') || 'https://rafeq.ai';
-        res.redirect(`${frontendUrl}/dashboard/stores?status=error&reason=config_missing`);
-        return;
-      }
-
-      const oauthParams = new URLSearchParams({
-        client_id: clientId,
-        redirect_uri: redirectUri,
-        response_type: 'code',
-      });
-
-      const oauthUrl = `https://oauth.zid.sa/oauth/authorize?${oauthParams.toString()}`;
+      const oauthUrl = await this.zidOAuthService.generateInstallAuthorizationUrl();
       this.logger.log(`🔗 Redirecting to: ${oauthUrl}`);
       res.redirect(oauthUrl);
       return;
@@ -185,23 +162,7 @@ export class ZidOAuthController {
     if (!code && !state && !error) {
       this.logger.log('🔀 Zid install flow (POST) → redirecting to OAuth authorize');
 
-      const clientId = this.configService.get<string>('zid.clientId');
-      const redirectUri = this.configService.get<string>('zid.oauthCallbackUrl');
-
-      if (!clientId || !redirectUri) {
-        this.logger.error('❌ Zid OAuth config missing');
-        const frontendUrl = this.configService.get<string>('app.frontendUrl') || 'https://rafeq.ai';
-        res.redirect(`${frontendUrl}/dashboard/stores?status=error&reason=config_missing`);
-        return;
-      }
-
-      const oauthParams = new URLSearchParams({
-        client_id: clientId,
-        redirect_uri: redirectUri,
-        response_type: 'code',
-      });
-
-      const oauthUrl = `https://oauth.zid.sa/oauth/authorize?${oauthParams.toString()}`;
+      const oauthUrl = await this.zidOAuthService.generateInstallAuthorizationUrl();
       this.logger.log(`🔗 Redirecting to: ${oauthUrl}`);
       res.redirect(oauthUrl);
       return;
@@ -260,9 +221,12 @@ export class ZidOAuthController {
       // ═══════════════════════════════════════════════════════════════
       // 🔀 تحديد نوع الطلب: من الداشبورد أو من متجر زد
       // ═══════════════════════════════════════════════════════════════
-      const hasValidState = params.state && this.zidOAuthService.isValidState(params.state);
+      if (!params.state) {
+        throw new BadRequestException('جلسة ربط زد مفقودة');
+      }
+      const transaction = await this.zidOAuthService.consumeState(params.state);
 
-      if (hasValidState) {
+      if (transaction.mode === 'dashboard') {
         // ════════════════════════════════════════════════════════════
         // 🔗 حالة 1: من الداشبورد — ربط متجر لحساب موجود
         // ════════════════════════════════════════════════════════════
@@ -270,7 +234,7 @@ export class ZidOAuthController {
 
         const { tokens, tenantId } = await this.zidOAuthService.exchangeCodeForTokens(
           params.code,
-          params.state!,
+          transaction.tenantId,
         );
         // ✅ لازم نقرأ بيانات المتجر الفعلية قبل الربط للتحقق من الهوية.
         // إذا فشل getStoreInfo لا نكمل الربط حتى لا يحصل دمج خاطئ بين التجار.
