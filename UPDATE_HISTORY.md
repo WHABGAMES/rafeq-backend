@@ -37,17 +37,17 @@
 # أحدث التحديثات
 
 ### [2026-10-02] — BE-085 — v59 — توحيد ربط المتاجر مع تدفقات سلة وزد الرسمية
-- **الحالة:** محلي — مكتمل ومفحوص، بانتظار الرفع وإضافة `SALLA_APP_ID` في DigitalOcean.
+- **الحالة:** منشور على DigitalOcean ومتحقق حياً — commit `b94b43e`، deployment `848a496a-26d0-4557-9076-4675309a27fd`.
 - **النسخة:** `UPDATE_HISTORY.md` v59.
 - **المشكلة:** كان API اليدوي يقبل سلة وزد، وزر سلة يبدأ Custom OAuth رغم أن التطبيق المنشور يستخدم Easy Mode، وحالة OAuth لزد محفوظة داخل ذاكرة Instance، كما كانت ميزات المنصة تقبل متجراً غير نشط وتحسب انتهاء Webhook سلة بطريقة غير صحيحة.
 - **السبب الجذري:** اختلطت هوية المنصة الرسمية بالتكامل العام، وتعددت آليات OAuth state، وعوملت قيمة `expires` المطلقة كمدة نسبية.
 - **طريقة الحل:** حُصر API اليدوي في `other` على مستوى DTO وController؛ صار زر سلة يُرجع رابط تثبيت التطبيق الرسمي المبني من `SALLA_APP_ID`؛ رُفض Callback سلة القديم عند غياب state بدل تحويله إلى تسجيل؛ نُقلت معاملات زد إلى Redis بمدة عشر دقائق واستهلاك ذري مرة واحدة لمساري الداشبورد والتثبيت؛ واشترطت حالة متجر نشطة في قدرات المنصة، وصُحح تفسير انتهاء توكن Easy Mode.
 - **الأثر التشغيلي:** سلة تتطلب تثبيت التطبيق من سلة؛ زد يبقى OAuth لكن يصبح آمناً مع إعادة التشغيل والتوسع الأفقي؛ المنصات المخصصة وحدها تستخدم API اليدوي؛ المتاجر المفصولة لا تمنح ميزات.
 - **الملفات:** `.env.example` v2 · `src/config/configuration.ts` v2 · `src/modules/stores/api-connect.controller.ts` v2 · `src/modules/stores/dto/connect-api-store.dto.ts` v2 · `src/modules/stores/salla-oauth.controller.ts` v2 · `src/modules/stores/salla-oauth.service.ts` v2 · `src/modules/stores/zid-oauth.controller.ts` v2 · `src/modules/stores/zid-oauth.service.ts` v2 · `src/modules/platform-capabilities/platform-capabilities.service.ts` v4 · اختبارات الربط v1.
-- **المخاطر/الملاحظات:** يجب ضبط `SALLA_APP_ID=1758342349` في تطبيق الخادم قبل النشر. لا تغيير على أسرار أو Webhook URL أو Redirect URL الحاليين.
+- **المخاطر/الملاحظات:** ضُبط `SALLA_APP_ID=1758342349` في تطبيق الخادم قبل النشر. لا تغيير على أسرار أو Webhook URL أو Redirect URL الحاليين.
 - **التحقق:** تثبيت `npm ci` نظيف؛ `npm audit --audit-level=high` بلا ثغرات؛ بناء Nest وESLint ناجحان؛ 42 حزمة و230 اختباراً ناجحاً، تشمل اختبارات جديدة لاستهلاك state مرة واحدة ولتاريخ انتهاء سلة؛ و`git diff --check` نظيف.
 - **رسالة الـcommit:** `fix(BE-085): v59 harden official store connection flows`.
-- **PR / Commit:** محلي — لا يوجد بعد.
+- **PR / Commit:** `b94b43e` على `main`.
 - **خطة التراجع:** إعادة BE-085 كوحدة واحدة؛ لا توجد migration لقاعدة البيانات.
 
 ### [2026-10-02] — BE-084 — v58 — توحيد كتالوج المنصات وتنفيذ تصدير CSAT
