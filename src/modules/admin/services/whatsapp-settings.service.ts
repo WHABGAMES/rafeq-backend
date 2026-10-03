@@ -12,6 +12,7 @@ import {
   Logger,
   NotFoundException,
   BadRequestException,
+  ConflictException,
   OnModuleInit,
 } from '@nestjs/common';
 import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
@@ -198,53 +199,67 @@ export class WhatsappSettingsService implements OnModuleInit {
       });
     }
 
-    // ✅ إنشاء admin channel تلقائياً إذا لم يكن موجوداً
+    // إنشاء قناة الإدارة العامة تلقائياً إذا لم تكن موجودة.
     await this.ensureAdminChannel().catch(e =>
       this.logger.warn(`⚠️ ensureAdminChannel: ${e?.message}`),
     );
   }
 
   /**
-   * ✅ FIX: ينشئ channel إداري مخصص لكل تاجر لديه إعدادات واتساب نشطة
-   * يُستدعى مرة واحدة عند startup — idempotent
+   * يزامن القناة الداخلية الخاصة بصندوق الإدارة مع إعدادات واتساب العامة.
+   * الدالة idempotent وتُستدعى عند التشغيل وبعد كل حفظ/تفعيل، لذلك لا تحتاج
+   * إعادة تشغيل الخادم حتى يبدأ الاستقبال بعد تغيير Phone Number ID.
    */
-  private async ensureAdminChannel(): Promise<void> {
-    // ✅ FIX: جلب كل إعدادات واتساب النشطة (لكل التجار)
-    const allSettings = await this.settingsRepo.find({
-      where: { isActive: true },
+  private async ensureAdminChannel(currentSettings?: WhatsappSettings): Promise<void> {
+    const settings = currentSettings ?? await this.settingsRepo.findOne({
+      where: { isActive: true, tenantId: IsNull() },
     });
+    if (!settings?.isActive || !settings.phoneNumberId || settings.tenantId) return;
 
-    for (const settings of allSettings) {
-      if (!settings.phoneNumberId) continue;
-
-      // تحقق من وجود channel بهذا الرقم
-      const [existing] = await this.dataSource.query(
-        `SELECT id FROM channels WHERE whatsapp_phone_number_id = $1 LIMIT 1`,
-        [settings.phoneNumberId],
-      );
-      if (existing) continue; // موجود مسبقاً ✅
-
-      // ✅ FIX: ابحث عن store مرتبط بنفس الـ tenant
-      const storeQuery = settings.tenantId
-        ? `SELECT id, tenant_id FROM stores WHERE tenant_id = $1 AND deleted_at IS NULL LIMIT 1`
-        : `SELECT id, tenant_id FROM stores WHERE deleted_at IS NULL LIMIT 1`;
-      const storeParams = settings.tenantId ? [settings.tenantId] : [];
-
-      const [store] = await this.dataSource.query(storeQuery, storeParams);
-      if (!store) {
-        this.logger.debug(`ensureAdminChannel: no store found for tenant ${settings.tenantId || 'global'} — will retry on next startup`);
-        continue;
+    const [existing] = await this.dataSource.query(
+      `SELECT id, is_admin_channel FROM channels WHERE whatsapp_phone_number_id = $1 LIMIT 1`,
+      [settings.phoneNumberId],
+    );
+    if (existing) {
+      if (existing.is_admin_channel !== true) {
+        throw new ConflictException(
+          'Phone Number ID is already assigned to a store channel and cannot be reused for the admin inbox',
+        );
       }
-
-      // أنشئ admin channel
       await this.dataSource.query(
+        `UPDATE channels
+         SET is_admin_channel = true,
+             status = 'connected',
+             is_official = true,
+             whatsapp_phone_number = $2,
+             whatsapp_business_account_id = $3,
+             updated_at = NOW()
+         WHERE id = $1`,
+        [existing.id, settings.phoneNumber || '', settings.businessAccountId || null],
+      );
+      return;
+    }
+
+    // اختيار ثابت فقط لتلبية FK الحالي؛ is_admin_channel يمنع ظهور القناة للمتجر.
+    const [store] = await this.dataSource.query(
+      `SELECT id FROM stores
+       WHERE deleted_at IS NULL
+       ORDER BY created_at ASC, id ASC
+       LIMIT 1`,
+    );
+    if (!store) {
+      this.logger.warn('ensureAdminChannel: no store exists to host the internal admin channel');
+      return;
+    }
+
+    await this.dataSource.query(
         `INSERT INTO channels
            (id, store_id, type, name, status, is_official, is_admin_channel,
-            whatsapp_phone_number_id, whatsapp_phone_number,
+            whatsapp_phone_number_id, whatsapp_phone_number, whatsapp_business_account_id,
             connected_at, settings, created_at, updated_at)
          VALUES
            (gen_random_uuid(), $1, 'whatsapp_official', $2, 'connected', true, true,
-            $3, $4,
+            $3, $4, $5,
             NOW(), '{}', NOW(), NOW())
          ON CONFLICT DO NOTHING`,
         [
@@ -252,11 +267,11 @@ export class WhatsappSettingsService implements OnModuleInit {
           `Admin WhatsApp (${settings.phoneNumber || settings.phoneNumberId})`,
           settings.phoneNumberId,
           settings.phoneNumber || '',
+          settings.businessAccountId || null,
         ],
       );
 
-      this.logger.log(`✅ Admin WhatsApp channel created for tenant: ${settings.tenantId || 'global'}, phoneNumberId: ${settings.phoneNumberId}`);
-    }
+    this.logger.log(`✅ Admin WhatsApp channel created for phoneNumberId: ${settings.phoneNumberId}`);
   }
 
   // ─── Settings Management ──────────────────────────────────────────────────
@@ -335,6 +350,9 @@ export class WhatsappSettingsService implements OnModuleInit {
     }
 
     const saved = await this.settingsRepo.save(settings);
+    if (!saved.tenantId && saved.isActive) {
+      await this.ensureAdminChannel(saved);
+    }
     return this.toSafeSettings(saved);
   }
 
@@ -346,6 +364,9 @@ export class WhatsappSettingsService implements OnModuleInit {
     settings.isActive = isActive;
     settings.lastConfiguredAt = new Date();
     await this.settingsRepo.save(settings);
+    if (isActive && !settings.tenantId) {
+      await this.ensureAdminChannel(settings);
+    }
   }
 
   /**
@@ -491,9 +512,13 @@ export class WhatsappSettingsService implements OnModuleInit {
       'Test message from Rafeq Admin Panel 🎉',
     );
 
-    settings.lastTestSentAt = new Date();
-    settings.connectionStatus = result.success ? 'connected' : 'error';
-    await this.settingsRepo.save(settings);
+    // فشل رسالة الاختبار لا يعني أن الربط مفصول؛ قد ترفض Meta رسالة نصية
+    // خارج نافذة خدمة العميل (24 ساعة) مع بقاء الرمز والرقم صالحين تماماً.
+    // فحص الصحة الدوري وحده هو مصدر connectionStatus.
+    if (result.success) {
+      settings.lastTestSentAt = new Date();
+      await this.settingsRepo.save(settings);
+    }
 
     // ✅ Explicit mapping من ApiCallResult → { success, message }
     return {
@@ -559,6 +584,7 @@ export class WhatsappSettingsService implements OnModuleInit {
             settings.phoneNumberId,
             recipientPhone,
             message,
+            getJsonString(result.response, 'message_id'),
           );
           savedMessageId = saved?.messageId || null;
         } catch (e) {
@@ -587,23 +613,15 @@ export class WhatsappSettingsService implements OnModuleInit {
     phoneNumberId: string,
     recipientPhone: string,
     messageContent: string,
+    externalMessageId?: string,
   ): Promise<{ conversationId: string; messageId: string } | null> {
-    // 1. ابحث عن channel بنفس phoneNumberId أو أي channel واتساب متاح
-    let channel = await this.dataSource.query(
-      `SELECT id, store_id FROM channels WHERE whatsapp_phone_number_id = $1 LIMIT 1`,
+    // قناة الإدارة المطابقة فقط. لا يجوز إلحاق محادثة إدارية بمتجر عشوائي.
+    const [channel] = await this.dataSource.query(
+      `SELECT id, store_id FROM channels
+       WHERE whatsapp_phone_number_id = $1 AND is_admin_channel = true
+       LIMIT 1`,
       [phoneNumberId],
-    ).then(rows => rows[0] || null);
-
-    // Fallback: أي channel واتساب متاح إذا لم يُوجد برقم محدد
-    if (!channel) {
-      const [fallback] = await this.dataSource.query(
-        `SELECT id, store_id FROM channels WHERE type IN ('whatsapp_official','whatsapp_qr') AND status = 'connected' LIMIT 1`,
-      );
-      if (fallback) {
-        channel = fallback;
-        this.logger.debug(`Using fallback channel ${channel.id} for admin conversation`);
-      }
-    }
+    );
 
     if (!channel) {
       this.logger.warn(`No WhatsApp channel found — cannot create admin conversation for ${recipientPhone}`);
@@ -663,12 +681,12 @@ export class WhatsappSettingsService implements OnModuleInit {
     const [newMsg] = await this.dataSource.query(
       `INSERT INTO messages
          (id, tenant_id, conversation_id, direction, type, status, sender,
-          content, metadata, delivered_at, created_at, updated_at)
+          external_id, content, metadata, delivered_at, created_at, updated_at)
        VALUES
          (gen_random_uuid(), $1, $2, 'outbound', 'text', 'sent', 'agent',
-          $3, '{}', $4, $4, $4)
+          $3, $4, '{}', $5, $5, $5)
        RETURNING id, content, sender, direction, status, created_at`,
-      [tenantId, conversationId, messageContent, now],
+      [tenantId, conversationId, externalMessageId || null, messageContent, now],
     );
 
     this.logger.log(`✅ Admin conversation created/updated: ${conversationId}`);
@@ -700,7 +718,7 @@ export class WhatsappSettingsService implements OnModuleInit {
           },
           body: JSON.stringify({
             messaging_product: 'whatsapp',
-            to,
+            to: this.formatMetaRecipient(to),
             type: 'text',
             text: { body: message },
           }),
@@ -713,7 +731,14 @@ export class WhatsappSettingsService implements OnModuleInit {
           const errorMsg = getJsonString(asJsonRecord(data.error), 'message') ?? `HTTP ${resp.status}`;
           return { success: false, response: data, error: errorMsg };
         }
-        return { success: true, response: data };
+        const firstMessage = Array.isArray(data.messages)
+          ? asJsonRecord(data.messages[0])
+          : undefined;
+        const messageId = getJsonString(firstMessage, 'id');
+        return {
+          success: true,
+          response: messageId ? { ...data, message_id: messageId } : data,
+        };
       }
 
       // ── TWILIO ────────────────────────────────────────────────────────────
@@ -910,6 +935,14 @@ export class WhatsappSettingsService implements OnModuleInit {
 
   private maskToken(token: string): string {
     return token ? '•••••••• (محفوظ)' : 'غير محفوظ';
+  }
+
+  private formatMetaRecipient(phone: string): string {
+    let normalized = phone.replace(/\D/g, '');
+    if (normalized.startsWith('00') && normalized.length > 10) normalized = normalized.slice(2);
+    if (normalized.startsWith('05') && normalized.length === 10) return `966${normalized.slice(1)}`;
+    if (normalized.startsWith('5') && normalized.length === 9) return `966${normalized}`;
+    return normalized;
   }
 
   private toSafeSettings(settings: WhatsappSettings): SafeWhatsappSettings {

@@ -31,7 +31,7 @@ import { Request, Response } from 'express';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import { Repository, DataSource, IsNull } from 'typeorm';
 import * as crypto from 'crypto';
 
 import { WhatsAppService, WhatsAppWebhookPayload } from './whatsapp.service';
@@ -126,7 +126,11 @@ export class WhatsAppController {
 
   private async findChannelByPhoneNumberId(phoneNumberId: string): Promise<Channel | null> {
     return this.channelRepository.findOne({
-      where: { whatsappPhoneNumberId: phoneNumberId, type: ChannelType.WHATSAPP_OFFICIAL },
+      where: {
+        whatsappPhoneNumberId: phoneNumberId,
+        type: ChannelType.WHATSAPP_OFFICIAL,
+        isAdminChannel: false,
+      },
     });
   }
 
@@ -187,14 +191,14 @@ export class WhatsAppController {
   @ApiOperation({ summary: 'WhatsApp Webhook Verification' })
   @ApiResponse({ status: 200, description: 'Verification successful' })
   @ApiResponse({ status: 403, description: 'Verification failed' })
-  verifyWebhook(
+  async verifyWebhook(
     @Query('hub.mode') mode: string,
     @Query('hub.verify_token') token: string,
     @Query('hub.challenge') challenge: string,
     @Res() res: Response,
   ) {
     this.logger.log('WhatsApp webhook verification request', { mode, hasToken: !!token });
-    const result = this.whatsAppService.verifyWebhook(mode, token, challenge);
+    const result = await this.whatsAppService.verifyWebhook(mode, token, challenge);
     if (result) return res.status(HttpStatus.OK).send(result);
     return res.status(HttpStatus.FORBIDDEN).send('Verification failed');
   }
@@ -223,11 +227,9 @@ export class WhatsAppController {
       this.logger.warn(signatureCheckResult.warning);
     }
 
-    // إرسال 200 فوراً كما تطلبه Meta
-    res.status(HttpStatus.OK).send('EVENT_RECEIVED');
-
     if (payload.object !== 'whatsapp_business_account') {
       this.logger.warn('Received non-WhatsApp webhook', { object: payload.object });
+      res.status(HttpStatus.OK).send('EVENT_RECEIVED');
       return;
     }
 
@@ -235,6 +237,7 @@ export class WhatsAppController {
       const phoneNumberId = payload.entry?.[0]?.changes?.[0]?.value?.metadata?.phone_number_id;
       if (!phoneNumberId) {
         this.logger.warn('Webhook missing phone_number_id');
+        res.status(HttpStatus.BAD_REQUEST).send('MISSING_PHONE_NUMBER_ID');
         return;
       }
 
@@ -248,22 +251,29 @@ export class WhatsAppController {
           await this.channelRepository.increment({ id: channel.id }, 'messagesReceived', messagesCount);
           await this.channelRepository.update(channel.id, { lastActivityAt: new Date() });
         }
+        res.status(HttpStatus.OK).send('EVENT_RECEIVED');
         return;
       }
 
       // 2. بحث في إعدادات WhatsApp الإدارية
-      const adminSettings = await this.whatsappSettingsRepo.findOne({ where: {} });
+      const adminSettings = await this.whatsappSettingsRepo.findOne({
+        where: { tenantId: IsNull(), isActive: true },
+      });
       if (adminSettings?.phoneNumberId === phoneNumberId) {
         this.logger.log('Processing admin WhatsApp webhook', { phoneNumberId });
         await this.processAdminWebhook(payload);
+        res.status(HttpStatus.OK).send('EVENT_RECEIVED');
         return;
       }
 
       this.logger.warn('No channel found for phone_number_id', { phoneNumberId });
+      res.status(HttpStatus.OK).send('EVENT_RECEIVED');
     } catch (error: unknown) {
       this.logger.error('Error processing WhatsApp webhook', {
         error: getErrorMessage(error),
       });
+      // لا نقر باستلام حدث لم يُحفَظ؛ 5xx تطلب من Meta إعادة التسليم.
+      if (!res.headersSent) res.status(HttpStatus.INTERNAL_SERVER_ERROR).send('PERSISTENCE_FAILED');
     }
   }
 
@@ -397,79 +407,83 @@ export class WhatsAppController {
     content: string,
     externalMessageId: string,
     timestamp: Date,
-  ): Promise<void> {
-    // تحقق من عدم التكرار
-    const [existingMsg] = await this.dataSource.query(
-      `SELECT id FROM messages WHERE external_id = $1 LIMIT 1`,
-      [externalMessageId],
-    );
-    if (existingMsg) {
-      this.logger.debug(`Duplicate admin message: ${externalMessageId}`);
-      return;
-    }
+    messageMetadata: Record<string, unknown>,
+  ): Promise<boolean> {
+    return this.dataSource.transaction(async manager => {
+      // يمنع إنشاء محادثتين للمرسل نفسه عندما تصل أحداث متزامنة.
+      await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+        `${channelId}:${senderPhone}`,
+      ]);
 
-    // ابحث عن conversation مفتوحة لنفس الرقم
-    const [existingConv] = await this.dataSource.query(
-      `SELECT id FROM conversations
-       WHERE channel_id = $1
-         AND (customer_phone = $2 OR customer_external_id = $2)
-         AND status IN ('open', 'pending', 'assigned')
-       ORDER BY last_message_at DESC NULLS LAST
-       LIMIT 1`,
-      [channelId, senderPhone],
-    );
-
-    let conversationId: string;
-
-    if (existingConv) {
-      conversationId = existingConv.id;
-      // تحديث بيانات المحادثة
-      await this.dataSource.query(
-        `UPDATE conversations
-         SET last_message_at = $1,
-             messages_count = messages_count + 1
-             ${senderName ? `, customer_name = COALESCE(NULLIF(customer_name, ''), $3)` : ''}
-         WHERE id = $2`,
-        senderName
-          ? [timestamp, conversationId, senderName]
-          : [timestamp, conversationId],
+      const [existingMsg] = await manager.query(
+        'SELECT id FROM messages WHERE external_id = $1 LIMIT 1',
+        [externalMessageId],
       );
-    } else {
-      // إنشاء conversation جديدة
-      const [newConv] = await this.dataSource.query(
-        `INSERT INTO conversations
-           (id, tenant_id, channel_id,
-            customer_phone, customer_external_id, customer_name,
-            status, handler, messages_count, last_message_at,
-            ai_context, metadata, tags, created_at, updated_at)
+      if (existingMsg) {
+        this.logger.debug(`Duplicate admin message: ${externalMessageId}`);
+        return false;
+      }
+
+      const [existingConv] = await manager.query(
+        `SELECT id FROM conversations
+         WHERE channel_id = $1
+           AND (customer_phone = $2 OR customer_external_id = $2)
+           AND status IN ('open', 'pending', 'assigned')
+         ORDER BY last_message_at DESC NULLS LAST
+         LIMIT 1`,
+        [channelId, senderPhone],
+      );
+
+      let conversationId: string;
+      if (existingConv) {
+        conversationId = existingConv.id;
+        await manager.query(
+          `UPDATE conversations
+           SET last_message_at = $1,
+               messages_count = messages_count + 1,
+               updated_at = NOW()
+               ${senderName ? `, customer_name = COALESCE(NULLIF(customer_name, ''), $3)` : ''}
+           WHERE id = $2`,
+          senderName
+            ? [timestamp, conversationId, senderName]
+            : [timestamp, conversationId],
+        );
+      } else {
+        const [newConv] = await manager.query(
+          `INSERT INTO conversations
+             (id, tenant_id, channel_id,
+              customer_phone, customer_external_id, customer_name,
+              status, handler, messages_count, last_message_at,
+              ai_context, metadata, tags, created_at, updated_at)
+           VALUES
+             (gen_random_uuid(), $1, $2,
+              $3, $3, $4,
+              'open', 'human', 1, $5,
+              '{}', '{}', '{}', $5, $5)
+           RETURNING id`,
+          [tenantId, channelId, senderPhone, senderName || 'عميل', timestamp],
+        );
+        conversationId = newConv.id;
+        this.logger.log(`📝 New admin inbox conversation: ${conversationId} for ${senderPhone}`);
+      }
+
+      await manager.query(
+        `INSERT INTO messages
+           (id, tenant_id, conversation_id,
+            direction, type, status, sender,
+            external_id, content, metadata,
+            delivered_at, created_at, updated_at)
          VALUES
            (gen_random_uuid(), $1, $2,
-            $3, $3, $4,
-            'open', 'human', 1, $5,
-            '{}', '{}', '{}', $5, $5)
-         RETURNING id`,
-        [tenantId, channelId, senderPhone, senderName || 'عميل', timestamp],
+            'inbound', 'text', 'delivered', 'customer',
+            $3, $4, $5::jsonb,
+            $6, $6, $6)`,
+        [tenantId, conversationId, externalMessageId, content, JSON.stringify(messageMetadata), timestamp],
       );
-      conversationId = newConv.id;
-      this.logger.log(`📝 New admin inbox conversation: ${conversationId} for ${senderPhone}`);
-    }
 
-    // إضافة الرسالة
-    await this.dataSource.query(
-      `INSERT INTO messages
-         (id, tenant_id, conversation_id,
-          direction, type, status, sender,
-          external_id, content, metadata,
-          delivered_at, created_at, updated_at)
-       VALUES
-         (gen_random_uuid(), $1, $2,
-          'inbound', 'text', 'delivered', 'customer',
-          $3, $4, '{}',
-          $5, $5, $5)`,
-      [tenantId, conversationId, externalMessageId, content, timestamp],
-    );
-
-    this.logger.log(`✅ Admin inbox conversation updated: ${conversationId}`);
+      this.logger.log(`✅ Admin inbox conversation updated: ${conversationId}`);
+      return true;
+    });
   }
 
   /**
@@ -477,28 +491,19 @@ export class WhatsAppController {
    * ✅ FIX-3: ينشئ Conversation + Message في جداول المحادثات ليظهر في admin inbox
    */
   private async processAdminWebhook(payload: WhatsAppWebhookPayload): Promise<void> {
-    // ✅ جلب channel الأدمن — مع fallback لأي channel واتساب متاح
-    const adminSettings = await this.whatsappSettingsRepo.findOne({ where: {} });
+    // جلب قناة الإدارة المطابقة فقط؛ لا نستخدم قناة متجر كـ fallback.
+    const adminSettings = await this.whatsappSettingsRepo.findOne({
+      where: { tenantId: IsNull(), isActive: true },
+    });
 
-    let adminChannel = adminSettings?.phoneNumberId
+    const adminChannel = adminSettings?.phoneNumberId
       ? await this.channelRepository.findOne({
-          where: { whatsappPhoneNumberId: adminSettings.phoneNumberId },
+          where: {
+            whatsappPhoneNumberId: adminSettings.phoneNumberId,
+            isAdminChannel: true,
+          },
         })
       : null;
-
-    // Fallback: أي channel واتساب متاح
-    if (!adminChannel) {
-      adminChannel = await this.channelRepository.findOne({
-        where: [
-          { type: ChannelType.WHATSAPP_OFFICIAL },
-          { type: ChannelType.WHATSAPP_QR },
-        ],
-        order: { connectedAt: 'DESC' },
-      }) || null;
-      if (adminChannel) {
-        this.logger.debug(`Using fallback channel ${adminChannel.id} for admin inbox`);
-      }
-    }
 
     // جلب tenantId من store المرتبط بـ admin channel
     let adminTenantId: string | null = null;
@@ -533,17 +538,9 @@ export class WhatsAppController {
             const senderName = change.value?.contacts?.[0]?.profile?.name || null;
             const now = new Date(parseInt(msg.timestamp) * 1000);
 
-            // ✅ حفظ في message_logs للتتبع
-            await this.dataSource.query(`
-              INSERT INTO message_logs
-                (id, channel, direction, recipient_phone, content, trigger_event, status, attempts, sent_at, created_at)
-              VALUES
-                (gen_random_uuid(), 'whatsapp', 'inbound', $1, $2, 'inbound', 'received', 0, NOW(), NOW())
-            `, [phone, content]);
-
             // ✅ إنشاء/تحديث Conversation في admin inbox
             if (adminChannel && adminTenantId && phone) {
-              await this.createOrUpdateAdminInboxConversation(
+              const persisted = await this.createOrUpdateAdminInboxConversation(
                 adminChannel.id,
                 adminTenantId,
                 phone,
@@ -551,7 +548,20 @@ export class WhatsAppController {
                 content || '',
                 msg.id,
                 now,
+                msg as unknown as Record<string, unknown>,
               );
+              if (persisted) {
+                await this.dataSource.query(`
+                  INSERT INTO message_logs
+                    (id, channel, direction, recipient_phone, content, trigger_event,
+                     status, attempts, response_payload, sent_at, created_at)
+                  VALUES
+                    (gen_random_uuid(), 'whatsapp', 'inbound', $1, $2, 'inbound',
+                     'received', 0, $3::jsonb, NOW(), NOW())
+                `, [phone, content, JSON.stringify({ message_id: msg.id })]);
+              }
+            } else {
+              throw new Error('Admin WhatsApp channel is not ready for durable message storage');
             }
 
             this.logger.log(`✅ Saved inbound admin WhatsApp message`, { from: phone, type: msg.type });
@@ -559,6 +569,7 @@ export class WhatsAppController {
             this.logger.error('Failed to save inbound admin WhatsApp message', {
               error: err instanceof Error ? err.message : 'Unknown',
             });
+            throw err;
           }
         }
 
@@ -571,6 +582,13 @@ export class WhatsAppController {
               const newStatus = status.status === 'failed' ? 'failed' : 'sent';
               const statusLabel = status.status === 'delivered' ? 'delivered' :
                                   status.status === 'read' ? 'read' : 'failed';
+
+              await this.dataSource.query(
+                `UPDATE messages
+                 SET status = $1, updated_at = NOW()
+                 WHERE external_id = $2 AND direction = 'outbound'`,
+                [statusLabel, status.id],
+              );
 
               await this.dataSource.query(`
                 UPDATE message_logs
@@ -593,6 +611,7 @@ export class WhatsAppController {
               error: err instanceof Error ? err.message : 'Unknown',
               messageId: status.id,
             });
+            throw err;
           }
         }
       }

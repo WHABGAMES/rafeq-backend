@@ -126,6 +126,7 @@ export class InboxService {
       .leftJoinAndSelect('conv.channel', 'channel')
       .leftJoinAndSelect('conv.assignedTo', 'agent')
       .where('conv.tenantId = :tenantId', { tenantId })
+      .andWhere('COALESCE(channel.isAdminChannel, false) = false')
       // ✅ فلترة محادثات broadcast (status@broadcast)
       // NULL-safe: conversations without customerExternalId must still appear
       .andWhere("(conv.customerExternalId IS NULL OR conv.customerExternalId NOT LIKE :broadcast)", { broadcast: '%broadcast%' });
@@ -173,6 +174,7 @@ export class InboxService {
 
     const [items, total] = await queryBuilder
       .orderBy('conv.lastMessageAt', 'DESC')
+      .addOrderBy('conv.id', 'DESC')
       .skip((pagination.page - 1) * pagination.limit)
       .take(pagination.limit)
       .getManyAndCount();
@@ -222,10 +224,7 @@ export class InboxService {
     pagination = { page: 1, limit: 50 },
   ): Promise<{ messages: MessageDto[]; total: number }> {
     // التحقق من ملكية المحادثة
-    const conversation = await this.conversationRepository.findOne({
-      where: { id: conversationId, tenantId },
-      select: ['id'],
-    });
+    const conversation = await this.getTenantConversationById(conversationId, tenantId);
 
     if (!conversation) {
       throw new NotFoundException('المحادثة غير موجودة');
@@ -261,9 +260,7 @@ export class InboxService {
     tenantId: string,
   ): Promise<MessageDto> {
     // التحقق من ملكية المحادثة
-    const conversation = await this.conversationRepository.findOne({
-      where: { id: conversationId, tenantId },
-    });
+    const conversation = await this.getTenantConversationById(conversationId, tenantId);
 
     if (!conversation) {
       throw new NotFoundException('المحادثة غير موجودة');
@@ -293,7 +290,9 @@ export class InboxService {
   async getStats(tenantId: string, userId?: string): Promise<InboxStats> {
     const baseQuery = this.conversationRepository
       .createQueryBuilder('conv')
+      .innerJoin('conv.channel', 'channel')
       .where('conv.tenantId = :tenantId', { tenantId })
+      .andWhere('COALESCE(channel.isAdminChannel, false) = false')
       .andWhere('conv.status NOT IN (:...closedStatuses)', {
         closedStatuses: [ConversationStatus.CLOSED],
       });
@@ -340,10 +339,7 @@ export class InboxService {
   // ═══════════════════════════════════════════════════════════════════════════
 
   async getConversation(id: string, tenantId: string) {
-    const conversation = await this.conversationRepository.findOne({
-      where: { id, tenantId },
-      relations: ['channel', 'assignedTo'],
-    });
+    const conversation = await this.getTenantConversationById(id, tenantId, true);
 
     if (!conversation) {
       throw new NotFoundException('المحادثة غير موجودة');
@@ -474,6 +470,7 @@ export class InboxService {
   }
 
   async markAsRead(id: string, tenantId: string): Promise<void> {
+    await this.getTenantConversationById(id, tenantId);
     await this.conversationRepository.update(
       { id, tenantId },
       { messagesCount: 0 },
@@ -488,14 +485,34 @@ export class InboxService {
     id: string,
     tenantId: string,
   ): Promise<Conversation> {
-    const conversation = await this.conversationRepository.findOne({
-      where: { id, tenantId },
-    });
+    const conversation = await this.getTenantConversationById(id, tenantId);
 
     if (!conversation) {
       throw new NotFoundException('المحادثة غير موجودة');
     }
 
+    return conversation;
+  }
+
+  /**
+   * حاجز ملكية موحد لكل عمليات صندوق التاجر. شرط tenant وحده غير كافٍ لأن
+   * قناة الإدارة الداخلية تُخزّن ضمن البنية نفسها لتلبية قيود FK.
+   */
+  private async getTenantConversationById(
+    id: string,
+    tenantId: string,
+    includeRelations = false,
+  ): Promise<Conversation> {
+    const query = this.conversationRepository
+      .createQueryBuilder('conv')
+      .innerJoinAndSelect('conv.channel', 'channel')
+      .where('conv.id = :id', { id })
+      .andWhere('conv.tenantId = :tenantId', { tenantId })
+      .andWhere('COALESCE(channel.isAdminChannel, false) = false');
+
+    if (includeRelations) query.leftJoinAndSelect('conv.assignedTo', 'assignedTo');
+    const conversation = await query.getOne();
+    if (!conversation) throw new NotFoundException('المحادثة غير موجودة');
     return conversation;
   }
 
@@ -622,9 +639,7 @@ export class InboxService {
    * الرسائل تُحذف تلقائياً بسبب ON DELETE CASCADE
    */
   async deleteConversation(tenantId: string, conversationId: string): Promise<void> {
-    const conversation = await this.conversationRepository.findOne({
-      where: { id: conversationId, tenantId },
-    });
+    const conversation = await this.getTenantConversationById(conversationId, tenantId);
 
     if (!conversation) {
       throw new NotFoundException(`المحادثة غير موجودة: ${conversationId}`);
@@ -640,12 +655,24 @@ export class InboxService {
 
   // ═══ حذف جميع المحادثات للمتجر ═══
   async deleteAllConversations(tenantId: string): Promise<{ deleted: number }> {
-    // عد قبل الحذف — أضمن من parsing نتيجة DELETE
-    const count = await this.conversationRepository.count({ where: { tenantId } });
+    // قنوات الإدارة مستثناة حتى لو كانت مستضافة داخلياً تحت tenant تقني.
+    const rows = await this.conversationRepository.manager.query(
+      `SELECT COUNT(*)::int AS count
+       FROM conversations conv
+       INNER JOIN channels channel ON channel.id = conv.channel_id
+       WHERE conv.tenant_id = $1 AND COALESCE(channel.is_admin_channel, false) = false`,
+      [tenantId],
+    );
+    const count = Number(rows[0]?.count || 0);
     if (count === 0) return { deleted: 0 };
 
     await this.conversationRepository.manager.query(
-      `DELETE FROM conversations WHERE tenant_id = $1`, [tenantId],
+      `DELETE FROM conversations conv
+       USING channels channel
+       WHERE conv.channel_id = channel.id
+         AND conv.tenant_id = $1
+         AND COALESCE(channel.is_admin_channel, false) = false`,
+      [tenantId],
     );
     this.logger.log(`🗑️ Bulk deleted ${count} conversations for tenant ${tenantId}`);
     return { deleted: count };
@@ -659,6 +686,7 @@ export class InboxService {
        INNER JOIN stores s ON s.id = c.store_id 
        WHERE s.tenant_id = $1 
          AND c.type = 'whatsapp_qr' 
+         AND COALESCE(c.is_admin_channel, false) = false
        ORDER BY c.connected_at DESC NULLS LAST 
        LIMIT 1`,
       [tenantId],

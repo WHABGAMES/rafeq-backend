@@ -138,7 +138,7 @@ export class Message extends BaseEntity {
     length: 255,
     nullable: true,
   })
-  @Index('idx_message_external_id')
+  @Index('UQ_messages_external_id', { unique: true, where: '"external_id" IS NOT NULL' })
   externalId?: string;
 
   /**

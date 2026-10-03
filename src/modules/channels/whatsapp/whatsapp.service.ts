@@ -17,10 +17,14 @@ import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 import FormData from 'form-data';
+import * as crypto from 'crypto';
 
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { InjectRepository } from '@nestjs/typeorm';
+import { IsNull, Repository } from 'typeorm';
 import { getHttpErrorDetails } from '@common/utils/error.util';
 import { asJsonRecord, getJsonString } from '@common/utils/json-record.util';
+import { WhatsappSettings } from '../../admin/entities/whatsapp-settings.entity';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 📌 INTERFACES - تعريف الأنواع
@@ -287,6 +291,8 @@ export class WhatsAppService {
     private readonly configService: ConfigService,
     private readonly httpService: HttpService,
     private readonly eventEmitter: EventEmitter2,
+    @InjectRepository(WhatsappSettings)
+    private readonly whatsappSettingsRepo: Repository<WhatsappSettings>,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════════
@@ -591,20 +597,34 @@ export class WhatsAppService {
    * 2. نتحقق من الـ verify_token
    * 3. نرجع الـ challenge
    */
-  verifyWebhook(
+  async verifyWebhook(
     mode: string,
     token: string,
     challenge: string,
-  ): string | null {
-    const verifyToken = this.configService.get<string>('whatsapp.webhookVerifyToken');
+  ): Promise<string | null> {
+    const envToken = this.configService.get<string>('whatsapp.webhookVerifyToken')?.trim();
+    const settings = await this.whatsappSettingsRepo.findOne({
+      where: { tenantId: IsNull(), isActive: true },
+      select: ['webhookVerifyToken'],
+    });
+    const acceptedTokens = [envToken, settings?.webhookVerifyToken?.trim()].filter(
+      (candidate): candidate is string => Boolean(candidate),
+    );
 
-    if (mode === 'subscribe' && token === verifyToken) {
+    if (mode === 'subscribe' && acceptedTokens.some(candidate => this.secureTokenEquals(token, candidate))) {
       this.logger.log('WhatsApp webhook verified successfully');
       return challenge;
     }
 
     this.logger.warn('WhatsApp webhook verification failed');
     return null;
+  }
+
+  private secureTokenEquals(actual: string, expected: string): boolean {
+    const actualBuffer = Buffer.from(actual || '', 'utf8');
+    const expectedBuffer = Buffer.from(expected, 'utf8');
+    return actualBuffer.length === expectedBuffer.length
+      && crypto.timingSafeEqual(actualBuffer, expectedBuffer);
   }
 
   /**

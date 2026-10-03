@@ -28,7 +28,7 @@ import {
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, IsNull } from 'typeorm';
 
 import { AdminJwtGuard, AdminPermissionGuard, RequirePermissions, Require2FA } from '../guards/admin.guards';
 import { CurrentAdmin } from '../decorators/current-admin.decorator';
@@ -36,7 +36,6 @@ import { WhatsappSettings } from '../entities/whatsapp-settings.entity';
 import { AdminUser, PERMISSIONS } from '../entities/admin-user.entity';
 
 import { Conversation, Message, ConversationStatus, Channel } from '@database/entities';
-import { InboxService } from '@modules/inbox/inbox.service';
 import { WhatsappSettingsService } from '../services/whatsapp-settings.service';
 import { SendAdminMessageDto, UpdateAdminConversationStatusDto, UpdateAdminConversationTagsDto } from '../dto/admin-inbox.dto';
 
@@ -60,7 +59,6 @@ export class AdminInboxController {
     @InjectRepository(WhatsappSettings)
     private readonly whatsappSettingsRepo: Repository<WhatsappSettings>,
 
-    private readonly inboxService: InboxService,
     private readonly whatsappSettingsService: WhatsappSettingsService,
   ) {}
 
@@ -76,18 +74,20 @@ export class AdminInboxController {
    */
   private async getAdminChannelIds(): Promise<string[]> {
     // 1. Get admin WhatsApp settings
-    const settings = await this.whatsappSettingsRepo.findOne({ where: {} });
+    const settings = await this.whatsappSettingsRepo.findOne({
+      where: { tenantId: IsNull(), isActive: true },
+    });
     if (!settings || !settings.phoneNumberId) {
       this.logger.warn('Admin WhatsApp settings not found or phoneNumberId missing');
       return [];
     }
 
-    // 2. Find admin channels (by flag first, fallback to phoneNumberId)
+    // 2. القناة يجب أن تحمل علم الإدارة وأن تطابق الرقم المحفوظ معاً.
     const channels = await this.channelRepo.find({
-      where: [
-        { isAdminChannel: true },
-        { whatsappPhoneNumberId: settings.phoneNumberId },
-      ],
+      where: {
+        isAdminChannel: true,
+        whatsappPhoneNumberId: settings.phoneNumberId,
+      },
       select: ['id'],
     });
 
@@ -150,6 +150,7 @@ export class AdminInboxController {
 
     const [items, total] = await qb
       .orderBy('conv.lastMessageAt', 'DESC')
+      .addOrderBy('conv.id', 'DESC')
       .skip((p - 1) * l)
       .take(l)
       .getManyAndCount();
@@ -227,15 +228,54 @@ export class AdminInboxController {
   @ApiOperation({ summary: 'رسائل محادثة' })
   async getMessages(
     @Param('id') id: string,
-    @Query('page', new ParseIntPipe({ optional: true })) page = 1,
     @Query('limit', new ParseIntPipe({ optional: true })) limit = 50,
+    @Query('before') before?: string,
+    @Query('beforeId') beforeId?: string,
   ) {
-    const conv = await this.requireAdminConversation(id);
+    await this.requireAdminConversation(id);
+    const normalizedLimit = Math.min(Number(limit) || 50, 100);
+    const query = this.messageRepo
+      .createQueryBuilder('message')
+      .where('message.conversationId = :conversationId', { conversationId: id });
 
-    return this.inboxService.getMessages(id, conv.tenantId, {
-      page: Number(page) || 1,
-      limit: Math.min(Number(limit) || 50, 100),
-    });
+    if (before || beforeId) {
+      if (!before || !beforeId) {
+        throw new BadRequestException('before and beforeId must be provided together');
+      }
+      const beforeDate = new Date(before);
+      if (Number.isNaN(beforeDate.getTime())) {
+        throw new BadRequestException('Invalid message cursor');
+      }
+      query.andWhere(
+        '(message.createdAt < :before OR (message.createdAt = :before AND message.id < :beforeId))',
+        { before: beforeDate, beforeId },
+      );
+    }
+
+    const [items, total] = await Promise.all([
+      query
+        .orderBy('message.createdAt', 'DESC')
+        .addOrderBy('message.id', 'DESC')
+        .take(normalizedLimit)
+        .getMany(),
+      this.messageRepo.count({ where: { conversationId: id } }),
+    ]);
+    const oldest = items.at(-1);
+
+    return {
+      messages: items.reverse().map(message => ({
+        id: message.id,
+        conversationId: message.conversationId,
+        content: message.content || '',
+        sender: message.sender || 'system',
+        timestamp: message.createdAt.toISOString(),
+        read: message.status === 'read',
+      })),
+      total,
+      nextCursor: items.length === normalizedLimit && oldest
+        ? { before: oldest.createdAt.toISOString(), beforeId: oldest.id }
+        : null,
+    };
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -300,9 +340,10 @@ export class AdminInboxController {
     @Param('id') id: string,
     @Body() body: UpdateAdminConversationStatusDto,
   ) {
-    const conv = await this.requireAdminConversation(id);
-
-    return this.inboxService.updateStatus(id, body.status, conv.tenantId);
+    const conversation = await this.requireAdminConversation(id);
+    conversation.status = body.status;
+    if (body.status === ConversationStatus.RESOLVED) conversation.resolvedAt = new Date();
+    return this.conversationRepo.save(conversation);
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -314,9 +355,9 @@ export class AdminInboxController {
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'علامة مقروء' })
   async markAsRead(@Param('id') id: string) {
-    const conv = await this.requireAdminConversation(id);
-
-    await this.inboxService.markAsRead(id, conv.tenantId);
+    const conversation = await this.requireAdminConversation(id);
+    conversation.messagesCount = 0;
+    await this.conversationRepo.save(conversation);
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -331,9 +372,9 @@ export class AdminInboxController {
     @Param('id') id: string,
     @Body() body: UpdateAdminConversationTagsDto,
   ) {
-    const conv = await this.requireAdminConversation(id);
-
-    return this.inboxService.addTags(id, body.tags, conv.tenantId);
+    const conversation = await this.requireAdminConversation(id);
+    conversation.tags = [...new Set([...(conversation.tags || []), ...body.tags])];
+    return this.conversationRepo.save(conversation);
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -346,8 +387,7 @@ export class AdminInboxController {
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'حذف محادثة نهائياً' })
   async deleteConversation(@Param('id') id: string) {
-    const conv = await this.requireAdminConversation(id);
-
-    await this.inboxService.deleteConversation(conv.tenantId, id);
+    const conversation = await this.requireAdminConversation(id);
+    await this.conversationRepo.remove(conversation);
   }
 }

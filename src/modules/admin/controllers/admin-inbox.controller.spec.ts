@@ -1,5 +1,4 @@
 import { NotFoundException } from '@nestjs/common';
-jest.mock('@modules/inbox/inbox.service', () => ({ InboxService: class InboxService {} }));
 import { AdminInboxController } from './admin-inbox.controller';
 
 describe('AdminInboxController conversation isolation', () => {
@@ -8,18 +7,31 @@ describe('AdminInboxController conversation isolation', () => {
     andWhere: jest.fn().mockReturnThis(),
     getOne: jest.fn(),
   };
-  const conversationRepo = { createQueryBuilder: jest.fn(() => queryBuilder) };
-  const messageRepo = {};
+  const conversationRepo = {
+    createQueryBuilder: jest.fn(() => queryBuilder),
+    save: jest.fn(),
+    remove: jest.fn(),
+  };
+  const messageQueryBuilder = {
+    where: jest.fn().mockReturnThis(),
+    andWhere: jest.fn().mockReturnThis(),
+    orderBy: jest.fn().mockReturnThis(),
+    addOrderBy: jest.fn().mockReturnThis(),
+    take: jest.fn().mockReturnThis(),
+    getMany: jest.fn(),
+  };
+  const messageRepo = {
+    createQueryBuilder: jest.fn(() => messageQueryBuilder),
+    count: jest.fn(),
+  };
   const channelRepo = { find: jest.fn() };
   const whatsappSettingsRepo = { findOne: jest.fn() };
-  const inboxService = { getMessages: jest.fn() };
   const whatsappSettingsService = {};
   const controller = new AdminInboxController(
     conversationRepo as never,
     messageRepo as never,
     channelRepo as never,
     whatsappSettingsRepo as never,
-    inboxService as never,
     whatsappSettingsService as never,
   );
 
@@ -30,22 +42,29 @@ describe('AdminInboxController conversation isolation', () => {
     channelRepo.find.mockResolvedValue([{ id: 'admin-channel' }]);
     queryBuilder.getOne.mockResolvedValue(null);
 
-    await expect(controller.getMessages('foreign-conversation', 1, 50))
+    await expect(controller.getMessages('foreign-conversation', 50))
       .rejects.toBeInstanceOf(NotFoundException);
     expect(queryBuilder.andWhere).toHaveBeenCalledWith(
       'conversation.channelId IN (:...channelIds)',
       { channelIds: ['admin-channel'] },
     );
-    expect(inboxService.getMessages).not.toHaveBeenCalled();
+    expect(messageRepo.createQueryBuilder).not.toHaveBeenCalled();
   });
 
-  it('passes the verified conversation tenant to the inbox service', async () => {
+  it('loads messages only after verifying the conversation is on an admin channel', async () => {
     whatsappSettingsRepo.findOne.mockResolvedValue({ phoneNumberId: 'admin-phone' });
     channelRepo.find.mockResolvedValue([{ id: 'admin-channel' }]);
     queryBuilder.getOne.mockResolvedValue({ id: 'conversation', tenantId: 'tenant' });
-    inboxService.getMessages.mockResolvedValue({ items: [] });
+    messageQueryBuilder.getMany.mockResolvedValue([]);
+    messageRepo.count.mockResolvedValue(0);
 
-    await controller.getMessages('conversation', 1, 50);
-    expect(inboxService.getMessages).toHaveBeenCalledWith('conversation', 'tenant', { page: 1, limit: 50 });
+    await expect(controller.getMessages('conversation', 50)).resolves.toEqual({
+      messages: [],
+      total: 0,
+      nextCursor: null,
+    });
+    expect(messageQueryBuilder.orderBy).toHaveBeenCalledWith('message.createdAt', 'DESC');
+    expect(messageQueryBuilder.addOrderBy).toHaveBeenCalledWith('message.id', 'DESC');
+    expect(messageQueryBuilder.take).toHaveBeenCalledWith(50);
   });
 });

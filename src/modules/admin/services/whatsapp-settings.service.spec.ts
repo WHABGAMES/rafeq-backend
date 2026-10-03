@@ -34,10 +34,13 @@ describe('WhatsappSettingsService settings persistence', () => {
       save: jest.fn(async (settings: WhatsappSettings) => settings),
       create: jest.fn(),
     } as unknown as Repository<WhatsappSettings>;
+    const syncQuery = jest.fn()
+      .mockResolvedValueOnce([{ id: 'admin-channel-id', is_admin_channel: true }])
+      .mockResolvedValueOnce([]);
     const service = new WhatsappSettingsService(
       settingsRepo,
       {} as Repository<MessageLog>,
-      {} as DataSource,
+      { query: syncQuery } as unknown as DataSource,
       { get: jest.fn((_key: string, fallback?: string) => fallback) } as unknown as ConfigService,
       {} as MailService,
     );
@@ -53,6 +56,11 @@ describe('WhatsappSettingsService settings persistence', () => {
     expect(result.hasAccessToken).toBe(true);
     expect(result.maskedToken).toBe('•••••••• (محفوظ)');
     expect(result.lastConfiguredAt).toBeInstanceOf(Date);
+    expect(syncQuery).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining('SET is_admin_channel = true'),
+      ['admin-channel-id', '+966511111111', null],
+    );
   });
 
   it('alerts the owner only after three consecutive Meta health failures', async () => {
@@ -126,6 +134,91 @@ describe('WhatsappSettingsService settings persistence', () => {
         'SELECT pg_advisory_unlock($1)',
         [742_610_307],
       );
+    } finally {
+      global.fetch = originalFetch;
+      delete process.env.ENCRYPTION_KEY;
+    }
+  });
+
+  it('normalizes the Meta recipient and records a successful test only after Meta accepts it', async () => {
+    process.env.ENCRYPTION_KEY = 'test-encryption-key';
+    const configured = Object.assign(new WhatsappSettings(), {
+      ...existing,
+      accessTokenEncrypted: encryptForTest('meta-token-for-test'),
+      phoneNumberId: '123456789',
+      lastTestSentAt: undefined,
+    });
+    const settingsRepo = {
+      findOne: jest.fn().mockResolvedValue(configured),
+      save: jest.fn(async (settings: WhatsappSettings) => settings),
+    } as unknown as Repository<WhatsappSettings>;
+    const service = new WhatsappSettingsService(
+      settingsRepo,
+      {} as Repository<MessageLog>,
+      {} as DataSource,
+      { get: jest.fn((_key: string, fallback?: string) => fallback) } as unknown as ConfigService,
+      {} as MailService,
+    );
+    const originalFetch = global.fetch;
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ messages: [{ id: 'wamid.test' }] }),
+    }) as unknown as typeof fetch;
+
+    try {
+      await expect(service.sendTestMessage('+966 57 949 9572')).resolves.toEqual({
+        success: true,
+        message: 'Test message sent successfully',
+      });
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining('/123456789/messages'),
+        expect.objectContaining({
+          body: expect.stringContaining('"to":"966579499572"'),
+        }),
+      );
+      expect(configured.lastTestSentAt).toBeInstanceOf(Date);
+      expect(configured.connectionStatus).toBe('connected');
+    } finally {
+      global.fetch = originalFetch;
+      delete process.env.ENCRYPTION_KEY;
+    }
+  });
+
+  it('does not mark the integration disconnected when Meta rejects a test message', async () => {
+    process.env.ENCRYPTION_KEY = 'test-encryption-key';
+    const previousTestAt = new Date('2026-10-01T08:00:00.000Z');
+    const configured = Object.assign(new WhatsappSettings(), {
+      ...existing,
+      accessTokenEncrypted: encryptForTest('meta-token-for-test'),
+      phoneNumberId: '123456789',
+      connectionStatus: 'connected',
+      lastTestSentAt: previousTestAt,
+    });
+    const settingsRepo = {
+      findOne: jest.fn().mockResolvedValue(configured),
+      save: jest.fn(),
+    } as unknown as Repository<WhatsappSettings>;
+    const service = new WhatsappSettingsService(
+      settingsRepo,
+      {} as Repository<MessageLog>,
+      {} as DataSource,
+      { get: jest.fn((_key: string, fallback?: string) => fallback) } as unknown as ConfigService,
+      {} as MailService,
+    );
+    const originalFetch = global.fetch;
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: async () => ({ error: { message: 'Outside the customer service window' } }),
+    }) as unknown as typeof fetch;
+
+    try {
+      const result = await service.sendTestMessage('+966579499572');
+      expect(result.success).toBe(false);
+      expect(configured.connectionStatus).toBe('connected');
+      expect(configured.lastTestSentAt).toBe(previousTestAt);
+      expect(settingsRepo.save).not.toHaveBeenCalled();
     } finally {
       global.fetch = originalFetch;
       delete process.env.ENCRYPTION_KEY;
