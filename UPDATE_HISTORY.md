@@ -36,6 +36,20 @@
 
 # أحدث التحديثات
 
+### [2026-10-03] — BE-093 — v67 — إصلاح حفظ إيصالات حالة واتساب في PostgreSQL
+- **الحالة:** محلي — إصلاح عاجل اجتاز بوابة الفحص وجاهز لإعادة النشر.
+- **النسخة:** `whatsapp.controller.ts` v5 · `whatsapp.controller.spec.ts` v3 · `UPDATE_HISTORY.md` v67.
+- **المشكلة:** بعد نشر BE-092 كشف سجل الإنتاج أن Webhook إيصال `read` يرجع HTTP 500 ولا يحدّث `message_logs` بسبب `inconsistent types deduced for parameter $1`.
+- **السبب الجذري:** أعيد استخدام `$1` لتعيين عمود `status` ذي نوع PostgreSQL المقيد ولمقارنته مع literal نصي داخل `CASE`، فاستنتج PostgreSQL نوعين غير متوافقين للباراميتر نفسه.
+- **طريقة الحل:** أزيلت المقارنة المكررة كلياً، وأصبح `error_message = COALESCE($4, error_message)`؛ فالباراميتر الرابع يحمل سبباً فقط للحالة الفاشلة ويكون `NULL` لبقية الحالات. أضيف اختبار انحدار يفحص صيغة الاستعلام ويمنع عودة المقارنة المسببة.
+- **الأثر التشغيلي:** تحفظ إيصالات `sent/delivered/read/failed` دون 500؛ ويظل سبب الخطأ السابق محفوظاً للحالات غير الفاشلة ويُكتب سبب Meta عند الفشل.
+- **الملفات:** `src/modules/channels/whatsapp/whatsapp.controller.ts` v5 · `src/modules/channels/whatsapp/whatsapp.controller.spec.ts` v3 · `UPDATE_HISTORY.md` v67.
+- **المخاطر/الملاحظات:** لا migration ولا تغيير في payload أو توقيع Webhook. لا تأثير على سلة أو زد.
+- **التحقق:** اختبار Webhook المستهدف 3/3 ناجح، وESLint الكامل وبناء Nest ناجحان، وكامل الاختبارات 52/52 مجموعة و265/265 اختباراً ناجحة، و`git diff --check` نظيف.
+- **رسالة الـcommit:** `fix(BE-093): v67 persist WhatsApp delivery receipts safely` — أزل تعارض نوع باراميتر PostgreSQL وأضف اختبار انحدار للاستعلام.
+- **PR / Commit:** لا يوجد بعد.
+- **خطة التراجع:** إعادة الاستعلام والاختبار فقط؛ لا تعديل بيانات أو مخطط.
+
 ### [2026-10-03] — BE-092 — v66 — فصل الردود التشغيلية عن بوابة 2FA
 - **الحالة:** مرفوع ومندمج في `main` — بانتظار اكتمال نشر DigitalOcean والفحص الحي.
 - **النسخة:** `admin-inbox.controller.ts` v4 · `admin-inbox.controller.spec.ts` v2 · `UPDATE_HISTORY.md` v66.

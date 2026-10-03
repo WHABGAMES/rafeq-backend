@@ -144,8 +144,9 @@ describe('WhatsAppController durable webhook acknowledgement', () => {
 
     expect(response.status).toHaveBeenCalledWith(200);
     expect(query).toHaveBeenCalledWith(
-      expect.stringContaining('UPDATE message_logs'),
+      expect.stringMatching(/UPDATE message_logs[\s\S]*error_message = COALESCE\(\$4, error_message\)/),
       ['sent', expect.stringContaining('"delivery_status":"sent"'), 'wamid.test', null],
     );
+    expect(query.mock.calls[1]?.[0]).not.toContain("$1 = 'failed'");
   });
 });

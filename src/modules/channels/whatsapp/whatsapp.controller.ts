@@ -599,7 +599,7 @@ export class WhatsAppController {
                 SET 
                   status = $1,
                   response_payload = COALESCE(response_payload, '{}'::jsonb) || $2::jsonb,
-                  error_message = CASE WHEN $1 = 'failed' THEN $4 ELSE error_message END
+                  error_message = COALESCE($4, error_message)
                 WHERE 
                   response_payload->>'message_id' = $3
                   AND direction = 'outbound'
