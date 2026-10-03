@@ -577,11 +577,15 @@ export class WhatsAppController {
         const statuses = change.value?.statuses || [];
         for (const status of statuses) {
           try {
-            if (['delivered', 'read', 'failed'].includes(status.status)) {
+            if (['sent', 'delivered', 'read', 'failed'].includes(status.status)) {
               // تحديث الحالة في message_logs باستخدام الـ external message ID
               const newStatus = status.status === 'failed' ? 'failed' : 'sent';
-              const statusLabel = status.status === 'delivered' ? 'delivered' :
+              const statusLabel = status.status === 'sent' ? 'sent' :
+                                  status.status === 'delivered' ? 'delivered' :
                                   status.status === 'read' ? 'read' : 'failed';
+              const failureReason = status.status === 'failed'
+                ? status.errors?.map(error => error.message || error.title).filter(Boolean).join('; ') || 'Meta delivery failed'
+                : null;
 
               await this.dataSource.query(
                 `UPDATE messages
@@ -594,7 +598,8 @@ export class WhatsAppController {
                 UPDATE message_logs
                 SET 
                   status = $1,
-                  response_payload = COALESCE(response_payload, '{}'::jsonb) || $2::jsonb
+                  response_payload = COALESCE(response_payload, '{}'::jsonb) || $2::jsonb,
+                  error_message = CASE WHEN $1 = 'failed' THEN $4 ELSE error_message END
                 WHERE 
                   response_payload->>'message_id' = $3
                   AND direction = 'outbound'
@@ -602,6 +607,7 @@ export class WhatsAppController {
                 newStatus,
                 JSON.stringify({ delivery_status: statusLabel, delivery_time: new Date(parseInt(status.timestamp) * 1000).toISOString() }),
                 status.id,
+                failureReason,
               ]);
 
               this.logger.debug(`📊 Admin WhatsApp status update: ${status.status}`, { messageId: status.id });

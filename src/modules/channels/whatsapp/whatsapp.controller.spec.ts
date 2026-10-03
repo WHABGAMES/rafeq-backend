@@ -91,4 +91,61 @@ describe('WhatsAppController durable webhook acknowledgement', () => {
     expect(response.status).toHaveBeenCalledWith(500);
     expect(response.send).toHaveBeenCalledWith('PERSISTENCE_FAILED');
   });
+
+  it('persists the Meta sent receipt for an admin test message', async () => {
+    const statusPayload: WhatsAppWebhookPayload = {
+      object: 'whatsapp_business_account',
+      entry: [{
+        id: 'waba-id',
+        changes: [{
+          field: 'messages',
+          value: {
+            messaging_product: 'whatsapp',
+            metadata: {
+              phone_number_id: 'admin-phone-id',
+              display_phone_number: '+966500000000',
+            },
+            statuses: [{
+              id: 'wamid.test',
+              status: 'sent',
+              timestamp: '1791014400',
+              recipient_id: '971561667877',
+            }],
+          },
+        }],
+      }],
+    };
+    const channelRepository = {
+      findOne: jest.fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ id: 'admin-channel', storeId: null }),
+    } as unknown as Repository<Channel>;
+    const whatsappSettingsRepo = {
+      findOne: jest.fn().mockResolvedValue({
+        phoneNumberId: 'admin-phone-id',
+        isActive: true,
+      }),
+    } as unknown as Repository<WhatsappSettings>;
+    const query = jest.fn().mockResolvedValue([]);
+    const controller = new WhatsAppController(
+      {} as WhatsAppService,
+      { get: jest.fn((_key: string) => undefined) } as unknown as ConfigService,
+      channelRepository,
+      whatsappSettingsRepo,
+      { query } as unknown as DataSource,
+    );
+    const response = createResponse();
+
+    await controller.handleWebhook(
+      statusPayload,
+      { headers: {}, rawBody: undefined } as never,
+      response as never,
+    );
+
+    expect(response.status).toHaveBeenCalledWith(200);
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('UPDATE message_logs'),
+      ['sent', expect.stringContaining('"delivery_status":"sent"'), 'wamid.test', null],
+    );
+  });
 });

@@ -2,7 +2,7 @@ import { ConfigService } from '@nestjs/config';
 import { createCipheriv, randomBytes, scryptSync } from 'crypto';
 import { DataSource, IsNull, Repository } from 'typeorm';
 import { MailService } from '../../mail/mail.service';
-import { MessageLog } from '../entities/message-log.entity';
+import { MessageLog, MessageStatus } from '../entities/message-log.entity';
 import { WhatsappProvider, WhatsappSettings } from '../entities/whatsapp-settings.entity';
 import { WhatsappSettingsService } from './whatsapp-settings.service';
 
@@ -152,9 +152,16 @@ describe('WhatsappSettingsService settings persistence', () => {
       findOne: jest.fn().mockResolvedValue(configured),
       save: jest.fn(async (settings: WhatsappSettings) => settings),
     } as unknown as Repository<WhatsappSettings>;
+    const messageLogRepo = {
+      create: jest.fn((data: Partial<MessageLog>) => Object.assign(new MessageLog(), data)),
+      save: jest.fn(async (log: MessageLog) => {
+        log.id ||= 'test-log-id';
+        return log;
+      }),
+    } as unknown as Repository<MessageLog>;
     const service = new WhatsappSettingsService(
       settingsRepo,
-      {} as Repository<MessageLog>,
+      messageLogRepo,
       {} as DataSource,
       { get: jest.fn((_key: string, fallback?: string) => fallback) } as unknown as ConfigService,
       {} as MailService,
@@ -169,7 +176,10 @@ describe('WhatsappSettingsService settings persistence', () => {
     try {
       await expect(service.sendTestMessage('+966 57 949 9572')).resolves.toEqual({
         success: true,
-        message: 'Test message sent successfully',
+        status: 'accepted',
+        message: 'Meta accepted the test message. Waiting for the delivery receipt.',
+        messageId: 'wamid.test',
+        messageLogId: 'test-log-id',
       });
       expect(global.fetch).toHaveBeenCalledWith(
         expect.stringContaining('/123456789/messages'),
@@ -179,6 +189,16 @@ describe('WhatsappSettingsService settings persistence', () => {
       );
       expect(configured.lastTestSentAt).toBeInstanceOf(Date);
       expect(configured.connectionStatus).toBe('connected');
+      expect(messageLogRepo.save).toHaveBeenLastCalledWith(expect.objectContaining({
+        id: 'test-log-id',
+        status: MessageStatus.PENDING,
+        attempts: 1,
+        responsePayload: expect.objectContaining({
+          message_id: 'wamid.test',
+          whatsapp_settings_id: configured.id,
+          delivery_status: 'accepted',
+        }),
+      }));
     } finally {
       global.fetch = originalFetch;
       delete process.env.ENCRYPTION_KEY;
@@ -199,9 +219,16 @@ describe('WhatsappSettingsService settings persistence', () => {
       findOne: jest.fn().mockResolvedValue(configured),
       save: jest.fn(),
     } as unknown as Repository<WhatsappSettings>;
+    const messageLogRepo = {
+      create: jest.fn((data: Partial<MessageLog>) => Object.assign(new MessageLog(), data)),
+      save: jest.fn(async (log: MessageLog) => {
+        log.id ||= 'failed-test-log-id';
+        return log;
+      }),
+    } as unknown as Repository<MessageLog>;
     const service = new WhatsappSettingsService(
       settingsRepo,
-      {} as Repository<MessageLog>,
+      messageLogRepo,
       {} as DataSource,
       { get: jest.fn((_key: string, fallback?: string) => fallback) } as unknown as ConfigService,
       {} as MailService,
@@ -219,9 +246,45 @@ describe('WhatsappSettingsService settings persistence', () => {
       expect(configured.connectionStatus).toBe('connected');
       expect(configured.lastTestSentAt).toBe(previousTestAt);
       expect(settingsRepo.save).not.toHaveBeenCalled();
+      expect(messageLogRepo.save).toHaveBeenLastCalledWith(expect.objectContaining({
+        status: MessageStatus.FAILED,
+        errorMessage: 'Outside the customer service window',
+        responsePayload: expect.objectContaining({ delivery_status: 'failed' }),
+      }));
     } finally {
       global.fetch = originalFetch;
       delete process.env.ENCRYPTION_KEY;
     }
+  });
+
+  it('blocks a test before calling Meta when the health monitor marks the connection disconnected', async () => {
+    const configured = Object.assign(new WhatsappSettings(), {
+      ...existing,
+      connectionStatus: 'disconnected',
+    });
+    const settingsRepo = {
+      findOne: jest.fn().mockResolvedValue(configured),
+    } as unknown as Repository<WhatsappSettings>;
+    const messageLogRepo = {
+      create: jest.fn(),
+      save: jest.fn(),
+    } as unknown as Repository<MessageLog>;
+    const service = new WhatsappSettingsService(
+      settingsRepo,
+      messageLogRepo,
+      {} as DataSource,
+      { get: jest.fn((_key: string, fallback?: string) => fallback) } as unknown as ConfigService,
+      {} as MailService,
+    );
+    const fetchSpy = jest.spyOn(global, 'fetch');
+
+    await expect(service.sendTestMessage('+966579499572')).resolves.toEqual({
+      success: false,
+      status: 'blocked',
+      message: 'WhatsApp connection is not available. Update the access token and verify the connection first.',
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(messageLogRepo.create).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
   });
 });

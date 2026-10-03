@@ -33,6 +33,28 @@ interface ApiCallResult {
   success: boolean;
   response?: Record<string, unknown>;
   error?: string;
+  httpStatus?: number;
+  providerErrorCode?: number;
+}
+
+type WhatsappTestDeliveryStatus = 'pending' | 'accepted' | 'sent' | 'delivered' | 'read' | 'failed';
+
+export interface WhatsappTestResult {
+  success: boolean;
+  status: 'accepted' | 'failed' | 'blocked';
+  message: string;
+  messageId?: string;
+  messageLogId?: string;
+}
+
+export interface LatestWhatsappTest {
+  id: string;
+  recipientPhone: string | null;
+  status: WhatsappTestDeliveryStatus;
+  messageId: string | null;
+  errorMessage: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
 }
 
 interface MessageHistoryRow {
@@ -48,10 +70,11 @@ interface MessageHistoryRow {
   triggerEvent: string | null;
 }
 
-type SafeWhatsappSettings = Omit<WhatsappSettings, 'accessTokenEncrypted' | 'webhookVerifyToken'> & {
+export type SafeWhatsappSettings = Omit<WhatsappSettings, 'accessTokenEncrypted' | 'webhookVerifyToken'> & {
   maskedToken: string;
   hasAccessToken: boolean;
   hasWebhookVerifyToken: boolean;
+  latestTest: LatestWhatsappTest | null;
 };
 
 const FAILURE_THRESHOLD = 3;
@@ -288,7 +311,7 @@ export class WhatsappSettingsService implements OnModuleInit {
     const settings = await this.settingsRepo.findOne({ where });
     if (!settings) return null;
 
-    return this.toSafeSettings(settings);
+    return this.toSafeSettings(settings, await this.getLatestTest(settings.id));
   }
 
   async upsertSettings(data: {
@@ -353,10 +376,13 @@ export class WhatsappSettingsService implements OnModuleInit {
     if (!saved.tenantId && saved.isActive) {
       await this.ensureAdminChannel(saved);
     }
-    return this.toSafeSettings(saved);
+    if (saved.isActive && saved.provider === WhatsappProvider.META && accessToken) {
+      await this.checkMetaConnection(saved);
+    }
+    return this.toSafeSettings(saved, await this.getLatestTest(saved.id));
   }
 
-  async toggleActive(isActive: boolean, tenantId?: string): Promise<void> {
+  async toggleActive(isActive: boolean, tenantId?: string): Promise<SafeWhatsappSettings> {
     const where = this.settingsWhere(tenantId);
 
     const settings = await this.settingsRepo.findOne({ where });
@@ -367,6 +393,10 @@ export class WhatsappSettingsService implements OnModuleInit {
     if (isActive && !settings.tenantId) {
       await this.ensureAdminChannel(settings);
     }
+    if (isActive && settings.provider === WhatsappProvider.META) {
+      await this.checkMetaConnection(settings);
+    }
+    return this.toSafeSettings(settings, await this.getLatestTest(settings.id));
   }
 
   /**
@@ -495,7 +525,7 @@ export class WhatsappSettingsService implements OnModuleInit {
    * sendViaWhatsappApi (private) ترجع ApiCallResult { success, response?, error? }
    * — نوعان مختلفان، نعمل explicit mapping بينهما
    */
-  async sendTestMessage(phoneNumber: string, tenantId?: string): Promise<{ success: boolean; message: string }> {
+  async sendTestMessage(phoneNumber: string, tenantId?: string): Promise<WhatsappTestResult> {
     const where = this.settingsWhere(tenantId);
 
     const settings = await this.settingsRepo.findOne({ where });
@@ -504,29 +534,141 @@ export class WhatsappSettingsService implements OnModuleInit {
       throw new BadRequestException('WhatsApp integration is not active');
     }
 
-    const token = this.decrypt(settings.accessTokenEncrypted);
-    const result = await this.sendViaWhatsappApi(
-      settings,
-      token,
-      phoneNumber,
-      'Test message from Rafeq Admin Panel 🎉',
-    );
+    if (settings.provider === WhatsappProvider.META && settings.connectionStatus !== 'connected') {
+      return {
+        success: false,
+        status: 'blocked',
+        message: 'WhatsApp connection is not available. Update the access token and verify the connection first.',
+      };
+    }
+
+    const normalizedPhone = settings.provider === WhatsappProvider.META
+      ? this.formatMetaRecipient(phoneNumber)
+      : phoneNumber.trim();
+    const testMessage = 'Test message from Rafeq Admin Panel 🎉';
+    const log = await this.messageLogRepo.save(this.messageLogRepo.create({
+      recipientPhone: normalizedPhone,
+      channel: 'whatsapp',
+      triggerEvent: 'admin_test',
+      content: testMessage,
+      status: MessageStatus.PENDING,
+      attempts: 0,
+      responsePayload: {
+        whatsapp_settings_id: settings.id,
+        delivery_status: 'pending',
+      },
+    }));
+
+    let result: ApiCallResult;
+    try {
+      const token = this.decrypt(settings.accessTokenEncrypted);
+      result = await this.sendViaWhatsappApi(
+        settings,
+        token,
+        normalizedPhone,
+        testMessage,
+      );
+    } catch (error) {
+      result = {
+        success: false,
+        error: error instanceof Error ? error.message : 'Could not read the saved access token',
+      };
+    }
 
     // فشل رسالة الاختبار لا يعني أن الربط مفصول؛ قد ترفض Meta رسالة نصية
     // خارج نافذة خدمة العميل (24 ساعة) مع بقاء الرمز والرقم صالحين تماماً.
     // فحص الصحة الدوري وحده هو مصدر connectionStatus.
     if (result.success) {
       settings.lastTestSentAt = new Date();
+      const messageId = getJsonString(result.response, 'message_id');
+      log.status = MessageStatus.PENDING;
+      log.attempts = 1;
+      log.sentAt = settings.lastTestSentAt;
+      log.responsePayload = {
+        ...result.response,
+        whatsapp_settings_id: settings.id,
+        delivery_status: 'accepted',
+      };
+      await this.messageLogRepo.save(log);
+      await this.settingsRepo.save(settings);
+      return {
+        success: true,
+        status: 'accepted',
+        message: 'Meta accepted the test message. Waiting for the delivery receipt.',
+        messageId,
+        messageLogId: log.id,
+      };
+    }
+
+    log.status = MessageStatus.FAILED;
+    log.attempts = 1;
+    log.errorMessage = result.error ?? 'Failed to submit test message';
+    log.responsePayload = {
+      ...result.response,
+      whatsapp_settings_id: settings.id,
+      delivery_status: 'failed',
+    };
+    await this.messageLogRepo.save(log);
+
+    if (this.isAuthenticationFailure(result)) {
+      settings.connectionStatus = 'disconnected';
+      settings.lastConnectionError = log.errorMessage;
+      settings.lastHealthCheckedAt = new Date();
       await this.settingsRepo.save(settings);
     }
 
-    // ✅ Explicit mapping من ApiCallResult → { success, message }
     return {
-      success: result.success,
-      message: result.success
-        ? 'Test message sent successfully'
-        : (result.error ?? 'Failed to send test message'),
+      success: false,
+      status: 'failed',
+      message: log.errorMessage,
+      messageLogId: log.id,
     };
+  }
+
+  private async getLatestTest(settingsId: string): Promise<LatestWhatsappTest | null> {
+    const rows = await this.dataSource.query(
+      `SELECT id,
+              recipient_phone AS "recipientPhone",
+              COALESCE(response_payload->>'delivery_status', status) AS status,
+              response_payload->>'message_id' AS "messageId",
+              error_message AS "errorMessage",
+              created_at AS "createdAt",
+              COALESCE(
+                NULLIF(response_payload->>'delivery_time', '')::timestamptz,
+                sent_at,
+                created_at
+              ) AS "updatedAt"
+       FROM message_logs
+       WHERE trigger_event = 'admin_test'
+         AND response_payload->>'whatsapp_settings_id' = $1
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`,
+      [settingsId],
+    );
+    if (!Array.isArray(rows) || !rows[0]) return null;
+    const row = rows[0] as Record<string, unknown>;
+    const status = this.parseTestDeliveryStatus(row.status);
+    if (!status) return null;
+    return {
+      id: String(row.id),
+      recipientPhone: typeof row.recipientPhone === 'string' ? row.recipientPhone : null,
+      status,
+      messageId: typeof row.messageId === 'string' ? row.messageId : null,
+      errorMessage: typeof row.errorMessage === 'string' ? row.errorMessage : null,
+      createdAt: row.createdAt as Date | string,
+      updatedAt: row.updatedAt as Date | string,
+    };
+  }
+
+  private parseTestDeliveryStatus(value: unknown): WhatsappTestDeliveryStatus | null {
+    return typeof value === 'string'
+      && ['pending', 'accepted', 'sent', 'delivered', 'read', 'failed'].includes(value)
+      ? value as WhatsappTestDeliveryStatus
+      : null;
+  }
+
+  private isAuthenticationFailure(result: ApiCallResult): boolean {
+    return result.httpStatus === 401 || result.providerErrorCode === 190;
   }
 
   // ─── Send Message (via Processor) ─────────────────────────────────────────
@@ -728,8 +870,18 @@ export class WhatsappSettingsService implements OnModuleInit {
         const data = asJsonRecord(await resp.json()) ?? {};
 
         if (!resp.ok) {
-          const errorMsg = getJsonString(asJsonRecord(data.error), 'message') ?? `HTTP ${resp.status}`;
-          return { success: false, response: data, error: errorMsg };
+          const providerError = asJsonRecord(data.error);
+          const errorMsg = getJsonString(providerError, 'message') ?? `HTTP ${resp.status}`;
+          const providerErrorCode = typeof providerError?.code === 'number'
+            ? providerError.code
+            : undefined;
+          return {
+            success: false,
+            response: data,
+            error: errorMsg,
+            httpStatus: resp.status,
+            providerErrorCode,
+          };
         }
         const firstMessage = Array.isArray(data.messages)
           ? asJsonRecord(data.messages[0])
@@ -945,13 +1097,17 @@ export class WhatsappSettingsService implements OnModuleInit {
     return normalized;
   }
 
-  private toSafeSettings(settings: WhatsappSettings): SafeWhatsappSettings {
+  private toSafeSettings(
+    settings: WhatsappSettings,
+    latestTest: LatestWhatsappTest | null,
+  ): SafeWhatsappSettings {
     const { accessTokenEncrypted, webhookVerifyToken, ...rest } = settings;
     return {
       ...rest,
       hasAccessToken: Boolean(accessTokenEncrypted),
       hasWebhookVerifyToken: Boolean(webhookVerifyToken),
       maskedToken: this.maskToken(accessTokenEncrypted),
+      latestTest,
     };
   }
 
