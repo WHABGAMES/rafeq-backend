@@ -284,7 +284,6 @@ export class AdminInboxController {
 
   @Post(':id/messages')
   @RequirePermissions(PERMISSIONS.ADMIN_INBOX_MANAGE)
-  @Require2FA()
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'إرسال رسالة من الأدمن عبر WhatsApp Admin Settings' })
   async sendMessage(

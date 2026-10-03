@@ -26,7 +26,7 @@ describe('AdminInboxController conversation isolation', () => {
   };
   const channelRepo = { find: jest.fn() };
   const whatsappSettingsRepo = { findOne: jest.fn() };
-  const whatsappSettingsService = {};
+  const whatsappSettingsService = { sendMessage: jest.fn() };
   const controller = new AdminInboxController(
     conversationRepo as never,
     messageRepo as never,
@@ -66,5 +66,36 @@ describe('AdminInboxController conversation isolation', () => {
     expect(messageQueryBuilder.orderBy).toHaveBeenCalledWith('message.createdAt', 'DESC');
     expect(messageQueryBuilder.addOrderBy).toHaveBeenCalledWith('message.id', 'DESC');
     expect(messageQueryBuilder.take).toHaveBeenCalledWith(50);
+  });
+
+  it('sends operational inbox replies through the configured admin WhatsApp channel', async () => {
+    whatsappSettingsRepo.findOne.mockResolvedValue({ phoneNumberId: 'admin-phone' });
+    channelRepo.find.mockResolvedValue([{ id: 'admin-channel' }]);
+    queryBuilder.getOne.mockResolvedValue({
+      id: 'conversation',
+      tenantId: 'tenant',
+      customerPhone: '971561667877',
+    });
+    whatsappSettingsService.sendMessage.mockResolvedValue({
+      success: true,
+      messageLogId: 'log-id',
+      savedMessageId: 'message-id',
+    });
+
+    await expect(controller.sendMessage(
+      'conversation',
+      {} as never,
+      { content: ' مرحباً ' },
+    )).resolves.toMatchObject({
+      id: 'message-id',
+      conversationId: 'conversation',
+      content: 'مرحباً',
+      status: 'sent',
+    });
+    expect(whatsappSettingsService.sendMessage).toHaveBeenCalledWith(
+      '971561667877',
+      'مرحباً',
+      { recipientUserId: undefined, triggerEvent: 'admin.manual' },
+    );
   });
 });
