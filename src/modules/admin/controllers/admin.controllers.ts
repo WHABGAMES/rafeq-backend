@@ -106,7 +106,6 @@ export class WhatsappController {
 
   @Post('connect')
   @RequirePermissions(PERMISSIONS.WHATSAPP_MANAGE)
-  @Require2FA()
   @HttpCode(HttpStatus.OK)
   connect(
     @Body() body: SaveAdminWhatsappSettingsDto,
@@ -116,7 +115,6 @@ export class WhatsappController {
 
   @Post('toggle')
   @RequirePermissions(PERMISSIONS.WHATSAPP_MANAGE)
-  @Require2FA()
   @HttpCode(HttpStatus.OK)
   toggle(@Body() body: ToggleAdminWhatsappDto) {
     return this.whatsappService.toggleActive(body.isActive, body.tenantId);
@@ -140,7 +138,6 @@ export class WhatsappController {
 
   @Post('test')
   @RequirePermissions(PERMISSIONS.WHATSAPP_MANAGE)
-  @Require2FA()
   @HttpCode(HttpStatus.OK)
   test(@Body() body: TestAdminWhatsappDto) {
     return this.whatsappService.sendTestMessage(body.phoneNumber, body.tenantId);
