@@ -36,6 +36,34 @@
 
 # أحدث التحديثات
 
+### [2026-10-03] — BE-095 — v69 — تدقيق متانة النسخ الاحتياطي قبل الإنتاج
+- **الحالة:** محلي — مكتمل برمجياً؛ الرفع ممنوع حتى إكمال بوابة الواجهة وإعداد التخزين والأسرار.
+- **النسخة:** خدمة النسخ v2 · خدمة التخزين واختبارها v2 · كيان ومخطط النسخ v2 · أداة الاستعادة واختبارها v1 · `package.json` v8 · `package-lock.json` v7 · `BACKUP_RUNBOOK.md` v2 · `UPDATE_HISTORY.md` v69.
+- **المشكلة:** كان التنفيذ الأول صالحاً وظيفياً، لكنه اعتمد على رفع وحيد محدود الحجم، وقد يعيد جدولة نسخة طويلة سليمة اعتماداً على وقت البدء، ولم يكن مسار الاستعادة المشفرة قابلاً للاختبار بأداة رسمية.
+- **السبب الجذري:** توقيع S3 اليدوي لم يوفر multipart، واستخدم اكتشاف العمل المتوقف عمراً ثابتاً دون lease متجدد، واقتصر التصميم الأول على مسار إنشاء النسخة.
+- **طريقة الحل:** استبدل توقيع HTTP اليدوي بـAWS SDK والرفع متعدد الأجزاء مع إلغاء الأجزاء عند الفشل ومحاولات مضبوطة، وأضيف heartbeat كل 30 ثانية واسترجاع العمل فقط بعد 15 دقيقة من انقطاعه. يمر خرج `pg_dump` مباشرة عبر AES-256-GCM بلا ملف صريح، ويتحقق HEAD من الحجم وSHA-256 وبصمة مفتاح التشفير قبل اعتماد النسخة. أضيفت أداة استعادة تتحقق من digest/header/auth tag وتحذف الناتج الجزئي عند الفشل، مع اختبارات العبث والإعدادات.
+- **الأثر التشغيلي:** يدعم النظام نمو النسخ لما بعد حد single PUT، ولا يكرر نسخة بطيئة عند تشغيل عدة حاويات، ويمكن إثبات سلامة ملف الاستعادة قبل `pg_restore`.
+- **الملفات:** `src/modules/admin/services/backup-object-storage.service.ts` v2 · `src/modules/admin/services/backup-object-storage.service.spec.ts` v2 · `src/modules/admin/services/platform-backup.service.ts` v2 · `src/modules/admin/services/platform-backup.service.spec.ts` v2 · `src/modules/admin/entities/platform-backup.entity.ts` v2 · `src/database/migrations/CreatePlatformBackups1791000000000.ts` v2 · `src/cli/decrypt-platform-backup.ts` v1 · `src/cli/decrypt-platform-backup.spec.ts` v1 · `package.json` v8 · `package-lock.json` v7 · `BACKUP_RUNBOOK.md` v2 · `UPDATE_HISTORY.md` v69.
+- **المخاطر/الملاحظات:** يلزم Space خاص وأسرار `BACKUP_*` ومفتاح محفوظ خارج DigitalOcean. النسخة تشمل PostgreSQL ولا تشمل أسرار البيئة أو Redis المؤقت. لا تأثير على OAuth أو Webhooks أو تكامل سلة وزد.
+- **التحقق:** `npm audit --audit-level=high` صفر ثغرات، وESLint الكامل بصفر تحذيرات/أخطاء، وبناء Nest ناجح، واختبارات النسخ/التخزين/الاستعادة المستهدفة 13/13 وكامل اختبارات الخادم 55/55 مجموعة و278/278 اختباراً ناجحة، و`git diff --check` نظيف.
+- **رسالة الـcommit:** `feat(BE-095): v69 harden encrypted backup lifecycle` — رفع multipart رسمي، heartbeat موزع، تحقق سلامة واستعادة موثقة قابلة للاختبار.
+- **PR / Commit:** غير منشأ بعد.
+- **خطة التراجع:** عكس الملفات والتبعية قبل تشغيل migration؛ بعد إنشاء سجلات فعلية لا يُعكس المخطط إلا بعد حفظ metadata والتأكد من عدم وجود job نشط.
+
+### [2026-10-03] — BE-094 — v68 — نسخ احتياطي مستقل ومشفّر لكل بيانات المنصة
+- **الحالة:** محلي — بانتظار إعداد Object Storage ومفتاح التشفير ثم المراجعة والرفع.
+- **النسخة:** ملفات النظام الجديدة و`BACKUP_RUNBOOK.md` v1 · `admin.module.ts` v2 · `admin-user.entity.ts` v3 · `audit-log.entity.ts` v2 · `typeorm.config.ts` v4 · `Dockerfile` v3 · `.env.example` v3 · `UPDATE_HISTORY.md` v68.
+- **المشكلة:** نسخ PostgreSQL المدارة تحمي آخر سبعة أيام، لكن لم توجد نسخة مستقلة خارج الـCluster أو سجل إداري للنسخ، ولا حماية من حذف الـCluster مع نسخه التابعة.
+- **السبب الجذري:** اعتمدت المنصة على حماية المزوّد فقط ولم يكن لديها مسار logical backup كامل قابل للنقل أو سياسة احتفاظ مستقلة.
+- **طريقة الحل:** أضيف نظام jobs دائم ينفذ `pg_dump` كامل لكل الجداول، يشفر الناتج بـAES-256-GCM قبل مغادرة الخادم، يحسب SHA-256، يرفعه إلى Object Storage متوافق مع S3 مع تشفير الخادم، ثم يتحقق من الحجم المخزن. المطالبة بالعمل ذرية عبر `FOR UPDATE SKIP LOCKED` وقيد فريد يمنع نسختين نشطتين، وتُعاد الأعمال المهجورة بعد توقف الحاوية. النسخ يومية مع احتفاظ 7–365 يوماً وتنظيف آمن وسجل حالات كامل. الطلب اليدوي يتطلب صلاحية مستقلة و2FA ويسجل في Audit Log.
+- **الأثر التشغيلي:** تشمل النسخة المحادثات والرسائل والتقارير والحسابات والإعدادات والتدقيق وكل جدول حالي أو مستقبلي تلقائياً. يبقى النظام مغلقاً بأمان حتى تكتمل الأسرار المطلوبة.
+- **الملفات:** `src/modules/admin/entities/platform-backup.entity.ts` v1 · `src/database/migrations/CreatePlatformBackups1791000000000.ts` v1 · `src/modules/admin/services/backup-object-storage.service.ts` v1 · `src/modules/admin/services/platform-backup.service.ts` v1 · `src/modules/admin/services/platform-backup.service.spec.ts` v1 · `src/modules/admin/controllers/platform-backups.controller.ts` v1 · `BACKUP_RUNBOOK.md` v1 · `src/modules/admin/admin.module.ts` v2 · `src/modules/admin/entities/admin-user.entity.ts` v3 · `src/modules/admin/entities/audit-log.entity.ts` v2 · `src/config/typeorm.config.ts` v4 · `Dockerfile` v3 · `.env.example` v3 · `UPDATE_HISTORY.md` v68.
+- **المخاطر/الملاحظات:** يلزم Space خاص غير عام ومتغيرات `BACKUP_*`، مع حفظ مفتاح التشفير منفصلاً. الاستعادة تكون إلى قاعدة جديدة للفحص قبل التحويل. لا تأثير على OAuth أو Webhooks أو تكامل سلة وزد.
+- **التحقق:** TypeScript وESLint الكامل ناجحان بصفر أخطاء وتحذيرات، بناء Nest ناجح، اختبارات خدمة النسخ 5/5 وكامل اختبارات الخادم 269/269 ناجحة، و`git diff --check` نظيف.
+- **رسالة الـcommit:** `feat(BE-094): v68 add encrypted off-site platform backups` — نسخ PostgreSQL كامل، تشفير قبل الرفع، Queue ذرية، تحقق التخزين، احتفاظ وتدقيق إداري.
+- **PR / Commit:** غير منشأ بعد.
+- **خطة التراجع:** إزالة Controller/Services/Entity ثم عكس migration؛ لا تُحذف أي نسخة خارجية إلا بإجراء مستقل ومدروس.
+
 ### [2026-10-03] — BE-093 — v67 — إصلاح حفظ إيصالات حالة واتساب في PostgreSQL
 - **الحالة:** منشور في الإنتاج ومتحقق حياً — الإصلاح `8394d18` موجود في deployment `9b84b7ed-363b-4d70-ae97-a76c38adeabf`؛ التطبيق Live وHealthy و`/api/health` يعيد HTTP 200، وسجل التشغيل الجديد بلا خطأ تعارض الأنواع.
 - **النسخة:** `whatsapp.controller.ts` v5 · `whatsapp.controller.spec.ts` v3 · `UPDATE_HISTORY.md` v67.

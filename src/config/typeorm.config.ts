@@ -42,6 +42,7 @@ import { TrustedDevice } from '../modules/auth/trusted-device.entity';
 import { PlatformNotification } from '../modules/platform-notifications/platform-notification.entity';
 import { PlatformNotificationUserAction } from '../modules/platform-notifications/platform-notification-user-action.entity';
 import { PlatformFeature } from '../modules/platform-capabilities/entities/platform-feature.entity';
+import { PlatformBackup } from '../modules/admin/entities/platform-backup.entity';
 
 const entities = [
   User, Tenant, Store, Channel, Message, Conversation, Campaign, Customer,
@@ -52,6 +53,7 @@ const entities = [
   PlatformNotification,
   PlatformNotificationUserAction,
   PlatformFeature,
+  PlatformBackup,
 ];
 
 const parsePoolLimit = (

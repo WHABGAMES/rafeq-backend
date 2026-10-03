@@ -34,6 +34,9 @@ export enum AuditAction {
   WHATSAPP_SETTINGS_UPDATED = 'whatsapp.settings_updated',
   WHATSAPP_TEST_SENT = 'whatsapp.test_sent',
 
+  // ── Admin → Backups ──
+  BACKUP_REQUESTED = 'backup.requested',
+
   // ── Admin → Templates ──
   TEMPLATE_CREATED = 'template.created',
   TEMPLATE_UPDATED = 'template.updated',

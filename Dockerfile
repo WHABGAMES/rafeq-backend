@@ -40,6 +40,7 @@ RUN apk add --no-cache \
     dumb-init \
     curl \
     git \
+    postgresql-client \
     python3 \
     make \
     g++

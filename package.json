@@ -48,9 +48,12 @@
     "docker:down": "docker-compose down",
     "docker:logs": "docker-compose logs -f",
     "migration:show": "npm run typeorm -- migration:show -d src/database/data-source.ts",
-    "telegram:session:generate": "ts-node src/cli/generate-telegram-session.ts"
+    "telegram:session:generate": "ts-node src/cli/generate-telegram-session.ts",
+    "backup:decrypt": "ts-node src/cli/decrypt-platform-backup.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1146.0",
+    "@aws-sdk/lib-storage": "^3.1146.0",
     "@hapi/boom": "^10.0.1",
     "@nestjs/axios": "^4.0.1",
     "@nestjs/bullmq": "^11.0.5",

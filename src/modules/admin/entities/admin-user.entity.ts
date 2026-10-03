@@ -53,6 +53,8 @@ export const PERMISSIONS = {
   ADMIN_ALERTS_READ: 'admin_alerts.read',
   ADMIN_ALERTS_MANAGE: 'admin_alerts.manage',
   ADMIN_ALERTS_TEST: 'admin_alerts.test',
+  BACKUPS_READ: 'backups.read',
+  BACKUPS_MANAGE: 'backups.manage',
 } as const;
 
 export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -82,6 +84,8 @@ export const ROLE_PERMISSIONS: Record<AdminRole, Permission[]> = {
     PERMISSIONS.ADMIN_ALERTS_READ,
     PERMISSIONS.ADMIN_ALERTS_MANAGE,
     PERMISSIONS.ADMIN_ALERTS_TEST,
+    PERMISSIONS.BACKUPS_READ,
+    PERMISSIONS.BACKUPS_MANAGE,
   ],
   [AdminRole.SUPPORT]: [
     PERMISSIONS.USERS_READ,

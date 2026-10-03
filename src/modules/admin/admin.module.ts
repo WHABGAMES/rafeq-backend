@@ -26,6 +26,7 @@ import { MessageLog } from './entities/message-log.entity';
 import { MaintenancePage } from './entities/maintenance-page.entity';
 import { AdminAlertRecipient } from './entities/admin-alert-recipient.entity';
 import { Conversation, Message, Channel } from '@database/entities';
+import { PlatformBackup } from './entities/platform-backup.entity';
 
 // Services
 import { AuditService } from './services/audit.service';
@@ -37,6 +38,8 @@ import { MaintenanceService } from './services/maintenance.service';
 import { AdminAlertsService } from './services/admin-alerts.service';
 import { AdminTwoFactorSecretService } from './services/admin-two-factor-secret.service';
 import { AdminLoginProtectionService } from './services/admin-login-protection.service';
+import { BackupObjectStorageService } from './services/backup-object-storage.service';
+import { PlatformBackupService } from './services/platform-backup.service';
 
 // Controllers
 import { AdminAuthController } from './controllers/admin-auth.controller';
@@ -79,6 +82,7 @@ import { OtpRelayModule } from '../otp-relay/otp-relay.module';
 import { PlatformCapabilitiesModule } from '../platform-capabilities/platform-capabilities.module';
 import { AdminPlatformFeaturesController } from './controllers/admin-platform-features.controller';
 import { getAdminJwtSecret } from './admin-jwt-secret';
+import { PlatformBackupsController } from './controllers/platform-backups.controller';
 
 // ─── [C-2] Startup Validation ─────────────────────────────────────────────────
 // يُنفَّذ قبل أي شيء عند تحميل الـ module
@@ -98,6 +102,7 @@ const jwtSecret = getAdminJwtSecret();
       Channel,       // ✅ مطلوب لـ AdminInboxController — فلترة بالرقم الإداري
       MaintenancePage, // ✅ مطلوب لنظام الصيانة الجزئي
       AdminAlertRecipient, // ✅ NEW: جدول مستقبلي تنبيهات الإدارة
+      PlatformBackup,
     ]),
 
     // ✅ JwtModule يستخدم نفس الـ secret المُتحقَّق منه أعلاه
@@ -156,6 +161,7 @@ const jwtSecret = getAdminJwtSecret();
     // ✅ NEW: تنبيهات الإدارة العليا (WhatsApp alerts on platform events)
     AdminAlertsController,
     AdminPlatformFeaturesController,
+    PlatformBackupsController,
   ],
 
   providers: [
@@ -180,6 +186,8 @@ const jwtSecret = getAdminJwtSecret();
     AdminAlertsService,   // ✅ NEW
     AdminTwoFactorSecretService,
     AdminLoginProtectionService,
+    BackupObjectStorageService,
+    PlatformBackupService,
   ],
 
   // Exported for use in other modules (e.g., stores module, webhooks module)
